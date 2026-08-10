@@ -1,0 +1,9 @@
+{
+  "api_base_url": "https://paper-api.example.invalid",
+  "operator_token_env": "TRADE_PLATFORM_OPERATOR_TOKEN",
+  "_operator_token_file_alternative": "/run/secrets/trade-platform-operator-token",
+  "return_provider": "sandbox-performance",
+  "return_account": "paper-account-1",
+  "investment_thesis_id": "00000000-0000-0000-0000-000000000000",
+  "dashboard_origin": "https://dashboard.example.invalid"
+}

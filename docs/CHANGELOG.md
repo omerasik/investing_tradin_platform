@@ -1,0 +1,39 @@
+# Changelog
+
+## 2026-07-30
+
+- Created Phase 0 documentation from the authoritative specifications.
+- Extracted and rendered both specifications for review.
+- Created isolated sibling upstream-research directory and shallow-cloned the specified candidates without executing repository code.
+- Added paper-only configuration, canonical domain contracts, deterministic risk checks and kill-switch controls with passing unit tests.
+- Added duplicate-intent protection and verified paper-only source scanning.
+- Added local FastAPI health/audit API, SQLite audit store, OpenAPI/API tests and CI verification workflow.
+- Added fail-closed environment-backed local API authentication and rate limiting.
+- Added canonical, venue-qualified instrument master persistence and tests.
+- Added structured local observability metrics and event logging.
+- Added point-in-time OHLCV provenance contracts, data-quality checks and deterministic batch-versioning.
+- Replaced opaque bar persistence with typed columns and added point-in-time historical query gating.
+- Added a provider-neutral historical-bar adapter contract and deterministic fixture adapter.
+- Added versioned feature registry and leakage-safe cost-aware vectorized moving-average baseline.
+- Added standardized performance reports and append-only versioned experiment tracking.
+- Added deterministic paper-order lifecycle and partial-fill simulation.
+- Added paper corporate-action treatment and reconciliation-to-risk blocking.
+- Added deterministic paper funding, borrow-cost and margin-limit calculations.
+- Added paper venue tick, lot, session and notional constraint validation.
+- Added cross-engine equity, fill and position reconciliation reporting.
+- Added transparent baseline breakout, momentum and mean-reversion strategies.
+- Added chronological out-of-sample split generation and bounded inverse-risk allocation.
+- Added portfolio exposure, concentration, and generalized stress-scenario calculations.
+- Added explainable deterministic portfolio risk-policy decisions.
+- Added protected paper-only portfolio risk-report API contract.
+- Added responsive Next.js paper-only operator command-center scaffold.
+- Added server-side dashboard risk proxy and HTTP smoke-test coverage.
+- Expanded the dashboard information architecture and strengthened HTTP smoke assertions.
+- Added lawful provider-neutral news/event metadata, source-confidence and license-gating contracts with point-in-time tests.
+- Added transparent probabilistic regime estimates and bounded ensemble allocation with walk-forward invariance tests.
+- Added append-only long-horizon investment theses, evidence-bound recommendations, non-executable rebalance plans and scenarios.
+- Completed static reference-only upstream manifest and supply-chain triage evidence; no upstream runtime dependency was adopted.
+- Added fixture-only paper-broker adapter contracts and deterministic execution-quality metrics; no vendor connection exists.
+- Added local shadow divergence and failure-drill evidence contracts; no live-data comparison exists.
+- Completed initial command, market, instrument, research, backtest, risk, investment and audit dashboard workspace coverage.
+- Performed consolidated final verification, source safety scan and readiness-document refresh.

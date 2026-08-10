@@ -1,0 +1,19 @@
+# Local runtimes and generated build output
+.venv/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.next/
+**/.next/
+node_modules/
+
+# Re-creatable local analysis and browser-test artifacts
+tmp/
+
+# Deployment secrets and local dashboard configuration
+.env
+.env.*
+!.env.example
+web/dashboard.config.json
+web/dashboard.e2e.token
+*.local.json

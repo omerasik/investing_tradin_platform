@@ -1,0 +1,11 @@
+"use client";
+
+import { FormEvent, useState } from "react";
+
+const defaults = { strategy_version: "momentum-dashboard-v1", family: "momentum", hypothesis: "Momentum persists after explicit costs.", required_datasets: ["bars-v1"], feature_versions: ["return:v1"], universe_rules: "Liquid ETFs", entry_logic: "Enter on positive momentum", exit_logic: "Exit on reversal", sizing_policy: "Volatility target", risk_policy: "risk-v1", cost_model_version: "cost-v1", capacity_model: "capacity-v1", expected_regimes: ["BULL"], parameter_schema: { lookback: "integer >= 2" }, failure_conditions: ["whipsaw"], limitations: ["No short borrow model"], idempotency_key: "dashboard-strategy-1" };
+
+export function StrategyCreator() {
+  const [version, setVersion] = useState(defaults.strategy_version); const [key, setKey] = useState(defaults.idempotency_key); const [result, setResult] = useState("No strategy card submitted.");
+  async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setResult("Creating research contract…"); const response = await fetch("/api/research", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...defaults, strategy_version: version, idempotency_key: key, action: "create_strategy" }) }); const body: unknown = await response.json(); const detail = body && typeof body === "object" && "detail" in body && typeof body.detail === "string" ? body.detail : "Invalid research strategy contract."; setResult(response.ok && body && typeof body === "object" && "strategy_id" in body && "strategy_version" in body ? `Created research strategy ${body.strategy_id}; ${body.strategy_version}` : detail); }
+  return <form onSubmit={submit}><p>All evidence fields are supplied by this explicit transparent baseline template; edit its version and idempotency key before submitting.</p><label>Strategy version<input aria-label="Strategy version" value={version} onChange={(event) => setVersion(event.target.value)} required /></label><label>Strategy idempotency key<input aria-label="Strategy idempotency key" value={key} onChange={(event) => setKey(event.target.value)} required /></label><button type="submit">Create research strategy</button><p aria-live="polite">{result}</p></form>;
+}
