@@ -1,11 +1,33 @@
 # Known Limitations
 
-- The project began from an empty repository; implemented components are local, fixture-driven and paper-only rather than operational production services.
-- External market, fundamental, macro, news and social data require licensed sources and provider contracts.
-- Broker paper integration requires sandbox credentials and Belgian/legal/tax review.
-- Upstream audits are static and preliminary until dependency/SBOM scanners are configured in an isolated environment.
-- No live-trading capability exists or is intended in the current implementation.
-- The initial idempotency ledger is in-memory only; a durable audited OMS store is required before multi-process paper trading.
-- The API has a single environment-backed operator token and in-memory rate limit. It must not be exposed beyond localhost until durable sessions, RBAC, TLS, distributed rate limits and deployment controls are implemented.
-- The Next.js dashboard has a server-side risk proxy and read-only local workspace states. Broader authenticated data wiring, durable operator identity and browser-level UI tests remain pending.
-- Browser-level local UI verification is currently blocked by browser-control navigation timeouts despite the local dashboard server responding with HTTP 200 and the production build passing. This is tooling evidence, not a dashboard pass.
+The full requirement-level matrix is in
+[`MASTER_ROADMAP.md`](MASTER_ROADMAP.md). These are the material current limits.
+
+- This is a local, paper-only system. Live trading is intentionally unavailable.
+- SQLite stores provide durable local evidence but are not the normalized
+  PostgreSQL/analytics/object-storage/queue deployment architecture required by
+  the specification.
+- The golden vector-to-event artifact verifies an explicitly declared,
+  single-price, zero-latency close-auction convention. It does not validate
+  production execution with spread, impact, latency, queue priority, funding,
+  borrow, margin, tax or capacity.
+- Strategy coverage is four transparent long-only baselines. Cross-sectional,
+  factor, macro, relative-value, event, sentiment, crypto-basis and
+  market-neutral families remain incomplete.
+- Market, macro, fundamental and news adapters are configuration/fixture or
+  narrow public-source boundaries. There is no activated licensed provider,
+  streaming feed, full SEC parser, economic calendar or real-time source health
+  deployment.
+- Social/narrative intelligence is not started: no lawful connector, bot/spam
+  controls, narrative clustering, crowding or price/sentiment divergence.
+- Regime, ensemble, ML and agent layers are local governance/research contracts;
+  they do not have validated production models, retrieval, orchestration,
+  empirical evaluation or execution authority.
+- The dashboard has selected browser E2E evidence, but lacks production
+  authentication/RBAC/MFA, interactive charts, accessibility verification and
+  the full required operator workflow suite.
+- Security is development-grade: bearer authentication and fail-closed local
+  controls exist; sessions/RBAC/MFA/CSRF/security headers/secret manager/SAST/
+  SCA/SBOM/encrypted off-site backup and disaster-recovery drills remain open.
+- Upstream repositories are reference-only pending complete isolated security,
+  license and benchmark evidence. No third-party runtime dependency is approved.
