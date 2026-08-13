@@ -40,7 +40,10 @@ jobs:
       - run: ruff check src/trade_platform/persistence.py src/trade_platform/postgres_schema.py src/trade_platform/postgres_backfill.py src/trade_platform/postgres_repositories.py tests/test_persistence.py tests/test_postgres_integration.py
       - run: mypy --follow-imports=skip src/trade_platform/persistence.py src/trade_platform/postgres_schema.py src/trade_platform/postgres_backfill.py src/trade_platform/postgres_repositories.py
       - run: bandit -q -r src/trade_platform/persistence.py src/trade_platform/postgres_backfill.py src/trade_platform/postgres_repositories.py
-      - run: pip-audit --strict --skip-editable
+      - name: Audit resolved Python dependencies
+        run: |
+          python -m pip freeze --exclude-editable > /tmp/resolved-requirements.txt
+          pip-audit --strict -r /tmp/resolved-requirements.txt
       - run: cyclonedx-py environment --output-file sbom.json
       - name: Fail on committed secret-like environment files
         run: |
