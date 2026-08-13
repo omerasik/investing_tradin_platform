@@ -7,10 +7,11 @@ The full requirement-level matrix is in
 - SQLite stores provide durable local evidence but are not the normalized
   PostgreSQL/analytics/object-storage/queue deployment architecture required by
   the specification.
-- The golden vector-to-event artifact verifies an explicitly declared,
-  single-price, zero-latency close-auction convention. It does not validate
-  production execution with spread, impact, latency, queue priority, funding,
-  borrow, margin, tax or capacity.
+- Golden artifacts now retain declared spread, fee, latency, participation and
+  impact assumptions, partial/unfilled-order observations, and raw versus
+  explained divergence. They are deterministic synthetic regressions, not
+  production execution validation: queue priority, funding, borrow, margin,
+  tax and capacity remain incomplete.
 - Strategy coverage is four transparent long-only baselines. Cross-sectional,
   factor, macro, relative-value, event, sentiment, crypto-basis and
   market-neutral families remain incomplete.

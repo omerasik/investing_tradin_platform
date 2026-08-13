@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from trade_platform.corporate_actions import CorporateAction, CorporateActionType
-from trade_platform.cross_engine import GoldenMarketBar, GoldenRunValidationError, SQLiteGoldenRunStore, ExecutionRecord, compare_execution_records, reconcile_engines, run_golden_vector_event_reconciliation
+from trade_platform.cross_engine import GoldenExecutionScenario, GoldenMarketBar, GoldenRunValidationError, SQLiteGoldenRunStore, ExecutionRecord, compare_execution_records, reconcile_engines, run_golden_vector_event_reconciliation, run_realistic_golden_vector_event_reconciliation
 from trade_platform.paper_execution import PaperOrder, Position, progress_to_acknowledged
 from trade_platform.research import CostModel, run_vectorized_backtest
 from tests.test_paper_execution import intent
@@ -60,6 +60,33 @@ class CrossEngineTests(unittest.TestCase):
         liquid_bars = (GoldenMarketBar(start, Decimal("100"), Decimal("100"), Decimal("100"), Decimal("10")), GoldenMarketBar(start + timedelta(days=1), Decimal("50"), Decimal("50"), Decimal("50"), Decimal("10")))
         with self.assertRaisesRegex(GoldenRunValidationError, "point_in_time_available"):
             run_golden_vector_event_reconciliation(dataset_version="golden-v1", strategy_version="trend-v1", instrument_id="US:NYSE:SPY", bars=liquid_bars, signals=(Decimal("1"), Decimal("0")), corporate_actions=(late,))
+
+    def test_realistic_golden_run_reconciles_dividend_split_and_symbol_change_at_parity(self) -> None:
+        start = datetime(2025, 1, 2, 14, 30, tzinfo=timezone.utc)
+        bars = (
+            GoldenMarketBar(start, Decimal("50"), Decimal("100"), Decimal("100"), Decimal("10"), "US:NYSE:SPY"),
+            GoldenMarketBar(start + timedelta(days=1), Decimal("50"), Decimal("50"), Decimal("50"), Decimal("10"), "US:NYSE:SPY"),
+            GoldenMarketBar(start + timedelta(days=2), Decimal("50"), Decimal("49"), Decimal("49"), Decimal("10"), "US:NYSE:SPY"),
+            GoldenMarketBar(start + timedelta(days=3), Decimal("50"), Decimal("49"), Decimal("49"), Decimal("10"), "US:NASDAQ:SPY"),
+        )
+        split = CorporateAction("US:NYSE:SPY", CorporateActionType.SPLIT, start, start + timedelta(days=1), start, "fixture", "split", ratio=Decimal("2"))
+        dividend = CorporateAction("US:NYSE:SPY", CorporateActionType.CASH_DIVIDEND, start, start + timedelta(days=2), start, "fixture", "dividend", amount_per_share=Decimal("1"), currency="USD")
+        symbol = CorporateAction("US:NYSE:SPY", CorporateActionType.SYMBOL_CHANGE, start, start + timedelta(days=3), start, "fixture", "symbol", successor_instrument_id="US:NASDAQ:SPY")
+        report = run_realistic_golden_vector_event_reconciliation(dataset_version="golden-corporate-v1", strategy_version="trend-v1", instrument_id="US:NYSE:SPY", bars=bars, signals=(Decimal("1"), Decimal("1"), Decimal("1"), Decimal("0")), scenario=GoldenExecutionScenario("close-auction-v1"), corporate_actions=(split, dividend, symbol))
+        self.assertTrue(report.exact_parity); self.assertTrue(report.reconciled)
+        self.assertEqual((report.vector_final_equity, report.applied_corporate_actions), (Decimal("1"), ("fixture:split:0", "fixture:dividend:0", "fixture:symbol:0")))
+        self.assertLess(abs(report.event_final_equity - Decimal("1")), Decimal("0.00000001"))
+        store = SQLiteGoldenRunStore(); store.append_realistic(report)
+        self.assertEqual(store.get_realistic(report.artifact_id), report)
+
+    def test_realistic_golden_run_persists_and_explains_execution_divergence(self) -> None:
+        start = datetime(2025, 1, 2, 14, 30, tzinfo=timezone.utc)
+        bars = tuple(GoldenMarketBar(start + timedelta(days=index), Decimal("100") + Decimal(index), Decimal("99") + Decimal(index), Decimal("101") + Decimal(index), Decimal("0.01")) for index in range(4))
+        scenario = GoldenExecutionScenario("pessimistic-v1", latency=timedelta(days=1), maximum_participation=Decimal("0.5"), commission_bps=Decimal("10"), fixed_fee=Decimal("0.001"), impact_coefficient=Decimal("0.1"))
+        report = run_realistic_golden_vector_event_reconciliation(dataset_version="golden-realism-v1", strategy_version="trend-v1", instrument_id="US:NYSE:SPY", bars=bars, signals=(Decimal("1"), Decimal("1"), Decimal("1"), Decimal("0")), scenario=scenario)
+        self.assertFalse(report.exact_parity); self.assertTrue(report.reconciled); self.assertEqual(report.unexplained_differences, ())
+        self.assertTrue({"latency", "participation_limit", "commission_or_fixed_fee", "market_impact", "bid_ask_spread"}.issubset(set(report.explained_by)))
+        self.assertEqual(report.assumptions["version"], "pessimistic-v1")
 
 
 if __name__ == "__main__":

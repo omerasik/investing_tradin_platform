@@ -29,8 +29,8 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
-- 244 local Python tests and Python compilation pass (including golden
-  vector-to-event reconciliation tests).
+- 247 local Python tests and Python compilation pass (including close-auction
+  parity plus spread/fee/latency/participation/impact golden regressions).
 - Next.js production build has passed using the installed locked dependencies.
 - Browser E2E has exercised configured paper OMS evidence, investments/alerts,
   research strategy creation, backtest launch with held-out evidence, and an
@@ -46,11 +46,10 @@ snapshot, not a second roadmap.
 
 ## Immediate P0 work
 
-1. Extend the golden artifact from close-auction parity to identical-data event
-   execution scenarios with spread, fees, partial fills, latency and broader
-   corporate-action treatment.
-2. Add durable capacity, slippage/latency sensitivity, bootstrap, historical
+1. Add durable capacity, slippage/latency sensitivity, bootstrap, historical
    stress, parameter-stability and multiple-testing artifacts before promotion.
+2. Extend corporate-action goldens to delisting and broaden the event artifact
+   from deterministic scenarios into API-addressable research evidence.
 3. Establish Postgres migrations and normalized production domain storage.
 
 All completion/limitation claims must be updated in `MASTER_ROADMAP.md` with

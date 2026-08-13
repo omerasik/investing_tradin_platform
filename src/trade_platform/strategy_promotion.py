@@ -9,7 +9,7 @@ from enum import Enum
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from .cross_engine import CrossEngineReport
+from .cross_engine import CrossEngineReport, RealisticGoldenRunReport
 from .domain import utc_now
 from .research_validation import MultipleTestingResult, WalkForwardResult
 from .strategy_validation import StrategyRunCard, StrategyValidationError
@@ -71,6 +71,8 @@ def evaluate_promotion(
     probabilistic_sharpe: Decimal,
     artifact_ids: dict[str, str],
     policy: PromotionPolicy = PromotionPolicy(),
+    *,
+    golden_run: RealisticGoldenRunReport | None = None,
 ) -> PromotionDecision:
     """Return an evidence decision only; even a passing result always needs human review."""
     policy.validate()
@@ -81,6 +83,12 @@ def evaluate_promotion(
         reasons.append("invalid_run_card")
     if not cross_engine_report.reconciled:
         reasons.append("cross_engine_reconciliation_failed")
+    if golden_run is None:
+        reasons.append("missing_golden_execution_evidence")
+    elif golden_run.strategy_version != run_card.strategy_version:
+        reasons.append("golden_execution_strategy_mismatch")
+    elif not golden_run.reconciled:
+        reasons.append("golden_execution_unexplained_divergence")
     if run_card.strategy_version not in multiple_testing.discoveries:
         reasons.append("multiple_testing_not_passed")
     if not Decimal("0") <= probabilistic_sharpe <= Decimal("1"):

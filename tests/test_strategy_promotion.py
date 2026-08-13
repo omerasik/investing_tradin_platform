@@ -1,11 +1,12 @@
 from decimal import Decimal
-from datetime import timedelta
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 from uuid import uuid4
 
-from trade_platform.cross_engine import CrossEngineReport
+from trade_platform.cross_engine import CrossEngineReport, GoldenExecutionScenario, GoldenMarketBar, run_realistic_golden_vector_event_reconciliation
 from trade_platform.research import CostModel, MovingAverageCrossStrategy
 from trade_platform.research_validation import benjamini_hochberg, run_purged_walk_forward
 from trade_platform.strategy_promotion import PromotionPolicy, PromotionStatus, SQLitePromotionLedger, StrategyActivation, evaluate_promotion
@@ -22,6 +23,8 @@ class StrategyPromotionTests(unittest.TestCase):
         self.cross_engine = CrossEngineReport(True, (), Decimal("1"), Decimal("1"))
         self.multiple_testing = benjamini_hochberg({self.run_card.strategy_version: Decimal("0.01")})
         self.policy = PromotionPolicy(minimum_held_out_periods=20)
+        bars = tuple(GoldenMarketBar(datetime(2025, 1, 1 + index, tzinfo=timezone.utc), Decimal("100") + Decimal(index), Decimal("100") + Decimal(index), Decimal("100") + Decimal(index), Decimal("10")) for index in range(4))
+        self.golden = run_realistic_golden_vector_event_reconciliation(dataset_version="golden-v1", strategy_version=self.run_card.strategy_version, instrument_id="US:NYSE:SPY", bars=bars, signals=(Decimal("1"), Decimal("1"), Decimal("1"), Decimal("0")), scenario=GoldenExecutionScenario("parity-v1"))
 
     def test_missing_evidence_or_reconciliation_blocks_promotion(self) -> None:
         decision = evaluate_promotion(self.run_card, self.walk_forward, CrossEngineReport(False, ("fee",), Decimal("1"), Decimal("1")), self.multiple_testing, Decimal("0.99"), {"capacity": "capacity-1"}, self.policy)
@@ -30,7 +33,7 @@ class StrategyPromotionTests(unittest.TestCase):
         self.assertIn("missing_stress_evidence", decision.reasons)
 
     def test_complete_evidence_requires_review_and_is_durable(self) -> None:
-        decision = evaluate_promotion(self.run_card, self.walk_forward, self.cross_engine, self.multiple_testing, Decimal("0.99"), {"capacity": "capacity-1", "data_quality": "dq-1", "stress": "stress-1"}, self.policy)
+        decision = evaluate_promotion(self.run_card, self.walk_forward, self.cross_engine, self.multiple_testing, Decimal("0.99"), {"capacity": "capacity-1", "data_quality": "dq-1", "stress": "stress-1"}, self.policy, golden_run=self.golden)
         self.assertEqual(decision.status, PromotionStatus.REVIEW_REQUIRED)
         self.assertEqual(decision.reasons, ())
         with TemporaryDirectory() as directory:
@@ -42,7 +45,7 @@ class StrategyPromotionTests(unittest.TestCase):
             ledger.close()
 
     def test_only_reviewed_matching_promotion_can_enable_strategy_point_in_time(self) -> None:
-        reviewed = evaluate_promotion(self.run_card, self.walk_forward, self.cross_engine, self.multiple_testing, Decimal("0.99"), {"capacity": "capacity-1", "data_quality": "dq-1", "stress": "stress-1"}, self.policy)
+        reviewed = evaluate_promotion(self.run_card, self.walk_forward, self.cross_engine, self.multiple_testing, Decimal("0.99"), {"capacity": "capacity-1", "data_quality": "dq-1", "stress": "stress-1"}, self.policy, golden_run=self.golden)
         blocked = evaluate_promotion(self.run_card, self.walk_forward, CrossEngineReport(False, (), Decimal("1"), Decimal("1")), self.multiple_testing, Decimal("0.99"), {"capacity": "capacity-1", "data_quality": "dq-1", "stress": "stress-1"}, self.policy)
         with TemporaryDirectory() as directory:
             ledger = SQLitePromotionLedger(Path(directory) / "promotion.sqlite")
@@ -57,6 +60,12 @@ class StrategyPromotionTests(unittest.TestCase):
             ledger.append_activation(StrategyActivation(uuid4(), self.run_card.strategy_version, False, "operator", at + timedelta(seconds=1), at + timedelta(seconds=1)))
             self.assertFalse(ledger.strategy_enabled_as_of(self.run_card.strategy_version, at + timedelta(seconds=1)))
             ledger.close()
+
+    def test_missing_or_unexplained_golden_execution_blocks_promotion(self) -> None:
+        missing = evaluate_promotion(self.run_card, self.walk_forward, self.cross_engine, self.multiple_testing, Decimal("0.99"), {"capacity": "capacity-1", "data_quality": "dq-1", "stress": "stress-1"}, self.policy)
+        self.assertIn("missing_golden_execution_evidence", missing.reasons)
+        rejected = evaluate_promotion(self.run_card, self.walk_forward, self.cross_engine, self.multiple_testing, Decimal("0.99"), {"capacity": "capacity-1", "data_quality": "dq-1", "stress": "stress-1"}, self.policy, golden_run=replace(self.golden, reconciled=False, unexplained_differences=("final_equity_mismatch",)))
+        self.assertIn("golden_execution_unexplained_divergence", rejected.reasons)
 
 
 if __name__ == "__main__":
