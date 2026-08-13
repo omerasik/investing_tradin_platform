@@ -70,6 +70,10 @@ snapshot, not a second roadmap.
   explicit legacy identity mappings. PostgreSQL integration coverage is present
   and CI provisions the database, but this workstation's Docker engine was not
   available for a local live PostgreSQL run.
+- PostgreSQL critical repositories now atomically persist daily risk
+  reservation/decision idempotency, paper OMS creation/event evidence, external
+  fill deduplication and validation-package creation. They retain no broker or
+  execution authority.
 
 All completion/limitation claims must be updated in `MASTER_ROADMAP.md` with
 executed evidence; do not infer production readiness from unit tests.

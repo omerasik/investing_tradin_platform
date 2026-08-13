@@ -49,6 +49,8 @@ class SQLiteDatabase:
         try:
             with self.connection:
                 yield self.connection
+        except PersistenceError:
+            raise
         except sqlite3.Error as error:
             raise PersistenceError("sqlite_transaction_failed") from error
 
@@ -75,6 +77,8 @@ class PostgresDatabase:
         try:
             with self.connection.transaction():
                 yield self.connection
+        except PersistenceError:
+            raise
         except Exception as error:
             raise PersistenceError("postgres_transaction_failed") from error
 
