@@ -10,6 +10,12 @@ dashboard smoke workflow. Local machines without a running PostgreSQL service
 skip that integration class explicitly; this is an external-environment gap,
 not a passing production test.
 
+The first executed CI evidence is GitHub Actions
+[run 31721923194](https://github.com/omerasik/investing_tradin_platform/actions/runs/31721923194): PostgreSQL 16 was
+provisioned, migrated and used by the integration/concurrency suite. Local
+Docker remains unavailable, but that no longer leaves PostgreSQL test execution
+unverified.
+
 The PostgreSQL integration suite seeds normalized foreign keys and exercises
 OMS/fill idempotency, daily-notional rejection, concurrent reservations and
 validation-package rollback.

@@ -74,6 +74,11 @@ snapshot, not a second roadmap.
   reservation/decision idempotency, paper OMS creation/event evidence, external
   fill deduplication and validation-package creation. They retain no broker or
   execution authority.
+- GitHub Actions run [31721923194](https://github.com/omerasik/investing_tradin_platform/actions/runs/31721923194)
+  successfully exercised the ephemeral PostgreSQL migration and integration
+  suite along with all configured Python/frontend quality gates. Critical live
+  application services still use legacy SQLite paths, so this is integration
+  evidence for the new repository layer—not a completed persistence migration.
 
 All completion/limitation claims must be updated in `MASTER_ROADMAP.md` with
 executed evidence; do not infer production readiness from unit tests.
