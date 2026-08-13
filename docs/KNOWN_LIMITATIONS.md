@@ -11,7 +11,16 @@ The full requirement-level matrix is in
   impact assumptions, partial/unfilled-order observations, and raw versus
   explained divergence. They are deterministic synthetic regressions, not
   production execution validation: queue priority, funding, borrow, margin,
-  tax and capacity remain incomplete.
+  tax remain incomplete. Capacity is separately persisted but is an explicit
+  daily OHLCV/ADV estimate: it has no order-book, queue, auction or empirical
+  broker-fill precision.
+- Slippage, latency, stress and robustness artifacts are deterministic,
+  versioned research evidence. Their costs and shocks are declared model/fixture
+  assumptions; no full historical stress archive, real order-book replay or
+  calibrated provider-backed capacity model is available.
+- A complete package is required for a review decision, but package generation
+  is currently a research-service API rather than an automated backtest-launch
+  workflow or dashboard view.
 - Strategy coverage is four transparent long-only baselines. Cross-sectional,
   factor, macro, relative-value, event, sentiment, crypto-basis and
   market-neutral families remain incomplete.

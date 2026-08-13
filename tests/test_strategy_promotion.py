@@ -9,7 +9,7 @@ from uuid import uuid4
 from trade_platform.cross_engine import CrossEngineReport, GoldenExecutionScenario, GoldenMarketBar, run_realistic_golden_vector_event_reconciliation
 from trade_platform.research import CostModel, MovingAverageCrossStrategy
 from trade_platform.research_validation import benjamini_hochberg, run_purged_walk_forward
-from trade_platform.strategy_promotion import PromotionPolicy, PromotionStatus, SQLitePromotionLedger, StrategyActivation, evaluate_promotion
+from trade_platform.strategy_promotion import PromotionDecision, PromotionPolicy, PromotionStatus, SQLitePromotionLedger, StrategyActivation, evaluate_promotion
 from trade_platform.strategy_validation import purged_walk_forward_splits
 from tests.test_strategy_validation import card
 
@@ -30,12 +30,12 @@ class StrategyPromotionTests(unittest.TestCase):
         decision = evaluate_promotion(self.run_card, self.walk_forward, CrossEngineReport(False, ("fee",), Decimal("1"), Decimal("1")), self.multiple_testing, Decimal("0.99"), {"capacity": "capacity-1"}, self.policy)
         self.assertEqual(decision.status, PromotionStatus.BLOCKED)
         self.assertIn("cross_engine_reconciliation_failed", decision.reasons)
-        self.assertIn("missing_stress_evidence", decision.reasons)
+        self.assertIn("unresolved_persisted_validation_package", decision.reasons)
 
-    def test_complete_evidence_requires_review_and_is_durable(self) -> None:
+    def test_manually_supplied_evidence_ids_do_not_satisfy_promotion(self) -> None:
         decision = evaluate_promotion(self.run_card, self.walk_forward, self.cross_engine, self.multiple_testing, Decimal("0.99"), {"capacity": "capacity-1", "data_quality": "dq-1", "stress": "stress-1"}, self.policy, golden_run=self.golden)
-        self.assertEqual(decision.status, PromotionStatus.REVIEW_REQUIRED)
-        self.assertEqual(decision.reasons, ())
+        self.assertEqual(decision.status, PromotionStatus.BLOCKED)
+        self.assertIn("unresolved_persisted_validation_package", decision.reasons)
         with TemporaryDirectory() as directory:
             ledger = SQLitePromotionLedger(Path(directory) / "promotion.sqlite")
             ledger.append(decision)
@@ -45,7 +45,7 @@ class StrategyPromotionTests(unittest.TestCase):
             ledger.close()
 
     def test_only_reviewed_matching_promotion_can_enable_strategy_point_in_time(self) -> None:
-        reviewed = evaluate_promotion(self.run_card, self.walk_forward, self.cross_engine, self.multiple_testing, Decimal("0.99"), {"capacity": "capacity-1", "data_quality": "dq-1", "stress": "stress-1"}, self.policy, golden_run=self.golden)
+        reviewed = PromotionDecision(uuid4(), self.run_card.strategy_id, self.run_card.strategy_version, PromotionStatus.REVIEW_REQUIRED, (), 20, Decimal(".1"))
         blocked = evaluate_promotion(self.run_card, self.walk_forward, CrossEngineReport(False, (), Decimal("1"), Decimal("1")), self.multiple_testing, Decimal("0.99"), {"capacity": "capacity-1", "data_quality": "dq-1", "stress": "stress-1"}, self.policy)
         with TemporaryDirectory() as directory:
             ledger = SQLitePromotionLedger(Path(directory) / "promotion.sqlite")

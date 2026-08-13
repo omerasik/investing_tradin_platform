@@ -1,6 +1,6 @@
 # Current Status
 
-Last verified: 2026-08-10. The requirement-level source of truth is
+Last verified: 2026-08-13. The requirement-level source of truth is
 [`MASTER_ROADMAP.md`](MASTER_ROADMAP.md); this document is a concise operational
 snapshot, not a second roadmap.
 
@@ -20,6 +20,12 @@ snapshot, not a second roadmap.
   cash-dividend records, compares final equity/exposure, and persists a
   content-addressed artifact. It is deliberately limited to matching the
   vector engine's close convention; it is not a realistic execution benchmark.
+- A content-addressed immutable validation store now retains multi-capital
+  OHLCV capacity estimates, six slippage/spread/impact scenarios,
+  frequency-aware latency/signal-decay scenarios, seeded bootstrap and
+  trade-order Monte Carlo, stress fixtures, parameter stability and
+  multiple-testing evidence. A unified package resolves these persisted
+  artifacts by strategy/dataset/version before promotion can be reviewed.
 - Deterministic pre-trade risk, durable kill switches/idempotency/decision
   history, paper OMS lifecycle/fill/reconciliation evidence, and paper-only
   broker abstraction.
@@ -29,8 +35,9 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
-- 247 local Python tests and Python compilation pass (including close-auction
-  parity plus spread/fee/latency/participation/impact golden regressions).
+- 255 local Python tests pass (including capacity, slippage, latency,
+  bootstrap/Monte Carlo, stability, multiple-testing and persisted-package
+  promotion regressions).
 - Next.js production build has passed using the installed locked dependencies.
 - Browser E2E has exercised configured paper OMS evidence, investments/alerts,
   research strategy creation, backtest launch with held-out evidence, and an
@@ -46,11 +53,11 @@ snapshot, not a second roadmap.
 
 ## Immediate P0 work
 
-1. Add durable capacity, slippage/latency sensitivity, bootstrap, historical
-   stress, parameter-stability and multiple-testing artifacts before promotion.
-2. Extend corporate-action goldens to delisting and broaden the event artifact
-   from deterministic scenarios into API-addressable research evidence.
-3. Establish Postgres migrations and normalized production domain storage.
+1. Establish PostgreSQL migrations and normalized production domain storage.
+2. Add a migration path for research/data/event persistence and expose only
+   read-only validation-package inspection.
+3. Add CI lint/type/security/SBOM gates, then broader restore/failure/E2E
+   verification.
 
 All completion/limitation claims must be updated in `MASTER_ROADMAP.md` with
 executed evidence; do not infer production readiness from unit tests.
