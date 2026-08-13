@@ -1,5 +1,6 @@
 """Runs in CI or locally only when POSTGRES_TEST_DSN names an ephemeral database."""
 
+import hashlib
 import os
 import threading
 import unittest
@@ -25,17 +26,19 @@ class PostgresIntegrationTests(unittest.TestCase):
         self.strategy_id, self.strategy_version_id = uuid4(), uuid4()
         self.signal_id, self.policy_id, self.policy_version_id = uuid4(), uuid4(), uuid4()
         suffix = str(self.exchange_id)[:8]
+        dataset_hash = hashlib.sha256(f"dataset:{self.dataset_version_id}".encode()).hexdigest()
+        policy_hash = hashlib.sha256(f"policy:{self.policy_version_id}".encode()).hexdigest()
         with self.connection.transaction(), self.connection.cursor() as cursor:
             cursor.execute("INSERT INTO exchanges VALUES (%s, %s, 'Integration', 'UTC', %s)", (self.exchange_id, f"XI{suffix[:6]}", self.now))
             cursor.execute("INSERT INTO instruments VALUES (%s, %s, 'TEST', 'EQUITY', 'USD', 0.01, 1, %s, NULL, %s)", (self.instrument_id, self.exchange_id, self.now, self.now))
             cursor.execute("INSERT INTO datasets VALUES (%s, %s, 'fixture', 'terms-v1', %s)", (self.dataset_id, f"integration-data-{suffix}", self.now))
-            cursor.execute("INSERT INTO dataset_versions VALUES (%s, %s, 'v1', %s, NULL, NULL, %s)", (self.dataset_version_id, self.dataset_id, "a" * 64, self.now))
+            cursor.execute("INSERT INTO dataset_versions VALUES (%s, %s, 'v1', %s, NULL, NULL, %s)", (self.dataset_version_id, self.dataset_id, dataset_hash, self.now))
             cursor.execute("INSERT INTO strategy_definitions VALUES (%s, 'test', 'test', %s)", (self.strategy_id, self.now))
             cursor.execute("INSERT INTO strategy_versions VALUES (%s, %s, 'v1', '{}'::jsonb, 'cost-v1', 'capacity-v1', '{}'::jsonb, %s)", (self.strategy_version_id, self.strategy_id, self.now))
             cursor.execute("INSERT INTO accounts VALUES (%s, 'PAPER', 'USD', %s)", (f"integration-paper-{suffix}", self.now))
             cursor.execute("INSERT INTO signals VALUES (%s, %s, %s, 'VALIDATED', %s, %s + interval '1 day', '{}'::jsonb)", (self.signal_id, self.strategy_version_id, self.instrument_id, self.now, self.now))
             cursor.execute("INSERT INTO risk_policies VALUES (%s, %s, %s)", (self.policy_id, f"integration-policy-{suffix}", self.now))
-            cursor.execute("INSERT INTO risk_policy_versions VALUES (%s, %s, 'v1', '{}'::jsonb, %s, %s)", (self.policy_version_id, self.policy_id, "b" * 64, self.now))
+            cursor.execute("INSERT INTO risk_policy_versions VALUES (%s, %s, 'v1', '{}'::jsonb, %s, %s)", (self.policy_version_id, self.policy_id, policy_hash, self.now))
 
     def tearDown(self) -> None:
         self.connection.close()
