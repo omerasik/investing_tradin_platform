@@ -11,7 +11,7 @@ class PostgresIntegrationTests(unittest.TestCase):
         from alembic.config import Config
 
         self.config = Config("alembic.ini")
-        self.config.set_main_option("sqlalchemy.url", os.environ["POSTGRES_TEST_DSN"])
+        self.config.set_main_option("sqlalchemy.url", os.environ["POSTGRES_TEST_DSN"].replace("postgresql://", "postgresql+psycopg://", 1))
         command.upgrade(self.config, "head")
         import psycopg
         self.connection = psycopg.connect(os.environ["POSTGRES_TEST_DSN"])
