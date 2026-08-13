@@ -9,3 +9,10 @@ dashboard/API <------------------------------------------------------------ read
 ```
 
 PostgreSQL, analytical time-series storage, object storage, Redis, and a durable event bus are deployment targets, not local requirements. Initial development uses deterministic local fixtures and SQLite-compatible metadata abstractions. Upstream code is not imported. Third-party systems can only be wrapped behind version-pinned adapters after license/security review.
+
+PostgreSQL now has an initial Alembic-managed normalized transactional schema.
+The `persistence` boundary selects SQLite for local test use or PostgreSQL by
+explicit configuration, so business rules do not choose a SQL dialect. This is
+only the first persistence migration: existing legacy SQLite repositories are
+not yet all moved behind that boundary, and schema presence alone is not a
+production-readiness claim.

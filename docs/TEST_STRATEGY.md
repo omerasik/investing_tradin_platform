@@ -1,3 +1,11 @@
 # Test Strategy
 
 Use unit, integration, contract, property, data-quality, backtest-regression, risk, security, failure-injection, restore and UI tests. Golden data and deterministic runs are required. Critical invariants: no order bypasses risk; expired signals and disabled strategies cannot create orders; duplicate intents cannot create exposure; stale data/reconciliation failures block risk increases; live trading remains impossible.
+
+The CI suite provisions ephemeral PostgreSQL, applies Alembic migrations, and
+runs migration/immutable-schema integration coverage when `POSTGRES_TEST_DSN`
+is supplied. It also runs compile, deterministic unit tests, scoped Ruff/mypy,
+Bandit, dependency audit, SBOM generation, TypeScript checking and the built
+dashboard smoke workflow. Local machines without a running PostgreSQL service
+skip that integration class explicitly; this is an external-environment gap,
+not a passing production test.

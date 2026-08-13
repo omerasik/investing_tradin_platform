@@ -7,6 +7,11 @@ The full requirement-level matrix is in
 - SQLite stores provide durable local evidence but are not the normalized
   PostgreSQL/analytics/object-storage/queue deployment architecture required by
   the specification.
+- The initial normalized PostgreSQL schema and migration boundary are present,
+  but legacy SQLite repositories have not yet been migrated individually and
+  the backfill intentionally stops before writes without an explicit identity
+  mapping. Local PostgreSQL integration execution is externally blocked here
+  because Docker Desktop was unavailable; CI is configured to run it.
 - Golden artifacts now retain declared spread, fee, latency, participation and
   impact assumptions, partial/unfilled-order observations, and raw versus
   explained divergence. They are deterministic synthetic regressions, not

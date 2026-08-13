@@ -59,5 +59,17 @@ snapshot, not a second roadmap.
 3. Add CI lint/type/security/SBOM gates, then broader restore/failure/E2E
    verification.
 
+## PostgreSQL persistence progress
+
+- An initial Alembic-managed PostgreSQL schema now normalizes the major domain
+  identities, versions, provenance, events and financial values; immutable
+  evidence/event tables reject mutation at the database boundary.
+- The persistence adapter explicitly separates local SQLite from PostgreSQL,
+  and paper/production configuration requires PostgreSQL.
+- A backfill utility provides dry-run counts/checksums and fails closed pending
+  explicit legacy identity mappings. PostgreSQL integration coverage is present
+  and CI provisions the database, but this workstation's Docker engine was not
+  available for a local live PostgreSQL run.
+
 All completion/limitation claims must be updated in `MASTER_ROADMAP.md` with
 executed evidence; do not infer production readiness from unit tests.

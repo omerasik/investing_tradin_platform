@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from .persistence import PersistenceTarget, TransactionalDatabase, open_database
+
 
 class LiveTradingForbiddenError(ValueError):
     """Raised whenever a configuration attempts to enable live execution."""
@@ -31,6 +33,8 @@ class PlatformConfig:
     live_trading_enabled: bool = False
     paper_trading_enabled: bool = True
     assessment_integrity_key_reference: str | None = None
+    persistence_target: PersistenceTarget = PersistenceTarget.SQLITE
+    persistence_location: str = ":memory:"
 
     def __post_init__(self) -> None:
         if self.live_trading_enabled:
@@ -39,6 +43,10 @@ class PlatformConfig:
             )
         if not self.paper_trading_enabled:
             raise ValueError("Paper trading must remain enabled for the current platform mode.")
+        if self.environment in {"paper", "production"} and self.persistence_target is not PersistenceTarget.POSTGRES:
+            raise ValueError("paper_or_production_requires_postgres_persistence")
+        if self.persistence_target is PersistenceTarget.POSTGRES and not self.persistence_location.startswith(("postgres://", "postgresql://")):
+            raise ValueError("postgres_persistence_location_required")
 
     def assessment_integrity_key(self, resolver: EnvironmentSecretResolver | None = None) -> bytes:
         if self.assessment_integrity_key_reference is None:
@@ -50,3 +58,7 @@ class PlatformConfig:
         from .pretrade_assessment import SQLitePreTradeAssessmentStore
 
         return SQLitePreTradeAssessmentStore(database_path, integrity_key=self.assessment_integrity_key(resolver))
+
+    def create_database(self) -> TransactionalDatabase:
+        """Select the configured adapter without leaking SQL dialect into domains."""
+        return open_database(self.persistence_target, self.persistence_location)
