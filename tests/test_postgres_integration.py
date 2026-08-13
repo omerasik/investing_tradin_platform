@@ -1,6 +1,7 @@
 """Runs in CI or locally only when POSTGRES_TEST_DSN names an ephemeral database."""
 
 import os
+import threading
 import unittest
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -83,6 +84,35 @@ class PostgresIntegrationTests(unittest.TestCase):
             cursor.execute("SELECT COUNT(*) FROM validation_packages WHERE package_id = %s", (package_id,))
             self.assertEqual(cursor.fetchone()[0], 0)
         repository._database.close()
+
+    def test_concurrent_reservations_cannot_exceed_daily_limit(self) -> None:
+        from trade_platform.persistence import PostgresDatabase
+        from trade_platform.postgres_repositories import (
+            PostgresCriticalRepository,
+            PostgresRepositoryError,
+        )
+
+        account_id = f"integration-paper-{str(self.exchange_id)[:8]}"
+        start = threading.Barrier(2)
+        outcomes: list[str] = []
+
+        def reserve() -> None:
+            repository = PostgresCriticalRepository(PostgresDatabase(os.environ["POSTGRES_TEST_DSN"]))
+            try:
+                start.wait(timeout=5)
+                repository.reserve_and_record_decision(account_id=account_id, intent_id=uuid4(), policy_version_id=self.policy_version_id, business_date=self.now.date(), notional=Decimal(60), daily_limit=Decimal(100), approved=True, reasons=(), decided_at=self.now)
+                outcomes.append("reserved")
+            except PostgresRepositoryError:
+                outcomes.append("blocked")
+            finally:
+                repository._database.close()
+
+        workers = (threading.Thread(target=reserve), threading.Thread(target=reserve))
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=10)
+        self.assertEqual(sorted(outcomes), ["blocked", "reserved"])
 
 
 if __name__ == "__main__":

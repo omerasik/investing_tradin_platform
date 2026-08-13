@@ -11,6 +11,7 @@ skip that integration class explicitly; this is an external-environment gap,
 not a passing production test.
 
 The PostgreSQL integration suite seeds normalized foreign keys and exercises
-OMS/fill idempotency, daily-notional rejection and validation-package rollback.
+OMS/fill idempotency, daily-notional rejection, concurrent reservations and
+validation-package rollback.
 It is designed to be extended with concurrent reservation/restart/reconciliation
 cases as each legacy repository moves to the adapter boundary.
