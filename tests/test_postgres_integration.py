@@ -332,6 +332,81 @@ class PostgresIntegrationTests(unittest.TestCase):
         )  # type: ignore[union-attr]
         reopened_database.close()
 
+    def test_quant_package_and_promotion_history_survive_restart(self) -> None:
+        from trade_platform.persistence import PostgresDatabase
+        from trade_platform.postgres_quant_validation import (
+            PostgresPromotionLedger,
+            PostgresQuantValidationStore,
+        )
+        from trade_platform.quant_validation import (
+            REQUIRED_EVIDENCE,
+            build_validation_package,
+            record_external_evidence,
+        )
+        from trade_platform.strategy_promotion import (
+            PromotionDecision,
+            PromotionStatus,
+            StrategyActivation,
+        )
+
+        database = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        mappings = {"fixture-v1": self.strategy_version_id}
+        datasets = {"fixture-data-v1": self.dataset_version_id}
+        store = PostgresQuantValidationStore(
+            database, strategy_versions=mappings, dataset_versions=datasets
+        )
+        artifacts = {}
+        for evidence_type in REQUIRED_EVIDENCE:
+            artifact = record_external_evidence(
+                evidence_type=evidence_type,
+                strategy_version="fixture-v1",
+                dataset_version="fixture-data-v1",
+                passed=True,
+            )
+            artifacts[evidence_type] = store.append(artifact)
+        package = build_validation_package(
+            strategy_id=self.strategy_id,
+            strategy_version="fixture-v1",
+            dataset_version="fixture-data-v1",
+            feature_versions=("features-v1",),
+            cost_model_version="cost-v1",
+            evidence_ids=artifacts,
+        )
+        package_id = store.append(package)
+        decision = PromotionDecision(
+            uuid4(),
+            self.strategy_id,
+            "fixture-v1",
+            PromotionStatus.REVIEW_REQUIRED,
+            (),
+            20,
+            Decimal("0.1"),
+            self.now,
+        )
+        promotions = PostgresPromotionLedger(database, strategy_versions=mappings)
+        promotions.append(decision, package_id=package_id)
+        promotions.append_activation(
+            StrategyActivation(
+                uuid4(), "fixture-v1", True, "reviewer", self.now, self.now, decision.decision_id
+            )
+        )
+        database.close()
+
+        reopened = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        package_record = PostgresQuantValidationStore(
+            reopened, strategy_versions=mappings, dataset_versions=datasets
+        ).get(package_id)
+        self.assertEqual(package_record["artifact_type"], "StrategyValidationPackage")
+        self.assertEqual(
+            package_record["evidence_ids"], {name: str(value) for name, value in artifacts.items()}
+        )
+        self.assertTrue(
+            PostgresPromotionLedger(reopened, strategy_versions=mappings).strategy_enabled_as_of(
+                "fixture-v1", self.now
+            )
+        )
+        reopened.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -40,13 +40,20 @@ def upgrade() -> None:
         "CREATE TABLE strategy_activation_events (activation_id UUID PRIMARY KEY, strategy_version_id UUID NOT NULL REFERENCES strategy_versions(strategy_version_id), active BOOLEAN NOT NULL, actor TEXT NOT NULL, effective_at TIMESTAMPTZ NOT NULL, ingested_at TIMESTAMPTZ NOT NULL, promotion_decision_id UUID REFERENCES strategy_promotion_decisions(decision_id))"
     )
     op.execute(
+        "ALTER TABLE validation_packages ADD COLUMN feature_versions JSONB NOT NULL DEFAULT '[]'::jsonb"
+    )
+    op.execute(
         "CREATE TABLE postgres_backfill_runs (run_id UUID PRIMARY KEY, source_fingerprint CHAR(64) NOT NULL, mapping_fingerprint CHAR(64) NOT NULL, mode TEXT NOT NULL CHECK(mode IN ('DRY_RUN','APPLY')), started_at TIMESTAMPTZ NOT NULL, completed_at TIMESTAMPTZ, status TEXT NOT NULL CHECK(status IN ('RUNNING','COMPLETED','FAILED')), report JSONB NOT NULL, UNIQUE(source_fingerprint, mapping_fingerprint, mode))"
     )
     op.execute(
         "CREATE TABLE postgres_backfill_rows (run_id UUID NOT NULL REFERENCES postgres_backfill_runs(run_id), source_table TEXT NOT NULL, source_identity TEXT NOT NULL, destination_table TEXT NOT NULL, destination_identity TEXT NOT NULL, content_hash CHAR(64) NOT NULL, PRIMARY KEY(run_id, source_table, source_identity), UNIQUE(destination_table, destination_identity))"
     )
-    op.execute("ALTER TABLE quant_validation_artifacts DROP CONSTRAINT IF EXISTS quant_validation_artifacts_artifact_type_check")
-    op.execute("ALTER TABLE quant_validation_artifacts ADD CONSTRAINT quant_validation_artifacts_artifact_type_check CHECK(artifact_type IN ('capacity','slippage','latency','bootstrap','monte_carlo','stress','parameter_stability','multiple_testing','data_quality','scorecard','execution_realism','oos_walk_forward','golden_reconciliation'))")
+    op.execute(
+        "ALTER TABLE quant_validation_artifacts DROP CONSTRAINT IF EXISTS quant_validation_artifacts_artifact_type_check"
+    )
+    op.execute(
+        "ALTER TABLE quant_validation_artifacts ADD CONSTRAINT quant_validation_artifacts_artifact_type_check CHECK(artifact_type IN ('capacity','slippage','latency','bootstrap','monte_carlo','stress','parameter_stability','multiple_testing','data_quality','scorecard','execution_realism','oos_walk_forward','golden_reconciliation'))"
+    )
     for table in (
         "kill_switch_events",
         "broker_sync_events",
@@ -74,3 +81,4 @@ def downgrade() -> None:
         op.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
     op.execute("DROP INDEX IF EXISTS oms_events_sequence_idx")
     op.execute("ALTER TABLE oms_events DROP COLUMN IF EXISTS event_sequence")
+    op.execute("ALTER TABLE validation_packages DROP COLUMN IF EXISTS feature_versions")
