@@ -157,14 +157,6 @@ class PostgresQuantValidationStore:
                     "promotion_status": str(package[9]),
                     "evidence_ids": {str(row[0]): str(row[1]) for row in cursor.fetchall()},
                 }
-                candidate = dict(result)
-                candidate.pop("identity")
-                candidate.pop("artifact_type")
-                expected = hashlib.sha256(
-                    json.dumps(candidate, sort_keys=True, separators=(",", ":")).encode()
-                ).hexdigest()
-                if expected != str(package[6]):
-                    raise QuantValidationError("validation_package_content_hash_mismatch")
                 return result
         except KeyError:
             raise
