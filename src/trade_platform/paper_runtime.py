@@ -12,14 +12,19 @@ from .config import PlatformConfig
 from .execution_evidence import SQLiteExecutionEvidenceStore
 from .instruments import SQLiteInstrumentStore
 from .model_registry import SQLiteModelRegistry
-from .paper_oms import SQLitePaperOms
 from .paper_execution import PaperOrder
+from .paper_oms import SQLitePaperOms
+from .persistence import PersistenceTarget
 from .policy_registry import SQLitePolicyRegistry
 from .portfolio_evidence import OmsReconciledAccountStore
 from .portfolio_risk import StressScenario
 from .pretrade_assessment import PreTradeAssessment, SQLitePreTradeAssessmentStore, assess_pretrade
 from .quotes import SQLiteQuoteStore
-from .return_history import PortfolioReturnProvider, ReturnIngestionRetryPolicy, SQLitePortfolioReturnStore
+from .return_history import (
+    PortfolioReturnProvider,
+    ReturnIngestionRetryPolicy,
+    SQLitePortfolioReturnStore,
+)
 from .signal_engine import SQLiteSignalStore
 from .strategy_promotion import SQLitePromotionLedger
 
@@ -160,6 +165,12 @@ def build_paper_runtime(
     policy_selection: PaperPolicySelection,
 ) -> PaperRuntime:
     """Open a paper-only runtime only when policy and keyed-integrity evidence exist."""
+    if config.persistence_target is PersistenceTarget.POSTGRES:
+        # This legacy constructor owns SQLite repositories.  A PostgreSQL
+        # configuration must never pass through it while the dedicated
+        # composition root is being completed; an explicit stop is safer than
+        # a durable-looking runtime backed by local SQLite authorities.
+        raise PaperRuntimeError("postgres_paper_runtime_requires_explicit_composition")
     path = Path(database_path)
     if str(path) == ":memory:":
         raise PaperRuntimeError("durable_paper_database_required")

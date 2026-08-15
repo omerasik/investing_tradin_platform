@@ -63,8 +63,10 @@ snapshot, not a second roadmap.
 
 ## Immediate P0 work
 
-1. Replace every safety-critical SQLite dependency in build_paper_runtime with
-   explicitly selected PostgreSQL composition and no fallback.
+1. Replace every remaining `MUST_MIGRATE` pre-trade authority listed in
+   `POSTGRES_RUNTIME_AUTHORITY_MATRIX.md`; the legacy SQLite builder now rejects
+   PostgreSQL configuration before constructing any store, and the explicit
+   PostgreSQL core composition is not submission-ready until this is complete.
 2. Complete PostgreSQL pre-trade authority and restart/reconciliation coverage.
 3. Complete mapped cutover, failure injection, fresh restore/reconciliation and
    representative security/CI gates.
@@ -97,6 +99,12 @@ snapshot, not a second roadmap.
   LEGACY_UNVERIFIABLE and makes package membership immutable. GitHub Actions
   run 31859646575 verifies this boundary against PostgreSQL 16 after restart and
   deliberate manifest, projection, membership and evidence-hash tampering.
+- `build_postgres_paper_core` explicitly composes PostgreSQL OMS/event cursor,
+  reconciliation view, kill-switch, risk, validation and promotion authorities
+  on one connection owner. The legacy `build_paper_runtime` refuses every
+  PostgreSQL target before any SQLite constructor can run. The matrix records
+  the remaining pre-trade stores as `MUST_MIGRATE`, and the core intentionally
+  remains `submission_ready = False` rather than falling back.
 
 All completion/limitation claims must be updated in `MASTER_ROADMAP.md` with
 executed evidence; do not infer production readiness from unit tests.

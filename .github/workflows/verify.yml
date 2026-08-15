@@ -37,9 +37,9 @@ jobs:
       - run: python -m compileall -q src tests migrations scripts
       - run: alembic upgrade head
       - run: python -m unittest discover -s tests -v
-      - run: ruff check src/trade_platform/persistence.py src/trade_platform/postgres_schema.py src/trade_platform/postgres_backfill.py src/trade_platform/postgres_repositories.py tests/test_persistence.py tests/test_postgres_integration.py
-      - run: mypy --follow-imports=skip src/trade_platform/persistence.py src/trade_platform/postgres_schema.py src/trade_platform/postgres_backfill.py src/trade_platform/postgres_repositories.py
-      - run: bandit -q -r src/trade_platform/persistence.py src/trade_platform/postgres_backfill.py src/trade_platform/postgres_repositories.py
+      - run: ruff check src/trade_platform/persistence.py src/trade_platform/postgres_schema.py src/trade_platform/postgres_backfill.py src/trade_platform/postgres_repositories.py src/trade_platform/postgres_runtime.py tests/test_persistence.py tests/test_postgres_integration.py tests/test_postgres_runtime.py
+      - run: mypy --follow-imports=skip src/trade_platform/persistence.py src/trade_platform/postgres_schema.py src/trade_platform/postgres_backfill.py src/trade_platform/postgres_repositories.py src/trade_platform/postgres_runtime.py
+      - run: bandit -q -r src/trade_platform/persistence.py src/trade_platform/postgres_backfill.py src/trade_platform/postgres_repositories.py src/trade_platform/postgres_runtime.py
       - name: Audit resolved Python dependencies
         run: |
           python -m pip freeze --exclude-editable > /tmp/resolved-requirements.txt

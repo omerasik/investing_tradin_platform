@@ -12,6 +12,11 @@ The full requirement-level matrix is in
   the backfill intentionally stops before writes without an explicit identity
   mapping. A safe disposable local PostgreSQL DSN is not configured; CI is the
   authoritative PostgreSQL integration environment.
+- PostgreSQL configuration can no longer enter the legacy SQLite paper-runtime
+  constructor, and an explicit PostgreSQL-only core authority graph exists.
+  That graph is deliberately not submission-ready: policy, signed assessment,
+  rich instrument/signal/model evidence, quotes, execution context and return
+  history remain `MUST_MIGRATE` before the full runtime can be composed.
 - Golden artifacts now retain declared spread, fee, latency, participation and
   impact assumptions, partial/unfilled-order observations, and raw versus
   explained divergence. They are deterministic synthetic regressions, not
