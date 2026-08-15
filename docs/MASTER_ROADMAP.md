@@ -1413,7 +1413,7 @@ the safety-critical paper platform. This is not approval for live trading or a
 claim of production identity/security/provider readiness. Cycle 10 is now the
 authorized P1 instrument/calendar foundation.
 
-## Cycle 193 candidate — execution-program Cycle 10
+## Cycle 193 evidence — execution-program Cycle 10
 
 - Objective: establish the first genuine P1 PostgreSQL instrument and calendar
   authority before broad provider integration.
@@ -1433,10 +1433,15 @@ authorized P1 instrument/calendar foundation.
   early closes; FX uses Sunday 17:00 through Friday 17:00 New York 24x5 windows
   and rollover metadata; crypto is UTC 24x7. Historical resolution requires
   validity and ingestion availability as-of the query.
-- Test candidate: PostgreSQL coverage includes symbol change, delisting, early
+- Test evidence: PostgreSQL coverage includes symbol change, delisting, early
   close, holiday, DST, FX weekend, crypto 24x7, duplicate-provider/ambiguous-
   symbol rejection, delayed mapping visibility and restart. Restore hashing now
   covers all seven new tables (**23 critical tables total**).
+- CI evidence: GitHub Actions [verify run 31888506314](https://github.com/omerasik/investing_tradin_platform/actions/runs/31888506314)
+  passed on commit `083a7bf`: PostgreSQL 16 applied migrations through 0008,
+  all **284 tests ran without skips**, the fresh restore compared all **23
+  critical tables**, and every Ruff, mypy, Bandit, secret, dependency,
+  frontend and artifact gate passed.
 - Boundary: these versioned convention fixtures are not a licensed feed or a
   complete exchange schedule. No credential, broker, order or live capability
-  was added. Status: PENDING real PostgreSQL CI through migration 0008.
+  was added. Status: **VERIFIED**.

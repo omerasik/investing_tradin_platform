@@ -130,11 +130,15 @@ executed evidence; do not infer production readiness from unit tests.
   audit reports no known vulnerabilities.
 - The GitHub repository is PUBLIC. No visibility setting was changed.
 
-## Cycle 10 candidate
+## Cycle 10 verified
 
 Migration 0008 and `PostgresProfessionalInstrumentMaster` add PostgreSQL
 professional instrument/calendar authority. Temporal symbol and external-ID
 mappings are point-in-time and overlap-protected; lifecycle events make
 delisting effective without rewriting history. The provider-neutral MVP covers
 US equity/ETF, EURUSD, GLD-as-ETF-proxy, BTC and ETH, with US/DST/holiday/early-
-close, FX 24x5 and crypto 24x7 calendars. Real PostgreSQL CI is pending.
+close, FX 24x5 and crypto 24x7 calendars. GitHub Actions verify run
+`31888506314` passed on commit `083a7bf`: migration 0008, all 284 tests without
+skips, a fresh 23-table restore and every quality/security/frontend gate passed.
+This is not a licensed feed or permission for broker connectivity or live
+trading.
