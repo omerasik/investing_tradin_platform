@@ -143,13 +143,15 @@ skips, a fresh 23-table restore and every quality/security/frontend gate passed.
 This is not a licensed feed or permission for broker connectivity or live
 trading.
 
-## Cycle 11 core candidate
+## Cycle 11 provider-neutral core verified / real provider externally blocked
 
 Migration 0009 and `PostgresHistoricalMarketDataPipeline` implement immutable
 authorized-source, raw observation, normalization, sealed dataset and research
 query layers for US equities/ETFs. The contract retains OHLCV and corporate-
 action provenance/revisions, resolves provider IDs point-in-time, rejects bad
-data and excludes latest-adjusted prices by default. Real PostgreSQL CI is
-pending. The implementation uses synthetic fixtures; selecting a provider and
-accepting its legal/storage terms is `EXTERNAL_BLOCKED`, so Cycle 11 is not yet
-a verified authorized-real-data slice.
+data and excludes latest-adjusted prices by default. GitHub Actions verify run
+`31889028646` passed on commit `9337b8f`: migration 0009, all 288 tests without
+skips, a fresh 28-table restore and every quality/security/frontend gate passed.
+The implementation uses synthetic fixtures; selecting a provider and accepting
+its legal/storage terms is `EXTERNAL_BLOCKED`, so Cycle 11 is not yet a verified
+authorized-real-data slice.

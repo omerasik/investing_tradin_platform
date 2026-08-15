@@ -1446,7 +1446,7 @@ authorized P1 instrument/calendar foundation.
   complete exchange schedule. No credential, broker, order or live capability
   was added. Status: **VERIFIED**.
 
-## Cycle 194 candidate — execution-program Cycle 11 core
+## Cycle 194 evidence — execution-program Cycle 11 core
 
 - Objective: establish the provider-neutral US equity/ETF historical-data path
   without falsely accepting third-party terms or claiming fixture data is real.
@@ -1459,12 +1459,17 @@ authorized P1 instrument/calendar foundation.
   dataset-version-bound, revision-aware and ingestion-time filtered. Values
   marked `LATEST_ADJUSTED` are excluded by default and require an explicit
   caller override.
-- Coverage candidate: OHLCV revisions, rejected impossible/negative bars,
+- Coverage evidence: OHLCV revisions, rejected impossible/negative bars,
   dividends, splits, symbol changes, delistings, raw update rejection, dataset
   sealing, pre-seal invisibility and restart reconstruction. Restore hashing is
   expanded from 23 to **28 critical tables**.
+- CI evidence: GitHub Actions [verify run 31889028646](https://github.com/omerasik/investing_tradin_platform/actions/runs/31889028646)
+  passed on commit `9337b8f`: PostgreSQL 16 applied migrations through 0009,
+  all **288 tests ran without skips**, the fresh restore compared **28 critical
+  tables**, and all quality, security, dependency, frontend and artifact gates
+  passed. The provider-neutral core is **VERIFIED**.
 - External boundary: no provider selection, paid credential, terms acceptance
   or legal/storage approval was provided. The integration uses attributable
   synthetic fixtures only; actual authorized-real-data ingestion is
-  `EXTERNAL_BLOCKED`. Status: PENDING PostgreSQL CI for the provider-neutral
-  core and not eligible to be called the completed Cycle 11 real-data proof.
+  `EXTERNAL_BLOCKED` and this evidence is not eligible to be called the
+  completed Cycle 11 real-data proof.
