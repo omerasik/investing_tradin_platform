@@ -8,6 +8,7 @@ import os
 import sqlite3
 import unittest
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import UUID, uuid4
@@ -162,7 +163,7 @@ class PostgresBackfillIntegrationTests(unittest.TestCase):
             reopened_database = PostgresDatabase(self.dsn)
             reopened = PostgresPaperOms(reopened_database).get(UUID(ids["intent_id"]))
             self.assertEqual(reopened.status, OrderStatus.FILLED)
-            self.assertEqual(str(reopened.filled_quantity), "2.000000000000")
+            self.assertEqual(reopened.filled_quantity, Decimal("2.000000000000"))
             reopened_database.close()
 
             connection = psycopg.connect(self.dsn)
@@ -180,6 +181,16 @@ class PostgresBackfillIntegrationTests(unittest.TestCase):
                 persisted = cursor.fetchone()[0]
                 self.assertEqual(persisted["reconciliation_result"], "MATCHED")
                 self.assertEqual(persisted["source_counts"], dry_run.row_counts)
+                cursor.execute(
+                    "SELECT price FROM fills WHERE fill_id = %s",
+                    (UUID(ids["partial_fill_id"]),),
+                )
+                self.assertEqual(cursor.fetchone()[0], Decimal("10.000000000001"))
+                cursor.execute(
+                    "SELECT notional FROM risk_reservations WHERE reservation_id = %s",
+                    (UUID(ids["reservation_id"]),),
+                )
+                self.assertEqual(cursor.fetchone()[0], Decimal("20.000000000002"))
             connection.close()
 
             missing_mapping = json.loads(json.dumps(mapping))
