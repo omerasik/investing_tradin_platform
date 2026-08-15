@@ -27,8 +27,9 @@ snapshot, not a second roadmap.
   multiple-testing evidence. Canonical manifest v1 now binds exact strategy and
   dataset identities/versions, feature/cost versions, evidence IDs and hashes,
   limitations, evaluation time and metadata. PostgreSQL CI verification of the
-  new migration/restart/tamper path is pending; CI run 31859463557 correctly
-  rejected an assertion-order defect and it is not yet VERIFIED.
+  new migration/restart/tamper path is pending. CI runs 31859463557 and
+  31859542257 exposed verification-order and domain-error-wrapping defects;
+  neither run is acceptance evidence and the change is not yet VERIFIED.
 - Deterministic pre-trade risk, durable kill switches/idempotency/decision
   history, paper OMS lifecycle/fill/reconciliation evidence, and paper-only
   broker abstraction.

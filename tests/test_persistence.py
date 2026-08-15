@@ -7,6 +7,7 @@ from trade_platform.config import PlatformConfig
 from trade_platform.persistence import (
     PersistenceError,
     PersistenceTarget,
+    PostgresDatabase,
     SQLiteDatabase,
     open_database,
 )
@@ -15,6 +16,27 @@ from trade_platform.postgres_schema import IMMUTABLE_TABLES, INITIAL_SCHEMA_SQL,
 
 
 class PersistenceTests(unittest.TestCase):
+    def test_postgres_transaction_preserves_domain_rejection_reason(self) -> None:
+        class TransactionContext:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+        class Connection:
+            def transaction(self):
+                return TransactionContext()
+
+        database = PostgresDatabase.__new__(PostgresDatabase)
+        database.dsn = "postgresql://fixture"
+        database.connection = Connection()
+        with (
+            self.assertRaisesRegex(ValueError, "domain_integrity_rejected"),
+            database.transaction(),
+        ):
+            raise ValueError("domain_integrity_rejected")
+
     def test_sqlite_adapter_is_transactional_and_backend_selection_is_explicit(self) -> None:
         database = SQLiteDatabase()
         with database.transaction() as transaction:

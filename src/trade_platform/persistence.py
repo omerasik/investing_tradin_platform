@@ -80,6 +80,12 @@ class PostgresDatabase:
         except PersistenceError:
             raise
         except Exception as error:
+            # Roll back every exception, but preserve domain fail-closed errors
+            # so callers retain the exact integrity/risk rejection reason.
+            import psycopg
+
+            if not isinstance(error, psycopg.Error):
+                raise
             raise PersistenceError("postgres_transaction_failed") from error
 
     def close(self) -> None:

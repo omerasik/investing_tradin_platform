@@ -334,6 +334,8 @@ class PostgresIntegrationTests(unittest.TestCase):
         reopened_database.close()
 
     def test_quant_package_and_promotion_history_survive_restart(self) -> None:
+        import psycopg
+
         from trade_platform.persistence import PostgresDatabase
         from trade_platform.postgres_quant_validation import (
             PostgresPromotionLedger,
@@ -419,18 +421,24 @@ class PostgresIntegrationTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(QuantValidationError, "evidence_hash_mismatch"):
             store.append(bad_evidence_package)
-        with self.assertRaises(Exception):
-            with self.connection.transaction(), self.connection.cursor() as cursor:
-                cursor.execute(
-                    "UPDATE validation_packages SET canonical_manifest = '{}' WHERE package_id = %s",
-                    (package_id,),
-                )
-        with self.assertRaises(Exception):
-            with self.connection.transaction(), self.connection.cursor() as cursor:
-                cursor.execute(
-                    "DELETE FROM validation_package_artifacts WHERE package_id = %s",
-                    (package_id,),
-                )
+        with (
+            self.assertRaises(psycopg.errors.RaiseException),
+            self.connection.transaction(),
+            self.connection.cursor() as cursor,
+        ):
+            cursor.execute(
+                "UPDATE validation_packages SET canonical_manifest = '{}' WHERE package_id = %s",
+                (package_id,),
+            )
+        with (
+            self.assertRaises(psycopg.errors.RaiseException),
+            self.connection.transaction(),
+            self.connection.cursor() as cursor,
+        ):
+            cursor.execute(
+                "DELETE FROM validation_package_artifacts WHERE package_id = %s",
+                (package_id,),
+            )
         decision = PromotionDecision(
             uuid4(),
             self.strategy_id,
