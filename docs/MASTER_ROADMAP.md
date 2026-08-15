@@ -1505,7 +1505,7 @@ authorized P1 instrument/calendar foundation.
   robustness validation package cannot honestly run. Existing synthetic proofs
   are not alpha and are not being relabelled. Status: `EXTERNAL_BLOCKED`.
 
-## Cycle 197 candidate — execution-program Cycle 14 core
+## Cycle 197 evidence — execution-program Cycle 14 core
 
 - Objective: establish SEC-style point-in-time company fundamentals while real
   primary-source activation remains externally governed.
@@ -1516,9 +1516,14 @@ authorized P1 instrument/calendar foundation.
   and ingestion and chooses the latest then-known amendment. Transparent
   formulas cover revenue, operating margin, FCF, debt, shares/dilution,
   NOPAT/invested capital/ROIC and capital allocation.
-- Test candidate: pre-acceptance invisibility, ingestion delay, amendment
+- Test evidence: pre-acceptance invisibility, ingestion delay, amendment
   selection, exact values, immutability, restart and formula failures. Restore
   hashing expands from 30 to **33 critical tables**.
+- CI evidence: failed run 31889938442 revealed an untyped nullable PostgreSQL
+  metric parameter. GitHub Actions [verify run 31890008661](https://github.com/omerasik/investing_tradin_platform/actions/runs/31890008661)
+  passed after commit `88a76af`: migrations through 0011, all **295 tests
+  without skips**, a fresh **33-table** restore and all remaining gates. The
+  provider-neutral core is **VERIFIED**.
 - External boundary: fixtures use a test-only authorization reference. Actual
   SEC retrieval remains `EXTERNAL_BLOCKED` until terms and identifying operator
-  configuration are approved. Status: PENDING real PostgreSQL CI through 0011.
+  configuration are approved; this is not primary-source real-data evidence.

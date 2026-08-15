@@ -173,11 +173,14 @@ The required authorized real market dataset is unavailable because no provider
 and legal/storage terms were approved. No synthetic result is being relabelled
 as a real-data proof or alpha.
 
-## Cycle 14 provider-neutral core candidate
+## Cycle 14 provider-neutral core verified / SEC retrieval externally blocked
 
 Migration 0011 and `pit_fundamentals.py` add authorized-source, SEC-style filing
 and filing-fact PostgreSQL authorities. PIT reads enforce acceptance and
 ingestion visibility and revision selection. Transparent formula v1 covers
 revenue, operating margin, FCF, debt, shares/dilution, ROIC components and
-capital allocation. Real PostgreSQL CI is pending; actual SEC network ingestion
+capital allocation. After failed run `31889938442` exposed an untyped nullable
+PostgreSQL parameter, commit `88a76af` fixed the query. Verify run `31890008661`
+then passed migration 0011, all 295 tests without skips, the fresh 33-table
+restore and every quality/security/frontend gate. Actual SEC network ingestion
 is `EXTERNAL_BLOCKED` until terms and operator identity are approved.
