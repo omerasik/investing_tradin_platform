@@ -542,7 +542,53 @@ class PostgresIntegrationTests(unittest.TestCase):
                     (blocked_intent.intent_id,),
                 )
                 self.assertEqual(cursor.fetchone()[0], 0)
+            adapter.simulate_fill(
+                f"partial-{suffix}", intent.intent_id, Decimal("0.4"), Decimal(100)
+            )
+            runtime.core.broker.sync_events()
+            self.assertEqual(
+                runtime.core.oms.get(intent.intent_id).status.value, "PARTIALLY_FILLED"
+            )
+            adapter.simulate_fill(
+                f"final-{suffix}", intent.intent_id, Decimal("0.6"), Decimal(100)
+            )
+            runtime.core.broker.sync_events()
+            self.assertEqual(runtime.core.oms.get(intent.intent_id).status.value, "FILLED")
+            self.assertEqual(len(runtime.core.oms.fills(intent.intent_id)), 2)
+            final_snapshot = adapter.sync_account()
+            runtime.core.oms.record_reconciliation_with_account(
+                final_snapshot,
+                ReconciliationResult(True, ()),
+                healthy=True,
+                ingested_at=final_snapshot.as_of,
+            )
             runtime.close()
+
+            restarted = build_postgres_paper_runtime(
+                config=config,
+                adapter=adapter,
+                identities=identities,
+                policy_selection=selection,
+            )
+            self.assertEqual(restarted.core.oms.get(intent.intent_id).status.value, "FILLED")
+            self.assertEqual(len(restarted.core.oms.fills(intent.intent_id)), 2)
+            self.assertEqual(
+                restarted.core.events.last_sequence("deterministic"),
+                adapter.order_events()[-1].sequence,
+            )
+            recovered_account = restarted.core.reconciled_accounts.latest_as_of(
+                account_id, datetime.now(UTC)
+            ).snapshot
+            self.assertEqual(recovered_account.cash.amount, Decimal(9900))
+            self.assertEqual(recovered_account.positions[instrument_id].quantity, Decimal(1))
+            self.assertIn("GLOBAL", restarted.core.kill_switches.active_scopes())
+            with restarted.core.database.transaction() as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT count(*) FROM risk_reservations WHERE intent_id=%s",
+                    (intent.intent_id,),
+                )
+                self.assertEqual(cursor.fetchone()[0], 1)
+            restarted.close()
 
     def test_atomic_oms_fill_and_risk_idempotency(self) -> None:
         from trade_platform.persistence import PostgresDatabase
