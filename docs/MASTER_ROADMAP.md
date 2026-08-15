@@ -1528,7 +1528,7 @@ authorized P1 instrument/calendar foundation.
   SEC retrieval remains `EXTERNAL_BLOCKED` until terms and identifying operator
   configuration are approved; this is not primary-source real-data evidence.
 
-## Cycle 198 candidate — execution-program Cycle 15 core
+## Cycle 198 evidence — execution-program Cycle 15 core
 
 - Migration 0012 and `pit_macro.py` persist authorized source metadata and a
   controlled policy-rate/CPI/employment/GDP/yield-curve/liquidity-credit
@@ -1538,4 +1538,8 @@ authorized P1 instrument/calendar foundation.
   historical decision time. Tests cover initial/revised values, delay,
   immutability and restart; restore expands to **35 critical tables**.
 - Actual authoritative source activation and any licensed expectations are
-  `EXTERNAL_BLOCKED`. Status: PENDING real PostgreSQL CI through 0012.
+  `EXTERNAL_BLOCKED`.
+- CI evidence: GitHub Actions [verify run 31890332414](https://github.com/omerasik/investing_tradin_platform/actions/runs/31890332414)
+  passed on commit `b67a35f`: migrations through 0012, all **297 tests without
+  skips**, a fresh **35-table** restore and all quality, security, dependency,
+  frontend and artifact gates. Provider-neutral core status: **VERIFIED**.
