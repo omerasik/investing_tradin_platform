@@ -28,3 +28,9 @@ future provider normalization. Provider/broker symbols must resolve through its
 temporal mapping tables before observations become canonical. Calendar logic
 evaluates venue-local weekly windows and append-only exceptions; it fetches no
 schedule/data and has no execution authority.
+
+`PostgresHistoricalMarketDataPipeline` now follows that authority with raw
+capture, normalization, quality status, sealed dataset versioning and PIT
+research queries for the US equity/ETF slice. The provider adapter remains
+outside the trusted core and cannot register a source without recorded terms
+and authorization evidence.

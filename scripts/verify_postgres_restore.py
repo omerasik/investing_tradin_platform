@@ -37,6 +37,11 @@ CRITICAL_TABLES = (
     "professional_calendar_definitions",
     "professional_calendar_weekly_sessions",
     "professional_calendar_exceptions",
+    "historical_data_sources",
+    "historical_raw_observations",
+    "historical_normalized_observations",
+    "historical_dataset_versions",
+    "historical_dataset_members",
 )
 
 

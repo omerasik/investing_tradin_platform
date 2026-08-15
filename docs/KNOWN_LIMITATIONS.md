@@ -70,3 +70,7 @@ The full requirement-level matrix is in
   ARCX US sessions, one FX convention and UTC crypto; BIST, broader exchanges,
   futures/options/fixed income and Europe/Asia remain inactive. GLD is an ETF
   proxy, not spot gold or a future.
+- Cycle 11's PostgreSQL US equity/ETF ingestion, normalization, dataset and PIT
+  query core is implemented with synthetic fixtures only. No licensed or
+  legally approved real provider/data terms were supplied, so actual authorized
+  ingestion is `EXTERNAL_BLOCKED`; this cycle cannot be called a real-data proof.

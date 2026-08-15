@@ -1445,3 +1445,26 @@ authorized P1 instrument/calendar foundation.
 - Boundary: these versioned convention fixtures are not a licensed feed or a
   complete exchange schedule. No credential, broker, order or live capability
   was added. Status: **VERIFIED**.
+
+## Cycle 194 candidate — execution-program Cycle 11 core
+
+- Objective: establish the provider-neutral US equity/ETF historical-data path
+  without falsely accepting third-party terms or claiming fixture data is real.
+- Schema/module: migration 0009 and `historical_market_data.py` persist an
+  explicitly authorized source, immutable raw observations, normalized values
+  and quality status, sealed content-addressed dataset versions and immutable
+  membership in PostgreSQL.
+- PIT/leakage rules: provider identifiers resolve against temporal instrument
+  mappings using separate event and knowledge timestamps; research queries are
+  dataset-version-bound, revision-aware and ingestion-time filtered. Values
+  marked `LATEST_ADJUSTED` are excluded by default and require an explicit
+  caller override.
+- Coverage candidate: OHLCV revisions, rejected impossible/negative bars,
+  dividends, splits, symbol changes, delistings, raw update rejection, dataset
+  sealing, pre-seal invisibility and restart reconstruction. Restore hashing is
+  expanded from 23 to **28 critical tables**.
+- External boundary: no provider selection, paid credential, terms acceptance
+  or legal/storage approval was provided. The integration uses attributable
+  synthetic fixtures only; actual authorized-real-data ingestion is
+  `EXTERNAL_BLOCKED`. Status: PENDING PostgreSQL CI for the provider-neutral
+  core and not eligible to be called the completed Cycle 11 real-data proof.

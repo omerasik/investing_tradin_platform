@@ -34,3 +34,21 @@ Resolution applies `[valid_from, valid_until)` and `ingested_at <= as_of`;
 database exclusion constraints reject overlap. Delisting and calendar
 exceptions are append-only. Futures metadata is explicitly reserved, but no
 future or continuous contract is activated.
+
+## Authorized historical market-data vertical slice
+
+Migration 0009 implements the US equity/ETF provider-neutral path as five
+immutable PostgreSQL layers: explicitly authorized source, raw observation,
+normalized observation, sealed dataset version and dataset membership. Raw
+OHLCV/dividend/split/symbol-change/delisting records preserve provider identity,
+exchange, event/effective/ingestion times, adjustment status, revision,
+canonical raw hash and provenance URI. Normalization resolves the provider ID
+through the professional instrument master at separate effective/knowledge
+times and records rejected quality evidence without repairing it.
+
+Research reads are fixed to a sealed dataset, expose the exact data version and
+select only revisions ingested by the knowledge timestamp. `LATEST_ADJUSTED`
+observations are excluded unless a caller makes an explicit leakage-sensitive
+override. This infrastructure does not itself grant source rights: a real
+provider remains disabled until an operator supplies an approved authorization
+reference and terms version.

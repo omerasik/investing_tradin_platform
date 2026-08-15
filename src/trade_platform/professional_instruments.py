@@ -381,6 +381,38 @@ class PostgresProfessionalInstrumentMaster:
             "professional_identifier_mappings", "identifier_value", value, "namespace", namespace, as_of
         )
 
+    def resolve_identifier_point_in_time(
+        self, namespace: str, value: str, effective_at: datetime, known_at: datetime
+    ) -> ProfessionalInstrument:
+        """Resolve historical identity by its validity time and separate knowledge time."""
+        _require_aware(effective_at, "effective_at")
+        _require_aware(known_at, "known_at")
+        if known_at < effective_at:
+            raise InstrumentResolutionError("identifier_known_before_effective")
+        statement = (
+            "SELECT instrument_id FROM professional_identifier_mappings "
+            "WHERE identifier_value=%s AND namespace=%s AND valid_from<=%s "
+            "AND (valid_until IS NULL OR valid_until>%s) AND ingested_at<=%s "
+            "AND NOT EXISTS (SELECT 1 FROM professional_instrument_lifecycle_events e "
+            "WHERE e.instrument_id=professional_identifier_mappings.instrument_id "
+            "AND e.status='DELISTED' AND e.effective_at<=%s AND e.ingested_at<=%s) "
+            "ORDER BY valid_from DESC LIMIT 2"
+        )
+        try:
+            with self._database.transaction() as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    statement,
+                    (value, namespace, effective_at, effective_at, known_at, effective_at, known_at),
+                )
+                rows = cursor.fetchall()
+        except Exception as error:
+            raise InstrumentResolutionError("instrument_mapping_read_failed") from error
+        if not rows:
+            raise InstrumentResolutionError(f"mapping_not_found:{namespace}:{value}")
+        if len(rows) != 1:
+            raise AmbiguousInstrumentMappingError(f"ambiguous_mapping:{namespace}:{value}")
+        return self.get_as_of(str(rows[0][0]), known_at)
+
     def _resolve(self, table: str, value_column: str, value: str, scope_column: str, scope: str,
                  as_of: datetime) -> ProfessionalInstrument:
         _require_aware(as_of, "as_of")

@@ -34,3 +34,10 @@ Cycle 10 adds PostgreSQL tests for temporal symbol/provider resolution, overlap
 constraints, delisting, ingestion-time visibility, US early-close/holiday/DST,
 FX weekend boundaries, crypto 24x7 and restart. Fresh-restore comparison now
 includes all seven professional instrument/calendar tables.
+
+Cycle 11 adds real PostgreSQL coverage for immutable raw observations,
+provider-ID resolution with separate event/knowledge times, OHLCV revisions,
+quality rejection, dividend/split/symbol-change/delisting normalization, sealed
+dataset hashing, default exclusion of latest-adjusted values, pre-seal PIT
+invisibility and close/reopen reconstruction. Restore comparison includes all
+five historical-data tables (**28 critical tables total**).
