@@ -70,7 +70,10 @@ class PostgresDatabase:
             import psycopg
         except ImportError as error:  # keeps local/unit installation lightweight
             raise PersistenceError("postgres_driver_unavailable") from error
-        self.connection = psycopg.connect(self.dsn)
+        try:
+            self.connection = psycopg.connect(self.dsn)
+        except psycopg.Error as error:
+            raise PersistenceError("postgres_connection_failed") from error
 
     @contextmanager
     def transaction(self) -> Iterator[Any]:
