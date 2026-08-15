@@ -212,7 +212,8 @@ class PostgresPitFundamentalStore:
             "WITH ranked AS (SELECT f.*,x.*,ROW_NUMBER() OVER (PARTITION BY f.source_id,f.filing_id,x.taxonomy_namespace,x.concept,x.unit "
             "ORDER BY f.revision DESC,f.accepted_at DESC,f.ingested_at DESC) rank FROM pit_fundamental_filings f "
             "JOIN pit_fundamental_facts x ON x.filing_record_id=f.filing_record_id WHERE f.instrument_id=%s "
-            "AND f.accepted_at<=%s AND f.ingested_at<=%s AND (%s IS NULL OR x.standardized_metric=%s)) "
+            "AND f.accepted_at<=%s AND f.ingested_at<=%s "
+            "AND (%s::text IS NULL OR x.standardized_metric=%s::text)) "
             "SELECT * FROM ranked WHERE rank=1 "
             "ORDER BY reporting_period_end,concept"
         )
