@@ -80,8 +80,10 @@ class PostgresQuantValidationStore:
             raise QuantValidationError("postgres_validation_artifact_persistence_failed") from error
 
     def _append_package(self, package: StrategyValidationPackage) -> UUID:
-        strategy_id, dataset_id = self._identity(package.strategy_version, package.dataset_version)
         verify_validation_package(package)
+        strategy_id, dataset_id = self._identity(
+            package.strategy_version, package.dataset_version
+        )
         if (
             strategy_id != package.strategy_version_id
             or dataset_id != package.dataset_version_id

@@ -73,4 +73,3 @@ ordinary application mutation. It does not defend against an administrator who
 can rewrite data, triggers, and hashes. If that threat enters scope, add a
 separately controlled signature or WORM/object-lock copy; do not change the
 canonical manifest format silently.
-
