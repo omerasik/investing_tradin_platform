@@ -38,10 +38,12 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
-- The latest implementation baseline passed 266 Python tests without skips in
+- The latest implementation baseline passed 274 Python tests without skips in
   GitHub Actions
-  [run 31859646575](https://github.com/omerasik/investing_tradin_platform/actions/runs/31859646575)
-  at commit 268b765, including PostgreSQL migration and integration coverage.
+  [run 31886409990](https://github.com/omerasik/investing_tradin_platform/actions/runs/31886409990)
+  at commit 38d8143, including the complete mapped SQLite-to-PostgreSQL APPLY,
+  idempotent replay, conflict/unsupported/missing-mapping rejection, exact
+  financial NUMERIC checks and restart reconstruction.
   The same run passed scoped Ruff, mypy and Bandit, dependency audit, SBOM,
   committed-secret guard, TypeScript, Next production build and dashboard
   smoke verification.
@@ -63,13 +65,9 @@ snapshot, not a second roadmap.
 
 ## Immediate P0 work
 
-1. Replace every remaining `MUST_MIGRATE` pre-trade authority listed in
-   `POSTGRES_RUNTIME_AUTHORITY_MATRIX.md`; the legacy SQLite builder now rejects
-   PostgreSQL configuration before constructing any store, and the explicit
-   PostgreSQL core composition is not submission-ready until this is complete.
-2. Complete PostgreSQL pre-trade authority and restart/reconciliation coverage.
-3. Complete mapped cutover, failure injection, fresh restore/reconciliation and
-   representative security/CI gates.
+1. Execute PostgreSQL failure injection at the real transaction/runtime boundaries.
+2. Execute backup to a separate fresh database, restore, reconstruction and reconciliation.
+3. Complete the P0 security/CI/repository-quality audit and combined exit review.
 
 ## PostgreSQL persistence progress
 

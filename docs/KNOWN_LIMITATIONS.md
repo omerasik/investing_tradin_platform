@@ -7,11 +7,12 @@ The full requirement-level matrix is in
 - SQLite stores provide durable local evidence but are not the normalized
   PostgreSQL/analytics/object-storage/queue deployment architecture required by
   the specification.
-- The normalized PostgreSQL schema and migration boundary are present,
-  but legacy SQLite repositories have not yet been migrated individually and
-  the backfill intentionally stops before writes without an explicit identity
-  mapping. A safe disposable local PostgreSQL DSN is not configured; CI is the
-  authoritative PostgreSQL integration environment.
+- The normalized PostgreSQL schema and representative mapped legacy migration
+  are CI-verified, including APPLY/replay/conflict/restart behavior. It is not a
+  blanket converter for every research-only SQLite table: unknown or unsupported
+  records fail closed and require an explicit operator resolution. A safe
+  disposable local PostgreSQL DSN is not configured; CI remains the authoritative
+  PostgreSQL integration environment.
 - PostgreSQL configuration can no longer enter the legacy SQLite paper-runtime
   constructor, and an explicit PostgreSQL-only core authority graph exists.
   That graph is deliberately not submission-ready. Policy and signed
