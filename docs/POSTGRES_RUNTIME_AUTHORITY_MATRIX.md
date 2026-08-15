@@ -13,8 +13,8 @@ legacy `build_paper_runtime` SQLite constructor.
 | Daily risk reservation/decision | `PostgresRiskStore` | PostgreSQL authority | COMPOSED |
 | Validation package/evidence | `PostgresQuantValidationStore` | PostgreSQL authority | COMPOSED |
 | Promotion/activation | `PostgresPromotionLedger` | PostgreSQL authority | COMPOSED |
-| Policy documents and portfolio stress policy | none | MUST_MIGRATE | BLOCKS_SUBMISSION |
-| Signed pre-trade assessment and input evidence | none | MUST_MIGRATE | BLOCKS_SUBMISSION |
+| Policy documents and portfolio stress policy | `PostgresPolicyRegistry` | PostgreSQL authority | COMPOSED |
+| Signed pre-trade assessment and input evidence | `PostgresPreTradeAssessmentStore` | PostgreSQL authority | COMPOSED |
 | Instrument risk profile/session calendar | normalized base schema is insufficient | MUST_MIGRATE | BLOCKS_SUBMISSION |
 | Validated signal/lifecycle | normalized base schema is insufficient | MUST_MIGRATE | BLOCKS_SUBMISSION |
 | Model validation/approval/drift/prediction | normalized base schema is insufficient | MUST_MIGRATE | BLOCKS_SUBMISSION |
@@ -26,10 +26,11 @@ legacy `build_paper_runtime` SQLite constructor.
 
 `build_postgres_paper_core` composes the existing PostgreSQL rows above on one
 explicitly selected database connection and never constructs a SQLite store.
-It intentionally reports `submission_ready = False`: `PaperBrokerSyncService`
-has no assessment/policy authorities and therefore rejects its checked
-submission entry point. This is a fail-closed intermediate cutover state, not a
-claim that P0 or the full paper runtime is complete.
+It intentionally reports `submission_ready = False`: policy and keyed
+assessment authorities are now wired, but the upstream signal/model/market and
+portfolio evidence required to produce an approvable assessment is incomplete.
+This is a fail-closed intermediate cutover state, not a claim that P0 or the
+full paper runtime is complete.
 
 P0 may close only after every `MUST_MIGRATE` row is replaced, the configured
 full PostgreSQL composition is exercised end-to-end, and database uncertainty

@@ -89,6 +89,75 @@ class PostgresIntegrationTests(unittest.TestCase):
                 "quant_validation_artifacts_immutable", {row[0] for row in cursor.fetchall()}
             )
 
+    def test_policy_and_keyed_assessment_survive_restart_and_reject_tamper(self) -> None:
+        from trade_platform.domain import RiskDecision, RiskDecisionType
+        from trade_platform.persistence import PersistenceError, PostgresDatabase
+        from trade_platform.policy_registry import PolicyDocument
+        from trade_platform.postgres_pretrade import (
+            PostgresPolicyRegistry,
+            PostgresPreTradeAssessmentStore,
+        )
+        from trade_platform.pretrade_assessment import PreTradeAssessment
+
+        database = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        policies = PostgresPolicyRegistry(database)
+        version = f"risk:integration:{str(self.exchange_id)[:8]}"
+        document = PolicyDocument(
+            "risk",
+            version,
+            {"maximum_order_notional": "1000"},
+            "risk-reviewer",
+            self.now,
+        )
+        policies.append(document)
+        policies.append(document)
+        self.assertEqual(
+            policies.resolve_risk_policy(version).maximum_order_notional, Decimal(1000)
+        )
+        intent_id = uuid4()
+        assessment = PreTradeAssessment(
+            uuid4(),
+            RiskDecision(
+                uuid4(),
+                intent_id,
+                RiskDecisionType.REJECT,
+                ("fixture_rejection",),
+                self.now,
+            ),
+            None,
+            "fixture_rejection",
+            self.now,
+            version,
+            "portfolio:fixture",
+            document.digest,
+            "portfolio-digest",
+        )
+        store = PostgresPreTradeAssessmentStore(database, integrity_key=b"integration-key")
+        store.append(assessment)
+        store.append(assessment)
+        database.close()
+
+        restarted = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        recovered = PostgresPreTradeAssessmentStore(
+            restarted, integrity_key=b"integration-key"
+        ).get_for_intent(intent_id)
+        self.assertEqual(recovered, assessment)
+        with self.assertRaisesRegex(ValueError, "mac_mismatch"):
+            PostgresPreTradeAssessmentStore(
+                restarted, integrity_key=b"wrong-key"
+            ).get_for_intent(intent_id)
+        with (
+            self.assertRaises(PersistenceError),
+            restarted.transaction() as connection,
+            connection.cursor() as cursor,
+        ):
+            cursor.execute(
+                "UPDATE runtime_pretrade_assessments SET assessment_mac = %s "
+                "WHERE intent_id = %s",
+                ("0" * 64, intent_id),
+            )
+        restarted.close()
+
     def test_atomic_oms_fill_and_risk_idempotency(self) -> None:
         from trade_platform.persistence import PostgresDatabase
         from trade_platform.postgres_repositories import (

@@ -14,8 +14,9 @@ The full requirement-level matrix is in
   authoritative PostgreSQL integration environment.
 - PostgreSQL configuration can no longer enter the legacy SQLite paper-runtime
   constructor, and an explicit PostgreSQL-only core authority graph exists.
-  That graph is deliberately not submission-ready: policy, signed assessment,
-  rich instrument/signal/model evidence, quotes, execution context and return
+  That graph is deliberately not submission-ready. Policy and signed
+  assessment now have PostgreSQL implementations pending CI; rich
+  instrument/signal/model evidence, quotes, execution context and return
   history remain `MUST_MIGRATE` before the full runtime can be composed.
 - Golden artifacts now retain declared spread, fee, latency, participation and
   impact assumptions, partial/unfilled-order observations, and raw versus

@@ -16,6 +16,7 @@ from .config import PlatformConfig
 from .persistence import PersistenceTarget, PostgresDatabase
 from .portfolio_evidence import OmsReconciledAccountStore
 from .postgres_paper_oms import PostgresBrokerEventStore, PostgresPaperOms
+from .postgres_pretrade import PostgresPolicyRegistry, PostgresPreTradeAssessmentStore
 from .postgres_quant_validation import PostgresPromotionLedger, PostgresQuantValidationStore
 from .risk import PostgresKillSwitchRegistry, PostgresRiskStore
 
@@ -45,9 +46,9 @@ class PostgresRuntimeIdentityMap:
 class PostgresPaperCoreAuthorities:
     """PostgreSQL-only authorities already safe to compose in paper mode.
 
-    ``broker`` intentionally lacks assessment and policy stores.  Its checked
-    submission entry point therefore fails closed until the full pre-trade
-    composition is supplied by the next cutover slice.
+    ``broker`` has immutable policy and keyed assessment stores, but the graph
+    intentionally remains non-submission-ready until every upstream pre-trade
+    evidence authority is PostgreSQL-backed.
     """
 
     database: PostgresDatabase
@@ -59,6 +60,8 @@ class PostgresPaperCoreAuthorities:
     risk: PostgresRiskStore
     validation: PostgresQuantValidationStore
     promotions: PostgresPromotionLedger
+    policies: PostgresPolicyRegistry
+    assessments: PostgresPreTradeAssessmentStore
 
     @property
     def submission_ready(self) -> bool:
@@ -94,7 +97,17 @@ def build_postgres_paper_core(
         oms = PostgresPaperOms(database)
         events = PostgresBrokerEventStore(database, adapter.configuration.account_id)
         reconciled_accounts = OmsReconciledAccountStore(oms)
-        broker = PaperBrokerSyncService(oms, adapter, events)
+        policies = PostgresPolicyRegistry(database)
+        assessments = PostgresPreTradeAssessmentStore(
+            database, integrity_key=config.assessment_integrity_key()
+        )
+        broker = PaperBrokerSyncService(
+            oms,
+            adapter,
+            events,
+            assessment_store=assessments,
+            policy_registry=policies,
+        )
         return PostgresPaperCoreAuthorities(
             database=database,
             oms=oms,
@@ -111,6 +124,8 @@ def build_postgres_paper_core(
             promotions=PostgresPromotionLedger(
                 database, strategy_versions=identities.strategy_versions
             ),
+            policies=policies,
+            assessments=assessments,
         )
     except Exception:
         database.close()

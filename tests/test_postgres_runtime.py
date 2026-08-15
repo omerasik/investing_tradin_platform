@@ -1,3 +1,4 @@
+import os
 import unittest
 from decimal import Decimal
 from unittest.mock import Mock, patch
@@ -18,6 +19,10 @@ from trade_platform.paper_runtime import (
 )
 from trade_platform.persistence import PersistenceTarget, PostgresDatabase
 from trade_platform.postgres_paper_oms import PostgresBrokerEventStore, PostgresPaperOms
+from trade_platform.postgres_pretrade import (
+    PostgresPolicyRegistry,
+    PostgresPreTradeAssessmentStore,
+)
 from trade_platform.postgres_quant_validation import (
     PostgresPromotionLedger,
     PostgresQuantValidationStore,
@@ -71,7 +76,10 @@ class PostgresRuntimeCompositionTests(unittest.TestCase):
         identities = PostgresRuntimeIdentityMap(
             {"risk:v1": uuid4()}, {"strategy:v1": uuid4()}, {"dataset:v1": uuid4()}
         )
-        with patch.object(PlatformConfig, "create_database", return_value=database):
+        with (
+            patch.object(PlatformConfig, "create_database", return_value=database),
+            patch.dict(os.environ, {"TEST_ASSESSMENT_KEY": "unit-test-key"}),
+        ):
             core = build_postgres_paper_core(
                 config=self.config(),
                 adapter=self.adapter(),
@@ -84,6 +92,8 @@ class PostgresRuntimeCompositionTests(unittest.TestCase):
         self.assertIsInstance(core.risk, PostgresRiskStore)
         self.assertIsInstance(core.validation, PostgresQuantValidationStore)
         self.assertIsInstance(core.promotions, PostgresPromotionLedger)
+        self.assertIsInstance(core.policies, PostgresPolicyRegistry)
+        self.assertIsInstance(core.assessments, PostgresPreTradeAssessmentStore)
         self.assertFalse(core.submission_ready)
         authorities = (
             core.oms,
@@ -94,6 +104,8 @@ class PostgresRuntimeCompositionTests(unittest.TestCase):
             core.risk,
             core.validation,
             core.promotions,
+            core.policies,
+            core.assessments,
         )
         self.assertFalse(any(type(value).__name__.startswith("SQLite") for value in authorities))
         core.close()
