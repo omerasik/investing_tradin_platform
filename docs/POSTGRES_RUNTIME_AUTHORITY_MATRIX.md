@@ -15,9 +15,10 @@ legacy `build_paper_runtime` SQLite constructor.
 | Promotion/activation | `PostgresPromotionLedger` | PostgreSQL authority | COMPOSED |
 | Policy documents and portfolio stress policy | `PostgresPolicyRegistry` | PostgreSQL authority | COMPOSED |
 | Signed pre-trade assessment and input evidence | `PostgresPreTradeAssessmentStore` | PostgreSQL authority | COMPOSED |
-| Instrument risk profile/session calendar | normalized base schema is insufficient | MUST_MIGRATE | BLOCKS_SUBMISSION |
-| Validated signal/lifecycle | normalized base schema is insufficient | MUST_MIGRATE | BLOCKS_SUBMISSION |
-| Model validation/approval/drift/prediction | normalized base schema is insufficient | MUST_MIGRATE | BLOCKS_SUBMISSION |
+| Instrument/risk profile/session calendar | `PostgresInstrumentStore` | PostgreSQL authority | COMPOSED_PENDING_CI |
+| Validated signal | `PostgresSignalStore` | PostgreSQL authority | COMPOSED_PENDING_CI |
+| Model validation/approval | `PostgresModelRegistry` | PostgreSQL authority | COMPOSED_PENDING_CI |
+| Full signal lifecycle and model drift/prediction | partial PostgreSQL surface | MUST_MIGRATE | BLOCKS_MANAGED_LIFECYCLE |
 | Halt/event-risk/slippage evidence | `PostgresExecutionEvidenceStore` | PostgreSQL authority | COMPOSED_PENDING_CI |
 | Point-in-time quotes | `PostgresQuoteStore` | PostgreSQL authority | COMPOSED_PENDING_CI |
 | Portfolio return history | `PostgresPortfolioReturnStore` | PostgreSQL authority | COMPOSED_PENDING_CI |

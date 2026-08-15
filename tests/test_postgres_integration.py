@@ -5,7 +5,7 @@ import os
 import threading
 import unittest
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -250,6 +250,131 @@ class PostgresIntegrationTests(unittest.TestCase):
             maximum_age_seconds=86400,
         )
         self.assertEqual(evidence.observations, (observation,))
+        restarted.close()
+
+    def test_instrument_signal_and_model_authorities_survive_restart(self) -> None:
+        from trade_platform.domain import AssetClass, Instrument, OrderSide
+        from trade_platform.instruments import InstrumentRiskProfile, TradingSession
+        from trade_platform.model_registry import ModelValidation, ModelVersion
+        from trade_platform.persistence import PostgresDatabase
+        from trade_platform.postgres_decision_authorities import (
+            PostgresInstrumentStore,
+            PostgresModelRegistry,
+            PostgresSignalStore,
+        )
+        from trade_platform.signal_engine import (
+            SignalEngine,
+            SignalProposal,
+            ValidationStage,
+        )
+
+        database = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        instrument_id = str(self.instrument_id)
+        instruments = PostgresInstrumentStore(database)
+        instrument = Instrument(
+            instrument_id,
+            "RUNTIME",
+            "RUNTIME",
+            AssetClass.ETF,
+            "USD",
+            Decimal("0.01"),
+            Decimal(1),
+        )
+        instruments.register(instrument)
+        profile = InstrumentRiskProfile(
+            instrument_id,
+            "INDEX",
+            "US",
+            "US_INDEX",
+            Decimal(1),
+            Decimal(0),
+            {"market": Decimal(1)},
+            self.now,
+            self.now,
+        )
+        instruments.append_risk_profile(profile)
+        instruments.add_trading_session(
+            TradingSession("RUNTIME", self.now.weekday(), time(0), time(23, 59), "UTC")
+        )
+        proposal = SignalProposal.create(
+            instrument_id=instrument_id,
+            asset_class=AssetClass.ETF,
+            strategy_version=f"runtime:{self.strategy_version_id}",
+            direction=OrderSide.BUY,
+            entry_low=Decimal(99),
+            entry_high=Decimal(101),
+            invalidation_level=Decimal(98),
+            stop_level=Decimal(98),
+            target_logic="target",
+            expected_holding_period=timedelta(days=1),
+            strength=Decimal("0.8"),
+            confidence=Decimal("0.8"),
+            expected_return=Decimal("0.02"),
+            expected_volatility=Decimal("0.1"),
+            expected_downside=Decimal("-0.01"),
+            risk_reward_estimate=Decimal(2),
+            regime="BULL",
+            liquidity_score=Decimal(1),
+            data_quality_score=Decimal(1),
+            news_risk=Decimal(0),
+            event_risk=Decimal("0.1"),
+            correlation_impact=Decimal(0),
+            recommended_quantity=Decimal(1),
+            expires_at=self.now + timedelta(days=1),
+            explanation="integration evidence",
+            contradicting_evidence=(),
+        )
+        proposal = replace(proposal, created_at=self.now)
+        signals = PostgresSignalStore(database)
+        signals.append(proposal)
+        validation = replace(
+            SignalEngine().validate(
+                proposal, {stage: True for stage in ValidationStage}
+            ),
+            assessed_at=self.now,
+        )
+        signals.append_validation(validation)
+        models = PostgresModelRegistry(database)
+        model = replace(
+            ModelVersion.create(
+                name=f"runtime-{self.exchange_id}",
+                version="v1",
+                task="direction",
+                feature_version="features:v1",
+                dataset_version="dataset:v1",
+                artifact_reference="local://integration-model",
+            ),
+            created_at=self.now,
+        )
+        models.register(model)
+        model_validation = replace(
+            ModelValidation.create(
+                model_id=model.model_id,
+                metrics={"brier": Decimal("0.1")},
+                economic_value_after_cost=Decimal("0.01"),
+                evidence_reference="integration://model",
+            ),
+            validated_at=self.now,
+        )
+        models.append_validation(model_validation)
+        models.approve(
+            model.model_id,
+            validation_id=model_validation.validation_id,
+            actor="reviewer",
+            reason="integration review",
+        )
+        database.close()
+
+        restarted = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        recovered_instruments = PostgresInstrumentStore(restarted)
+        self.assertEqual(recovered_instruments.get(instrument_id), instrument)
+        self.assertEqual(recovered_instruments.risk_profile_as_of(instrument_id, self.now), profile)
+        self.assertTrue(recovered_instruments.is_trading_session("RUNTIME", self.now))
+        self.assertEqual(
+            PostgresSignalStore(restarted).risk_signal(proposal.signal_id, as_of=self.now).signal_id,
+            proposal.signal_id,
+        )
+        self.assertTrue(PostgresModelRegistry(restarted).is_approved(model.model_id))
         restarted.close()
 
     def test_atomic_oms_fill_and_risk_idempotency(self) -> None:
