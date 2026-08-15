@@ -979,6 +979,213 @@ class PostgresIntegrationTests(unittest.TestCase):
         )
         reopened.close()
 
+    def _install_failure_trigger(self, table: str) -> None:
+        with self.connection.transaction(), self.connection.cursor() as cursor:
+            cursor.execute(
+                "CREATE OR REPLACE FUNCTION cycle7_injected_failure() RETURNS trigger "
+                "LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'cycle7_injected_failure'; END; $$"
+            )
+            cursor.execute(
+                f"CREATE TRIGGER cycle7_fail BEFORE INSERT ON {table} "  # nosec B608: test allow-list
+                "FOR EACH ROW EXECUTE FUNCTION cycle7_injected_failure()"
+            )
+
+    def _remove_failure_trigger(self, table: str) -> None:
+        with self.connection.transaction(), self.connection.cursor() as cursor:
+            cursor.execute(f"DROP TRIGGER IF EXISTS cycle7_fail ON {table}")  # nosec B608: test allow-list
+            cursor.execute("DROP FUNCTION IF EXISTS cycle7_injected_failure()")
+
+    def test_database_unavailable_and_terminated_connections_fail_closed(self) -> None:
+        from trade_platform.persistence import PersistenceError, PostgresDatabase
+        from trade_platform.postgres_repositories import (
+            PostgresCriticalRepository,
+            PostgresRepositoryError,
+        )
+
+        with self.assertRaises(PersistenceError):
+            PostgresDatabase(
+                "postgresql://postgres:postgres@127.0.0.1:1/unavailable?connect_timeout=1"
+            )
+
+        interrupted = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        with interrupted.connection.cursor() as cursor:
+            cursor.execute("SELECT pg_backend_pid()")
+            backend_pid = cursor.fetchone()[0]
+        with self.connection.transaction(), self.connection.cursor() as cursor:
+            cursor.execute("SELECT pg_terminate_backend(%s)", (backend_pid,))
+            self.assertTrue(cursor.fetchone()[0])
+        repository = PostgresCriticalRepository(interrupted)
+        with self.assertRaises(PostgresRepositoryError):
+            repository.reserve_and_record_decision(
+                account_id=f"integration-paper-{str(self.exchange_id)[:8]}",
+                intent_id=uuid4(),
+                policy_version_id=self.policy_version_id,
+                business_date=self.now.date(),
+                notional=Decimal(1),
+                daily_limit=Decimal(100),
+                approved=True,
+                reasons=(),
+                decided_at=self.now,
+            )
+        interrupted.close()
+
+    def test_risk_reservation_rolls_back_when_decision_commit_fails(self) -> None:
+        from trade_platform.persistence import PostgresDatabase
+        from trade_platform.postgres_repositories import (
+            PostgresCriticalRepository,
+            PostgresRepositoryError,
+        )
+
+        repository = PostgresCriticalRepository(PostgresDatabase(os.environ["POSTGRES_TEST_DSN"]))
+        intent_id = uuid4()
+        with self.assertRaises(PostgresRepositoryError):
+            repository.reserve_and_record_decision(
+                account_id=f"integration-paper-{str(self.exchange_id)[:8]}",
+                intent_id=intent_id,
+                policy_version_id=uuid4(),
+                business_date=self.now.date(),
+                notional=Decimal(10),
+                daily_limit=Decimal(100),
+                approved=True,
+                reasons=(),
+                decided_at=self.now,
+            )
+        with self.connection.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM risk_reservations WHERE intent_id = %s", (intent_id,))
+            self.assertEqual(cursor.fetchone()[0], 0)
+            cursor.execute("SELECT COUNT(*) FROM risk_decisions WHERE intent_id = %s", (intent_id,))
+            self.assertEqual(cursor.fetchone()[0], 0)
+        repository._database.close()
+
+    def test_order_intent_rolls_back_when_initial_oms_event_fails(self) -> None:
+        from trade_platform.persistence import PostgresDatabase
+        from trade_platform.postgres_repositories import (
+            PostgresCriticalRepository,
+            PostgresRepositoryError,
+        )
+
+        intent_id = uuid4()
+        repository = PostgresCriticalRepository(PostgresDatabase(os.environ["POSTGRES_TEST_DSN"]))
+        self._install_failure_trigger("oms_events")
+        try:
+            with self.assertRaises(PostgresRepositoryError):
+                repository.create_order_with_event(
+                    intent_id=intent_id,
+                    signal_id=self.signal_id,
+                    account_id=f"integration-paper-{str(self.exchange_id)[:8]}",
+                    instrument_id=self.instrument_id,
+                    side="BUY",
+                    quantity=Decimal(1),
+                    limit_price=Decimal(100),
+                    status="PROPOSED",
+                    created_at=self.now,
+                )
+        finally:
+            self._remove_failure_trigger("oms_events")
+            repository._database.close()
+        with self.connection.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM paper_order_intents WHERE intent_id = %s", (intent_id,))
+            self.assertEqual(cursor.fetchone()[0], 0)
+
+    def test_broker_cursor_and_event_roll_back_when_fill_write_fails(self) -> None:
+        from trade_platform.broker_adapter import BrokerOrderEvent
+        from trade_platform.domain import OrderIntent, OrderSide, OrderStatus
+        from trade_platform.paper_execution import PaperOrder, progress_to_acknowledged
+        from trade_platform.paper_oms import PaperOmsError
+        from trade_platform.persistence import PostgresDatabase
+        from trade_platform.postgres_paper_oms import PostgresPaperOms
+
+        account_id = f"integration-paper-{str(self.exchange_id)[:8]}"
+        intent = OrderIntent(
+            uuid4(), self.signal_id, str(self.instrument_id), account_id,
+            OrderSide.BUY, Decimal(1), Decimal(100), self.now,
+        )
+        database = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        oms = PostgresPaperOms(database)
+        oms.create(PaperOrder(intent))
+        for status in (
+            OrderStatus.RISK_PENDING,
+            OrderStatus.APPROVED,
+            OrderStatus.SUBMISSION_PENDING,
+            OrderStatus.SUBMITTED,
+            OrderStatus.ACKNOWLEDGED,
+        ):
+            oms.transition(intent.intent_id, status)
+        event = BrokerOrderEvent(
+            1, uuid4(), intent.intent_id, OrderStatus.FILLED, "FILL", self.now,
+            f"cycle7-fill-{intent.intent_id}",
+            {"external_fill_id": f"cycle7-fill-{intent.intent_id}", "quantity": "1", "price": "100"},
+        )
+        self._install_failure_trigger("fills")
+        try:
+            with self.assertRaises(PaperOmsError):
+                oms.apply_broker_event(account_id, "cycle7-broker", event)
+        finally:
+            self._remove_failure_trigger("fills")
+        self.assertEqual(oms.get(intent.intent_id), progress_to_acknowledged(PaperOrder(intent)))
+        with self.connection.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM broker_sync_events WHERE event_id = %s", (event.event_id,))
+            self.assertEqual(cursor.fetchone()[0], 0)
+            cursor.execute(
+                "SELECT COUNT(*) FROM broker_event_cursors WHERE account_id = %s AND source = 'cycle7-broker'",
+                (account_id,),
+            )
+            self.assertEqual(cursor.fetchone()[0], 0)
+        database.close()
+
+    def test_reconciliation_rolls_back_when_account_evidence_write_fails(self) -> None:
+        from trade_platform.broker_adapter import BrokerAccountSnapshot
+        from trade_platform.paper_execution import CashBalance, ReconciliationResult
+        from trade_platform.paper_oms import PaperOmsError
+        from trade_platform.persistence import PostgresDatabase
+        from trade_platform.postgres_paper_oms import PostgresPaperOms
+
+        account_id = f"integration-paper-{str(self.exchange_id)[:8]}"
+        snapshot = BrokerAccountSnapshot(
+            account_id, "cycle7-broker", self.now, CashBalance("USD", Decimal(1000)),
+            Decimal(1000), {}, (), (), Decimal(0), Decimal(0),
+        )
+        database = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        oms = PostgresPaperOms(database)
+        self._install_failure_trigger("reconciled_account_evidence")
+        try:
+            with self.assertRaises(PaperOmsError):
+                oms.record_reconciliation_with_account(
+                    snapshot, ReconciliationResult(True, ()), healthy=True, ingested_at=self.now
+                )
+        finally:
+            self._remove_failure_trigger("reconciled_account_evidence")
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM reconciliations WHERE account_id = %s AND source = 'cycle7-broker'",
+                (account_id,),
+            )
+            self.assertEqual(cursor.fetchone()[0], 0)
+        database.close()
+
+    def test_unknown_package_cannot_create_promotion_decision(self) -> None:
+        from trade_platform.persistence import PostgresDatabase
+        from trade_platform.postgres_quant_validation import PostgresPromotionLedger
+        from trade_platform.strategy_promotion import PromotionDecision, PromotionStatus
+
+        decision = PromotionDecision(
+            uuid4(), self.strategy_id, "cycle7-strategy", PromotionStatus.REVIEW_REQUIRED,
+            (), 20, Decimal("0.1"), self.now,
+        )
+        database = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        ledger = PostgresPromotionLedger(
+            database, strategy_versions={"cycle7-strategy": self.strategy_version_id}
+        )
+        with self.assertRaisesRegex(ValueError, "postgres_promotion_persistence_failed"):
+            ledger.append(decision, package_id=uuid4())
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM strategy_promotion_decisions WHERE decision_id = %s",
+                (decision.decision_id,),
+            )
+            self.assertEqual(cursor.fetchone()[0], 0)
+        database.close()
+
 
 if __name__ == "__main__":
     unittest.main()
