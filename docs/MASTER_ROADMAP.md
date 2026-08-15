@@ -1365,5 +1365,7 @@ exists.
   only; the documented target is OIDC, short-lived sessions, MFA, RBAC, CSRF
   protection, auditable authorization and managed secrets.
 - Acceptance: local Ruff, mypy ratchet, Bandit, 281-test suite, TypeScript,
-  ESLint, production audit and Next build pass. Final VERIFIED status and P0
-  exit depend on the expanded GitHub Actions run.
+  ESLint, production audit and Next build pass. GitHub Actions run 31887717381
+  passed every expanded gate at commit `5eb098c`; its sole Node 20 deprecation
+  annotation is removed by moving artifact retention to the current v7 major.
+  Final VERIFIED status depends on the clean follow-up run.
