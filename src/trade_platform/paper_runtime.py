@@ -68,6 +68,7 @@ class PaperRuntime:
     stress_scenarios: tuple[StressScenario, ...]
     durable_risk_store: Any | None = None
     durable_kill_switches: Any | None = None
+    durable_recovery_gate: Any | None = None
 
     def close(self) -> None:
         self.assessments.close()
@@ -84,6 +85,8 @@ class PaperRuntime:
 
     def assess(self, intent, *, observed_at: datetime) -> PreTradeAssessment:
         """Derive every pre-trade input from this runtime's durable authorities."""
+        if self.durable_recovery_gate is not None and self.durable_recovery_gate.blocks():
+            raise PaperRuntimeError("postgres_recovery_reconciliation_required")
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
             raise PaperRuntimeError("assessment_time_must_be_timezone_aware")
         quote = self.quotes.latest_as_of(intent.instrument_id, observed_at)

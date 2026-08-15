@@ -1163,6 +1163,29 @@ class PostgresIntegrationTests(unittest.TestCase):
             self.assertEqual(cursor.fetchone()[0], 0)
         database.close()
 
+    def test_recovery_gate_is_append_only_and_survives_restart(self) -> None:
+        from trade_platform.persistence import PersistenceError, PostgresDatabase
+        from trade_platform.postgres_recovery import PostgresRecoveryGate
+
+        database = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        gate = PostgresRecoveryGate(database)
+        gate.require_reconciliation("integration_restore")
+        self.assertTrue(gate.blocks())
+        database.close()
+
+        restarted = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        recovered = PostgresRecoveryGate(restarted)
+        self.assertTrue(recovered.blocks())
+        with (
+            self.assertRaises(PersistenceError),
+            restarted.transaction() as connection,
+            connection.cursor() as cursor,
+        ):
+            cursor.execute("DELETE FROM runtime_recovery_events")
+        recovered.mark_reconciled("integration_reconciliation_complete")
+        self.assertFalse(recovered.blocks())
+        restarted.close()
+
     def test_unknown_package_cannot_create_promotion_decision(self) -> None:
         from trade_platform.persistence import PostgresDatabase
         from trade_platform.postgres_quant_validation import PostgresPromotionLedger

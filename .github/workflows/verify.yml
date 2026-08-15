@@ -37,9 +37,22 @@ jobs:
       - run: python -m compileall -q src tests migrations scripts
       - run: alembic upgrade head
       - run: python -m unittest discover -s tests -v
-      - run: ruff check src/trade_platform/persistence.py src/trade_platform/postgres_schema.py src/trade_platform/postgres_backfill.py src/trade_platform/legacy_migration_fixture.py src/trade_platform/postgres_repositories.py src/trade_platform/postgres_runtime.py src/trade_platform/postgres_pretrade.py src/trade_platform/postgres_market_context.py src/trade_platform/postgres_decision_authorities.py tests/test_persistence.py tests/test_postgres_backfill_integration.py tests/test_postgres_integration.py tests/test_postgres_runtime.py migrations/versions/20260815_0004_postgres_pretrade_evidence.py migrations/versions/20260815_0005_postgres_market_context.py migrations/versions/20260815_0006_postgres_decision_authorities.py
-      - run: mypy --follow-imports=skip src/trade_platform/persistence.py src/trade_platform/postgres_schema.py src/trade_platform/postgres_backfill.py src/trade_platform/legacy_migration_fixture.py src/trade_platform/postgres_repositories.py src/trade_platform/postgres_runtime.py src/trade_platform/postgres_pretrade.py src/trade_platform/postgres_market_context.py src/trade_platform/postgres_decision_authorities.py
-      - run: bandit -q -r src/trade_platform/persistence.py src/trade_platform/postgres_backfill.py src/trade_platform/legacy_migration_fixture.py src/trade_platform/postgres_repositories.py src/trade_platform/postgres_runtime.py src/trade_platform/postgres_pretrade.py src/trade_platform/postgres_market_context.py src/trade_platform/postgres_decision_authorities.py
+      - name: PostgreSQL backup, fresh restore and reconciliation drill
+        env:
+          RESTORED_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:5432/trade_platform_restore
+        run: |
+          pg_dump "$POSTGRES_TEST_DSN" --format=custom --file=/tmp/trade-platform.dump
+          head -c 1024 /tmp/trade-platform.dump > /tmp/trade-platform-corrupt.dump
+          if pg_restore --list /tmp/trade-platform-corrupt.dump >/dev/null 2>&1; then
+            echo "corrupt backup was unexpectedly accepted"
+            exit 1
+          fi
+          psql postgresql://postgres:postgres@127.0.0.1:5432/postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE trade_platform_restore"
+          pg_restore --no-owner --no-privileges --dbname="$RESTORED_POSTGRES_DSN" /tmp/trade-platform.dump
+          python scripts/verify_postgres_restore.py --source-dsn "$POSTGRES_TEST_DSN" --restored-dsn "$RESTORED_POSTGRES_DSN"
+      - run: ruff check src/trade_platform/persistence.py src/trade_platform/postgres_schema.py src/trade_platform/postgres_backfill.py src/trade_platform/legacy_migration_fixture.py src/trade_platform/postgres_repositories.py src/trade_platform/postgres_runtime.py src/trade_platform/postgres_recovery.py src/trade_platform/postgres_pretrade.py src/trade_platform/postgres_market_context.py src/trade_platform/postgres_decision_authorities.py scripts/verify_postgres_restore.py tests/test_persistence.py tests/test_postgres_backfill_integration.py tests/test_postgres_integration.py tests/test_postgres_runtime.py migrations/versions/20260815_0004_postgres_pretrade_evidence.py migrations/versions/20260815_0005_postgres_market_context.py migrations/versions/20260815_0006_postgres_decision_authorities.py migrations/versions/20260815_0007_postgres_recovery_gate.py
+      - run: mypy --follow-imports=skip src/trade_platform/persistence.py src/trade_platform/postgres_schema.py src/trade_platform/postgres_backfill.py src/trade_platform/legacy_migration_fixture.py src/trade_platform/postgres_repositories.py src/trade_platform/postgres_runtime.py src/trade_platform/postgres_recovery.py src/trade_platform/postgres_pretrade.py src/trade_platform/postgres_market_context.py src/trade_platform/postgres_decision_authorities.py scripts/verify_postgres_restore.py
+      - run: bandit -q -r src/trade_platform/persistence.py src/trade_platform/postgres_backfill.py src/trade_platform/legacy_migration_fixture.py src/trade_platform/postgres_repositories.py src/trade_platform/postgres_runtime.py src/trade_platform/postgres_recovery.py src/trade_platform/postgres_pretrade.py src/trade_platform/postgres_market_context.py src/trade_platform/postgres_decision_authorities.py scripts/verify_postgres_restore.py
       - name: Audit resolved Python dependencies
         run: |
           python -m pip freeze --exclude-editable > /tmp/resolved-requirements.txt

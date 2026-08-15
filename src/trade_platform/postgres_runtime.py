@@ -29,6 +29,7 @@ from .postgres_market_context import (
 from .postgres_paper_oms import PostgresBrokerEventStore, PostgresPaperOms
 from .postgres_pretrade import PostgresPolicyRegistry, PostgresPreTradeAssessmentStore
 from .postgres_quant_validation import PostgresPromotionLedger, PostgresQuantValidationStore
+from .postgres_recovery import PostgresRecoveryGate
 from .risk import PostgresKillSwitchRegistry, PostgresRiskStore
 
 
@@ -79,6 +80,7 @@ class PostgresPaperCoreAuthorities:
     instruments: PostgresInstrumentStore
     signals: PostgresSignalStore
     models: PostgresModelRegistry
+    recovery: PostgresRecoveryGate
 
     @property
     def submission_ready(self) -> bool:
@@ -170,6 +172,7 @@ def build_postgres_paper_core(
             instruments=PostgresInstrumentStore(database),
             signals=PostgresSignalStore(database),
             models=PostgresModelRegistry(database),
+            recovery=PostgresRecoveryGate(database),
         )
     except Exception:
         database.close()
@@ -216,6 +219,7 @@ def build_postgres_paper_runtime(
             scenarios,
             core.risk,
             core.kill_switches,
+            core.recovery,
         )
         return ConfiguredPostgresPaperRuntime(paper, core)
     except Exception:
