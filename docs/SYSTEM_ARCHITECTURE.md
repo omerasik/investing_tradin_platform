@@ -22,3 +22,9 @@ model approval, quote/execution/return evidence, risk, OMS, broker event/cursor,
 reconciliation, validation and promotion authorities in PostgreSQL with no
 silent SQLite fallback. A durable recovery gate blocks risk increase after a
 restore until reconciliation. This paper cutover is not live readiness.
+
+The P1 data path begins with `PostgresProfessionalInstrumentMaster`, upstream of
+future provider normalization. Provider/broker symbols must resolve through its
+temporal mapping tables before observations become canonical. Calendar logic
+evaluates venue-local weekly windows and append-only exceptions; it fetches no
+schedule/data and has no execution authority.

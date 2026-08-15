@@ -129,3 +129,12 @@ executed evidence; do not infer production readiness from unit tests.
   smoke. Next.js is pinned to 16.3.1 and `nanoid` to 3.3.18; local production
   audit reports no known vulnerabilities.
 - The GitHub repository is PUBLIC. No visibility setting was changed.
+
+## Cycle 10 candidate
+
+Migration 0008 and `PostgresProfessionalInstrumentMaster` add PostgreSQL
+professional instrument/calendar authority. Temporal symbol and external-ID
+mappings are point-in-time and overlap-protected; lifecycle events make
+delisting effective without rewriting history. The provider-neutral MVP covers
+US equity/ETF, EURUSD, GLD-as-ETF-proxy, BTC and ETH, with US/DST/holiday/early-
+close, FX 24x5 and crypto 24x7 calendars. Real PostgreSQL CI is pending.

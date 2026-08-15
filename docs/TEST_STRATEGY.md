@@ -27,5 +27,10 @@ cases as each legacy repository moves to the adapter boundary.
 
 The recovery job creates a custom-format backup, proves a truncated backup is
 rejected, restores into a separately created database, compares revision plus
-16 critical table hashes/counts, reconstructs runtime state and releases a
+the critical table allow-list hashes/counts, reconstructs runtime state and releases a
 durable recovery gate only after reconciliation.
+
+Cycle 10 adds PostgreSQL tests for temporal symbol/provider resolution, overlap
+constraints, delisting, ingestion-time visibility, US early-close/holiday/DST,
+FX weekend boundaries, crypto 24x7 and restart. Fresh-restore comparison now
+includes all seven professional instrument/calendar tables.

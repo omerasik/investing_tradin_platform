@@ -65,3 +65,8 @@ The full requirement-level matrix is in
   to remain at zero errors.
 - Upstream repositories are reference-only pending complete isolated security,
   license and benchmark evidence. No third-party runtime dependency is approved.
+- Cycle 10's universe/calendars are deterministic provider-neutral convention
+  fixtures, not an authorized exchange/calendar feed. Coverage is limited to
+  ARCX US sessions, one FX convention and UTC crypto; BIST, broader exchanges,
+  futures/options/fixed income and Europe/Asia remain inactive. GLD is an ETF
+  proxy, not spot gold or a future.

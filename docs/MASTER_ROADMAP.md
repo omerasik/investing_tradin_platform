@@ -1412,3 +1412,31 @@ Decision: all fifteen invariants have executed evidence. **P0 is VERIFIED** for
 the safety-critical paper platform. This is not approval for live trading or a
 claim of production identity/security/provider readiness. Cycle 10 is now the
 authorized P1 instrument/calendar foundation.
+
+## Cycle 193 candidate — execution-program Cycle 10
+
+- Objective: establish the first genuine P1 PostgreSQL instrument and calendar
+  authority before broad provider integration.
+- Schema: migration 0008 adds immutable professional instrument definitions,
+  temporal symbol/provider/broker/standard mappings, append-only lifecycle
+  events, versioned calendars, weekly sessions and holiday/early-close evidence.
+  GiST exclusion constraints reject overlapping symbol, identifier and calendar
+  validity ranges at the database boundary.
+- Model: records include asset/instrument type, exchange/venue/MIC, current and
+  historical symbols, lifecycle/listing, legally optional ISIN/CUSIP, currency/
+  unit/precision/timezone/session fields, corporate-action link and optional
+  future contract/notice/last-trade/continuous/roll metadata.
+- Initial provider-neutral universe: AAPL, SPY, EURUSD spot FX, BTCUSD/ETHUSD
+  spot crypto and GLD. GLD is explicitly an `ETF_PROXY`; it is not XAUUSD spot
+  or GC futures.
+- Calendar semantics: ARCX uses America/New_York DST and append-only holidays/
+  early closes; FX uses Sunday 17:00 through Friday 17:00 New York 24x5 windows
+  and rollover metadata; crypto is UTC 24x7. Historical resolution requires
+  validity and ingestion availability as-of the query.
+- Test candidate: PostgreSQL coverage includes symbol change, delisting, early
+  close, holiday, DST, FX weekend, crypto 24x7, duplicate-provider/ambiguous-
+  symbol rejection, delayed mapping visibility and restart. Restore hashing now
+  covers all seven new tables (**23 critical tables total**).
+- Boundary: these versioned convention fixtures are not a licensed feed or a
+  complete exchange schedule. No credential, broker, order or live capability
+  was added. Status: PENDING real PostgreSQL CI through migration 0008.

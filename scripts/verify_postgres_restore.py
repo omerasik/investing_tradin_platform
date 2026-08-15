@@ -30,6 +30,13 @@ CRITICAL_TABLES = (
     "validation_package_artifacts",
     "strategy_promotion_decisions",
     "strategy_activation_events",
+    "professional_instruments",
+    "professional_symbol_mappings",
+    "professional_identifier_mappings",
+    "professional_instrument_lifecycle_events",
+    "professional_calendar_definitions",
+    "professional_calendar_weekly_sessions",
+    "professional_calendar_exceptions",
 )
 
 
