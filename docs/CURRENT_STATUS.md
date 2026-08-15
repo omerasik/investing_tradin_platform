@@ -156,11 +156,13 @@ The implementation uses synthetic fixtures; selecting a provider and accepting
 its legal/storage terms is `EXTERNAL_BLOCKED`, so Cycle 11 is not yet a verified
 authorized-real-data slice.
 
-## Cycle 12 candidate
+## Cycle 12 verified
 
 Migration 0010 and `data_health.py` persist policy-versioned assessments and
 all eleven required finding types with seven action levels. Applicable global,
 asset-class, strategy and instrument scopes resolve point-in-time. Blocking
 health prevents a PostgreSQL signal from becoming `VALIDATED` through both the
 repository and a database trigger; a later clean assessment reopens only the
-same scope. Real PostgreSQL CI is pending.
+same scope. GitHub Actions verify run `31889499296` passed on commit `4ab25dc`:
+migration 0010, all 291 tests without skips, a fresh 30-table restore and every
+quality/security/frontend gate passed.
