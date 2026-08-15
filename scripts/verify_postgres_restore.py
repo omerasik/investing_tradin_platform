@@ -42,6 +42,7 @@ CRITICAL_TABLES = (
     "historical_normalized_observations",
     "historical_dataset_versions",
     "historical_dataset_members",
+    "historical_ingestion_checkpoints",
     "data_health_assessments",
     "data_health_findings",
     "pit_fundamental_sources",
