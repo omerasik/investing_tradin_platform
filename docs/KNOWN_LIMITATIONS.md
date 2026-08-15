@@ -3,6 +3,11 @@
 The full requirement-level matrix is in
 [`MASTER_ROADMAP.md`](MASTER_ROADMAP.md). These are the material current limits.
 
+- A 2026-08-16 local regression run completed 297 Python tests but skipped 23
+  PostgreSQL-dependent tests because no disposable PostgreSQL DSN is configured.
+  The current full no-skip evidence remains the Cycle 15 CI run, not this local
+  fixture-only execution.
+
 - This is a local, paper-only system. Live trading is intentionally unavailable.
 - SQLite stores provide durable local evidence but are not the normalized
   PostgreSQL/analytics/object-storage/queue deployment architecture required by

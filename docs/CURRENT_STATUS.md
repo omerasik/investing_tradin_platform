@@ -1,6 +1,6 @@
 # Current Status
 
-Last verified: 2026-08-15. The requirement-level source of truth is
+Last synchronized: 2026-08-16. The requirement-level source of truth is
 [`MASTER_ROADMAP.md`](MASTER_ROADMAP.md); this document is a concise operational
 snapshot, not a second roadmap.
 
@@ -38,7 +38,16 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
-- The latest implementation baseline passed 274 Python tests without skips in
+- A fresh local audit on 2026-08-16 completed **297 Python tests**. It skipped
+  **23 PostgreSQL-dependent tests** because no disposable PostgreSQL DSN is
+  configured on this workstation; this is not substituted for CI evidence.
+- The latest no-skip PostgreSQL CI evidence is Cycle 15: GitHub Actions run
+  `31890332414` on `b67a35f` applied migrations through `0012`, ran all 297
+  Python tests without skips, restored and reconciled 35 critical tables, and
+  passed the configured quality, security, dependency, frontend and dashboard
+  gates. Its macro/fundamental/historical fixtures remain provider-neutral.
+
+- A historic implementation baseline passed 274 Python tests without skips in
   GitHub Actions
   [run 31886409990](https://github.com/omerasik/investing_tradin_platform/actions/runs/31886409990)
   at commit 38d8143, including the complete mapped SQLite-to-PostgreSQL APPLY,
@@ -65,9 +74,12 @@ snapshot, not a second roadmap.
 
 ## Immediate P0 work
 
-1. P0 is VERIFIED by the combined fifteen-invariant exit audit and clean CI run
-   31887843535.
-2. Build Cycle 10's PostgreSQL professional instrument/calendar authority.
+1. P0 remains VERIFIED by the combined fifteen-invariant exit audit and clean
+   CI run 31887843535; Cycles 10–15 subsequently verified provider-neutral
+   PostgreSQL instrument, historical-data, Data Health, fundamental and macro
+   authorities.
+2. Keep authorized real-data activation EXTERNAL_BLOCKED until the operator
+   approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
 
 ## PostgreSQL persistence progress
