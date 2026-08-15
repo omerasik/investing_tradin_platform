@@ -274,8 +274,8 @@ class PostgresIntegrationTests(unittest.TestCase):
         instruments = PostgresInstrumentStore(database)
         instrument = Instrument(
             instrument_id,
-            runtime_venue,
             "RUNTIME",
+            runtime_venue,
             AssetClass.ETF,
             "USD",
             Decimal("0.01"),
