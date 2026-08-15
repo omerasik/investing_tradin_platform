@@ -1,29 +1,42 @@
 """Non-executing coordinator for checked signal, risk context and portfolio evidence."""
 
-import json
-import sqlite3
 import hashlib
 import hmac
+import json
+import sqlite3
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from .broker_adapter import BrokerAccountSnapshot
-from .domain import MarketSnapshot, OrderIntent, PortfolioState, RiskDecision, RiskDecisionType, utc_now
+from .domain import (
+    MarketSnapshot,
+    OrderIntent,
+    PortfolioState,
+    RiskDecision,
+    RiskDecisionType,
+    utc_now,
+)
 from .instruments import SQLiteInstrumentStore
 from .model_registry import SQLiteModelRegistry
-from .portfolio_risk import PortfolioExposure, PortfolioRiskDecision, StressResult, StressScenario, evaluate_portfolio
+from .portfolio_risk import (
+    PortfolioExposure,
+    PortfolioRiskDecision,
+    StressResult,
+    StressScenario,
+    evaluate_portfolio,
+)
 from .pretrade_context import build_pre_trade_execution_context
 from .risk import RiskEngine
 from .signal_engine import SignalEngineError, SQLiteSignalStore
 
 if TYPE_CHECKING:
     from .execution_evidence import SQLiteExecutionEvidenceStore
-    from .portfolio_evidence import SQLiteReconciledAccountStore
     from .policy_registry import SQLitePolicyRegistry
+    from .portfolio_evidence import SQLiteReconciledAccountStore
     from .quotes import SQLiteQuoteStore
     from .return_history import SQLitePortfolioReturnStore
 
@@ -264,6 +277,7 @@ def assess_pretrade(
     risk_policy_version: str,
     portfolio_policy_version: str,
     policy_registry: "SQLitePolicyRegistry",
+    kill_switch_registry: Any | None = None,
 ) -> PreTradeAssessment:
     """Assess all local evidence without constructing an order or calling a broker adapter."""
     if assessment_store is not None:
@@ -289,7 +303,10 @@ def assess_pretrade(
 
     try:
         risk_document = policy_registry.get("risk", risk_policy_version)
-        risk_engine = RiskEngine(policy_registry.resolve_risk_policy(risk_policy_version))
+        risk_engine = RiskEngine(
+            policy_registry.resolve_risk_policy(risk_policy_version),
+            kill_switches=kill_switch_registry,
+        )
         risk_policy_digest = risk_document.digest
     except ValueError as error:
         return policy_reject(f"risk_policy_evidence_unavailable:{error}")
@@ -364,6 +381,7 @@ def assess_pretrade(
             from .return_history import ReturnHistoryError
 
             try:
+                assert return_history_store is not None
                 return_history = return_history_store.evidence_for_policy(
                     intent.account_id, observed_at,
                     minimum_observations=portfolio_policy.minimum_historical_observations,

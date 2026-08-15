@@ -67,6 +67,7 @@ class PaperRuntime:
     policy_selection: PaperPolicySelection
     stress_scenarios: tuple[StressScenario, ...]
     durable_risk_store: Any | None = None
+    durable_kill_switches: Any | None = None
 
     def close(self) -> None:
         self.assessments.close()
@@ -141,6 +142,7 @@ class PaperRuntime:
             risk_policy_version=self.policy_selection.risk_policy_version,
             portfolio_policy_version=self.policy_selection.portfolio_policy_version,
             policy_registry=self.policies,
+            kill_switch_registry=self.durable_kill_switches,
         )
         if self.durable_risk_store is not None:
             risk_policy = self.policies.resolve_risk_policy(

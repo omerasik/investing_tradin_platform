@@ -215,6 +215,7 @@ def build_postgres_paper_runtime(
             policy_selection,
             scenarios,
             core.risk,
+            core.kill_switches,
         )
         return ConfiguredPostgresPaperRuntime(paper, core)
     except Exception:

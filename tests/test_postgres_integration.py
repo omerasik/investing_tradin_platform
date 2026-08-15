@@ -530,6 +530,18 @@ class PostgresIntegrationTests(unittest.TestCase):
                 self.assertEqual(cursor.fetchone()[0], 1)
                 cursor.execute("SELECT count(*) FROM paper_order_intents WHERE intent_id=%s", (intent.intent_id,))
                 self.assertEqual(cursor.fetchone()[0], 1)
+            runtime.core.kill_switches.activate("GLOBAL", actor="integration-risk")
+            blocked_intent = replace(intent, intent_id=uuid4())
+            blocked = runtime.assess_and_submit(blocked_intent, observed_at=self.now)
+            self.assertFalse(blocked.assessment.approved)
+            self.assertIn("kill_switch_active", blocked.assessment.risk_decision.reasons)
+            self.assertIsNone(blocked.paper_order)
+            with runtime.core.database.transaction() as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT count(*) FROM paper_order_intents WHERE intent_id=%s",
+                    (blocked_intent.intent_id,),
+                )
+                self.assertEqual(cursor.fetchone()[0], 0)
             runtime.close()
 
     def test_atomic_oms_fill_and_risk_idempotency(self) -> None:
