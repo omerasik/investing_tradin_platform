@@ -107,8 +107,9 @@ snapshot, not a second roadmap.
   remains `submission_ready = False` rather than falling back.
 - A separate configured PostgreSQL runtime builder now requires reviewed policy,
   stress and model evidence and persists the daily risk reservation/decision
-  before appending an approvable keyed assessment or touching OMS. Its full
-  integration fixture is pending CI and is not yet acceptance evidence.
+  before appending an approvable keyed assessment or touching OMS. GitHub
+  Actions run 31861000439 verifies the configured approval path and proves an
+  active PostgreSQL global kill switch rejects before OMS.
 
 All completion/limitation claims must be updated in `MASTER_ROADMAP.md` with
 executed evidence; do not infer production readiness from unit tests.
