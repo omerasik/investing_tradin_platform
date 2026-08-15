@@ -1,22 +1,35 @@
+import unittest
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import unittest
+from uuid import NAMESPACE_URL, uuid5
 
+from tests.test_strategy_validation import card
+from trade_platform.cross_engine import CrossEngineReport
 from trade_platform.quant_validation import (
-    ParameterResult, QuantValidationError, SQLiteValidationEvidenceStore, build_validation_package,
-    evaluate_bootstrap, evaluate_capacity, evaluate_latency_sensitivity, evaluate_monte_carlo_trade_sequence,
-    evaluate_multiple_testing, evaluate_parameter_stability, evaluate_slippage_sensitivity, evaluate_stress,
+    ParameterResult,
+    QuantValidationError,
+    SQLiteValidationEvidenceStore,
+    build_validation_package,
+    evaluate_bootstrap,
+    evaluate_capacity,
+    evaluate_latency_sensitivity,
+    evaluate_monte_carlo_trade_sequence,
+    evaluate_multiple_testing,
+    evaluate_parameter_stability,
+    evaluate_slippage_sensitivity,
+    evaluate_stress,
     record_external_evidence,
 )
-from trade_platform.research import CostModel
-from trade_platform.strategy_promotion import PromotionPolicy, PromotionStatus, evaluate_promotion_package
+from trade_platform.research import CostModel, MovingAverageCrossStrategy
 from trade_platform.research_validation import run_purged_walk_forward
-from trade_platform.research import MovingAverageCrossStrategy
-from trade_platform.cross_engine import CrossEngineReport
+from trade_platform.strategy_promotion import (
+    PromotionPolicy,
+    PromotionStatus,
+    evaluate_promotion_package,
+)
 from trade_platform.strategy_validation import purged_walk_forward_splits
-from tests.test_strategy_validation import card
 
 
 class QuantValidationTests(unittest.TestCase):
@@ -94,8 +107,19 @@ class QuantValidationTests(unittest.TestCase):
             evidence = {name: store.append(item) for name, item in external.items()}
             for name, item in (("capacity", capacity), ("slippage", slippage), ("latency", latency), ("bootstrap", bootstrap), ("monte_carlo", monte), ("stress", stress), ("parameter_stability", stability), ("multiple_testing", multiple)):
                 evidence[name] = store.append(item)
-            package = build_validation_package(strategy_id=run_card.strategy_id, strategy_version=run_card.strategy_version, dataset_version=dataset, feature_versions=run_card.feature_versions, cost_model_version=run_card.cost_model_version, evidence_ids=evidence)
+            evidence_hashes = {
+                name: str(store.get(artifact_id)["identity"]["content_hash"])
+                for name, artifact_id in evidence.items()
+            }
+            strategy_version_id = uuid5(NAMESPACE_URL, f"strategy-version:{run_card.strategy_version}")
+            dataset_id = uuid5(NAMESPACE_URL, f"dataset:{dataset}")
+            dataset_version_id = uuid5(NAMESPACE_URL, f"dataset-version:{dataset}")
+            package = build_validation_package(strategy_id=run_card.strategy_id, strategy_version_id=strategy_version_id,
+                strategy_version=run_card.strategy_version, dataset_id=dataset_id, dataset_version_id=dataset_version_id,
+                dataset_version=dataset, feature_versions=run_card.feature_versions, cost_model_version=run_card.cost_model_version,
+                evidence_ids=evidence, evidence_hashes=evidence_hashes)
             package_id = store.append(package)
+            self.assertEqual(store.append(package), package_id)
             splits = purged_walk_forward_splits(len(self.closes), train_size=10, validation_size=5, test_size=5, step=5, purge=1, embargo=1)
             held_out = tuple(run_purged_walk_forward(list(self.closes), MovingAverageCrossStrategy("ma", 2, 4).signals, splits, CostModel()))
             decision = evaluate_promotion_package(run_card=run_card, package_id=package_id, evidence_store=store, walk_forward_results=held_out, cross_engine_report=CrossEngineReport(True, (), Decimal("1"), Decimal("1")), probabilistic_sharpe=Decimal(".99"), policy=PromotionPolicy(minimum_held_out_periods=20))
@@ -109,7 +133,14 @@ class QuantValidationTests(unittest.TestCase):
                 ("weak_stress", record_external_evidence(evidence_type="stress", strategy_version=run_card.strategy_version, dataset_version=dataset, passed=False), "stress_evidence_weak"),
             ):
                 changed = dict(evidence); changed["golden_reconciliation" if "golden" in label or label.startswith("wrong") else "stress"] = store.append(replacement)
-                changed_package = build_validation_package(strategy_id=run_card.strategy_id, strategy_version=run_card.strategy_version, dataset_version=dataset, feature_versions=run_card.feature_versions, cost_model_version=run_card.cost_model_version, evidence_ids=changed, limitations=(label,))
+                changed_hashes = {
+                    name: str(store.get(artifact_id)["identity"]["content_hash"])
+                    for name, artifact_id in changed.items()
+                }
+                changed_package = build_validation_package(strategy_id=run_card.strategy_id, strategy_version_id=strategy_version_id,
+                    strategy_version=run_card.strategy_version, dataset_id=dataset_id, dataset_version_id=dataset_version_id,
+                    dataset_version=dataset, feature_versions=run_card.feature_versions, cost_model_version=run_card.cost_model_version,
+                    evidence_ids=changed, evidence_hashes=changed_hashes, limitations=(label,))
                 blocked = evaluate_promotion_package(run_card=run_card, package_id=store.append(changed_package), evidence_store=store, walk_forward_results=held_out, cross_engine_report=CrossEngineReport(True, (), Decimal("1"), Decimal("1")), probabilistic_sharpe=Decimal(".99"), policy=PromotionPolicy(minimum_held_out_periods=20))
                 self.assertEqual(blocked.status, PromotionStatus.BLOCKED)
                 self.assertIn(expected_reason, blocked.reasons)
@@ -120,7 +151,10 @@ class QuantValidationTests(unittest.TestCase):
         # A package cannot be made without all named artefacts, which prevents
         # manually invented IDs from entering the promotion gate.
         with self.assertRaisesRegex(QuantValidationError, "complete_evidence"):
-            build_validation_package(strategy_id=card().strategy_id, strategy_version="trend-v1", dataset_version="daily-v1", feature_versions=("f-v1",), cost_model_version="cost-v1", evidence_ids={})
+            build_validation_package(strategy_id=card().strategy_id, strategy_version_id=uuid5(NAMESPACE_URL, "strategy-version:trend-v1"),
+                strategy_version="trend-v1", dataset_id=uuid5(NAMESPACE_URL, "dataset:daily"),
+                dataset_version_id=uuid5(NAMESPACE_URL, "dataset-version:daily-v1"), dataset_version="daily-v1",
+                feature_versions=("f-v1",), cost_model_version="cost-v1", evidence_ids={}, evidence_hashes={})
 
 
 if __name__ == "__main__":

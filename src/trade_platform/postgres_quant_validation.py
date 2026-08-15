@@ -9,7 +9,13 @@ from typing import Any
 from uuid import UUID
 
 from .persistence import PostgresDatabase
-from .quant_validation import QuantValidationError, StrategyValidationPackage, _wire
+from .quant_validation import (
+    ArtifactIdentity,
+    QuantValidationError,
+    StrategyValidationPackage,
+    _wire,
+    verify_validation_package,
+)
 from .strategy_promotion import PromotionDecision, PromotionStatus, StrategyActivation
 
 
@@ -75,20 +81,48 @@ class PostgresQuantValidationStore:
 
     def _append_package(self, package: StrategyValidationPackage) -> UUID:
         strategy_id, dataset_id = self._identity(package.strategy_version, package.dataset_version)
-        payload = _wire(package)
-        candidate = dict(payload)
-        candidate.pop("identity", None)
+        verify_validation_package(package)
         if (
-            package.identity.content_hash
-            != hashlib.sha256(
-                json.dumps(candidate, sort_keys=True, separators=(",", ":")).encode()
-            ).hexdigest()
+            strategy_id != package.strategy_version_id
+            or dataset_id != package.dataset_version_id
         ):
-            raise QuantValidationError("validation_package_content_hash_mismatch")
+            raise QuantValidationError("validation_package_version_identity_mapping_mismatch")
         try:
             with self._database.transaction() as connection, connection.cursor() as cursor:
                 cursor.execute(
-                    "INSERT INTO validation_packages (package_id, strategy_version_id, dataset_version_id, cost_model_version, content_hash, status, created_at, limitations, feature_versions) VALUES (%s,%s,%s,%s,%s,'REVIEW_REQUIRED_OR_BLOCKED',%s,%s::jsonb,%s::jsonb)",
+                    "SELECT strategy_id FROM strategy_versions WHERE strategy_version_id = %s",
+                    (strategy_id,),
+                )
+                strategy = cursor.fetchone()
+                cursor.execute(
+                    "SELECT dataset_id FROM dataset_versions WHERE dataset_version_id = %s",
+                    (dataset_id,),
+                )
+                dataset = cursor.fetchone()
+                if (
+                    strategy is None
+                    or UUID(str(strategy[0])) != package.strategy_id
+                    or dataset is None
+                    or UUID(str(dataset[0])) != package.dataset_id
+                ):
+                    raise QuantValidationError(
+                        "validation_package_definition_identity_mapping_mismatch"
+                    )
+                for evidence_type, artifact_id in package.evidence_ids.items():
+                    cursor.execute(
+                        "SELECT content_hash FROM quant_validation_artifacts WHERE quant_artifact_id = %s",
+                        (artifact_id,),
+                    )
+                    evidence = cursor.fetchone()
+                    if (
+                        evidence is None
+                        or str(evidence[0]) != package.evidence_hashes[evidence_type]
+                    ):
+                        raise QuantValidationError(
+                            "validation_package_evidence_hash_mismatch"
+                        )
+                cursor.execute(
+                    "INSERT INTO validation_packages (package_id, strategy_version_id, dataset_version_id, cost_model_version, content_hash, status, created_at, limitations, feature_versions, manifest_version, canonical_manifest, integrity_status) VALUES (%s,%s,%s,%s,%s,'REVIEW_REQUIRED_OR_BLOCKED',%s,%s::jsonb,%s::jsonb,%s,%s,'VERIFIED') ON CONFLICT (package_id) DO NOTHING RETURNING package_id",
                     (
                         package.identity.artifact_id,
                         strategy_id,
@@ -98,14 +132,46 @@ class PostgresQuantValidationStore:
                         package.identity.evaluated_at,
                         json.dumps(package.limitations),
                         json.dumps(package.feature_versions),
+                        package.manifest_version,
+                        package.canonical_manifest,
                     ),
                 )
-                for evidence_type, artifact_id in package.evidence_ids.items():
+                inserted = cursor.fetchone()
+                if inserted is not None:
+                    for evidence_type, artifact_id in package.evidence_ids.items():
+                        cursor.execute(
+                            "INSERT INTO validation_package_artifacts (package_id, quant_artifact_id, evidence_type) VALUES (%s,%s,%s)",
+                            (package.identity.artifact_id, artifact_id, evidence_type),
+                        )
+                else:
                     cursor.execute(
-                        "INSERT INTO validation_package_artifacts (package_id, quant_artifact_id, evidence_type) VALUES (%s,%s,%s)",
-                        (package.identity.artifact_id, artifact_id, evidence_type),
+                        "SELECT strategy_version_id, dataset_version_id, content_hash, manifest_version, canonical_manifest, integrity_status FROM validation_packages WHERE package_id = %s",
+                        (package.identity.artifact_id,),
                     )
+                    existing = cursor.fetchone()
+                    cursor.execute(
+                        "SELECT evidence_type, quant_artifact_id FROM validation_package_artifacts WHERE package_id = %s",
+                        (package.identity.artifact_id,),
+                    )
+                    memberships = {
+                        str(row[0]): UUID(str(row[1])) for row in cursor.fetchall()
+                    }
+                    if (
+                        existing is None
+                        or UUID(str(existing[0])) != strategy_id
+                        or UUID(str(existing[1])) != dataset_id
+                        or str(existing[2]) != package.identity.content_hash
+                        or str(existing[3]) != package.manifest_version
+                        or str(existing[4]) != package.canonical_manifest
+                        or str(existing[5]) != "VERIFIED"
+                        or memberships != package.evidence_ids
+                    ):
+                        raise QuantValidationError(
+                            "validation_package_idempotency_conflict"
+                        )
             return package.identity.artifact_id
+        except QuantValidationError:
+            raise
         except Exception as error:
             raise QuantValidationError("postgres_validation_package_persistence_failed") from error
 
@@ -130,35 +196,91 @@ class PostgresQuantValidationStore:
                     payload["artifact_type"] = str(row[0])
                     return payload
                 cursor.execute(
-                    "SELECT p.package_id, s.strategy_id, s.version, d.version, p.feature_versions, p.cost_model_version, p.content_hash, p.created_at, p.limitations, p.status FROM validation_packages p JOIN strategy_versions s ON s.strategy_version_id = p.strategy_version_id JOIN dataset_versions d ON d.dataset_version_id = p.dataset_version_id WHERE p.package_id = %s",
+                    "SELECT p.package_id, p.strategy_version_id, p.dataset_version_id, p.cost_model_version, p.content_hash, p.created_at, p.limitations, p.status, p.feature_versions, p.manifest_version, p.canonical_manifest, p.integrity_status, s.strategy_id, d.dataset_id FROM validation_packages p JOIN strategy_versions s ON s.strategy_version_id = p.strategy_version_id JOIN dataset_versions d ON d.dataset_version_id = p.dataset_version_id WHERE p.package_id = %s",
                     (artifact_id,),
                 )
                 package = cursor.fetchone()
                 if package is None:
                     raise KeyError(str(artifact_id))
+                if str(package[11]) != "VERIFIED":
+                    raise QuantValidationError("validation_package_legacy_unverifiable")
+                try:
+                    manifest = json.loads(str(package[10]))
+                    identity = ArtifactIdentity(
+                        UUID(str(manifest["package_id"])),
+                        str(manifest["manifest_version"]),
+                        str(package[4]),
+                        datetime.fromisoformat(str(manifest["evaluated_at"])),
+                    )
+                    evidence_manifest = dict(manifest["evidence"])
+                    recovered = StrategyValidationPackage(
+                        identity,
+                        str(package[9]),
+                        str(package[10]),
+                        UUID(str(manifest["strategy"]["strategy_id"])),
+                        UUID(str(manifest["strategy"]["strategy_version_id"])),
+                        str(manifest["strategy"]["version"]),
+                        UUID(str(manifest["dataset"]["dataset_id"])),
+                        UUID(str(manifest["dataset"]["dataset_version_id"])),
+                        str(manifest["dataset"]["version"]),
+                        tuple(manifest["feature_versions"]),
+                        str(manifest["cost_model_version"]),
+                        {
+                            name: UUID(str(item["artifact_id"]))
+                            for name, item in evidence_manifest.items()
+                        },
+                        {
+                            name: str(item["content_hash"])
+                            for name, item in evidence_manifest.items()
+                        },
+                        tuple(manifest["limitations"]),
+                        str(manifest["promotion_eligibility_state"]),
+                        dict(manifest["validation_metadata"]),
+                    )
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+                    raise QuantValidationError(
+                        "invalid_validation_package_manifest"
+                    ) from error
+                verify_validation_package(recovered)
+                if (
+                    recovered.identity.artifact_id != UUID(str(package[0]))
+                    or recovered.strategy_version_id != UUID(str(package[1]))
+                    or recovered.dataset_version_id != UUID(str(package[2]))
+                    or recovered.cost_model_version != str(package[3])
+                    or recovered.identity.evaluated_at != package[5]
+                    or list(recovered.limitations) != list(package[6])
+                    or recovered.promotion_status != str(package[7])
+                    or list(recovered.feature_versions) != list(package[8])
+                    or recovered.strategy_id != UUID(str(package[12]))
+                    or recovered.dataset_id != UUID(str(package[13]))
+                ):
+                    raise QuantValidationError(
+                        "validation_package_relational_projection_mismatch"
+                    )
                 cursor.execute(
-                    "SELECT evidence_type, quant_artifact_id FROM validation_package_artifacts WHERE package_id = %s",
+                    "SELECT p.evidence_type, p.quant_artifact_id, a.content_hash FROM validation_package_artifacts p JOIN quant_validation_artifacts a ON a.quant_artifact_id = p.quant_artifact_id WHERE p.package_id = %s",
                     (artifact_id,),
                 )
-                result = {
-                    "artifact_type": "StrategyValidationPackage",
-                    "identity": {
-                        "artifact_id": str(package[0]),
-                        "artifact_version": "validation-package-v1",
-                        "content_hash": str(package[6]),
-                        "evaluated_at": package[7].isoformat(),
-                    },
-                    "strategy_id": str(package[1]),
-                    "strategy_version": str(package[2]),
-                    "dataset_version": str(package[3]),
-                    "feature_versions": tuple(package[4]),
-                    "cost_model_version": str(package[5]),
-                    "limitations": list(package[8]),
-                    "promotion_status": str(package[9]),
-                    "evidence_ids": {str(row[0]): str(row[1]) for row in cursor.fetchall()},
+                memberships = {
+                    str(row[0]): (UUID(str(row[1])), str(row[2]))
+                    for row in cursor.fetchall()
                 }
+                if memberships != {
+                    name: (
+                        recovered.evidence_ids[name],
+                        recovered.evidence_hashes[name],
+                    )
+                    for name in recovered.evidence_ids
+                }:
+                    raise QuantValidationError(
+                        "validation_package_evidence_membership_mismatch"
+                    )
+                result = _wire(recovered)
+                result["artifact_type"] = "StrategyValidationPackage"
                 return result
         except KeyError:
+            raise
+        except QuantValidationError:
             raise
         except Exception as error:
             raise QuantValidationError("postgres_validation_read_failed") from error

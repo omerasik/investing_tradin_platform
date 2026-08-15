@@ -70,7 +70,8 @@ INITIAL_SCHEMA_SQL: tuple[str, ...] = (
 IMMUTABLE_TABLES: tuple[str, ...] = (
     "market_data_provenance", "corporate_actions", "fundamental_facts", "macro_observations", "news_events",
     "feature_definitions", "research_experiments", "walk_forward_evidence", "golden_execution_artifacts",
-    "quant_validation_artifacts", "validation_packages", "strategy_promotion_decisions", "risk_decisions",
+    "quant_validation_artifacts", "validation_packages", "validation_package_artifacts",
+    "strategy_promotion_decisions", "risk_decisions",
     "oms_events", "fills", "reconciliations", "audit_events",
 )
 

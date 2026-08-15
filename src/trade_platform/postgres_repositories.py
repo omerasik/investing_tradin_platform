@@ -106,12 +106,18 @@ class PostgresCriticalRepository:
     def create_validation_package(self, *, package_id: UUID, strategy_version_id: UUID, dataset_version_id: UUID,
                                   cost_model_version: str, content_hash: str, status: str, created_at: datetime,
                                   limitations: tuple[str, ...], artifacts: dict[str, UUID]) -> None:
-        if status not in {"BLOCKED", "REVIEW_REQUIRED_OR_BLOCKED"} or len(content_hash) != 64 or not artifacts or created_at.tzinfo is None:
-            raise PostgresRepositoryError("invalid_validation_package")
-        try:
-            with self._database.transaction() as connection, connection.cursor() as cursor:
-                cursor.execute("INSERT INTO validation_packages VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)", (package_id, strategy_version_id, dataset_version_id, cost_model_version, content_hash, status, created_at, json.dumps(limitations)))
-                for evidence_type, artifact_id in artifacts.items():
-                    cursor.execute("INSERT INTO validation_package_artifacts VALUES (%s, %s, %s)", (package_id, artifact_id, evidence_type))
-        except Exception as error:
-            raise PostgresRepositoryError("validation_package_transaction_failed") from error
+        del (
+            package_id,
+            strategy_version_id,
+            dataset_version_id,
+            cost_model_version,
+            content_hash,
+            status,
+            created_at,
+            limitations,
+            artifacts,
+        )
+        # This former low-level entry point cannot prove canonical manifest or
+        # evidence hashes. Keep it fail-closed so callers must use the single
+        # integrity-verifying PostgresQuantValidationStore path.
+        raise PostgresRepositoryError("canonical_validation_package_store_required")

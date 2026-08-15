@@ -11,7 +11,7 @@ import hashlib
 import json
 import random
 import sqlite3
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 from math import ceil, sqrt
@@ -20,9 +20,14 @@ from statistics import NormalDist, mean, pstdev
 from typing import Any, Iterable
 from uuid import UUID, uuid5
 
-from .domain import utc_now
-from .domain import OrderSide
-from .event_backtest import EventDrivenBacktester, ExecutionAssumptions, MarketEvent, SimulatedOrderType, create_order
+from .domain import OrderSide, utc_now
+from .event_backtest import (
+    EventDrivenBacktester,
+    ExecutionAssumptions,
+    MarketEvent,
+    SimulatedOrderType,
+    create_order,
+)
 from .research import BacktestResult, CostModel, run_vectorized_backtest
 
 
@@ -49,6 +54,22 @@ def _wire(value: Any) -> Any:
     if isinstance(value, (tuple, list)):
         return [_wire(item) for item in value]
     return value
+
+
+def _canonical_json(value: Any) -> str:
+    """Return the versioned manifest's exact UTF-8 serialization.
+
+    Manifest v1 uses JSON with Unicode preserved, lexicographically sorted
+    object keys, no insignificant whitespace and _wire conversions for
+    UUID/datetime/Decimal values. Arrays retain their declared order.
+    """
+
+    return json.dumps(
+        _wire(value),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -520,29 +541,267 @@ def record_external_evidence(*, evidence_type: str, strategy_version: str, datas
 @dataclass(frozen=True, slots=True)
 class StrategyValidationPackage:
     identity: ArtifactIdentity
+    manifest_version: str
+    canonical_manifest: str
     strategy_id: UUID
+    strategy_version_id: UUID
     strategy_version: str
+    dataset_id: UUID
+    dataset_version_id: UUID
     dataset_version: str
     feature_versions: tuple[str, ...]
     cost_model_version: str
     evidence_ids: dict[str, UUID]
+    evidence_hashes: dict[str, str]
     limitations: tuple[str, ...]
     promotion_status: str
+    validation_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 REQUIRED_EVIDENCE = ("data_quality", "oos_walk_forward", "golden_reconciliation", "execution_realism", "capacity", "slippage", "latency", "bootstrap", "monte_carlo", "stress", "parameter_stability", "multiple_testing", "scorecard")
+VALIDATION_PACKAGE_MANIFEST_VERSION = "validation-package-manifest-v1"
 
 
-def build_validation_package(*, strategy_id: UUID, strategy_version: str, dataset_version: str, feature_versions: tuple[str, ...],
-                             cost_model_version: str, evidence_ids: dict[str, UUID], limitations: tuple[str, ...] = (),
-                             artifact_version: str = "validation-package-v1") -> StrategyValidationPackage:
+def _validation_package_manifest(
+    *,
+    package_id: UUID,
+    strategy_id: UUID,
+    strategy_version_id: UUID,
+    strategy_version: str,
+    dataset_id: UUID,
+    dataset_version_id: UUID,
+    dataset_version: str,
+    feature_versions: tuple[str, ...],
+    cost_model_version: str,
+    evidence_ids: dict[str, UUID],
+    evidence_hashes: dict[str, str],
+    limitations: tuple[str, ...],
+    evaluated_at: datetime,
+    promotion_status: str,
+    validation_metadata: dict[str, Any],
+    manifest_version: str,
+) -> dict[str, Any]:
+    return {
+        "manifest_version": manifest_version,
+        "package_id": package_id,
+        "strategy": {
+            "strategy_id": strategy_id,
+            "strategy_version_id": strategy_version_id,
+            "version": strategy_version,
+        },
+        "dataset": {
+            "dataset_id": dataset_id,
+            "dataset_version_id": dataset_version_id,
+            "version": dataset_version,
+        },
+        "feature_versions": feature_versions,
+        "cost_model_version": cost_model_version,
+        "evidence": {
+            evidence_type: {
+                "artifact_id": artifact_id,
+                "content_hash": evidence_hashes[evidence_type],
+            }
+            for evidence_type, artifact_id in evidence_ids.items()
+        },
+        "limitations": limitations,
+        "evaluated_at": evaluated_at,
+        "promotion_eligibility_state": promotion_status,
+        "validation_metadata": validation_metadata,
+    }
+
+
+def _package_semantic_id(
+    *,
+    strategy_id: UUID,
+    strategy_version_id: UUID,
+    strategy_version: str,
+    dataset_id: UUID,
+    dataset_version_id: UUID,
+    dataset_version: str,
+    feature_versions: tuple[str, ...],
+    cost_model_version: str,
+    evidence_ids: dict[str, UUID],
+    evidence_hashes: dict[str, str],
+    limitations: tuple[str, ...],
+    promotion_status: str,
+    validation_metadata: dict[str, Any],
+    manifest_version: str,
+) -> UUID:
+    semantic_payload = {
+        "manifest_version": manifest_version,
+        "strategy_id": strategy_id,
+        "strategy_version_id": strategy_version_id,
+        "strategy_version": strategy_version,
+        "dataset_id": dataset_id,
+        "dataset_version_id": dataset_version_id,
+        "dataset_version": dataset_version,
+        "feature_versions": feature_versions,
+        "cost_model_version": cost_model_version,
+        "evidence_ids": evidence_ids,
+        "evidence_hashes": evidence_hashes,
+        "limitations": limitations,
+        "promotion_status": promotion_status,
+        "validation_metadata": validation_metadata,
+    }
+    semantic_hash = hashlib.sha256(_canonical_json(semantic_payload).encode("utf-8")).hexdigest()
+    return uuid5(_NAMESPACE, f"validation_package_manifest:{semantic_hash}")
+
+
+def verify_validation_package(package: StrategyValidationPackage) -> dict[str, Any]:
+    """Verify exact manifest bytes and their complete semantic projection."""
+
+    if package.manifest_version != VALIDATION_PACKAGE_MANIFEST_VERSION:
+        raise QuantValidationError("unsupported_validation_package_manifest_version")
+    try:
+        parsed = json.loads(package.canonical_manifest)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise QuantValidationError("invalid_validation_package_manifest_json") from error
+    if _canonical_json(parsed) != package.canonical_manifest:
+        raise QuantValidationError("validation_package_manifest_not_canonical")
+    actual_hash = hashlib.sha256(package.canonical_manifest.encode("utf-8")).hexdigest()
+    if package.identity.content_hash != actual_hash:
+        raise QuantValidationError("validation_package_content_hash_mismatch")
+    if package.identity.artifact_id != _package_semantic_id(
+        strategy_id=package.strategy_id,
+        strategy_version_id=package.strategy_version_id,
+        strategy_version=package.strategy_version,
+        dataset_id=package.dataset_id,
+        dataset_version_id=package.dataset_version_id,
+        dataset_version=package.dataset_version,
+        feature_versions=package.feature_versions,
+        cost_model_version=package.cost_model_version,
+        evidence_ids=package.evidence_ids,
+        evidence_hashes=package.evidence_hashes,
+        limitations=package.limitations,
+        promotion_status=package.promotion_status,
+        validation_metadata=package.validation_metadata,
+        manifest_version=package.manifest_version,
+    ):
+        raise QuantValidationError("validation_package_identity_mismatch")
+    expected = _validation_package_manifest(
+        package_id=package.identity.artifact_id,
+        strategy_id=package.strategy_id,
+        strategy_version_id=package.strategy_version_id,
+        strategy_version=package.strategy_version,
+        dataset_id=package.dataset_id,
+        dataset_version_id=package.dataset_version_id,
+        dataset_version=package.dataset_version,
+        feature_versions=package.feature_versions,
+        cost_model_version=package.cost_model_version,
+        evidence_ids=package.evidence_ids,
+        evidence_hashes=package.evidence_hashes,
+        limitations=package.limitations,
+        evaluated_at=package.identity.evaluated_at,
+        promotion_status=package.promotion_status,
+        validation_metadata=package.validation_metadata,
+        manifest_version=package.manifest_version,
+    )
+    if parsed != _wire(expected):
+        raise QuantValidationError("validation_package_manifest_content_mismatch")
+    return parsed
+
+
+def build_validation_package(
+    *,
+    strategy_id: UUID,
+    strategy_version_id: UUID,
+    strategy_version: str,
+    dataset_id: UUID,
+    dataset_version_id: UUID,
+    dataset_version: str,
+    feature_versions: tuple[str, ...],
+    cost_model_version: str,
+    evidence_ids: dict[str, UUID],
+    evidence_hashes: dict[str, str],
+    limitations: tuple[str, ...] = (),
+    validation_metadata: dict[str, Any] | None = None,
+    evaluated_at: datetime | None = None,
+    manifest_version: str = VALIDATION_PACKAGE_MANIFEST_VERSION,
+) -> StrategyValidationPackage:
     missing = set(REQUIRED_EVIDENCE) - set(evidence_ids)
-    if not strategy_version.strip() or not dataset_version.strip() or not feature_versions or not cost_model_version.strip() or missing:
+    hashes_mismatch = set(evidence_hashes) != set(evidence_ids)
+    invalid_hash = any(
+        len(value) != 64 or any(character not in "0123456789abcdef" for character in value)
+        for value in evidence_hashes.values()
+    )
+    if (
+        not strategy_version.strip()
+        or not dataset_version.strip()
+        or not feature_versions
+        or len(set(feature_versions)) != len(feature_versions)
+        or not cost_model_version.strip()
+        or missing
+        or hashes_mismatch
+        or invalid_hash
+        or manifest_version != VALIDATION_PACKAGE_MANIFEST_VERSION
+    ):
         raise QuantValidationError("validation_package_requires_complete_evidence")
-    payload = {"strategy_id": strategy_id, "strategy_version": strategy_version, "dataset_version": dataset_version,
-               "feature_versions": feature_versions, "cost_model_version": cost_model_version, "evidence_ids": evidence_ids,
-               "limitations": limitations, "promotion_status": "REVIEW_REQUIRED_OR_BLOCKED"}
-    return StrategyValidationPackage(_identity("validation_package", artifact_version, payload), **payload)
+    evaluated = evaluated_at or utc_now()
+    if evaluated.tzinfo is None or evaluated.utcoffset() is None:
+        raise QuantValidationError("validation_package_requires_aware_evaluation_time")
+    metadata = {} if validation_metadata is None else dict(validation_metadata)
+    promotion_status = "REVIEW_REQUIRED_OR_BLOCKED"
+    package_id = _package_semantic_id(
+        strategy_id=strategy_id,
+        strategy_version_id=strategy_version_id,
+        strategy_version=strategy_version,
+        dataset_id=dataset_id,
+        dataset_version_id=dataset_version_id,
+        dataset_version=dataset_version,
+        feature_versions=feature_versions,
+        cost_model_version=cost_model_version,
+        evidence_ids=evidence_ids,
+        evidence_hashes=evidence_hashes,
+        limitations=limitations,
+        promotion_status=promotion_status,
+        validation_metadata=metadata,
+        manifest_version=manifest_version,
+    )
+    manifest = _validation_package_manifest(
+        package_id=package_id,
+        strategy_id=strategy_id,
+        strategy_version_id=strategy_version_id,
+        strategy_version=strategy_version,
+        dataset_id=dataset_id,
+        dataset_version_id=dataset_version_id,
+        dataset_version=dataset_version,
+        feature_versions=feature_versions,
+        cost_model_version=cost_model_version,
+        evidence_ids=evidence_ids,
+        evidence_hashes=evidence_hashes,
+        limitations=limitations,
+        evaluated_at=evaluated,
+        promotion_status=promotion_status,
+        validation_metadata=metadata,
+        manifest_version=manifest_version,
+    )
+    canonical_manifest = _canonical_json(manifest)
+    identity = ArtifactIdentity(
+        package_id,
+        manifest_version,
+        hashlib.sha256(canonical_manifest.encode("utf-8")).hexdigest(),
+        evaluated,
+    )
+    package = StrategyValidationPackage(
+        identity,
+        manifest_version,
+        canonical_manifest,
+        strategy_id,
+        strategy_version_id,
+        strategy_version,
+        dataset_id,
+        dataset_version_id,
+        dataset_version,
+        feature_versions,
+        cost_model_version,
+        dict(evidence_ids),
+        dict(evidence_hashes),
+        limitations,
+        promotion_status,
+        metadata,
+    )
+    verify_validation_package(package)
+    return package
 
 
 class SQLiteValidationEvidenceStore:
@@ -557,12 +816,23 @@ class SQLiteValidationEvidenceStore:
     def append(self, artifact: Any) -> UUID:
         identity = artifact.identity
         strategy_version = artifact.strategy_version; dataset_version = artifact.dataset_version
+        if isinstance(artifact, StrategyValidationPackage):
+            verify_validation_package(artifact)
         payload = _wire(artifact)
         try:
             self._connection.execute("INSERT INTO validation_artifacts VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (str(identity.artifact_id), identity.content_hash, type(artifact).__name__, strategy_version, dataset_version,
                  json.dumps(payload, sort_keys=True, separators=(",", ":")), identity.evaluated_at.isoformat()))
         except sqlite3.IntegrityError as error:
+            if isinstance(artifact, StrategyValidationPackage):
+                existing = self._connection.execute(
+                    "SELECT content_hash, artifact_type, payload_json FROM validation_artifacts WHERE artifact_id = ?",
+                    (str(identity.artifact_id),),
+                ).fetchone()
+                expected_payload = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+                if existing == (identity.content_hash, type(artifact).__name__, expected_payload):
+                    return identity.artifact_id
+                raise QuantValidationError("validation_package_idempotency_conflict") from error
             raise QuantValidationError("duplicate_validation_artifact") from error
         self._connection.commit(); return identity.artifact_id
 
@@ -570,6 +840,36 @@ class SQLiteValidationEvidenceStore:
         row = self._connection.execute("SELECT artifact_type, payload_json FROM validation_artifacts WHERE artifact_id = ?", (str(artifact_id),)).fetchone()
         if row is None: raise KeyError(str(artifact_id))
         payload = json.loads(row[1])
+        if row[0] == "StrategyValidationPackage":
+            try:
+                package = StrategyValidationPackage(
+                    ArtifactIdentity(
+                        UUID(payload["identity"]["artifact_id"]),
+                        str(payload["identity"]["artifact_version"]),
+                        str(payload["identity"]["content_hash"]),
+                        datetime.fromisoformat(payload["identity"]["evaluated_at"]),
+                    ),
+                    str(payload["manifest_version"]),
+                    str(payload["canonical_manifest"]),
+                    UUID(payload["strategy_id"]),
+                    UUID(payload["strategy_version_id"]),
+                    str(payload["strategy_version"]),
+                    UUID(payload["dataset_id"]),
+                    UUID(payload["dataset_version_id"]),
+                    str(payload["dataset_version"]),
+                    tuple(payload["feature_versions"]),
+                    str(payload["cost_model_version"]),
+                    {key: UUID(value) for key, value in payload["evidence_ids"].items()},
+                    {key: str(value) for key, value in payload["evidence_hashes"].items()},
+                    tuple(payload["limitations"]),
+                    str(payload["promotion_status"]),
+                    dict(payload["validation_metadata"]),
+                )
+            except (KeyError, TypeError, ValueError) as error:
+                raise QuantValidationError("invalid_validation_package_payload") from error
+            verify_validation_package(package)
+            payload["artifact_type"] = row[0]
+            return payload
         identity = payload.get("identity", {})
         candidate = dict(payload); candidate.pop("identity", None)
         actual_hash = hashlib.sha256(json.dumps(candidate, sort_keys=True, separators=(",", ":")).encode()).hexdigest()

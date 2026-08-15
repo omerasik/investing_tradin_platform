@@ -38,6 +38,7 @@ class PersistenceTests(unittest.TestCase):
         self.assertIn("NUMERIC", schema)
         self.assertIn("REFERENCES", schema)
         self.assertIn("quant_validation_artifacts", IMMUTABLE_TABLES)
+        self.assertIn("validation_package_artifacts", IMMUTABLE_TABLES)
         self.assertTrue(drop_schema_sql())
 
     def test_backfill_dry_run_reports_counts_and_checksums_without_target_writes(self) -> None:

@@ -7,11 +7,11 @@ The full requirement-level matrix is in
 - SQLite stores provide durable local evidence but are not the normalized
   PostgreSQL/analytics/object-storage/queue deployment architecture required by
   the specification.
-- The initial normalized PostgreSQL schema and migration boundary are present,
+- The normalized PostgreSQL schema and migration boundary are present,
   but legacy SQLite repositories have not yet been migrated individually and
   the backfill intentionally stops before writes without an explicit identity
-  mapping. Local PostgreSQL integration execution is externally blocked here
-  because Docker Desktop was unavailable; CI is configured to run it.
+  mapping. A safe disposable local PostgreSQL DSN is not configured; CI is the
+  authoritative PostgreSQL integration environment.
 - Golden artifacts now retain declared spread, fee, latency, participation and
   impact assumptions, partial/unfilled-order observations, and raw versus
   explained divergence. They are deterministic synthetic regressions, not
@@ -23,9 +23,11 @@ The full requirement-level matrix is in
   versioned research evidence. Their costs and shocks are declared model/fixture
   assumptions; no full historical stress archive, real order-book replay or
   calibrated provider-backed capacity model is available.
-- A complete package is required for a review decision, but package generation
-  is currently a research-service API rather than an automated backtest-launch
-  workflow or dashboard view.
+- A complete package is required for a review decision. Canonical manifest v1
+  and immutable membership are implemented and locally tested, but the current
+  migration/restart/tamper path is not VERIFIED until PostgreSQL CI succeeds.
+  Pre-manifest rows are intentionally LEGACY_UNVERIFIABLE. Package generation
+  is not yet an automated backtest-launch workflow or dashboard view.
 - Strategy coverage is four transparent long-only baselines. Cross-sectional,
   factor, macro, relative-value, event, sentiment, crypto-basis and
   market-neutral families remain incomplete.

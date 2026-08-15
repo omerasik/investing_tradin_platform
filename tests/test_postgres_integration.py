@@ -4,6 +4,7 @@ import hashlib
 import os
 import threading
 import unittest
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
@@ -340,6 +341,7 @@ class PostgresIntegrationTests(unittest.TestCase):
         )
         from trade_platform.quant_validation import (
             REQUIRED_EVIDENCE,
+            QuantValidationError,
             build_validation_package,
             record_external_evidence,
         )
@@ -356,6 +358,7 @@ class PostgresIntegrationTests(unittest.TestCase):
             database, strategy_versions=mappings, dataset_versions=datasets
         )
         artifacts = {}
+        artifact_hashes = {}
         for evidence_type in REQUIRED_EVIDENCE:
             artifact = record_external_evidence(
                 evidence_type=evidence_type,
@@ -364,15 +367,70 @@ class PostgresIntegrationTests(unittest.TestCase):
                 passed=True,
             )
             artifacts[evidence_type] = store.append(artifact)
+            artifact_hashes[evidence_type] = artifact.identity.content_hash
         package = build_validation_package(
             strategy_id=self.strategy_id,
+            strategy_version_id=self.strategy_version_id,
             strategy_version="fixture-v1",
+            dataset_id=self.dataset_id,
+            dataset_version_id=self.dataset_version_id,
             dataset_version="fixture-data-v1",
             feature_versions=("features-v1",),
             cost_model_version="cost-v1",
             evidence_ids=artifacts,
+            evidence_hashes=artifact_hashes,
+            evaluated_at=self.now,
+            validation_metadata={"protocol": "integration-v1"},
         )
         package_id = store.append(package)
+        self.assertEqual(store.append(package), package_id)
+        with self.assertRaisesRegex(QuantValidationError, "identity_mismatch"):
+            store.append(replace(package, feature_versions=("tampered-features",)))
+        with self.assertRaisesRegex(QuantValidationError, "identity_mismatch"):
+            store.append(replace(package, dataset_version="tampered-dataset"))
+        with self.assertRaisesRegex(QuantValidationError, "identity_mismatch"):
+            store.append(replace(package, strategy_version="tampered-strategy"))
+        with self.assertRaisesRegex(QuantValidationError, "content_hash_mismatch"):
+            store.append(
+                replace(
+                    package,
+                    identity=replace(package.identity, content_hash="0" * 64),
+                )
+            )
+        changed_membership = dict(package.evidence_ids)
+        changed_membership["capacity"] = uuid4()
+        with self.assertRaisesRegex(QuantValidationError, "identity_mismatch"):
+            store.append(replace(package, evidence_ids=changed_membership))
+        bad_hashes = dict(artifact_hashes)
+        bad_hashes["capacity"] = "0" * 64
+        bad_evidence_package = build_validation_package(
+            strategy_id=self.strategy_id,
+            strategy_version_id=self.strategy_version_id,
+            strategy_version="fixture-v1",
+            dataset_id=self.dataset_id,
+            dataset_version_id=self.dataset_version_id,
+            dataset_version="fixture-data-v1",
+            feature_versions=("features-v1",),
+            cost_model_version="cost-v1",
+            evidence_ids=artifacts,
+            evidence_hashes=bad_hashes,
+            limitations=("bad-evidence-hash",),
+            evaluated_at=self.now,
+        )
+        with self.assertRaisesRegex(QuantValidationError, "evidence_hash_mismatch"):
+            store.append(bad_evidence_package)
+        with self.assertRaises(Exception):
+            with self.connection.transaction(), self.connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE validation_packages SET canonical_manifest = '{}' WHERE package_id = %s",
+                    (package_id,),
+                )
+        with self.assertRaises(Exception):
+            with self.connection.transaction(), self.connection.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM validation_package_artifacts WHERE package_id = %s",
+                    (package_id,),
+                )
         decision = PromotionDecision(
             uuid4(),
             self.strategy_id,
@@ -399,6 +457,11 @@ class PostgresIntegrationTests(unittest.TestCase):
         self.assertEqual(package_record["artifact_type"], "StrategyValidationPackage")
         self.assertEqual(
             package_record["evidence_ids"], {name: str(value) for name, value in artifacts.items()}
+        )
+        self.assertEqual(package_record["evidence_hashes"], artifact_hashes)
+        self.assertEqual(
+            package_record["identity"]["content_hash"],
+            hashlib.sha256(package_record["canonical_manifest"].encode("utf-8")).hexdigest(),
         )
         self.assertTrue(
             PostgresPromotionLedger(reopened, strategy_versions=mappings).strategy_enabled_as_of(
