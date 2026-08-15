@@ -1369,3 +1369,46 @@ exists.
   passed every expanded gate at commit `5eb098c`; its sole Node 20 deprecation
   annotation is removed by moving artifact retention to the current v7 major.
   Final VERIFIED status depends on the clean follow-up run.
+
+## P0 exit audit — VERIFIED
+
+Executed together on 2026-08-15, not inferred from cycle labels:
+
+1. **PostgreSQL authoritative:** configured paper assessment/submission uses the
+   PostgreSQL authority graph (runs 31861000439, 31861146050).
+2. **No critical SQLite fallback:** PostgreSQL selection is rejected by the
+   legacy builder and the composed graph contains no SQLite authority (run
+   31860008593).
+3. **Canonical manifests:** content hashes, relational projections, membership
+   and evidence hashes reject mutation; legacy packages remain unverifiable
+   (runs 31859646575, 31886409990).
+4. **Atomic risk reservation:** advisory-locked reservation+decision rollback,
+   concurrency and restart are executed (runs 31721923194, 31886670023).
+5. **Durable kill switches:** state survives restart and blocks before OMS
+   (runs 31861000439, 31861146050).
+6. **Durable event-sourced OMS:** immutable lifecycle reconstruction reaches the
+   final persisted state (runs 31815560152, 31861146050).
+7. **Idempotent fills:** identical replay is a no-op and payload conflict rejects
+   (runs 31815560152, 31861146050).
+8. **Atomic broker cursor/events:** receipt, cursor and fill effects commit or
+   roll back together (run 31886670023).
+9. **Authoritative reconciliation:** account/position evidence and completeness
+   gate risk increase (runs 31861146050, 31886880648).
+10. **Restart reconstruction:** OMS, fills, cursor, risk, kill switch and account
+    state are rebuilt from PostgreSQL (runs 31861146050, 31886409990).
+11. **Mapped migration:** deterministic dry-run/APPLY/replay/conflict/unsupported
+    and exact financial-value checks ran against PostgreSQL (run 31886409990).
+12. **Failure injection:** connection loss and forced transaction failures prove
+    fail-closed, atomic operation (run 31886670023).
+13. **Fresh restore:** corrupt dump rejection, separate-database restore, 16-table
+    hash/count comparison and gated reconciliation executed (run 31886880648).
+14. **Unskipped PostgreSQL CI:** final expanded run 31887843535 executed all
+    **281 tests without skips**, migrations through 0007, restore, full quality,
+    security, dependency, frontend and artifact-evidence gates with no warning.
+15. **Live trading impossible:** configuration, adapters and tests retain the
+    paper-only/no-network/no-credential boundary in every cited run.
+
+Decision: all fifteen invariants have executed evidence. **P0 is VERIFIED** for
+the safety-critical paper platform. This is not approval for live trading or a
+claim of production identity/security/provider readiness. Cycle 10 is now the
+authorized P1 instrument/calendar foundation.

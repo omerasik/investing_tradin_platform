@@ -65,9 +65,10 @@ snapshot, not a second roadmap.
 
 ## Immediate P0 work
 
-1. Complete the expanded full-package Cycle 9 CI gate.
-2. Record the combined P0 exit decision from executed evidence.
-3. If green, begin Cycle 10 instrument/calendar work.
+1. P0 is VERIFIED by the combined fifteen-invariant exit audit and clean CI run
+   31887843535.
+2. Build Cycle 10's PostgreSQL professional instrument/calendar authority.
+3. Keep live trading and external provider connectivity disabled.
 
 ## PostgreSQL persistence progress
 
