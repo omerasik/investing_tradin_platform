@@ -1,9 +1,9 @@
+import unittest
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-import unittest
 
-from trade_platform.domain import OrderSide
 from trade_platform.corporate_actions import CorporateAction, CorporateActionType
+from trade_platform.domain import OrderSide
 from trade_platform.event_backtest import (
     EventBacktestValidationError,
     EventDrivenBacktester,
@@ -13,7 +13,6 @@ from trade_platform.event_backtest import (
     SimulatedOrderType,
     create_order,
 )
-
 
 UTC = timezone.utc
 T0 = datetime(2025, 1, 2, 14, 30, tzinfo=UTC)

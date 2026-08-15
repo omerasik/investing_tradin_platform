@@ -1,11 +1,21 @@
+import unittest
 from dataclasses import replace
 from datetime import datetime, timezone
-import unittest
 from uuid import uuid4
 
-from trade_platform.agent_research import AgentResearchError, AgentResearchOutput, AgentResearchRequest, AgentResearchReview, ConfiguredHttpsResearchAgent, ResearchAgentRole, ResearchModelConfiguration, SQLiteAgentResearchStore, assess_agent_research_output, run_structured_research_agent
-from trade_platform.data_providers import HttpResponse, RetryPolicy, ProviderConfigurationError
-
+from trade_platform.agent_research import (
+    AgentResearchError,
+    AgentResearchOutput,
+    AgentResearchRequest,
+    AgentResearchReview,
+    ConfiguredHttpsResearchAgent,
+    ResearchAgentRole,
+    ResearchModelConfiguration,
+    SQLiteAgentResearchStore,
+    assess_agent_research_output,
+    run_structured_research_agent,
+)
+from trade_platform.data_providers import HttpResponse, ProviderConfigurationError, RetryPolicy
 
 NOW = datetime(2026, 7, 1, tzinfo=timezone.utc)
 

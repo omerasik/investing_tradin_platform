@@ -3,9 +3,14 @@ from datetime import timedelta
 from decimal import Decimal
 from uuid import uuid4
 
-from trade_platform.domain import OrderIntent, OrderSide, OrderStatus, Signal, SignalStatus, utc_now
+from trade_platform.domain import OrderIntent, OrderSide, Signal, SignalStatus, utc_now
 from trade_platform.paper_execution import PaperOrder, progress_to_acknowledged
-from trade_platform.shadow_mode import (ShadowModeValidationError, compare_paper_orders, record_failure_drill, requires_incident)
+from trade_platform.shadow_mode import (
+    ShadowModeValidationError,
+    compare_paper_orders,
+    record_failure_drill,
+    requires_incident,
+)
 
 
 def make_order(intent_id=None) -> PaperOrder:

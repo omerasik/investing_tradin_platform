@@ -7,8 +7,12 @@ Create Date: 2026-08-13
 
 from alembic import op
 
-from trade_platform.postgres_schema import INITIAL_SCHEMA_SQL, IMMUTABLE_TABLES, drop_schema_sql, immutable_trigger_sql
-
+from trade_platform.postgres_schema import (
+    IMMUTABLE_TABLES,
+    INITIAL_SCHEMA_SQL,
+    drop_schema_sql,
+    immutable_trigger_sql,
+)
 
 revision = "20260813_0001"
 down_revision = None

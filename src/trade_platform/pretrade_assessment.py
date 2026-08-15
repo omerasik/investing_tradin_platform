@@ -381,7 +381,8 @@ def assess_pretrade(
             from .return_history import ReturnHistoryError
 
             try:
-                assert return_history_store is not None
+                if return_history_store is None:
+                    raise ReturnHistoryError("return_history_store_unavailable")
                 return_history = return_history_store.evidence_for_policy(
                     intent.account_id, observed_at,
                     minimum_observations=portfolio_policy.minimum_historical_observations,

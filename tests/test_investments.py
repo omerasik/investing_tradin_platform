@@ -4,10 +4,34 @@ from decimal import Decimal
 from tempfile import TemporaryDirectory
 from uuid import uuid4
 
-from trade_platform.investments import (CompanyResearchRecord, DcfValuation, InvestmentRecommendation, InvestmentReviewSchedule, InvestmentValidationError, ThemeDiscoveryRule,
-    InvestmentHolding, InvestmentMacroSensitivity, InvestmentPerformanceSnapshot, InvestmentPortfolioPolicy, InvestmentRebalanceDecision, InvestmentThemeExposure, SQLiteInvestmentStore, SourceBackedFact, ThesisExpectation, ThesisReview, ThesisReviewOutcome, draft_thesis,
-    calculate_fundamental_analytics, discover_themes_from_company_research, materialize_fundamental_facts, materialize_fundamental_facts_authorized, plan_rebalance, run_due_thesis_drift_with_alerts, scenario_value)
 from trade_platform.fundamentals import FundamentalFact, SQLiteFundamentalStore, StatementType
+from trade_platform.investments import (
+    CompanyResearchRecord,
+    DcfValuation,
+    InvestmentHolding,
+    InvestmentMacroSensitivity,
+    InvestmentPerformanceSnapshot,
+    InvestmentPortfolioPolicy,
+    InvestmentRebalanceDecision,
+    InvestmentRecommendation,
+    InvestmentReviewSchedule,
+    InvestmentThemeExposure,
+    InvestmentValidationError,
+    SourceBackedFact,
+    SQLiteInvestmentStore,
+    ThemeDiscoveryRule,
+    ThesisExpectation,
+    ThesisReview,
+    ThesisReviewOutcome,
+    calculate_fundamental_analytics,
+    discover_themes_from_company_research,
+    draft_thesis,
+    materialize_fundamental_facts,
+    materialize_fundamental_facts_authorized,
+    plan_rebalance,
+    run_due_thesis_drift_with_alerts,
+    scenario_value,
+)
 from trade_platform.operational_alerts import SQLiteOperationalAlertStore
 
 

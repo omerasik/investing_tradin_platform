@@ -1,13 +1,14 @@
 """Out-of-sample evaluation and multiple-testing controls for research only."""
 
 import random
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
 from statistics import NormalDist
-from typing import Callable
 
-from .research import BacktestResult, CostModel, ResearchValidationError as VectorizedValidationError, run_vectorized_backtest
-from .strategy_validation import PurgedWalkForwardSplit, StrategyValidationError
+from .research import BacktestResult, CostModel, run_vectorized_backtest
+from .research import ResearchValidationError as VectorizedValidationError
+from .strategy_validation import PurgedWalkForwardSplit
 
 
 class ResearchValidationError(ValueError):
@@ -51,7 +52,7 @@ def bootstrap_total_returns(period_returns: tuple[Decimal, ...], *, simulations:
     """Deterministic resampling of ordered return observations for uncertainty analysis."""
     if not period_returns or simulations < 1:
         raise ResearchValidationError("invalid_bootstrap_inputs")
-    generator = random.Random(seed)
+    generator = random.Random(seed)  # nosec B311 - reproducible bootstrap, not security randomness
     outcomes: list[Decimal] = []
     for _ in range(simulations):
         equity = Decimal("1")

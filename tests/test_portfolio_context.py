@@ -1,13 +1,13 @@
+import unittest
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-import unittest
 
+from tests.test_risk import approved_inputs
 from trade_platform.domain import RiskDecisionType, RiskPolicy
 from trade_platform.paper_execution import Position, ReconciliationResult
 from trade_platform.paper_oms import SQLitePaperOms
 from trade_platform.portfolio_context import portfolio_state_from_oms_reconciliation
 from trade_platform.risk import RiskEngine
-from tests.test_risk import approved_inputs
 
 
 class PortfolioContextTests(unittest.TestCase):

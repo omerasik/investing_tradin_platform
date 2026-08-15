@@ -1,11 +1,15 @@
+import unittest
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import unittest
 
-from trade_platform.fundamentals import FundamentalDataError, FundamentalFact, SQLiteFundamentalStore, StatementType
-
+from trade_platform.fundamentals import (
+    FundamentalDataError,
+    FundamentalFact,
+    SQLiteFundamentalStore,
+    StatementType,
+)
 
 UTC = timezone.utc
 PERIOD_START = datetime(2025, 1, 1, tzinfo=UTC)

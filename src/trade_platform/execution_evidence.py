@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from .domain import MarketSnapshot, OrderSide
 from .portfolio_risk import PortfolioExposure
@@ -123,7 +123,15 @@ class SQLiteExecutionEvidenceStore:
         )
 
     def _latest(self, table: str, instrument_id: str, decision_at: datetime):
-        return self._connection.execute(f"SELECT * FROM {table} WHERE instrument_id = ? AND observed_at <= ? AND ingested_at <= ? ORDER BY observed_at DESC, ingested_at DESC, rowid DESC LIMIT 1", (instrument_id, decision_at.isoformat(), decision_at.isoformat())).fetchone()
+        statements = {
+            "halt_observations": "SELECT * FROM halt_observations WHERE instrument_id = ? AND observed_at <= ? AND ingested_at <= ? ORDER BY observed_at DESC, ingested_at DESC, rowid DESC LIMIT 1",
+            "event_risk_observations": "SELECT * FROM event_risk_observations WHERE instrument_id = ? AND observed_at <= ? AND ingested_at <= ? ORDER BY observed_at DESC, ingested_at DESC, rowid DESC LIMIT 1",
+        }
+        try:
+            statement = statements[table]
+        except KeyError as error:
+            raise ExecutionEvidenceError("unsupported_execution_evidence_table") from error
+        return self._connection.execute(statement, (instrument_id, decision_at.isoformat(), decision_at.isoformat())).fetchone()
 
     def close(self) -> None:
         self._connection.close()

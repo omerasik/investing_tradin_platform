@@ -5,7 +5,18 @@ from uuid import uuid4
 
 from trade_platform.broker_adapter import BrokerConfiguration, BrokerMode
 from trade_platform.data_providers import HttpResponse, ProviderConfiguration
-from trade_platform.return_history import AccountPerformanceSnapshot, HttpsAccountPerformanceProvider, PortfolioReturnObservation, PortfolioReturnPage, ReturnHistoryError, ReturnIngestionCadence, ReturnIngestionRetryPolicy, ReturnProviderTransientError, SandboxAccountPerformanceProvider, SQLitePortfolioReturnStore
+from trade_platform.return_history import (
+    AccountPerformanceSnapshot,
+    HttpsAccountPerformanceProvider,
+    PortfolioReturnObservation,
+    PortfolioReturnPage,
+    ReturnHistoryError,
+    ReturnIngestionCadence,
+    ReturnIngestionRetryPolicy,
+    ReturnProviderTransientError,
+    SandboxAccountPerformanceProvider,
+    SQLitePortfolioReturnStore,
+)
 
 
 class PortfolioReturnHistoryTests(unittest.TestCase):

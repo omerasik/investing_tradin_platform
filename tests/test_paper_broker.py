@@ -4,7 +4,11 @@ from decimal import Decimal
 from uuid import uuid4
 
 from trade_platform.domain import OrderIntent, OrderSide, OrderStatus, Signal, SignalStatus, utc_now
-from trade_platform.paper_broker import FixturePaperBroker, PaperBrokerValidationError, execution_quality
+from trade_platform.paper_broker import (
+    FixturePaperBroker,
+    PaperBrokerValidationError,
+    execution_quality,
+)
 from trade_platform.paper_execution import PaperOrder
 
 

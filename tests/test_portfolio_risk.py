@@ -1,7 +1,20 @@
 import unittest
 from decimal import Decimal
 
-from trade_platform.portfolio_risk import PortfolioExposure, PortfolioRiskPolicy, StressScenario, concentration_breaches, evaluate_portfolio, factor_exposures, gross_and_net, grouped_exposures, historical_var_cvar, maximum_drawdown_loss, stress, weighted_exposure
+from trade_platform.portfolio_risk import (
+    PortfolioExposure,
+    PortfolioRiskPolicy,
+    StressScenario,
+    concentration_breaches,
+    evaluate_portfolio,
+    factor_exposures,
+    gross_and_net,
+    grouped_exposures,
+    historical_var_cvar,
+    maximum_drawdown_loss,
+    stress,
+    weighted_exposure,
+)
 
 
 class PortfolioRiskTests(unittest.TestCase):

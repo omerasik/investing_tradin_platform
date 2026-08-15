@@ -1,23 +1,40 @@
 import os
+import unittest
 from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from trade_platform.broker_adapter import BrokerAccountSnapshot, BrokerConfiguration, BrokerMode, SandboxPaperBrokerAdapter
+from trade_platform.broker_adapter import (
+    BrokerAccountSnapshot,
+    BrokerConfiguration,
+    BrokerMode,
+    SandboxPaperBrokerAdapter,
+)
 from trade_platform.config import PlatformConfig, SecretReferenceError
 from trade_platform.domain import AssetClass, Instrument, OrderIntent, OrderSide
-from trade_platform.execution_evidence import EventRiskObservation, HaltObservation, SlippageEstimate
+from trade_platform.execution_evidence import (
+    EventRiskObservation,
+    HaltObservation,
+    SlippageEstimate,
+)
 from trade_platform.instruments import InstrumentRiskProfile, TradingSession
-from trade_platform.paper_execution import CashBalance, ReconciliationResult
-from trade_platform.paper_runtime import PaperPolicySelection, PaperRuntimeError, build_paper_runtime
-from trade_platform.policy_registry import PolicyDocument, SQLitePolicyRegistry
 from trade_platform.model_registry import ModelValidation, ModelVersion, SQLiteModelRegistry
+from trade_platform.paper_execution import CashBalance, ReconciliationResult
+from trade_platform.paper_runtime import (
+    PaperPolicySelection,
+    PaperRuntimeError,
+    build_paper_runtime,
+)
+from trade_platform.policy_registry import PolicyDocument, SQLitePolicyRegistry
 from trade_platform.quotes import QuoteObservation
-from trade_platform.return_history import AccountPerformanceSnapshot, PortfolioReturnObservation, SandboxAccountPerformanceProvider
+from trade_platform.return_history import (
+    AccountPerformanceSnapshot,
+    PortfolioReturnObservation,
+    SandboxAccountPerformanceProvider,
+)
 from trade_platform.signal_engine import SignalEngine, SignalProposal, ValidationStage
 from trade_platform.strategy_promotion import PromotionDecision, PromotionStatus, StrategyActivation
 
@@ -66,9 +83,8 @@ class PaperRuntimeTests(unittest.TestCase):
             path = Path(directory) / "paper.sqlite"
             model_id = self.seed_policies(path)
             config = PlatformConfig(assessment_integrity_key_reference="env:TRADE_PLATFORM_ASSESSMENT_KEY")
-            with patch.dict(os.environ, {"TRADE_PLATFORM_ASSESSMENT_KEY": "test-key"}, clear=True):
-                with self.assertRaisesRegex(ValueError, "unknown_policy_version"):
-                    build_paper_runtime(config=config, database_path=path, adapter=adapter, policy_selection=PaperPolicySelection("risk:missing", "portfolio:paper-v1", model_id))
+            with patch.dict(os.environ, {"TRADE_PLATFORM_ASSESSMENT_KEY": "test-key"}, clear=True), self.assertRaisesRegex(ValueError, "unknown_policy_version"):
+                build_paper_runtime(config=config, database_path=path, adapter=adapter, policy_selection=PaperPolicySelection("risk:missing", "portfolio:paper-v1", model_id))
 
     def test_runtime_rejects_portfolio_policy_without_reviewed_stress_suite(self) -> None:
         adapter = SandboxPaperBrokerAdapter(BrokerConfiguration("local", BrokerMode.SIMULATED_PAPER, "paper"), cash=CashBalance("USD", Decimal("1000")))
@@ -79,9 +95,8 @@ class PaperRuntimeTests(unittest.TestCase):
             registry.append(PolicyDocument("portfolio", "portfolio:no-stress", {"maximum_gross_notional": "10000", "maximum_single_weight": "1", "maximum_scenario_loss": "10000"}, "risk-committee", datetime(2026, 1, 1, tzinfo=timezone.utc)))
             registry.close()
             config = PlatformConfig(assessment_integrity_key_reference="env:TRADE_PLATFORM_ASSESSMENT_KEY")
-            with patch.dict(os.environ, {"TRADE_PLATFORM_ASSESSMENT_KEY": "test-key"}, clear=True):
-                with self.assertRaisesRegex(ValueError, "stress_scenarios_unavailable"):
-                    build_paper_runtime(config=config, database_path=path, adapter=adapter, policy_selection=PaperPolicySelection("risk:paper-v1", "portfolio:no-stress", model_id))
+            with patch.dict(os.environ, {"TRADE_PLATFORM_ASSESSMENT_KEY": "test-key"}, clear=True), self.assertRaisesRegex(ValueError, "stress_scenarios_unavailable"):
+                build_paper_runtime(config=config, database_path=path, adapter=adapter, policy_selection=PaperPolicySelection("risk:paper-v1", "portfolio:no-stress", model_id))
 
     def test_runtime_rejects_unapproved_model_selection(self) -> None:
         adapter = SandboxPaperBrokerAdapter(BrokerConfiguration("local", BrokerMode.SIMULATED_PAPER, "paper"), cash=CashBalance("USD", Decimal("1000")))
@@ -89,9 +104,8 @@ class PaperRuntimeTests(unittest.TestCase):
             path = Path(directory) / "paper.sqlite"
             self.seed_policies(path)
             config = PlatformConfig(assessment_integrity_key_reference="env:TRADE_PLATFORM_ASSESSMENT_KEY")
-            with patch.dict(os.environ, {"TRADE_PLATFORM_ASSESSMENT_KEY": "test-key"}, clear=True):
-                with self.assertRaisesRegex(PaperRuntimeError, "selected_model_not_approved"):
-                    build_paper_runtime(config=config, database_path=path, adapter=adapter, policy_selection=PaperPolicySelection("risk:paper-v1", "portfolio:paper-v1", uuid4()))
+            with patch.dict(os.environ, {"TRADE_PLATFORM_ASSESSMENT_KEY": "test-key"}, clear=True), self.assertRaisesRegex(PaperRuntimeError, "selected_model_not_approved"):
+                build_paper_runtime(config=config, database_path=path, adapter=adapter, policy_selection=PaperPolicySelection("risk:paper-v1", "portfolio:paper-v1", uuid4()))
 
     def test_runtime_ingests_account_returns_only_through_durable_history_authority(self) -> None:
         now = datetime(2026, 1, 10, tzinfo=timezone.utc)

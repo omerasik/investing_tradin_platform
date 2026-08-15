@@ -3,7 +3,7 @@
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
@@ -564,7 +564,8 @@ class SQLiteInvestmentStore:
         if not fact_ids:
             return ()
         marks = ",".join("?" for _ in fact_ids)
-        rows = self._connection.execute(f"SELECT * FROM investment_facts WHERE fact_id IN ({marks})", tuple(str(value) for value in fact_ids)).fetchall()
+        # The SQL structure is fixed; only the number of parameter placeholders varies.
+        rows = self._connection.execute(f"SELECT * FROM investment_facts WHERE fact_id IN ({marks})", tuple(str(value) for value in fact_ids)).fetchall()  # nosec B608
         values = {UUID(row[0]): SourceBackedFact(UUID(row[0]), row[1], row[2], Decimal(row[3]), row[4], datetime.fromisoformat(row[5]), datetime.fromisoformat(row[6]), datetime.fromisoformat(row[7]), row[8], row[9], row[10]) for row in rows}
         if set(values) != set(fact_ids):
             raise InvestmentValidationError("materialization_facts_missing")

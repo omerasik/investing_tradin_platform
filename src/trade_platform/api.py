@@ -7,20 +7,28 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from .agent_research import AgentResearchError, AgentResearchOutput, SQLiteAgentResearchStore
 from .audit import AuditEvent, SQLiteAuditStore
 from .config import PlatformConfig
-from .observability import MetricsRegistry, StructuredEventLogger
-from .security import InMemoryRateLimiter, OperatorAuthenticator, protected_operator
-from .portfolio_risk import PortfolioExposure, PortfolioRiskPolicy, StressScenario, evaluate_portfolio
-from .return_history import ReturnIngestionCadence, SQLitePortfolioReturnStore
-from .investments import InvestmentValidationError, SQLiteInvestmentStore
-from .investments import materialize_fundamental_facts_authorized
 from .fundamentals import SQLiteFundamentalStore
+from .investments import (
+    InvestmentValidationError,
+    SQLiteInvestmentStore,
+    materialize_fundamental_facts_authorized,
+)
+from .observability import MetricsRegistry, StructuredEventLogger
 from .operational_alerts import AlertError, AlertStatus, SQLiteOperationalAlertStore
-from .agent_research import AgentResearchError, AgentResearchOutput, SQLiteAgentResearchStore
 from .paper_oms import PaperOmsError, SQLitePaperOms
-from .risk import SQLiteRiskDecisionStore
+from .portfolio_risk import (
+    PortfolioExposure,
+    PortfolioRiskPolicy,
+    StressScenario,
+    evaluate_portfolio,
+)
 from .research import CostModel, ResearchValidationError, SQLiteExperimentStore, WalkForwardProtocol
+from .return_history import ReturnIngestionCadence, SQLitePortfolioReturnStore
+from .risk import SQLiteRiskDecisionStore
+from .security import InMemoryRateLimiter, OperatorAuthenticator, protected_operator
 from .strategy_promotion import SQLitePromotionLedger
 from .strategy_validation import SQLiteStrategyRegistry, StrategyRunCard, StrategyValidationError
 

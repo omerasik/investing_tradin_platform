@@ -7,19 +7,31 @@ responses into the immutable, point-in-time facts consumed by investment researc
 import json
 import sqlite3
 import time
-from datetime import time as clock_time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
+from datetime import time as clock_time
 from decimal import Decimal
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Protocol
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
-from urllib.error import HTTPError, URLError
-from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from .data_providers import HttpResponse, HttpTransport, ProviderCapabilities, ProviderConfiguration, ProviderConfigurationError, ProviderError, ProviderHealth, ProviderHealthRegistry, RetryPolicy, UrlLibTransport
-from .investments import InvestmentValidationError, SQLiteInvestmentStore, SourceBackedFact
+from .data_providers import (
+    HttpResponse,
+    HttpTransport,
+    ProviderCapabilities,
+    ProviderConfiguration,
+    ProviderConfigurationError,
+    ProviderError,
+    ProviderHealth,
+    ProviderHealthRegistry,
+    RetryPolicy,
+    UrlLibTransport,
+)
+from .investments import InvestmentValidationError, SourceBackedFact, SQLiteInvestmentStore
 from .operational_alerts import AlertSeverity, AlertStatus, SQLiteOperationalAlertStore
 
 
@@ -206,7 +218,7 @@ class HttpsJsonInvestmentEvidenceProvider:
         raise ProviderError(f"investment_provider_http_status:{status}")
 
     def _parse_fact(self, requested_instrument_id: str, value: object) -> ProviderInvestmentFact:
-        if not isinstance(value, dict): raise ValueError("record must be object")
+        if not isinstance(value, dict): raise TypeError("record must be object")
         instrument_id = str(value.get("instrument_id", requested_instrument_id))
         if instrument_id != requested_instrument_id: raise ProviderError("investment_provider_instrument_mismatch")
         source_url = str(value.get("source_url", ""))
@@ -218,7 +230,7 @@ class HttpsJsonInvestmentEvidenceProvider:
 
     @staticmethod
     def _parse_timestamp(value: object) -> datetime:
-        result = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        result = datetime.fromisoformat(str(value))
         if result.tzinfo is None or result.utcoffset() is None: raise ValueError("timestamp must include timezone")
         return result.astimezone(timezone.utc)
 
@@ -292,7 +304,7 @@ class SecCompanyFactsProvider:
         raise ProviderError(f"sec_companyfacts_http_status:{status}")
 
     def _parse_payload(self, instrument_id: str, cik: str, payload: object, start: datetime, end: datetime) -> list[ProviderInvestmentFact]:
-        if not isinstance(payload, dict) or not isinstance(payload.get("facts"), dict): raise ValueError("missing facts")
+        if not isinstance(payload, dict) or not isinstance(payload.get("facts"), dict): raise TypeError("missing facts")
         values: list[ProviderInvestmentFact] = []
         for metric, (taxonomy, concept) in sorted(self._concepts.items()):
             concept_data = payload["facts"][taxonomy][concept]; unit_values = concept_data["units"]["USD"]
@@ -301,7 +313,7 @@ class SecCompanyFactsProvider:
                 filed_date = datetime.fromisoformat(item["filed"]).date()
                 available_at = datetime.combine(filed_date + timedelta(days=1), clock_time.min, timezone.utc)
                 if not start <= observed_at <= end or available_at > end: continue
-                accession = str(item["accn"]); document = str(item.get("form", "filing"))
+                accession = str(item["accn"])
                 source_id = f"{cik}:{taxonomy}:{concept}:{accession}:{item['end']}"
                 source_url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
                 fact = ProviderInvestmentFact(instrument_id, metric, Decimal(str(item["val"])), "USD", observed_at, available_at, source_id, source_url, int(item.get("fy", 0)), self.name)
@@ -412,7 +424,7 @@ class InvestmentProviderHealthMonitorJob:
         for provider in due:
             try:
                 check_provider(provider)
-            except Exception:
+            except Exception:  # noqa: BLE001 - provider boundary isolates arbitrary adapters
                 # Provider errors must be observable, but raw exception strings can leak credentials or transport detail.
                 self._health.failure(provider, "provider_health_check_failed")
             else:

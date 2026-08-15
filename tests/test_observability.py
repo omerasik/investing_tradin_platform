@@ -1,5 +1,4 @@
 import json
-import logging
 import unittest
 from decimal import Decimal
 

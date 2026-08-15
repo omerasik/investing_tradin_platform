@@ -4,7 +4,6 @@ import json
 import logging
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime
 
 from .domain import utc_now
 

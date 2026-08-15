@@ -1,2 +1,5 @@
 allowBuilds:
-  sharp: set this to true or false
+  sharp: false
+  unrs-resolver: false
+overrides:
+  nanoid: 3.3.18

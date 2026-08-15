@@ -11,13 +11,14 @@ import hashlib
 import json
 import random
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 from math import ceil, sqrt
 from pathlib import Path
 from statistics import NormalDist, mean, pstdev
-from typing import Any, Iterable
+from typing import Any
 from uuid import UUID, uuid5
 
 from .domain import OrderSide, utc_now
@@ -94,7 +95,6 @@ def _metrics(result: BacktestResult, *, periods_per_year: int = 252) -> tuple[De
     deviation = sqrt(sum(item * item for item in downside) / len(downside)) if downside else 0.0
     average = float(sum(returns, Decimal("0")) / Decimal(len(returns))) if returns else 0.0
     sortino = None if deviation == 0 else Decimal(str(average / deviation * sqrt(periods_per_year)))
-    execution_cost = sum((abs(result.period_returns[index] - (Decimal("0"))) for index in range(0)), Decimal("0"))
     # Cost is not recoverable from BacktestResult.  Every caller passes its
     # explicit model and computes it from turnover below.
     return result.total_return, annualized, result.sharpe, sortino, result.max_drawdown
@@ -298,7 +298,7 @@ def evaluate_latency_sensitivity(*, strategy_version: str, dataset_version: str,
     scenarios: list[LatencyScenario] = []
     frequency_seconds = data_frequency.total_seconds()
     for latency in latency_levels:
-        bars = int(ceil(latency.total_seconds() / frequency_seconds))
+        bars = ceil(latency.total_seconds() / frequency_seconds)
         delayed = [Decimal("0")] * len(signals)
         for index, signal in enumerate(signals):
             if index + bars < len(signals):
@@ -346,7 +346,8 @@ def evaluate_bootstrap(*, strategy_version: str, dataset_version: str, period_re
                        resamples: int, artifact_version: str = "bootstrap-v1") -> BootstrapEvidence:
     if not strategy_version.strip() or not dataset_version.strip() or not period_returns or resamples < 1:
         raise QuantValidationError("invalid_bootstrap_inputs")
-    rng = random.Random(seed); returns: list[Decimal] = []; sharpes: list[Decimal | None] = []; drawdowns: list[Decimal] = []
+    rng = random.Random(seed)  # nosec B311 - deterministic statistical simulation, not security randomness
+    returns: list[Decimal] = []; sharpes: list[Decimal | None] = []; drawdowns: list[Decimal] = []
     for _ in range(resamples):
         sample = tuple(rng.choice(period_returns) for _ in period_returns)
         equity = Decimal("1"); curve = [equity]
@@ -381,7 +382,8 @@ def evaluate_monte_carlo_trade_sequence(*, strategy_version: str, dataset_versio
                                         artifact_version: str = "monte-carlo-v1") -> MonteCarloEvidence:
     if not strategy_version.strip() or not dataset_version.strip() or not trade_returns or simulations < 1 or ruin_threshold <= 0:
         raise QuantValidationError("invalid_monte_carlo_inputs")
-    rng = random.Random(seed); terminal: list[Decimal] = []; drawdowns: list[Decimal] = []; breached = 0
+    rng = random.Random(seed)  # nosec B311 - deterministic statistical simulation, not security randomness
+    terminal: list[Decimal] = []; drawdowns: list[Decimal] = []; breached = 0
     for _ in range(simulations):
         sample = list(trade_returns); rng.shuffle(sample); equity = Decimal("1"); curve = [equity]
         for value in sample: equity *= Decimal("1") + value; curve.append(equity)

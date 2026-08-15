@@ -4,7 +4,13 @@ from decimal import Decimal
 from uuid import uuid4
 
 from trade_platform.domain import MarketSnapshot, OrderSide
-from trade_platform.execution_evidence import EventRiskObservation, ExecutionEvidenceError, HaltObservation, SlippageEstimate, SQLiteExecutionEvidenceStore
+from trade_platform.execution_evidence import (
+    EventRiskObservation,
+    ExecutionEvidenceError,
+    HaltObservation,
+    SlippageEstimate,
+    SQLiteExecutionEvidenceStore,
+)
 from trade_platform.portfolio_risk import PortfolioExposure
 
 

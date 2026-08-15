@@ -1,13 +1,18 @@
-from pathlib import Path
-from tempfile import TemporaryDirectory
 import unittest
 from dataclasses import replace
 from datetime import timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from uuid import uuid4
 
-from trade_platform.domain import RiskDecisionType, RiskPolicy
-from trade_platform.risk import RiskEngine, SQLiteDailyNotionalLedger, SQLiteIdempotencyLedger, SQLiteRiskDecisionStore
 from tests.test_risk import approved_inputs
+from trade_platform.domain import RiskDecisionType, RiskPolicy
+from trade_platform.risk import (
+    RiskEngine,
+    SQLiteDailyNotionalLedger,
+    SQLiteIdempotencyLedger,
+    SQLiteRiskDecisionStore,
+)
 
 
 class RiskPersistenceTests(unittest.TestCase):

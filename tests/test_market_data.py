@@ -3,12 +3,18 @@ from datetime import timedelta
 from decimal import Decimal
 
 from trade_platform.domain import DataProcessingStatus, OHLCVBar, utc_now
-from trade_platform.market_data import DataQualityError, FixtureBarProvider, SQLiteBarStore, assess_bars, ingest_from_provider
+from trade_platform.market_data import (
+    DataQualityError,
+    FixtureBarProvider,
+    SQLiteBarStore,
+    assess_bars,
+    ingest_from_provider,
+)
 
 
 def bar(minutes: int = 0, **changes: object) -> OHLCVBar:
     event = utc_now() + timedelta(minutes=minutes)
-    values: dict[str, object] = dict(instrument_id="US:NYSE:SPY", interval="1m", event_at=event, effective_at=event, ingested_at=event, open=Decimal("100"), high=Decimal("101"), low=Decimal("99"), close=Decimal("100.5"), volume=Decimal("1000"), provider="fixture", source_identifier=f"bar-{minutes}", original_timezone="UTC")
+    values: dict[str, object] = {"instrument_id": "US:NYSE:SPY", "interval": "1m", "event_at": event, "effective_at": event, "ingested_at": event, "open": Decimal("100"), "high": Decimal("101"), "low": Decimal("99"), "close": Decimal("100.5"), "volume": Decimal("1000"), "provider": "fixture", "source_identifier": f"bar-{minutes}", "original_timezone": "UTC"}
     values.update(changes)
     return OHLCVBar(**values)
 

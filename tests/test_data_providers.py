@@ -1,12 +1,24 @@
-from datetime import datetime, time, timedelta, timezone
-from dataclasses import replace
-from decimal import Decimal
 import unittest
+from dataclasses import replace
+from datetime import datetime, time, timezone
+from decimal import Decimal
 
-from trade_platform.data_providers import (BarPage, FallbackHistoricalProvider, HttpResponse, InMemoryBarCache, ProviderCapabilities, ProviderConfiguration, ProviderConfigurationError, ProviderError, ProviderHealthRegistry, RetryPolicy, StooqDailyCsvProvider, collect_pages)
+from trade_platform.data_providers import (
+    BarPage,
+    FallbackHistoricalProvider,
+    HttpResponse,
+    InMemoryBarCache,
+    ProviderCapabilities,
+    ProviderConfiguration,
+    ProviderConfigurationError,
+    ProviderError,
+    ProviderHealthRegistry,
+    RetryPolicy,
+    StooqDailyCsvProvider,
+    collect_pages,
+)
 from trade_platform.domain import OHLCVBar
 from trade_platform.market_data import SQLiteBarStore, ingest_from_provider
-
 
 NOW = datetime(2025, 1, 3, tzinfo=timezone.utc)
 START = datetime(2025, 1, 1, tzinfo=timezone.utc)

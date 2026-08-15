@@ -1,10 +1,17 @@
-from decimal import Decimal
 import unittest
+from decimal import Decimal
 
-from trade_platform.broker_adapter import BrokerAdapterError, BrokerConfiguration, BrokerMode, InternalAccountState, SandboxPaperBrokerAdapter, reconcile_broker_account
+from tests.test_paper_execution import intent
+from trade_platform.broker_adapter import (
+    BrokerAdapterError,
+    BrokerConfiguration,
+    BrokerMode,
+    InternalAccountState,
+    SandboxPaperBrokerAdapter,
+    reconcile_broker_account,
+)
 from trade_platform.domain import OrderStatus
 from trade_platform.paper_execution import CashBalance, PaperOrder
-from tests.test_paper_execution import intent
 
 
 class BrokerAdapterTests(unittest.TestCase):

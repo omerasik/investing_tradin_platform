@@ -12,18 +12,36 @@ import uvicorn
 
 from trade_platform.api import build_app
 from trade_platform.audit import SQLiteAuditStore
+from trade_platform.broker_adapter import BrokerAccountSnapshot
 from trade_platform.config import PlatformConfig
-from trade_platform.investments import (CompanyResearchRecord, InvestmentHolding, InvestmentPerformanceSnapshot,
-    InvestmentPortfolioPolicy, InvestmentRebalanceDecision, InvestmentThesis, SQLiteInvestmentStore, ThesisStatus)
-from trade_platform.security import InMemoryRateLimiter, OperatorAuthenticator
+from trade_platform.domain import (
+    OrderIntent,
+    OrderSide,
+    OrderStatus,
+    RiskDecision,
+    RiskDecisionType,
+)
+from trade_platform.investments import (
+    CompanyResearchRecord,
+    InvestmentHolding,
+    InvestmentPerformanceSnapshot,
+    InvestmentPortfolioPolicy,
+    InvestmentRebalanceDecision,
+    InvestmentThesis,
+    SQLiteInvestmentStore,
+    ThesisStatus,
+)
 from trade_platform.operational_alerts import AlertSeverity, SQLiteOperationalAlertStore
-from trade_platform.domain import OrderIntent, OrderSide, OrderStatus, RiskDecision, RiskDecisionType
 from trade_platform.paper_execution import CashBalance, PaperOrder, Position, ReconciliationResult
 from trade_platform.paper_oms import SQLitePaperOms
-from trade_platform.broker_adapter import BrokerAccountSnapshot
-from trade_platform.risk import SQLiteRiskDecisionStore
 from trade_platform.research import SQLiteExperimentStore
-from trade_platform.strategy_promotion import PromotionDecision, PromotionStatus, SQLitePromotionLedger
+from trade_platform.risk import SQLiteRiskDecisionStore
+from trade_platform.security import InMemoryRateLimiter, OperatorAuthenticator
+from trade_platform.strategy_promotion import (
+    PromotionDecision,
+    PromotionStatus,
+    SQLitePromotionLedger,
+)
 from trade_platform.strategy_validation import SQLiteStrategyRegistry, StrategyRunCard
 
 
@@ -44,7 +62,7 @@ def application():
     oms.ingest_fill("fixture-fill-1", intent.intent_id, Decimal("4"), Decimal("101"), occurred_at=now)
     decisions.append(RiskDecision.create(intent.intent_id, RiskDecisionType.REJECT, ["order_notional_limit"]))
     card = StrategyRunCard(UUID("66666666-6666-6666-6666-666666666666"), "trend-v1", "trend_following", "Trend persists after costs.", ("bars-v1",), ("return:v1",), "Liquid ETFs", "Enter on trend", "Exit on reversal", "Volatility target", "risk-v1", "cost-v1", "capacity-v1", ("BULL",), {"lookback": "integer"}, ("whipsaw",), ("no short borrow",), now); strategies.append(card)
-    experiment = experiments.append("trend-v1", "bars-v1", ("return:v1",), "cost-v1", {"lookback": 20}, {"total_return": Decimal("0.1"), "periods": 10}, experiment_id=UUID("77777777-7777-7777-7777-777777777777"))
+    experiments.append("trend-v1", "bars-v1", ("return:v1",), "cost-v1", {"lookback": 20}, {"total_return": Decimal("0.1"), "periods": 10}, experiment_id=UUID("77777777-7777-7777-7777-777777777777"))
     promotion = PromotionDecision(UUID("88888888-8888-8888-8888-888888888888"), card.strategy_id, "trend-v1", PromotionStatus.BLOCKED, ("missing_stress_evidence",), 10, Decimal("0.1"), now); promotions.append(promotion)
     snapshot = BrokerAccountSnapshot("paper-account", "fixture-sandbox", now, CashBalance("USD", Decimal("1000")), Decimal("900"), {"US:NYSE:SPY": Position("US:NYSE:SPY", Decimal("4"), Decimal("101"))}, (intent.intent_id,), ("fixture-fill-1",), Decimal("0"), Decimal("1"))
     oms.record_reconciliation_with_account(snapshot, ReconciliationResult(True, ()), healthy=True, ingested_at=now)

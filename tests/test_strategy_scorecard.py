@@ -1,9 +1,13 @@
-from decimal import Decimal
 import unittest
+from decimal import Decimal
 
 from trade_platform.research import CostModel, MovingAverageCrossStrategy
 from trade_platform.research_validation import run_purged_walk_forward
-from trade_platform.strategy_scorecard import ScorecardError, build_scorecard, calculate_held_out_metrics
+from trade_platform.strategy_scorecard import (
+    ScorecardError,
+    build_scorecard,
+    calculate_held_out_metrics,
+)
 from trade_platform.strategy_validation import purged_walk_forward_splits
 
 

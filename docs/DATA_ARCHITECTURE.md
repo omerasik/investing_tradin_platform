@@ -16,9 +16,11 @@ reject update/delete operations, and point-in-time/version queries have indexes.
 SQLite remains a bounded local/unit-test adapter. It is not the production
 target and paper/production configuration fails closed unless PostgreSQL is
 selected. The current legacy SQLite-to-PostgreSQL tool supports deterministic
-row-count/checksum inspection in dry-run mode and refuses writes until an
-operator provides an explicit legacy identity mapping; it cannot silently
-invent normalized foreign keys.
+row-count/checksum inspection in dry-run mode and applies only with an explicit
+legacy identity mapping. CI proves mapped APPLY, exact financial values,
+idempotent replay, conflict/unsupported rejection, destination reconciliation
+and restart reconstruction. It cannot silently invent normalized foreign keys;
+old validation packages remain `LEGACY_UNVERIFIABLE`.
 
 Initial canonical contracts cover instruments, OHLCV bars, corporate actions, macro releases, signals and order intents. The data-quality gate rejects missing/duplicate/time-regressing bars, invalid prices/volumes, stale data, currency inconsistency and below-threshold quality. Backtests may query only data available at the decision timestamp.
 

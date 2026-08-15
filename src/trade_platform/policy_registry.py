@@ -5,8 +5,8 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from decimal import Decimal
+from pathlib import Path
 
 from .domain import RiskPolicy
 from .portfolio_risk import PortfolioRiskPolicy, StressScenario
@@ -95,7 +95,7 @@ class SQLitePolicyRegistry:
                 if not isinstance(mapping, dict) or any(not isinstance(name, str) or not name.strip() for name in mapping):
                     raise TypeError("invalid_exposure_mapping")
                 values[field] = {name: Decimal(str(limit)) for name, limit in mapping.items()}
-            if any(field in values for field in {"maximum_var_loss", "maximum_cvar_loss", "maximum_drawdown_loss"}) and not {"minimum_historical_observations", "return_history_window_observations", "maximum_return_history_age_seconds"} <= set(values):
+            if any(field in values for field in ("maximum_var_loss", "maximum_cvar_loss", "maximum_drawdown_loss")) and not {"minimum_historical_observations", "return_history_window_observations", "maximum_return_history_age_seconds"} <= set(values):
                 raise TypeError("missing_historical_return_requirements")
             return PortfolioRiskPolicy(**values)
         except (TypeError, ValueError, ArithmeticError) as error:

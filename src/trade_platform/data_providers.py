@@ -8,10 +8,12 @@ by name only; no credential value is accepted or stored here.
 import csv
 import io
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, time as clock_time, timedelta, timezone
+from datetime import datetime, timedelta, timezone
+from datetime import time as clock_time
 from decimal import Decimal
-from typing import Callable, Protocol
+from typing import Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo

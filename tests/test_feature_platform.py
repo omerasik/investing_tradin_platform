@@ -1,14 +1,19 @@
+import unittest
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-import unittest
 
-from trade_platform.domain import DataProcessingStatus, OHLCVBar
-from trade_platform.feature_platform import FeatureDefinition, FeatureEngine, FeaturePlatformError, FeatureRegistry, SQLiteFeatureStore
-from trade_platform.fundamentals import SQLiteFundamentalStore
-from trade_platform.macro_data import SQLiteMacroReleaseStore
 from tests.test_fundamentals import fact
 from tests.test_macro_data import release
-
+from trade_platform.domain import DataProcessingStatus, OHLCVBar
+from trade_platform.feature_platform import (
+    FeatureDefinition,
+    FeatureEngine,
+    FeaturePlatformError,
+    FeatureRegistry,
+    SQLiteFeatureStore,
+)
+from trade_platform.fundamentals import SQLiteFundamentalStore
+from trade_platform.macro_data import SQLiteMacroReleaseStore
 
 UTC = timezone.utc
 T0 = datetime(2025, 1, 1, tzinfo=UTC)

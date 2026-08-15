@@ -326,7 +326,6 @@ class SQLiteInstrumentStore:
             holiday = self._connection.execute(
                 "SELECT 1 FROM market_holidays WHERE venue = ? AND holiday_date = ?", (venue, local.date().isoformat())
             ).fetchone()
-            if holiday is None and local.weekday() == weekday:
-                if time.fromisoformat(opens_at) <= local.time().replace(tzinfo=None) < time.fromisoformat(closes_at):
-                    return True
+            if holiday is None and local.weekday() == weekday and time.fromisoformat(opens_at) <= local.time().replace(tzinfo=None) < time.fromisoformat(closes_at):
+                return True
         return False

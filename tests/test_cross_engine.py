@@ -2,11 +2,21 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
+from tests.test_paper_execution import intent
 from trade_platform.corporate_actions import CorporateAction, CorporateActionType
-from trade_platform.cross_engine import GoldenExecutionScenario, GoldenMarketBar, GoldenRunValidationError, SQLiteGoldenRunStore, ExecutionRecord, compare_execution_records, reconcile_engines, run_golden_vector_event_reconciliation, run_realistic_golden_vector_event_reconciliation
+from trade_platform.cross_engine import (
+    ExecutionRecord,
+    GoldenExecutionScenario,
+    GoldenMarketBar,
+    GoldenRunValidationError,
+    SQLiteGoldenRunStore,
+    compare_execution_records,
+    reconcile_engines,
+    run_golden_vector_event_reconciliation,
+    run_realistic_golden_vector_event_reconciliation,
+)
 from trade_platform.paper_execution import PaperOrder, Position, progress_to_acknowledged
 from trade_platform.research import CostModel, run_vectorized_backtest
-from tests.test_paper_execution import intent
 
 
 class CrossEngineTests(unittest.TestCase):

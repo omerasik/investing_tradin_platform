@@ -1,11 +1,18 @@
+import unittest
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import unittest
 
 from trade_platform.domain import AssetClass, OrderSide, utc_now
-from trade_platform.signal_engine import DetailedSignalStatus, SignalEngine, SignalEngineError, SignalProposal, SQLiteSignalStore, ValidationStage
+from trade_platform.signal_engine import (
+    DetailedSignalStatus,
+    SignalEngine,
+    SignalEngineError,
+    SignalProposal,
+    SQLiteSignalStore,
+    ValidationStage,
+)
 
 
 def proposal() -> SignalProposal:

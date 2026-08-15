@@ -65,9 +65,9 @@ snapshot, not a second roadmap.
 
 ## Immediate P0 work
 
-1. Execute PostgreSQL failure injection at the real transaction/runtime boundaries.
-2. Execute backup to a separate fresh database, restore, reconstruction and reconciliation.
-3. Complete the P0 security/CI/repository-quality audit and combined exit review.
+1. Complete the expanded full-package Cycle 9 CI gate.
+2. Record the combined P0 exit decision from executed evidence.
+3. If green, begin Cycle 10 instrument/calendar work.
 
 ## PostgreSQL persistence progress
 
@@ -111,3 +111,20 @@ snapshot, not a second roadmap.
 
 All completion/limitation claims must be updated in `MASTER_ROADMAP.md` with
 executed evidence; do not infer production readiness from unit tests.
+
+## Execution-program Cycles 7-9
+
+- Cycle 7 adds real PostgreSQL connection-loss and transaction-failure tests at
+  risk, OMS, broker cursor/fill, reconciliation and validation/promotion
+  boundaries. Run 31886670023 passed all 280 tests without skips.
+- Cycle 8 restores a real custom-format `pg_dump` into a separately created
+  database, rejects a truncated dump, compares 16 critical tables by count and
+  content hash, reconstructs runtime state and holds a durable recovery gate
+  closed until reconciliation. Run 31886880648 passed all 281 tests.
+- Cycle 9 expands Ruff and Bandit to the complete Python tree/package, runs a
+  complete-package mypy debt ratchet plus a zero-error critical PostgreSQL
+  slice, adds detect-secrets for tracked source/configuration, dependency audits, Python SBOM, frontend license
+  evidence, frozen install, TypeScript, ESLint, production build and dashboard
+  smoke. Next.js is pinned to 16.3.1 and `nanoid` to 3.3.18; local production
+  audit reports no known vulnerabilities.
+- The GitHub repository is PUBLIC. No visibility setting was changed.

@@ -5,7 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from .domain import OrderStatus, utc_now
+from .domain import utc_now
 from .paper_execution import PaperOrder
 
 

@@ -1,30 +1,63 @@
 import unittest
-from decimal import Decimal
-
-from fastapi.testclient import TestClient
-
-from trade_platform.api import build_app
-from trade_platform.audit import SQLiteAuditStore
-from trade_platform.config import PlatformConfig
-from trade_platform.security import InMemoryRateLimiter, OperatorAuthenticator
-from trade_platform.return_history import PortfolioReturnObservation, SQLitePortfolioReturnStore
-from trade_platform.investments import (CompanyResearchRecord, DcfValuation, FundamentalAnalytics, InvestmentRecommendation, InvestmentReviewSchedule, InvestmentThesis, SQLiteInvestmentStore, ThemeDiscoveryRule,
-    SourceBackedFact, ThesisDriftAssessment, ThesisExpectation, ThesisReview, ThesisReviewOutcome, ThesisStatus, discover_themes_from_company_research)
-from trade_platform.investments import InvestmentHolding, InvestmentPortfolioPolicy, InvestmentThemeExposure, InvestmentMacroSensitivity, InvestmentPerformanceSnapshot, InvestmentRebalanceDecision
-from trade_platform.fundamentals import FundamentalFact, SQLiteFundamentalStore, StatementType
-from trade_platform.operational_alerts import AlertSeverity, SQLiteOperationalAlertStore
-from trade_platform.agent_research import AgentResearchOutput, ResearchAgentRole, SQLiteAgentResearchStore
-from trade_platform.broker_adapter import BrokerAccountSnapshot
-from trade_platform.domain import OrderIntent, OrderSide, OrderStatus, RiskDecision, RiskDecisionType
-from trade_platform.paper_execution import CashBalance, PaperOrder, Position, ReconciliationResult
-from trade_platform.paper_oms import SQLitePaperOms
-from trade_platform.risk import SQLiteRiskDecisionStore
-from trade_platform.research import SQLiteExperimentStore
-from trade_platform.strategy_promotion import PromotionDecision, PromotionStatus, SQLitePromotionLedger
-from trade_platform.strategy_validation import SQLiteStrategyRegistry, StrategyRunCard
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import uuid4
+
+from fastapi.testclient import TestClient
+
+from trade_platform.agent_research import (
+    AgentResearchOutput,
+    ResearchAgentRole,
+    SQLiteAgentResearchStore,
+)
+from trade_platform.api import build_app
+from trade_platform.audit import SQLiteAuditStore
+from trade_platform.broker_adapter import BrokerAccountSnapshot
+from trade_platform.config import PlatformConfig
+from trade_platform.domain import (
+    OrderIntent,
+    OrderSide,
+    OrderStatus,
+    RiskDecision,
+    RiskDecisionType,
+)
+from trade_platform.fundamentals import FundamentalFact, SQLiteFundamentalStore, StatementType
+from trade_platform.investments import (
+    CompanyResearchRecord,
+    DcfValuation,
+    FundamentalAnalytics,
+    InvestmentHolding,
+    InvestmentMacroSensitivity,
+    InvestmentPerformanceSnapshot,
+    InvestmentPortfolioPolicy,
+    InvestmentRebalanceDecision,
+    InvestmentRecommendation,
+    InvestmentReviewSchedule,
+    InvestmentThemeExposure,
+    InvestmentThesis,
+    SourceBackedFact,
+    SQLiteInvestmentStore,
+    ThemeDiscoveryRule,
+    ThesisDriftAssessment,
+    ThesisExpectation,
+    ThesisReview,
+    ThesisReviewOutcome,
+    ThesisStatus,
+    discover_themes_from_company_research,
+)
+from trade_platform.operational_alerts import AlertSeverity, SQLiteOperationalAlertStore
+from trade_platform.paper_execution import CashBalance, PaperOrder, Position, ReconciliationResult
+from trade_platform.paper_oms import SQLitePaperOms
+from trade_platform.research import SQLiteExperimentStore
+from trade_platform.return_history import PortfolioReturnObservation, SQLitePortfolioReturnStore
+from trade_platform.risk import SQLiteRiskDecisionStore
+from trade_platform.security import InMemoryRateLimiter, OperatorAuthenticator
+from trade_platform.strategy_promotion import (
+    PromotionDecision,
+    PromotionStatus,
+    SQLitePromotionLedger,
+)
+from trade_platform.strategy_validation import SQLiteStrategyRegistry, StrategyRunCard
 
 
 class ApiTests(unittest.TestCase):

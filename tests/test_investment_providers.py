@@ -1,16 +1,39 @@
+import unittest
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import unittest
 
-from trade_platform.data_providers import HttpResponse, ProviderCapabilities, ProviderConfiguration, ProviderConfigurationError, ProviderError, ProviderHealthRegistry, RetryPolicy
-from trade_platform.investment_providers import (FallbackInvestmentEvidenceProvider, FixtureInvestmentEvidenceProvider,
-    HttpsJsonInvestmentEvidenceProvider, InMemoryInvestmentEvidenceCache, InvestmentEvidencePage, InvestmentProviderHealthCadence, InvestmentProviderHealthMonitorJob, ProviderInvestmentFact, RetryingInvestmentEvidenceProvider, SecCompanyFactsProvider,
-    collect_investment_evidence_pages, ingest_investment_provider_facts, persist_investment_provider_health, SQLiteInvestmentProviderHealthStore, synchronize_investment_provider_health_alerts, synchronize_investment_provider_health_cadence_alerts, synchronize_persisted_investment_provider_health_alerts)
+from trade_platform.data_providers import (
+    HttpResponse,
+    ProviderCapabilities,
+    ProviderConfiguration,
+    ProviderConfigurationError,
+    ProviderError,
+    ProviderHealthRegistry,
+    RetryPolicy,
+)
+from trade_platform.investment_providers import (
+    FallbackInvestmentEvidenceProvider,
+    FixtureInvestmentEvidenceProvider,
+    HttpsJsonInvestmentEvidenceProvider,
+    InMemoryInvestmentEvidenceCache,
+    InvestmentEvidencePage,
+    InvestmentProviderHealthCadence,
+    InvestmentProviderHealthMonitorJob,
+    ProviderInvestmentFact,
+    RetryingInvestmentEvidenceProvider,
+    SecCompanyFactsProvider,
+    SQLiteInvestmentProviderHealthStore,
+    collect_investment_evidence_pages,
+    ingest_investment_provider_facts,
+    persist_investment_provider_health,
+    synchronize_investment_provider_health_alerts,
+    synchronize_investment_provider_health_cadence_alerts,
+    synchronize_persisted_investment_provider_health_alerts,
+)
 from trade_platform.investments import SQLiteInvestmentStore
 from trade_platform.operational_alerts import SQLiteOperationalAlertStore
-
 
 NOW = datetime(2026, 7, 1, tzinfo=timezone.utc)
 

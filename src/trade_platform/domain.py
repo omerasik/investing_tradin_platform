@@ -1,10 +1,10 @@
 """Canonical, dependency-free contracts shared by research, risk and paper execution."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
-from typing import Mapping
 from uuid import UUID, uuid4
 
 

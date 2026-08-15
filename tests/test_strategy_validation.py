@@ -1,8 +1,13 @@
+import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import unittest
 
-from trade_platform.strategy_validation import SQLiteStrategyRegistry, StrategyRunCard, StrategyValidationError, purged_walk_forward_splits
+from trade_platform.strategy_validation import (
+    SQLiteStrategyRegistry,
+    StrategyRunCard,
+    StrategyValidationError,
+    purged_walk_forward_splits,
+)
 
 
 def card() -> StrategyRunCard:

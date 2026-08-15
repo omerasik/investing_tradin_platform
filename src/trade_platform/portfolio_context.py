@@ -1,7 +1,6 @@
 """Build risk inputs from durable reconciliation evidence rather than caller assertions."""
 
 from datetime import datetime, timedelta
-from decimal import Decimal
 
 from .domain import PortfolioState, utc_now
 from .paper_execution import Position

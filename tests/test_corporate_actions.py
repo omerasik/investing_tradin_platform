@@ -1,10 +1,15 @@
+import unittest
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-import unittest
 
-from trade_platform.corporate_actions import (CorporateAction, CorporateActionError, CorporateActionType, SQLiteCorporateActionStore, apply_actions)
+from trade_platform.corporate_actions import (
+    CorporateAction,
+    CorporateActionError,
+    CorporateActionType,
+    SQLiteCorporateActionStore,
+    apply_actions,
+)
 from trade_platform.paper_execution import CashBalance, Position
-
 
 UTC = timezone.utc
 ANNOUNCED = datetime(2025, 1, 1, tzinfo=UTC)
@@ -12,7 +17,7 @@ EFFECTIVE = datetime(2025, 1, 5, tzinfo=UTC)
 
 
 def action(action_type: CorporateActionType, **changes: object) -> CorporateAction:
-    values: dict[str, object] = dict(instrument_id="US:NYSE:ACME", action_type=action_type, announced_at=ANNOUNCED, effective_at=EFFECTIVE, ingested_at=ANNOUNCED, provider="fixture-actions", source_identifier=action_type.value.lower())
+    values: dict[str, object] = {"instrument_id": "US:NYSE:ACME", "action_type": action_type, "announced_at": ANNOUNCED, "effective_at": EFFECTIVE, "ingested_at": ANNOUNCED, "provider": "fixture-actions", "source_identifier": action_type.value.lower()}
     if action_type is CorporateActionType.SPLIT:
         values["ratio"] = Decimal("2")
     elif action_type is CorporateActionType.CASH_DIVIDEND:

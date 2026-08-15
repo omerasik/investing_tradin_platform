@@ -3,7 +3,13 @@ from datetime import timedelta
 from decimal import Decimal
 
 from trade_platform.domain import utc_now
-from trade_platform.market_intelligence import (MarketIntelligenceValidationError, SQLiteNewsEventStore, SourceProfile, assess_event, fixture_event)
+from trade_platform.market_intelligence import (
+    MarketIntelligenceValidationError,
+    SourceProfile,
+    SQLiteNewsEventStore,
+    assess_event,
+    fixture_event,
+)
 
 
 class MarketIntelligenceTests(unittest.TestCase):

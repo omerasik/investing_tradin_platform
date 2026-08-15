@@ -1,7 +1,12 @@
 import unittest
 from unittest.mock import patch
 
-from trade_platform.config import EnvironmentSecretResolver, LiveTradingForbiddenError, PlatformConfig, SecretReferenceError
+from trade_platform.config import (
+    EnvironmentSecretResolver,
+    LiveTradingForbiddenError,
+    PlatformConfig,
+    SecretReferenceError,
+)
 
 
 class ConfigTests(unittest.TestCase):

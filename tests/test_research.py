@@ -1,7 +1,22 @@
 import unittest
 from decimal import Decimal
 
-from trade_platform.research import BreakoutStrategy, CostModel, FeatureDefinition, FeatureRegistry, MeanReversionStrategy, MomentumStrategy, MovingAverageCrossStrategy, SQLiteExperimentStore, WalkForwardProtocol, chronological_splits, inverse_risk_allocate, performance_report, run_vectorized_backtest, simple_moving_average
+from trade_platform.research import (
+    BreakoutStrategy,
+    CostModel,
+    FeatureDefinition,
+    FeatureRegistry,
+    MeanReversionStrategy,
+    MomentumStrategy,
+    MovingAverageCrossStrategy,
+    SQLiteExperimentStore,
+    WalkForwardProtocol,
+    chronological_splits,
+    inverse_risk_allocate,
+    performance_report,
+    run_vectorized_backtest,
+    simple_moving_average,
+)
 
 
 class ResearchTests(unittest.TestCase):
@@ -41,7 +56,7 @@ class ResearchTests(unittest.TestCase):
 
     def test_backtest_launch_is_idempotent_and_uses_transparent_family(self) -> None:
         store = SQLiteExperimentStore(); closes = tuple(Decimal(value) for value in ("10", "11", "12", "13", "14"))
-        launch = dict(strategy_version="momentum-v1", family="momentum", dataset_version="fixture-v1", feature_versions=("return:v1",), cost_model_version="cost-v1", parameters={"lookback": 2}, closes=closes, costs=CostModel(), idempotency_key="launch-1", actor="operator")
+        launch = {"strategy_version": "momentum-v1", "family": "momentum", "dataset_version": "fixture-v1", "feature_versions": ("return:v1",), "cost_model_version": "cost-v1", "parameters": {"lookback": 2}, "closes": closes, "costs": CostModel(), "idempotency_key": "launch-1", "actor": "operator"}
         first = store.launch(**launch); self.assertEqual(store.launch(**launch), first)
         with self.assertRaisesRegex(ValueError, "idempotency_conflict"):
             store.launch(**{**launch, "parameters": {"lookback": 3}})

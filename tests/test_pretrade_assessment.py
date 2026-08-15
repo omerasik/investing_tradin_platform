@@ -7,22 +7,47 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
 
-from trade_platform.broker_adapter import BrokerAccountSnapshot
-from trade_platform.broker_adapter import BrokerConfiguration, BrokerMode, SandboxPaperBrokerAdapter
+from trade_platform.broker_adapter import (
+    BrokerAccountSnapshot,
+    BrokerConfiguration,
+    BrokerMode,
+    SandboxPaperBrokerAdapter,
+)
 from trade_platform.broker_sync import PaperBrokerSyncService, SQLiteBrokerEventStore
-from trade_platform.domain import AssetClass, Instrument, MarketSnapshot, OrderIntent, OrderSide, PortfolioState, RiskDecisionType
-from trade_platform.execution_evidence import EventRiskObservation, HaltObservation, SlippageEstimate, SQLiteExecutionEvidenceStore
+from trade_platform.domain import (
+    AssetClass,
+    Instrument,
+    MarketSnapshot,
+    OrderIntent,
+    OrderSide,
+    RiskDecisionType,
+)
+from trade_platform.execution_evidence import (
+    EventRiskObservation,
+    HaltObservation,
+    SlippageEstimate,
+    SQLiteExecutionEvidenceStore,
+)
 from trade_platform.instruments import InstrumentRiskProfile, SQLiteInstrumentStore, TradingSession
 from trade_platform.model_registry import ModelValidation, ModelVersion, SQLiteModelRegistry
 from trade_platform.paper_execution import CashBalance, Position, ReconciliationResult
 from trade_platform.paper_oms import SQLitePaperOms
+from trade_platform.policy_registry import PolicyDocument, SQLitePolicyRegistry
 from trade_platform.portfolio_evidence import OmsReconciledAccountStore
 from trade_platform.portfolio_risk import PortfolioExposure, PortfolioRiskPolicy, StressScenario
-from trade_platform.policy_registry import PolicyDocument, SQLitePolicyRegistry
-from trade_platform.pretrade_assessment import PreTradeInputEvidence, SQLitePreTradeAssessmentStore, assess_pretrade, projected_exposure_fingerprint
+from trade_platform.pretrade_assessment import (
+    PreTradeInputEvidence,
+    SQLitePreTradeAssessmentStore,
+    assess_pretrade,
+)
 from trade_platform.quotes import QuoteObservation, SQLiteQuoteStore
 from trade_platform.return_history import PortfolioReturnObservation, SQLitePortfolioReturnStore
-from trade_platform.signal_engine import SignalEngine, SignalProposal, SQLiteSignalStore, ValidationStage
+from trade_platform.signal_engine import (
+    SignalEngine,
+    SignalProposal,
+    SQLiteSignalStore,
+    ValidationStage,
+)
 
 
 class PreTradeAssessmentTests(unittest.TestCase):

@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass, replace
 from decimal import Decimal
-from uuid import UUID
 
 from .domain import OrderIntent, OrderStatus, PortfolioState
 

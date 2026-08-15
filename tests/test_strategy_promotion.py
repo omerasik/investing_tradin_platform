@@ -1,17 +1,29 @@
-from decimal import Decimal
+import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import unittest
 from uuid import uuid4
 
-from trade_platform.cross_engine import CrossEngineReport, GoldenExecutionScenario, GoldenMarketBar, run_realistic_golden_vector_event_reconciliation
+from tests.test_strategy_validation import card
+from trade_platform.cross_engine import (
+    CrossEngineReport,
+    GoldenExecutionScenario,
+    GoldenMarketBar,
+    run_realistic_golden_vector_event_reconciliation,
+)
 from trade_platform.research import CostModel, MovingAverageCrossStrategy
 from trade_platform.research_validation import benjamini_hochberg, run_purged_walk_forward
-from trade_platform.strategy_promotion import PromotionDecision, PromotionPolicy, PromotionStatus, SQLitePromotionLedger, StrategyActivation, evaluate_promotion
+from trade_platform.strategy_promotion import (
+    PromotionDecision,
+    PromotionPolicy,
+    PromotionStatus,
+    SQLitePromotionLedger,
+    StrategyActivation,
+    evaluate_promotion,
+)
 from trade_platform.strategy_validation import purged_walk_forward_splits
-from tests.test_strategy_validation import card
 
 
 class StrategyPromotionTests(unittest.TestCase):

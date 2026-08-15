@@ -4,11 +4,12 @@ import hashlib
 import json
 import sqlite3
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Protocol
 from urllib.parse import urlencode
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 

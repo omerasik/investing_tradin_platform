@@ -11,3 +11,11 @@ write without explicit identity mapping. Production migrations are forward-only:
 do not run schema downgrades against a database with evidence. Restore drills
 must restore into a fresh database, run migrations, compare counts/checksums,
 then reconcile OMS/risk state before permitting a paper risk increase.
+
+CI now executes `pg_dump --format=custom`, corrupt-backup rejection, separate
+database creation, `pg_restore`, Alembic revision comparison, count plus SHA-256
+content comparison for 16 critical tables, manifest classification and OMS/
+cursor/risk/kill-switch/promotion/reconciliation reconstruction. Migration 0007
+adds an append-only recovery gate; risk increase remains blocked until checks
+and reconciliation release it. This proves logical CI recovery, not encrypted
+off-site retention or production RPO/RTO.

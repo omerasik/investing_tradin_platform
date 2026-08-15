@@ -1,20 +1,34 @@
-from decimal import Decimal
-from datetime import datetime, timedelta, timezone
-from tempfile import TemporaryDirectory
-from pathlib import Path
 import unittest
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from uuid import uuid4
 
-from trade_platform.broker_adapter import BrokerConfiguration, BrokerMode, InternalAccountState, SandboxPaperBrokerAdapter
+from tests.test_paper_execution import intent
+from trade_platform.broker_adapter import (
+    BrokerConfiguration,
+    BrokerMode,
+    InternalAccountState,
+    SandboxPaperBrokerAdapter,
+)
 from trade_platform.broker_sync import PaperBrokerSyncService, SQLiteBrokerEventStore
 from trade_platform.domain import RiskDecision, RiskDecisionType
+from trade_platform.operational_alerts import SQLiteOperationalAlertStore
 from trade_platform.paper_execution import CashBalance
 from trade_platform.paper_oms import SQLitePaperOms
-from trade_platform.operational_alerts import SQLiteOperationalAlertStore
-from trade_platform.portfolio_risk import PortfolioExposure, PortfolioRiskPolicy, StressScenario, evaluate_portfolio
 from trade_platform.policy_registry import PolicyDocument, SQLitePolicyRegistry
-from trade_platform.pretrade_assessment import PreTradeAssessment, PreTradeInputEvidence, SQLitePreTradeAssessmentStore
-from tests.test_paper_execution import intent
+from trade_platform.portfolio_risk import (
+    PortfolioExposure,
+    PortfolioRiskPolicy,
+    StressScenario,
+    evaluate_portfolio,
+)
+from trade_platform.pretrade_assessment import (
+    PreTradeAssessment,
+    PreTradeInputEvidence,
+    SQLitePreTradeAssessmentStore,
+)
 
 
 class BrokerSyncTests(unittest.TestCase):

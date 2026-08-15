@@ -16,3 +16,9 @@ explicit configuration, so business rules do not choose a SQL dialect. This is
 only the first persistence migration: existing legacy SQLite repositories are
 not yet all moved behind that boundary, and schema presence alone is not a
 production-readiness claim.
+
+The configured paper composition now owns policy, instrument/session, signal,
+model approval, quote/execution/return evidence, risk, OMS, broker event/cursor,
+reconciliation, validation and promotion authorities in PostgreSQL with no
+silent SQLite fallback. A durable recovery gate blocks risk increase after a
+restore until reconciliation. This paper cutover is not live readiness.

@@ -1,15 +1,14 @@
+import unittest
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import unittest
 from uuid import uuid4
 
 from trade_platform.broker_adapter import BrokerAccountSnapshot
 from trade_platform.domain import OrderIntent, OrderSide, OrderStatus
 from trade_platform.paper_execution import CashBalance, PaperOrder, Position, ReconciliationResult
 from trade_platform.paper_oms import PaperOmsError, SQLitePaperOms
-
 
 NOW = datetime(2025, 1, 2, 14, 30, tzinfo=timezone.utc)
 

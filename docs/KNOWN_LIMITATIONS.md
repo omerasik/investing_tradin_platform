@@ -52,8 +52,16 @@ The full requirement-level matrix is in
 - The dashboard has selected browser E2E evidence, but lacks production
   authentication/RBAC/MFA, interactive charts, accessibility verification and
   the full required operator workflow suite.
-- Security is development-grade: bearer authentication and fail-closed local
-  controls exist; sessions/RBAC/MFA/CSRF/security headers/secret manager/SAST/
-  SCA/SBOM/encrypted off-site backup and disaster-recovery drills remain open.
+- Authentication remains development-grade bearer-token auth. Production
+  sessions/RBAC/MFA, CSRF/session hardening, managed secrets, encrypted off-site
+  backup and incident-operated RPO/RTO remain open. Full-package static/security
+  scans, dependency audits, secret detection, SBOM/license evidence and a fresh
+  PostgreSQL restore/reconciliation drill are now CI gates.
+- The repository is PUBLIC. It contains no approved credential or private
+  dataset; mandatory tracked-file secret scanning reduces but does not remove
+  accidental-disclosure risk. Visibility was not changed.
+- Complete-package mypy has 120 known errors across 18 legacy modules. CI uses
+  a file-level non-increasing ratchet and requires the critical PostgreSQL slice
+  to remain at zero errors.
 - Upstream repositories are reference-only pending complete isolated security,
   license and benchmark evidence. No third-party runtime dependency is approved.

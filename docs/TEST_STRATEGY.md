@@ -4,9 +4,12 @@ Use unit, integration, contract, property, data-quality, backtest-regression, ri
 
 The CI suite provisions ephemeral PostgreSQL, applies Alembic migrations, and
 runs migration/immutable-schema integration coverage when `POSTGRES_TEST_DSN`
-is supplied. It also runs compile, deterministic unit tests, scoped Ruff/mypy,
-Bandit, dependency audit, SBOM generation, TypeScript checking and the built
-dashboard smoke workflow. Local machines without a running PostgreSQL service
+is supplied. It also runs compile, deterministic unit tests, full-tree Ruff,
+full-package Bandit, complete-package mypy debt ratchet, zero-error mypy for the
+critical PostgreSQL slice, Python/frontend dependency audits, tracked source/
+configuration secret detection, Python SBOM, frontend license inventory, frozen frontend
+install, TypeScript, ESLint, production build and dashboard smoke. Local
+machines without a running PostgreSQL service
 skip that integration class explicitly; this is an external-environment gap,
 not a passing production test.
 
@@ -21,3 +24,8 @@ OMS/fill idempotency, daily-notional rejection, concurrent reservations and
 validation-package rollback.
 It is designed to be extended with concurrent reservation/restart/reconciliation
 cases as each legacy repository moves to the adapter boundary.
+
+The recovery job creates a custom-format backup, proves a truncated backup is
+rejected, restores into a separately created database, compares revision plus
+16 critical table hashes/counts, reconstructs runtime state and releases a
+durable recovery gate only after reconciliation.

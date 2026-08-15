@@ -10,3 +10,10 @@ before any mapped write. Downgrades are permitted only for disposable schema
 tests; production migrations are forward-only. A failed migration, unavailable
 database, stale reconciliation or incomplete restore must leave risk increase
 and paper submission fail-closed.
+
+After any restore, run `scripts/verify_postgres_restore.py --source-dsn ...
+--restored-dsn ...` against a separately created database. Do not release the
+append-only recovery gate unless revision, critical hashes/counts, validation
+manifests, OMS reconstruction, broker cursor, risk reservation, kill switch,
+promotion and reconciliation checks all pass. A corrupt or incomplete dump is
+a failed deployment.

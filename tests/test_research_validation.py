@@ -1,8 +1,14 @@
-from decimal import Decimal
 import unittest
+from decimal import Decimal
 
 from trade_platform.research import CostModel, MovingAverageCrossStrategy
-from trade_platform.research_validation import ResearchValidationError, benjamini_hochberg, bootstrap_total_returns, probabilistic_sharpe_exceeds, run_purged_walk_forward
+from trade_platform.research_validation import (
+    ResearchValidationError,
+    benjamini_hochberg,
+    bootstrap_total_returns,
+    probabilistic_sharpe_exceeds,
+    run_purged_walk_forward,
+)
 from trade_platform.strategy_validation import purged_walk_forward_splits
 
 

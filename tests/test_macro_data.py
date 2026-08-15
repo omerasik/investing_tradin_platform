@@ -1,11 +1,10 @@
+import unittest
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import unittest
 
 from trade_platform.macro_data import MacroDataError, MacroRelease, SQLiteMacroReleaseStore
-
 
 UTC = timezone.utc
 OBS_START = datetime(2025, 1, 1, tzinfo=UTC)

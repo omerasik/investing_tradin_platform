@@ -28,8 +28,8 @@ jobs:
     env:
       POSTGRES_TEST_DSN: postgresql://postgres:postgres@127.0.0.1:5432/trade_platform
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: python -m pip install --upgrade pip
@@ -50,24 +50,32 @@ jobs:
           psql postgresql://postgres:postgres@127.0.0.1:5432/postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE trade_platform_restore"
           pg_restore --no-owner --no-privileges --dbname="$RESTORED_POSTGRES_DSN" /tmp/trade-platform.dump
           python scripts/verify_postgres_restore.py --source-dsn "$POSTGRES_TEST_DSN" --restored-dsn "$RESTORED_POSTGRES_DSN"
-      - run: ruff check src/trade_platform/persistence.py src/trade_platform/postgres_schema.py src/trade_platform/postgres_backfill.py src/trade_platform/legacy_migration_fixture.py src/trade_platform/postgres_repositories.py src/trade_platform/postgres_runtime.py src/trade_platform/postgres_recovery.py src/trade_platform/postgres_pretrade.py src/trade_platform/postgres_market_context.py src/trade_platform/postgres_decision_authorities.py scripts/verify_postgres_restore.py tests/test_persistence.py tests/test_postgres_backfill_integration.py tests/test_postgres_integration.py tests/test_postgres_runtime.py migrations/versions/20260815_0004_postgres_pretrade_evidence.py migrations/versions/20260815_0005_postgres_market_context.py migrations/versions/20260815_0006_postgres_decision_authorities.py migrations/versions/20260815_0007_postgres_recovery_gate.py
+      - run: ruff check src tests migrations scripts
+      - name: Complete-package mypy regression ratchet
+        run: python scripts/check_mypy_baseline.py
       - run: mypy --follow-imports=skip src/trade_platform/persistence.py src/trade_platform/postgres_schema.py src/trade_platform/postgres_backfill.py src/trade_platform/legacy_migration_fixture.py src/trade_platform/postgres_repositories.py src/trade_platform/postgres_runtime.py src/trade_platform/postgres_recovery.py src/trade_platform/postgres_pretrade.py src/trade_platform/postgres_market_context.py src/trade_platform/postgres_decision_authorities.py scripts/verify_postgres_restore.py
-      - run: bandit -q -r src/trade_platform/persistence.py src/trade_platform/postgres_backfill.py src/trade_platform/legacy_migration_fixture.py src/trade_platform/postgres_repositories.py src/trade_platform/postgres_runtime.py src/trade_platform/postgres_recovery.py src/trade_platform/postgres_pretrade.py src/trade_platform/postgres_market_context.py src/trade_platform/postgres_decision_authorities.py scripts/verify_postgres_restore.py
+      - run: bandit -q -r src/trade_platform
       - name: Audit resolved Python dependencies
         run: |
           python -m pip freeze --exclude-editable > /tmp/resolved-requirements.txt
           pip-audit --strict -r /tmp/resolved-requirements.txt
-      - run: cyclonedx-py environment --output-file sbom.json
-      - name: Fail on committed secret-like environment files
-        run: |
-          ! git ls-files | grep -E '(^|/)(\.env|.*\.pem|.*\.key)$'
-      - uses: actions/setup-node@v4
+      - run: cyclonedx-py environment --output-file sbom-python.json
+      - name: Scan tracked source and configuration for credential patterns and entropy
+        run: detect-secrets-hook --baseline .secrets.baseline $(git ls-files -- . ':!.secrets.baseline')
+      - uses: actions/setup-node@v5
         with:
           node-version: "22"
       - run: corepack enable
       - run: pnpm install --frozen-lockfile --ignore-scripts
         working-directory: web
       - run: pnpm exec tsc --noEmit
+        working-directory: web
+      - run: pnpm lint
+        working-directory: web
+      - run: pnpm audit --prod --audit-level high
+        working-directory: web
+      - name: Record frontend production dependency licenses
+        run: pnpm licenses list --prod --json > frontend-licenses.json
         working-directory: web
       - run: pnpm exec next build
         working-directory: web
@@ -82,3 +90,10 @@ jobs:
             sleep 1
           done
           DASHBOARD_URL=http://127.0.0.1:3000 node scripts/verify-dashboard.mjs
+      - name: Retain dependency and licensing evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-evidence
+          path: |
+            sbom-python.json
+            web/frontend-licenses.json

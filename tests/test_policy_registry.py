@@ -1,8 +1,8 @@
 import unittest
 from datetime import datetime, timezone
-from tempfile import TemporaryDirectory
-from pathlib import Path
 from decimal import Decimal
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from trade_platform.policy_registry import PolicyDocument, PolicyRegistryError, SQLitePolicyRegistry
 

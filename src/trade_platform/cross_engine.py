@@ -11,7 +11,13 @@ from uuid import UUID, uuid4
 
 from .corporate_actions import CorporateAction, CorporateActionType
 from .domain import OrderSide, utc_now
-from .event_backtest import EventDrivenBacktester, ExecutionAssumptions, MarketEvent, SimulatedOrderType, create_order
+from .event_backtest import (
+    EventDrivenBacktester,
+    ExecutionAssumptions,
+    MarketEvent,
+    SimulatedOrderType,
+    create_order,
+)
 from .paper_execution import PaperOrder, Position
 from .research import BacktestResult, CostModel, run_vectorized_backtest
 
@@ -184,7 +190,7 @@ def run_golden_vector_event_reconciliation(
             raise GoldenRunValidationError("golden_run_corporate_action_not_point_in_time_available")
     vector = run_vectorized_backtest([bar.adjusted_close for bar in bars], list(signals), CostModel())
     engine = EventDrivenBacktester(ExecutionAssumptions(maximum_participation=Decimal("1")), initial_cash=Decimal("1"))
-    pending_actions = list(sorted(corporate_actions, key=lambda item: (item.effective_at, item.provider, item.source_identifier, item.revision)))
+    pending_actions = sorted(corporate_actions, key=lambda item: (item.effective_at, item.provider, item.source_identifier, item.revision))
     applied_actions: list[str] = []
     submitted_orders = 0
     for index, bar in enumerate(bars):
@@ -258,7 +264,7 @@ def run_realistic_golden_vector_event_reconciliation(
         if previous_time is not None and bar.occurred_at <= previous_time:
             raise GoldenRunValidationError("golden_run_bars_must_be_strictly_chronological")
         previous_time = bar.occurred_at
-    pending_actions = list(sorted(corporate_actions, key=lambda item: (item.effective_at, item.provider, item.source_identifier, item.revision)))
+    pending_actions = sorted(corporate_actions, key=lambda item: (item.effective_at, item.provider, item.source_identifier, item.revision))
     action_keys: set[tuple[str, str, int]] = set()
     active_instrument_id = instrument_id
     for action in pending_actions:

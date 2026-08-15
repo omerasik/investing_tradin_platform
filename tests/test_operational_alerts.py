@@ -1,8 +1,13 @@
+import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import unittest
 
-from trade_platform.operational_alerts import AlertSeverity, AlertStatus, SQLiteFailureDrillStore, SQLiteOperationalAlertStore
+from trade_platform.operational_alerts import (
+    AlertSeverity,
+    AlertStatus,
+    SQLiteFailureDrillStore,
+    SQLiteOperationalAlertStore,
+)
 from trade_platform.shadow_mode import record_failure_drill
 
 

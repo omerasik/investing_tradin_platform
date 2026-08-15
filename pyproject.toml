@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["alembic>=1.14,<2", "bandit>=1.8,<2", "cyclonedx-bom>=5.1,<6", "httpx>=0.27,<1", "mypy>=1.13,<2", "pip-audit>=2.8,<3", "ruff>=0.8,<1"]
+dev = ["alembic>=1.14,<2", "bandit>=1.8,<2", "cyclonedx-bom>=5.1,<6", "detect-secrets>=1.5,<2", "httpx>=0.27,<1", "mypy>=1.13,<2", "pip-audit>=2.8,<3", "ruff>=0.8,<1"]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -22,3 +22,9 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.lint]
+# Decimal string constructors preserve reviewable financial precision. B008 is
+# required by FastAPI's dependency-injection signatures. UP017 is intentionally
+# deferred because persisted timezone representations are compatibility data.
+ignore = ["B008", "FURB157", "UP017"]

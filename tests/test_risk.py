@@ -4,7 +4,6 @@ from decimal import Decimal
 from uuid import uuid4
 
 from trade_platform.domain import (
-    AssetClass,
     MarketSnapshot,
     OrderIntent,
     OrderSide,
@@ -77,7 +76,7 @@ class RiskEngineTests(unittest.TestCase):
         self.assertEqual(repeated.reasons, ("duplicate_intent",))
 
     def test_execution_context_prevents_event_slippage_broker_and_buying_power_bypass(self) -> None:
-        intent, signal, market, portfolio, execution = approved_inputs()
+        intent, signal, market, portfolio, _execution = approved_inputs()
         blocked = PreTradeExecutionContext(False, True, False, Decimal("0.03"), Decimal("0.9"), Decimal("0"), False, False, False)
         result = RiskEngine(RiskPolicy()).assess(intent, signal, market, portfolio, blocked)
         self.assertEqual(result.decision, RiskDecisionType.REJECT)

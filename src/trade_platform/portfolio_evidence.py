@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from .broker_adapter import BrokerAccountSnapshot
 from .domain import OrderIntent, OrderSide, PortfolioState

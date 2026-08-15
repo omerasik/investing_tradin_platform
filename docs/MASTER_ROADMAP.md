@@ -1315,3 +1315,55 @@ exists.
 - Test evidence: GitHub Actions [verify run 31886409990](https://github.com/omerasik/investing_tradin_platform/actions/runs/31886409990) passed on commit `38d8143`. PostgreSQL 16 applied migrations through 0006 and all **274 Python tests ran without skips**. The migration integration test executed dry-run, mapped APPLY, identical second APPLY, exact `NUMERIC(30,12)` checks, destination report reconciliation, PostgreSQL OMS restart to final `FILLED`, legacy-package integrity classification, missing-mapping failure, conflicting replay failure and unsupported-record failure. Ruff, mypy, Bandit, dependency audit, SBOM, secret guard, locked frontend install, TypeScript, production build and dashboard smoke also passed.
 - Safety state: the fixture and broker records are deterministic and offline. No credential, network broker or live-order path exists; live trading remains disabled.
 - Status: VERIFIED. Execution-program Cycle 6 is complete; PostgreSQL failure injection is next.
+
+## Cycle 190 evidence — execution-program Cycle 7
+
+- Objective: inject failures at the real PostgreSQL transaction/runtime
+  boundaries and prove fail-closed atomicity.
+- Evidence: GitHub Actions run 31886670023 passed at commit `95e0209` with all
+  **280 tests without skips**. Coverage terminates/unavailable connections and
+  forces failures during reservation+decision, OMS intent+event, broker
+  event+cursor+fill and reconciliation/account writes; it also proves an
+  unknown validation package cannot promote. Existing restart, concurrency,
+  fill replay/conflict and manifest-tamper tests remain active.
+- Defect closed: raw psycopg connection exceptions are normalized to
+  `PersistenceError("postgres_connection_failed")`; no approval/order path can
+  treat database uncertainty as success.
+- Status: VERIFIED. No broker credential, network broker or live order exists.
+
+## Cycle 191 evidence — execution-program Cycle 8
+
+- Objective: execute a fresh-database PostgreSQL backup/restore/reconstruction
+  drill with a durable post-restore safety gate.
+- Evidence: migration 0007 adds immutable `runtime_recovery_events`;
+  `PostgresRecoveryGate` blocks risk increases until reconciliation. CI run
+  31886880648 passed at commit `0af2f0f` with all **281 tests without skips**.
+  The job produced a custom-format dump, rejected a truncated dump, created a
+  separate database, restored it, matched Alembic revision and count+SHA-256
+  content for 16 critical tables, classified validation manifests and
+  reconstructed OMS, cursor, risk, kill switch, promotion and reconciliation.
+- Status: VERIFIED for logical CI recovery. Encrypted off-site retention and
+  production RPO/RTO remain outside this paper-only repository.
+
+## Cycle 192 candidate — execution-program Cycle 9
+
+- Objective: widen quality/security/repository evidence to the whole product
+  surface and synchronize the architecture/runbooks.
+- Implemented gates: full-tree Ruff; full-package Bandit; complete-package mypy
+  file-level non-increasing ratchet (**120 known errors / 18 legacy modules**)
+  plus a zero-error critical PostgreSQL slice; compile/tests/migrations/failure/
+  backfill/restore; Python audit and CycloneDX SBOM; content-based tracked source/
+  configuration secret scan; frozen frontend install, TypeScript, ESLint, production audit,
+  build and dashboard smoke; retained frontend production-license inventory.
+- Supply-chain remediation: Next.js moved from vulnerable 16.1.6 to 16.3.1 and
+  transitive `nanoid` is locked to 3.3.18. Local production audit reports no
+  known vulnerabilities. Actions use the current Node 24-based checkout/setup
+  majors. Upstream artifacts remain reference-only with the existing license/
+  attribution matrix.
+- Repository/auth posture: GitHub reports the repository as **PUBLIC**;
+  visibility was not changed. Current bearer auth remains development/paper
+  only; the documented target is OIDC, short-lived sessions, MFA, RBAC, CSRF
+  protection, auditable authorization and managed secrets.
+- Acceptance: local Ruff, mypy ratchet, Bandit, 281-test suite, TypeScript,
+  ESLint, production audit and Next build pass. Final VERIFIED status and P0
+  exit depend on the expanded GitHub Actions run.

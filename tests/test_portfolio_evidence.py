@@ -3,12 +3,18 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import uuid4
 
+from trade_platform.broker_adapter import BrokerAccountSnapshot
 from trade_platform.domain import AssetClass, Instrument, OrderIntent, OrderSide
 from trade_platform.instruments import InstrumentRiskProfile, SQLiteInstrumentStore
-from trade_platform.broker_adapter import BrokerAccountSnapshot
 from trade_platform.paper_execution import CashBalance, Position, ReconciliationResult
 from trade_platform.paper_oms import SQLitePaperOms
-from trade_platform.portfolio_evidence import PortfolioEvidenceError, ReconciledAccountSnapshot, ReconciledPositionSnapshot, SQLiteReconciledAccountStore, SQLiteReconciledPositionStore
+from trade_platform.portfolio_evidence import (
+    PortfolioEvidenceError,
+    ReconciledAccountSnapshot,
+    ReconciledPositionSnapshot,
+    SQLiteReconciledAccountStore,
+    SQLiteReconciledPositionStore,
+)
 from trade_platform.quotes import QuoteObservation, SQLiteQuoteStore
 
 

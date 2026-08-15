@@ -11,9 +11,12 @@ from uuid import UUID, uuid4
 
 from .cross_engine import CrossEngineReport, RealisticGoldenRunReport
 from .domain import utc_now
+from .quant_validation import (
+    REQUIRED_EVIDENCE,
+    SQLiteValidationEvidenceStore,
+)
 from .research_validation import MultipleTestingResult, WalkForwardResult
 from .strategy_validation import StrategyRunCard, StrategyValidationError
-from .quant_validation import REQUIRED_EVIDENCE, SQLiteValidationEvidenceStore, StrategyValidationPackage
 
 
 class PromotionStatus(str, Enum):
@@ -175,9 +178,8 @@ def evaluate_promotion_package(*, run_card: StrategyRunCard, package_id: UUID,
                 reasons.append(f"{evidence_name}_evidence_stale")
         except (KeyError, TypeError, ValueError):
             reasons.append(f"invalid_{evidence_name}_timestamp")
-        if evidence_name in {"data_quality", "oos_walk_forward", "golden_reconciliation", "execution_realism", "scorecard"}:
-            if artifact.get("evidence_type") != evidence_name:
-                reasons.append(f"invalid_{evidence_name}_evidence")
+        if evidence_name in {"data_quality", "oos_walk_forward", "golden_reconciliation", "execution_realism", "scorecard"} and artifact.get("evidence_type") != evidence_name:
+            reasons.append(f"invalid_{evidence_name}_evidence")
         if artifact.get("passed") is False:
             reasons.append(f"{evidence_name}_failed")
         if evidence_name == "capacity":

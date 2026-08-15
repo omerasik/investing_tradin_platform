@@ -1,8 +1,8 @@
+import unittest
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import unittest
 from uuid import uuid4
 
 from trade_platform.backup_recovery import BackupRecoveryError, SQLiteBackupService

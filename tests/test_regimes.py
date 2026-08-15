@@ -1,7 +1,14 @@
 import unittest
 from decimal import Decimal
 
-from trade_platform.regimes import (Regime, RegimeValidationError, StrategyRegimeProfile, allocate_ensemble, estimate_regime, walk_forward_estimates)
+from trade_platform.regimes import (
+    Regime,
+    RegimeValidationError,
+    StrategyRegimeProfile,
+    allocate_ensemble,
+    estimate_regime,
+    walk_forward_estimates,
+)
 
 
 class RegimeTests(unittest.TestCase):

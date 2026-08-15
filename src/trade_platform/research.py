@@ -1,14 +1,14 @@
 """Deterministic research primitives with explicit no-look-ahead timing semantics."""
 
-import json
 import hashlib
+import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from math import sqrt
-from statistics import mean, pstdev
 from pathlib import Path
+from statistics import mean, pstdev
 from uuid import UUID, uuid4
 
 from .domain import utc_now
@@ -263,7 +263,8 @@ class SQLiteExperimentStore:
         if walk_forward_protocol is None:
             report.update({"walk_forward_status": "NOT_REQUESTED", "walk_forward_splits": 0, "walk_forward_held_out_periods": 0})
         else:
-            from .research_validation import ResearchValidationError as WalkForwardValidationError, run_purged_walk_forward
+            from .research_validation import ResearchValidationError as WalkForwardValidationError
+            from .research_validation import run_purged_walk_forward
             from .strategy_validation import StrategyValidationError, purged_walk_forward_splits
             try:
                 splits = purged_walk_forward_splits(

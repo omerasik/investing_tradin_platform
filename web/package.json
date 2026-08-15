@@ -1,7 +1,23 @@
 {
   "name": "trade-platform-dashboard",
   "private": true,
-  "scripts": {"dev": "next dev", "build": "next build", "lint": "next lint", "verify:dashboard": "node scripts/verify-dashboard.mjs"},
-  "dependencies": {"next": "16.1.6", "react": "19.2.4", "react-dom": "19.2.4"},
-  "devDependencies": {"typescript": "5.9.3", "@types/node": "24.10.1", "@types/react": "19.2.7", "@types/react-dom": "19.2.3"}
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "lint": "eslint .",
+    "verify:dashboard": "node scripts/verify-dashboard.mjs"
+  },
+  "dependencies": {
+    "next": "16.3.1",
+    "react": "19.2.4",
+    "react-dom": "19.2.4"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.3",
+    "eslint": "9.39.2",
+    "eslint-config-next": "16.3.1",
+    "typescript": "5.9.3"
+  }
 }
