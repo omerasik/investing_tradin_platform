@@ -18,9 +18,10 @@ legacy `build_paper_runtime` SQLite constructor.
 | Instrument risk profile/session calendar | normalized base schema is insufficient | MUST_MIGRATE | BLOCKS_SUBMISSION |
 | Validated signal/lifecycle | normalized base schema is insufficient | MUST_MIGRATE | BLOCKS_SUBMISSION |
 | Model validation/approval/drift/prediction | normalized base schema is insufficient | MUST_MIGRATE | BLOCKS_SUBMISSION |
-| Halt/event-risk/slippage evidence | none | MUST_MIGRATE | BLOCKS_SUBMISSION |
-| Point-in-time quotes | none | MUST_MIGRATE | BLOCKS_SUBMISSION |
-| Portfolio return history/provider health | none | MUST_MIGRATE | BLOCKS_SUBMISSION |
+| Halt/event-risk/slippage evidence | `PostgresExecutionEvidenceStore` | PostgreSQL authority | COMPOSED_PENDING_CI |
+| Point-in-time quotes | `PostgresQuoteStore` | PostgreSQL authority | COMPOSED_PENDING_CI |
+| Portfolio return history | `PostgresPortfolioReturnStore` | PostgreSQL authority | COMPOSED_PENDING_CI |
+| Return provider ingestion health/cadence | none | MUST_MIGRATE | BLOCKS_MANAGED_INGESTION |
 | SQLite paper runtime | `build_paper_runtime` | RESEARCH_ONLY | LOCAL_ONLY |
 | Other SQLite research/evaluation stores | module-specific local stores | RESEARCH_ONLY or LEGACY_NONCRITICAL | OUTSIDE_PAPER_AUTHORITY |
 

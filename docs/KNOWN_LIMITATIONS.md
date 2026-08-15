@@ -15,9 +15,10 @@ The full requirement-level matrix is in
 - PostgreSQL configuration can no longer enter the legacy SQLite paper-runtime
   constructor, and an explicit PostgreSQL-only core authority graph exists.
   That graph is deliberately not submission-ready. Policy and signed
-  assessment now have PostgreSQL implementations pending CI; rich
-  instrument/signal/model evidence, quotes, execution context and return
-  history remain `MUST_MIGRATE` before the full runtime can be composed.
+  assessment are PostgreSQL-CI verified. Point-in-time quotes, execution
+  context and return history are implemented pending CI; rich
+  instrument/signal/model evidence remains `MUST_MIGRATE` before the full
+  runtime can be composed. Managed return-provider health/cadence is also open.
 - Golden artifacts now retain declared spread, fee, latency, participation and
   impact assumptions, partial/unfilled-order observations, and raw versus
   explained divergence. They are deterministic synthetic regressions, not

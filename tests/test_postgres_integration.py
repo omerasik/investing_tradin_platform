@@ -5,7 +5,7 @@ import os
 import threading
 import unittest
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -156,6 +156,100 @@ class PostgresIntegrationTests(unittest.TestCase):
                 "WHERE intent_id = %s",
                 ("0" * 64, intent_id),
             )
+        restarted.close()
+
+    def test_point_in_time_market_context_survives_restart(self) -> None:
+        from trade_platform.domain import OrderSide
+        from trade_platform.execution_evidence import (
+            EventRiskObservation,
+            HaltObservation,
+            SlippageEstimate,
+        )
+        from trade_platform.persistence import PostgresDatabase
+        from trade_platform.postgres_market_context import (
+            PostgresExecutionEvidenceStore,
+            PostgresPortfolioReturnStore,
+            PostgresQuoteStore,
+        )
+        from trade_platform.quotes import QuoteObservation
+        from trade_platform.return_history import PortfolioReturnObservation
+
+        database = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        instrument_id = str(self.instrument_id)
+        quotes = PostgresQuoteStore(database)
+        quote = QuoteObservation(
+            uuid4(),
+            instrument_id,
+            Decimal("99.9"),
+            Decimal(100),
+            Decimal(100),
+            Decimal(1),
+            "integration-feed",
+            f"quote-{self.exchange_id}",
+            self.now,
+            self.now,
+        )
+        quotes.append(quote)
+        execution = PostgresExecutionEvidenceStore(database)
+        execution.append_halt(
+            HaltObservation(
+                uuid4(), instrument_id, False, "venue", f"halt-{self.exchange_id}", self.now, self.now
+            )
+        )
+        execution.append_event_risk(
+            EventRiskObservation(
+                uuid4(),
+                instrument_id,
+                Decimal("0.1"),
+                "events",
+                f"event-{self.exchange_id}",
+                self.now,
+                self.now,
+            )
+        )
+        execution.append_slippage(
+            SlippageEstimate(
+                uuid4(),
+                instrument_id,
+                OrderSide.BUY,
+                Decimal("0.001"),
+                "model",
+                f"slippage-{self.exchange_id}",
+                self.now,
+                self.now,
+            )
+        )
+        returns = PostgresPortfolioReturnStore(database)
+        account_id = f"integration-paper-{str(self.exchange_id)[:8]}"
+        observation = PortfolioReturnObservation(
+            uuid4(),
+            account_id,
+            self.now - timedelta(days=2),
+            self.now - timedelta(days=1),
+            Decimal("0.01"),
+            "paper-oms",
+            f"return-{self.exchange_id}",
+            self.now - timedelta(days=1),
+        )
+        returns.append(observation)
+        database.close()
+
+        restarted = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        self.assertEqual(PostgresQuoteStore(restarted).latest_as_of(instrument_id, self.now), quote)
+        snapshot = PostgresExecutionEvidenceStore(restarted).snapshot_as_of(
+            instrument_id, OrderSide.BUY, self.now
+        )
+        self.assertEqual(snapshot.event.risk, Decimal("0.1"))
+        self.assertFalse(snapshot.halt.halted)
+        self.assertEqual(snapshot.slippage.expected_fraction, Decimal("0.001"))
+        evidence = PostgresPortfolioReturnStore(restarted).evidence_for_policy(
+            account_id,
+            self.now,
+            minimum_observations=1,
+            window_observations=1,
+            maximum_age_seconds=86400,
+        )
+        self.assertEqual(evidence.observations, (observation,))
         restarted.close()
 
     def test_atomic_oms_fill_and_risk_idempotency(self) -> None:

@@ -15,6 +15,11 @@ from .broker_sync import PaperBrokerSyncService
 from .config import PlatformConfig
 from .persistence import PersistenceTarget, PostgresDatabase
 from .portfolio_evidence import OmsReconciledAccountStore
+from .postgres_market_context import (
+    PostgresExecutionEvidenceStore,
+    PostgresPortfolioReturnStore,
+    PostgresQuoteStore,
+)
 from .postgres_paper_oms import PostgresBrokerEventStore, PostgresPaperOms
 from .postgres_pretrade import PostgresPolicyRegistry, PostgresPreTradeAssessmentStore
 from .postgres_quant_validation import PostgresPromotionLedger, PostgresQuantValidationStore
@@ -62,6 +67,9 @@ class PostgresPaperCoreAuthorities:
     promotions: PostgresPromotionLedger
     policies: PostgresPolicyRegistry
     assessments: PostgresPreTradeAssessmentStore
+    quotes: PostgresQuoteStore
+    execution_evidence: PostgresExecutionEvidenceStore
+    return_history: PostgresPortfolioReturnStore
 
     @property
     def submission_ready(self) -> bool:
@@ -126,6 +134,9 @@ def build_postgres_paper_core(
             ),
             policies=policies,
             assessments=assessments,
+            quotes=PostgresQuoteStore(database),
+            execution_evidence=PostgresExecutionEvidenceStore(database),
+            return_history=PostgresPortfolioReturnStore(database),
         )
     except Exception:
         database.close()

@@ -18,6 +18,11 @@ from trade_platform.paper_runtime import (
     build_paper_runtime,
 )
 from trade_platform.persistence import PersistenceTarget, PostgresDatabase
+from trade_platform.postgres_market_context import (
+    PostgresExecutionEvidenceStore,
+    PostgresPortfolioReturnStore,
+    PostgresQuoteStore,
+)
 from trade_platform.postgres_paper_oms import PostgresBrokerEventStore, PostgresPaperOms
 from trade_platform.postgres_pretrade import (
     PostgresPolicyRegistry,
@@ -94,6 +99,9 @@ class PostgresRuntimeCompositionTests(unittest.TestCase):
         self.assertIsInstance(core.promotions, PostgresPromotionLedger)
         self.assertIsInstance(core.policies, PostgresPolicyRegistry)
         self.assertIsInstance(core.assessments, PostgresPreTradeAssessmentStore)
+        self.assertIsInstance(core.quotes, PostgresQuoteStore)
+        self.assertIsInstance(core.execution_evidence, PostgresExecutionEvidenceStore)
+        self.assertIsInstance(core.return_history, PostgresPortfolioReturnStore)
         self.assertFalse(core.submission_ready)
         authorities = (
             core.oms,
@@ -106,6 +114,9 @@ class PostgresRuntimeCompositionTests(unittest.TestCase):
             core.promotions,
             core.policies,
             core.assessments,
+            core.quotes,
+            core.execution_evidence,
+            core.return_history,
         )
         self.assertFalse(any(type(value).__name__.startswith("SQLite") for value in authorities))
         core.close()
