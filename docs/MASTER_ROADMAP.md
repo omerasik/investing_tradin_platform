@@ -1527,3 +1527,15 @@ authorized P1 instrument/calendar foundation.
 - External boundary: fixtures use a test-only authorization reference. Actual
   SEC retrieval remains `EXTERNAL_BLOCKED` until terms and identifying operator
   configuration are approved; this is not primary-source real-data evidence.
+
+## Cycle 198 candidate — execution-program Cycle 15 core
+
+- Migration 0012 and `pit_macro.py` persist authorized source metadata and a
+  controlled policy-rate/CPI/employment/GDP/yield-curve/liquidity-credit
+  catalogue. Observation period, initial release, expected/prior, revision,
+  release and ingestion times are separate.
+- PIT queries choose only the latest revision released and ingested by the
+  historical decision time. Tests cover initial/revised values, delay,
+  immutability and restart; restore expands to **35 critical tables**.
+- Actual authoritative source activation and any licensed expectations are
+  `EXTERNAL_BLOCKED`. Status: PENDING real PostgreSQL CI through 0012.

@@ -184,3 +184,10 @@ PostgreSQL parameter, commit `88a76af` fixed the query. Verify run `31890008661`
 then passed migration 0011, all 295 tests without skips, the fresh 33-table
 restore and every quality/security/frontend gate. Actual SEC network ingestion
 is `EXTERNAL_BLOCKED` until terms and operator identity are approved.
+
+## Cycle 15 provider-neutral core candidate
+
+Migration 0012 and `pit_macro.py` add the controlled macro catalogue and
+immutable initial-release/revision PostgreSQL path. PIT reads cannot expose a
+revision before release and ingestion. Real CI is pending; actual authoritative
+source activation remains `EXTERNAL_BLOCKED` until source terms are approved.

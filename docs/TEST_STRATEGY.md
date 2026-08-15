@@ -54,3 +54,7 @@ visibility, amended-revision selection, as-reported and standardized value
 retention, immutable filing evidence and close/reopen reconstruction. Formula
 unit tests cover all requested transparent fundamental metrics. Restore hashing
 includes all three PIT fundamental tables (**33 critical tables total**).
+
+The Cycle 15 core tests the controlled catalogue plus initial release,
+ingestion delay, revision visibility, immutability and restart in PostgreSQL.
+Restore hashing expands to **35 critical tables**.

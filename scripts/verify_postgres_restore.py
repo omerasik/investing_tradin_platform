@@ -47,6 +47,8 @@ CRITICAL_TABLES = (
     "pit_fundamental_sources",
     "pit_fundamental_filings",
     "pit_fundamental_facts",
+    "pit_macro_sources",
+    "pit_macro_observations",
 )
 
 

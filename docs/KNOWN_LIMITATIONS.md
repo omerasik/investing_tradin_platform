@@ -84,3 +84,6 @@ The full requirement-level matrix is in
 - Cycle 14's SEC-style PostgreSQL filing/fact/metric core uses attributable
   synthetic filings. No SEC terms acceptance/operator identity was authorized
   for this task, so primary-source network ingestion remains `EXTERNAL_BLOCKED`.
+- Cycle 15's macro catalogue is fixture-backed. No authoritative macro source
+  terms were approved, and consensus expectations remain nullable/licensed;
+  network ingestion is `EXTERNAL_BLOCKED`.

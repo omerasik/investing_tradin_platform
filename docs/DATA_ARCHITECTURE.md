@@ -81,3 +81,11 @@ dilution, NOPAT/invested-capital/ROIC and capital allocation from named
 standardized inputs. It fails on missing inputs or invalid denominators. The
 existing SEC-compatible network adapter remains disabled until terms acceptance
 and an operator identity are explicitly configured.
+
+## Point-in-time macro catalogue
+
+Migration 0012 stores authorized macro sources and immutable releases for policy
+rates, CPI, employment, GDP, yield curves and liquidity/credit. Observation
+period, initial release, optional licensed expectation, prior, revision,
+release and ingestion timestamps remain distinct; PIT reads select only the
+latest revision actually released and ingested by the query time.
