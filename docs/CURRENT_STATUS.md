@@ -105,6 +105,10 @@ snapshot, not a second roadmap.
   PostgreSQL target before any SQLite constructor can run. The matrix records
   the remaining pre-trade stores as `MUST_MIGRATE`, and the core intentionally
   remains `submission_ready = False` rather than falling back.
+- A separate configured PostgreSQL runtime builder now requires reviewed policy,
+  stress and model evidence and persists the daily risk reservation/decision
+  before appending an approvable keyed assessment or touching OMS. Its full
+  integration fixture is pending CI and is not yet acceptance evidence.
 
 All completion/limitation claims must be updated in `MASTER_ROADMAP.md` with
 executed evidence; do not infer production readiness from unit tests.

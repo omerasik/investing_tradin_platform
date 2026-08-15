@@ -13,6 +13,7 @@ from uuid import UUID
 from .broker_adapter import PaperBrokerAdapter
 from .broker_sync import PaperBrokerSyncService
 from .config import PlatformConfig
+from .paper_runtime import PaperPolicySelection, PaperRuntime, PaperRuntimeError
 from .persistence import PersistenceTarget, PostgresDatabase
 from .portfolio_evidence import OmsReconciledAccountStore
 from .postgres_decision_authorities import (
@@ -89,6 +90,27 @@ class PostgresPaperCoreAuthorities:
         self.database.close()
 
 
+@dataclass(slots=True)
+class ConfiguredPostgresPaperRuntime:
+    """Submission-capable facade retaining every PostgreSQL core authority."""
+
+    paper: PaperRuntime
+    core: PostgresPaperCoreAuthorities
+
+    @property
+    def submission_ready(self) -> bool:
+        return True
+
+    def assess(self, intent, *, observed_at):
+        return self.paper.assess(intent, observed_at=observed_at)
+
+    def assess_and_submit(self, intent, *, observed_at):
+        return self.paper.assess_and_submit(intent, observed_at=observed_at)
+
+    def close(self) -> None:
+        self.paper.close()
+
+
 def build_postgres_paper_core(
     *,
     config: PlatformConfig,
@@ -151,4 +173,50 @@ def build_postgres_paper_core(
         )
     except Exception:
         database.close()
+        raise
+
+
+def build_postgres_paper_runtime(
+    *,
+    config: PlatformConfig,
+    adapter: PaperBrokerAdapter,
+    identities: PostgresRuntimeIdentityMap,
+    policy_selection: PaperPolicySelection,
+) -> ConfiguredPostgresPaperRuntime:
+    """Build the actual PostgreSQL paper workflow or fail before submission."""
+    core = build_postgres_paper_core(
+        config=config,
+        adapter=adapter,
+        identities=identities,
+        risk_policy_version=policy_selection.risk_policy_version,
+    )
+    try:
+        core.policies.resolve_risk_policy(policy_selection.risk_policy_version)
+        core.policies.resolve_portfolio_policy(policy_selection.portfolio_policy_version)
+        scenarios = core.policies.resolve_portfolio_scenarios(
+            policy_selection.portfolio_policy_version
+        )
+        if not core.models.is_approved(policy_selection.model_id):
+            raise PaperRuntimeError("selected_model_not_approved")
+        paper = PaperRuntime(
+            core.oms,
+            core.events,
+            core.policies,  # type: ignore[arg-type]
+            core.assessments,  # type: ignore[arg-type]
+            core.instruments,  # type: ignore[arg-type]
+            core.signals,  # type: ignore[arg-type]
+            core.models,  # type: ignore[arg-type]
+            core.execution_evidence,  # type: ignore[arg-type]
+            core.quotes,  # type: ignore[arg-type]
+            core.return_history,  # type: ignore[arg-type]
+            core.promotions,  # type: ignore[arg-type]
+            core.reconciled_accounts,
+            core.broker,
+            policy_selection,
+            scenarios,
+            core.risk,
+        )
+        return ConfiguredPostgresPaperRuntime(paper, core)
+    except Exception:
+        core.close()
         raise

@@ -369,3 +369,6 @@ class PostgresPromotionLedger:
             raise ValueError("postgres_promotion_strategy_mapping_required") from error
         except Exception as error:
             raise ValueError("postgres_activation_read_failed") from error
+
+    def close(self) -> None:
+        return None

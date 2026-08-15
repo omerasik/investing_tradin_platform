@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 from .broker_adapter import PaperBrokerAdapter
@@ -65,6 +66,7 @@ class PaperRuntime:
     broker: PaperBrokerSyncService
     policy_selection: PaperPolicySelection
     stress_scenarios: tuple[StressScenario, ...]
+    durable_risk_store: Any | None = None
 
     def close(self) -> None:
         self.assessments.close()
@@ -118,7 +120,11 @@ class PaperRuntime:
                 input_evidence, return_history_reference=return_history.reference,
                 return_history_observed_at=return_history.observed_at,
             )
-        return assess_pretrade(
+        if self.durable_risk_store is not None:
+            existing = self.assessments.get_for_intent(intent.intent_id)
+            if existing is not None:
+                return existing
+        assessment = assess_pretrade(
             intent=intent, signal_store=self.signals, market=quote.market_snapshot(),
             portfolio_state=self.reconciled_accounts.portfolio_state_as_of(intent.account_id, observed_at),
             instruments=self.instruments, broker_snapshot=account_evidence.snapshot, broker_healthy=account_evidence.healthy,
@@ -126,7 +132,9 @@ class PaperRuntime:
             instrument_halted=snapshot.halt.halted, quote_available=True,
             expected_slippage_fraction=snapshot.slippage.expected_fraction, event_risk=snapshot.event.risk,
             projected_exposures=exposures, portfolio_equity=equity, scenario=self.stress_scenarios,
-            observed_at=observed_at, assessment_store=self.assessments, input_evidence=input_evidence,
+            observed_at=observed_at,
+            assessment_store=None if self.durable_risk_store is not None else self.assessments,
+            input_evidence=input_evidence,
             execution_evidence_store=self.execution_evidence, quote_store=self.quotes,
             reconciled_accounts=self.reconciled_accounts,
             return_history_store=self.return_history,
@@ -134,6 +142,20 @@ class PaperRuntime:
             portfolio_policy_version=self.policy_selection.portfolio_policy_version,
             policy_registry=self.policies,
         )
+        if self.durable_risk_store is not None:
+            risk_policy = self.policies.resolve_risk_policy(
+                self.policy_selection.risk_policy_version
+            )
+            persisted = self.durable_risk_store.persist(
+                intent,
+                assessment.risk_decision,
+                business_day=observed_at.date(),
+                daily_limit=risk_policy.maximum_daily_order_notional,
+            )
+            if persisted != assessment.risk_decision:
+                assessment = replace(assessment, risk_decision=persisted)
+            self.assessments.append(assessment)
+        return assessment
 
     def assess_and_submit(self, intent, *, observed_at: datetime) -> PaperAssessmentResult:
         assessment = self.assess(intent, observed_at=observed_at)

@@ -324,7 +324,7 @@ class PostgresIntegrationTests(unittest.TestCase):
             explanation="integration evidence",
             contradicting_evidence=(),
         )
-        proposal = replace(proposal, created_at=self.now)
+        proposal = replace(proposal, signal_id=self.signal_id, created_at=self.now)
         signals = PostgresSignalStore(database)
         signals.append(proposal)
         validation = replace(
@@ -376,6 +376,156 @@ class PostgresIntegrationTests(unittest.TestCase):
         )
         self.assertTrue(PostgresModelRegistry(restarted).is_approved(model.model_id))
         restarted.close()
+
+    def test_configured_postgres_assessment_reserves_before_paper_oms(self) -> None:
+        from unittest.mock import patch
+
+        from trade_platform.broker_adapter import (
+            BrokerAccountSnapshot,
+            BrokerConfiguration,
+            BrokerMode,
+            SandboxPaperBrokerAdapter,
+        )
+        from trade_platform.config import PlatformConfig
+        from trade_platform.domain import OrderIntent, OrderSide
+        from trade_platform.execution_evidence import (
+            EventRiskObservation,
+            HaltObservation,
+            SlippageEstimate,
+        )
+        from trade_platform.paper_execution import CashBalance, ReconciliationResult
+        from trade_platform.paper_runtime import PaperPolicySelection
+        from trade_platform.persistence import PersistenceTarget, PostgresDatabase
+        from trade_platform.policy_registry import PolicyDocument
+        from trade_platform.postgres_market_context import PostgresPortfolioReturnStore
+        from trade_platform.postgres_pretrade import PostgresPolicyRegistry
+        from trade_platform.postgres_runtime import (
+            PostgresRuntimeIdentityMap,
+            build_postgres_paper_runtime,
+        )
+        from trade_platform.quotes import QuoteObservation
+        from trade_platform.return_history import PortfolioReturnObservation
+
+        # Reuse the independently asserted authority seeding path in this fresh
+        # per-test database fixture, then compose the actual configured runtime.
+        self.test_instrument_signal_and_model_authorities_survive_restart()
+        suffix = str(self.exchange_id)[:8]
+        strategy_version = f"runtime:{self.strategy_version_id}"
+        risk_version = f"risk:runtime:{suffix}"
+        portfolio_version = f"portfolio:runtime:{suffix}"
+        database = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        policies = PostgresPolicyRegistry(database)
+        policies.append(
+            PolicyDocument(
+                "risk",
+                risk_version,
+                {
+                    "maximum_order_notional": "10000",
+                    "maximum_daily_order_notional": "10000",
+                },
+                "risk-reviewer",
+                self.now,
+            )
+        )
+        policies.append(
+            PolicyDocument(
+                "portfolio",
+                portfolio_version,
+                {
+                    "maximum_gross_notional": "10000",
+                    "maximum_single_weight": "1",
+                    "maximum_scenario_loss": "10000",
+                    "maximum_var_loss": "1",
+                    "minimum_historical_observations": 1,
+                    "return_history_window_observations": 1,
+                    "maximum_return_history_age_seconds": 86400,
+                    "stress_scenarios": {"risk_off": {"ETF": "-0.1"}},
+                },
+                "risk-reviewer",
+                self.now,
+            )
+        )
+        with database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute("SELECT model_id FROM runtime_models LIMIT 1")
+            model_id = cursor.fetchone()[0]
+            cursor.execute(
+                "INSERT INTO strategy_activation_events "
+                "(activation_id, strategy_version_id, active, actor, effective_at, ingested_at, promotion_decision_id) "
+                "VALUES (%s,%s,true,'integration-reviewer',%s,%s,NULL)",
+                (uuid4(), self.strategy_version_id, self.now, self.now),
+            )
+        database.close()
+
+        account_id = f"integration-paper-{suffix}"
+        adapter = SandboxPaperBrokerAdapter(
+            BrokerConfiguration("deterministic", BrokerMode.SIMULATED_PAPER, account_id),
+            cash=CashBalance("USD", Decimal(10000)),
+        )
+        config = PlatformConfig(
+            environment="paper",
+            persistence_target=PersistenceTarget.POSTGRES,
+            persistence_location=os.environ["POSTGRES_TEST_DSN"],
+            assessment_integrity_key_reference="env:PG_ASSESSMENT_KEY",
+        )
+        identities = PostgresRuntimeIdentityMap(
+            {risk_version: self.policy_version_id},
+            {strategy_version: self.strategy_version_id},
+            {"dataset:v1": self.dataset_version_id},
+        )
+        selection = PaperPolicySelection(risk_version, portfolio_version, model_id)
+        with patch.dict(os.environ, {"PG_ASSESSMENT_KEY": "integration-assessment-key"}):
+            runtime = build_postgres_paper_runtime(
+                config=config,
+                adapter=adapter,
+                identities=identities,
+                policy_selection=selection,
+            )
+            instrument_id = str(self.instrument_id)
+            runtime.core.quotes.append(
+                QuoteObservation(
+                    uuid4(), instrument_id, Decimal("99.9"), Decimal(100), Decimal(100),
+                    Decimal(1), "paper-feed", f"runtime-quote-{suffix}", self.now, self.now,
+                )
+            )
+            runtime.core.execution_evidence.append_halt(
+                HaltObservation(uuid4(), instrument_id, False, "venue", f"runtime-halt-{suffix}", self.now, self.now)
+            )
+            runtime.core.execution_evidence.append_event_risk(
+                EventRiskObservation(uuid4(), instrument_id, Decimal("0.1"), "events", f"runtime-event-{suffix}", self.now, self.now)
+            )
+            runtime.core.execution_evidence.append_slippage(
+                SlippageEstimate(uuid4(), instrument_id, OrderSide.BUY, Decimal("0.001"), "model", f"runtime-slip-{suffix}", self.now, self.now)
+            )
+            PostgresPortfolioReturnStore(runtime.core.database).append(
+                PortfolioReturnObservation(
+                    uuid4(), account_id, self.now - timedelta(days=2), self.now - timedelta(days=1),
+                    Decimal("0.01"), "paper-oms", f"runtime-return-{suffix}", self.now - timedelta(days=1),
+                )
+            )
+            runtime.core.oms.record_reconciliation_with_account(
+                BrokerAccountSnapshot(
+                    account_id, "deterministic", self.now, CashBalance("USD", Decimal(10000)),
+                    Decimal(10000), {}, (), (), Decimal(0), Decimal(0),
+                ),
+                ReconciliationResult(True, ()),
+                healthy=True,
+                ingested_at=self.now,
+            )
+            intent = OrderIntent(
+                uuid4(), self.signal_id, instrument_id, account_id, OrderSide.BUY,
+                Decimal(1), Decimal(100), self.now,
+            )
+            result = runtime.assess_and_submit(intent, observed_at=self.now)
+            self.assertTrue(result.assessment.approved, result.assessment.risk_decision.reasons)
+            self.assertEqual(result.paper_order.status.value, "ACKNOWLEDGED")
+            with runtime.core.database.transaction() as connection, connection.cursor() as cursor:
+                cursor.execute("SELECT count(*) FROM risk_reservations WHERE intent_id=%s", (intent.intent_id,))
+                self.assertEqual(cursor.fetchone()[0], 1)
+                cursor.execute("SELECT count(*) FROM runtime_pretrade_assessments WHERE intent_id=%s", (intent.intent_id,))
+                self.assertEqual(cursor.fetchone()[0], 1)
+                cursor.execute("SELECT count(*) FROM paper_order_intents WHERE intent_id=%s", (intent.intent_id,))
+                self.assertEqual(cursor.fetchone()[0], 1)
+            runtime.close()
 
     def test_atomic_oms_fill_and_risk_idempotency(self) -> None:
         from trade_platform.persistence import PostgresDatabase
