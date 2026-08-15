@@ -78,3 +78,9 @@ The full requirement-level matrix is in
   windows, provider-comparison inputs and calendar/session verdicts must still
   come from an authorized ingestion job. It is not yet calibrated on a licensed
   production feed and does not make the fixture dataset real.
+- Cycle 13 is `EXTERNAL_BLOCKED`: without an authorized real market dataset the
+  required real-data quant-validation proof cannot honestly run or be labelled
+  alpha. Existing synthetic validation evidence remains synthetic.
+- Cycle 14's SEC-style PostgreSQL filing/fact/metric core uses attributable
+  synthetic filings. No SEC terms acceptance/operator identity was authorized
+  for this task, so primary-source network ingestion remains `EXTERNAL_BLOCKED`.

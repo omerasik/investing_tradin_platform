@@ -14,8 +14,8 @@ then reconcile OMS/risk state before permitting a paper risk increase.
 
 CI now executes `pg_dump --format=custom`, corrupt-backup rejection, separate
 database creation, `pg_restore`, Alembic revision comparison, count plus SHA-256
-content comparison for the critical table allow-list (30 tables after Cycle
-12), manifest classification and OMS/
+content comparison for the critical table allow-list (33 tables after the Cycle
+14 core), manifest classification and OMS/
 cursor/risk/kill-switch/promotion/reconciliation reconstruction. Migration 0007
 adds an append-only recovery gate; risk increase remains blocked until checks
 and reconciliation release it. This proves logical CI recovery, not encrypted

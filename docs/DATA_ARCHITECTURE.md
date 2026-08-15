@@ -66,3 +66,18 @@ The latest assessment per applicable global/asset/strategy/instrument scope is
 the gate state as of a signal assessment timestamp. A blocking state rejects a
 PostgreSQL `VALIDATED` signal both in the application repository and in a
 database trigger; a later clean immutable assessment reopens only that scope.
+
+## Point-in-time fundamental filings
+
+Migration 0011 adds an explicitly authorized filing source, immutable SEC-style
+filing records and immutable as-reported/standardized facts. Filing ID, filing
+and acceptance timestamps, reporting/fiscal periods, revision, ingestion time,
+raw hash and provenance URI remain first-class. Historical reads require both
+`accepted_at` and `ingested_at` to be no later than the query and select only
+the latest then-known revision.
+
+Transparent formula v1 derives revenue, operating margin, FCF, debt, shares,
+dilution, NOPAT/invested-capital/ROIC and capital allocation from named
+standardized inputs. It fails on missing inputs or invalid denominators. The
+existing SEC-compatible network adapter remains disabled until terms acceptance
+and an operator identity are explicitly configured.

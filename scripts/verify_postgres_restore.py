@@ -44,6 +44,9 @@ CRITICAL_TABLES = (
     "historical_dataset_members",
     "data_health_assessments",
     "data_health_findings",
+    "pit_fundamental_sources",
+    "pit_fundamental_filings",
+    "pit_fundamental_facts",
 )
 
 

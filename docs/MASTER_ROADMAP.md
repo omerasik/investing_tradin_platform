@@ -1497,3 +1497,28 @@ authorized P1 instrument/calendar foundation.
   all **291 tests ran without skips**, the fresh restore compared all 30
   critical tables, and every quality, security, dependency, frontend and
   artifact gate passed. Status: **VERIFIED**.
+
+## Cycle 196 external block — execution-program Cycle 13
+
+- Required input: an authorized real market dataset. No provider selection or
+  legal/storage authorization exists, so a real-data vector/event/golden/
+  robustness validation package cannot honestly run. Existing synthetic proofs
+  are not alpha and are not being relabelled. Status: `EXTERNAL_BLOCKED`.
+
+## Cycle 197 candidate — execution-program Cycle 14 core
+
+- Objective: establish SEC-style point-in-time company fundamentals while real
+  primary-source activation remains externally governed.
+- Schema/module: migration 0011 and `pit_fundamentals.py` persist authorized
+  source metadata, filing identity/timestamps/fiscal period/revision/provenance
+  and filing-bound as-reported plus versioned standardized facts.
+- PIT/analytics: a historical query cannot see a filing before both acceptance
+  and ingestion and chooses the latest then-known amendment. Transparent
+  formulas cover revenue, operating margin, FCF, debt, shares/dilution,
+  NOPAT/invested capital/ROIC and capital allocation.
+- Test candidate: pre-acceptance invisibility, ingestion delay, amendment
+  selection, exact values, immutability, restart and formula failures. Restore
+  hashing expands from 30 to **33 critical tables**.
+- External boundary: fixtures use a test-only authorization reference. Actual
+  SEC retrieval remains `EXTERNAL_BLOCKED` until terms and identifying operator
+  configuration are approved. Status: PENDING real PostgreSQL CI through 0011.

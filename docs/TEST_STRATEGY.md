@@ -48,3 +48,9 @@ a direct SQL validation and the repository validation fail closed, appends a
 later clean assessment, validates successfully, rejects assessment mutation and
 reconstructs the exact findings after restart. Restore hashing includes the two
 data-health tables (**30 critical tables total**).
+
+The Cycle 14 core adds real PostgreSQL tests for filing acceptance/ingestion
+visibility, amended-revision selection, as-reported and standardized value
+retention, immutable filing evidence and close/reopen reconstruction. Formula
+unit tests cover all requested transparent fundamental metrics. Restore hashing
+includes all three PIT fundamental tables (**33 critical tables total**).

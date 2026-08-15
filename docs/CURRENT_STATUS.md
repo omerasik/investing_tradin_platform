@@ -166,3 +166,18 @@ repository and a database trigger; a later clean assessment reopens only the
 same scope. GitHub Actions verify run `31889499296` passed on commit `4ab25dc`:
 migration 0010, all 291 tests without skips, a fresh 30-table restore and every
 quality/security/frontend gate passed.
+
+## Cycle 13 externally blocked
+
+The required authorized real market dataset is unavailable because no provider
+and legal/storage terms were approved. No synthetic result is being relabelled
+as a real-data proof or alpha.
+
+## Cycle 14 provider-neutral core candidate
+
+Migration 0011 and `pit_fundamentals.py` add authorized-source, SEC-style filing
+and filing-fact PostgreSQL authorities. PIT reads enforce acceptance and
+ingestion visibility and revision selection. Transparent formula v1 covers
+revenue, operating margin, FCF, debt, shares/dilution, ROIC components and
+capital allocation. Real PostgreSQL CI is pending; actual SEC network ingestion
+is `EXTERNAL_BLOCKED` until terms and operator identity are approved.
