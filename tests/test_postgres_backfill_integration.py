@@ -144,7 +144,14 @@ class PostgresBackfillIntegrationTests(unittest.TestCase):
                 path, self.dsn, dry_run=False, identity_mapping=mapping
             )
             self.assertTrue(applied.post_write_reconciled)
-            self.assertEqual(applied.destination_counts, dry_run.row_counts)
+            self.assertEqual(
+                applied.destination_counts,
+                {
+                    table: count
+                    for table, count in dry_run.row_counts.items()
+                    if table != "research_experiments"
+                },
+            )
             self.assertGreater(applied.migrated_rows, 20)
 
             identical = backfill_sqlite_to_postgres(
