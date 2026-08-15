@@ -26,10 +26,9 @@ snapshot, not a second roadmap.
   trade-order Monte Carlo, stress fixtures, parameter stability and
   multiple-testing evidence. Canonical manifest v1 now binds exact strategy and
   dataset identities/versions, feature/cost versions, evidence IDs and hashes,
-  limitations, evaluation time and metadata. PostgreSQL CI verification of the
-  new migration/restart/tamper path is pending. CI runs 31859463557 and
-  31859542257 exposed verification-order and domain-error-wrapping defects;
-  neither run is acceptance evidence and the change is not yet VERIFIED.
+  limitations, evaluation time and metadata. PostgreSQL CI now verifies the
+  migration, exact restart reconstruction, duplicate idempotency, manifest and
+  relational tamper rejection, immutable membership and evidence-hash checks.
 - Deterministic pre-trade risk, durable kill switches/idempotency/decision
   history, paper OMS lifecycle/fill/reconciliation evidence, and paper-only
   broker abstraction.
@@ -39,11 +38,13 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
-- The latest committed baseline passed 265 Python tests in GitHub Actions
-  [run 31858948703](https://github.com/omerasik/investing_tradin_platform/actions/runs/31858948703)
-  at commit 2cebc26. The current manifest implementation passes all 265 local
-  tests, with six PostgreSQL tests skipped because no safe local test DSN is
-  configured.
+- The latest implementation baseline passed 266 Python tests without skips in
+  GitHub Actions
+  [run 31859646575](https://github.com/omerasik/investing_tradin_platform/actions/runs/31859646575)
+  at commit 268b765, including PostgreSQL migration and integration coverage.
+  The same run passed scoped Ruff, mypy and Bandit, dependency audit, SBOM,
+  committed-secret guard, TypeScript, Next production build and dashboard
+  smoke verification.
 - Validation-package focused local tests pass (including capacity, slippage, latency,
   bootstrap/Monte Carlo, stability, multiple-testing and persisted-package
   promotion regressions).
@@ -62,10 +63,9 @@ snapshot, not a second roadmap.
 
 ## Immediate P0 work
 
-1. Execute canonical validation-manifest migration, restart and tamper tests in
-   PostgreSQL CI; do not call the change VERIFIED before that run succeeds.
-2. Replace every safety-critical SQLite dependency in build_paper_runtime with
+1. Replace every safety-critical SQLite dependency in build_paper_runtime with
    explicitly selected PostgreSQL composition and no fallback.
+2. Complete PostgreSQL pre-trade authority and restart/reconciliation coverage.
 3. Complete mapped cutover, failure injection, fresh restore/reconciliation and
    representative security/CI gates.
 
@@ -94,8 +94,9 @@ snapshot, not a second roadmap.
 - The unsafe low-level validation-package insert path now fails closed.
   PostgresQuantValidationStore is the sole package writer and requires exact
   canonical manifest plus evidence hashes. Migration 0003 marks prior rows
-  LEGACY_UNVERIFIABLE and makes package membership immutable. This remains
-  IMPLEMENTED/TESTED_LOCAL until PostgreSQL CI executes it.
+  LEGACY_UNVERIFIABLE and makes package membership immutable. GitHub Actions
+  run 31859646575 verifies this boundary against PostgreSQL 16 after restart and
+  deliberate manifest, projection, membership and evidence-hash tampering.
 
 All completion/limitation claims must be updated in `MASTER_ROADMAP.md` with
 executed evidence; do not infer production readiness from unit tests.

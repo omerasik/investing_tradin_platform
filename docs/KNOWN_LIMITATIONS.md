@@ -23,11 +23,12 @@ The full requirement-level matrix is in
   versioned research evidence. Their costs and shocks are declared model/fixture
   assumptions; no full historical stress archive, real order-book replay or
   calibrated provider-backed capacity model is available.
-- A complete package is required for a review decision. Canonical manifest v1
-  and immutable membership are implemented and locally tested, but the current
-  migration/restart/tamper path is not VERIFIED until PostgreSQL CI succeeds.
-  Pre-manifest rows are intentionally LEGACY_UNVERIFIABLE. Package generation
-  is not yet an automated backtest-launch workflow or dashboard view.
+- A complete package is required for a review decision. Canonical manifest v1,
+  exact restart reconstruction and immutable membership are PostgreSQL-CI
+  verified. Pre-manifest rows are intentionally LEGACY_UNVERIFIABLE. Package
+  generation is not yet an automated backtest-launch workflow or dashboard
+  view, and critical application composition still contains legacy SQLite
+  authorities outside this verified package boundary.
 - Strategy coverage is four transparent long-only baselines. Cross-sectional,
   factor, macro, relative-value, event, sentiment, crypto-basis and
   market-neutral families remain incomplete.
