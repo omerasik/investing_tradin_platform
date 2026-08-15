@@ -1473,3 +1473,23 @@ authorized P1 instrument/calendar foundation.
   synthetic fixtures only; actual authorized-real-data ingestion is
   `EXTERNAL_BLOCKED` and this evidence is not eligible to be called the
   completed Cycle 11 real-data proof.
+
+## Cycle 195 candidate — execution-program Cycle 12
+
+- Objective: make persisted Data Health a mandatory operational signal gate.
+- Schema/module: migration 0010 and `data_health.py` add immutable scoped
+  assessments and ordered findings with policy, dataset, time, content-hash and
+  summary provenance.
+- Detector coverage: missing bars, duplicates, timestamp regression, impossible
+  OHLC, invalid volume, staleness, gaps, corporate-action mismatch, provider
+  disagreement, timezone/session mismatch and incomplete datasets. Actions are
+  exactly INFO, WARN, DEGRADE_CONFIDENCE, BLOCK_INSTRUMENT, BLOCK_STRATEGY,
+  BLOCK_ASSET_CLASS and GLOBAL_BLOCK.
+- Fail-closed integration: latest applicable global/asset/strategy/instrument
+  scope resolves as-of the proposed assessment. A block prevents `VALIDATED`
+  signal persistence at both the repository and PostgreSQL trigger boundaries;
+  a later clean append-only assessment reopens only its scope.
+- Test candidate: every detector/action, empty/clean assessment, persistence,
+  application and direct-SQL bypass rejection, clean reopen, immutability and
+  restart. Restore hashing expands from 28 to **30 critical tables**. Status:
+  PENDING real PostgreSQL CI through migration 0010.

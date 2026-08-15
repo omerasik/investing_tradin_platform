@@ -41,3 +41,10 @@ quality rejection, dividend/split/symbol-change/delisting normalization, sealed
 dataset hashing, default exclusion of latest-adjusted values, pre-seal PIT
 invisibility and close/reopen reconstruction. Restore comparison includes all
 five historical-data tables (**28 critical tables total**).
+
+Cycle 12 locally covers every required detector and all seven action levels.
+Real PostgreSQL coverage persists a blocking instrument assessment, proves both
+a direct SQL validation and the repository validation fail closed, appends a
+later clean assessment, validates successfully, rejects assessment mutation and
+reconstructs the exact findings after restart. Restore hashing includes the two
+data-health tables (**30 critical tables total**).

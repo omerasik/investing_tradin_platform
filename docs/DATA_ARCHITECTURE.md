@@ -52,3 +52,17 @@ observations are excluded unless a caller makes an explicit leakage-sensitive
 override. This infrastructure does not itself grant source rights: a real
 provider remains disabled until an operator supplies an approved authorization
 reference and terms version.
+
+## Persistent data health
+
+Migration 0010 stores immutable scoped assessments and ordered findings. The
+deterministic policy detects missing/duplicate/regressing bars, impossible
+OHLC, invalid volume, staleness, gaps, corporate-action mismatch, provider
+disagreement, timezone/session mismatch and incomplete coverage. Every result
+uses one of `INFO`, `WARN`, `DEGRADE_CONFIDENCE`, `BLOCK_INSTRUMENT`,
+`BLOCK_STRATEGY`, `BLOCK_ASSET_CLASS` or `GLOBAL_BLOCK`.
+
+The latest assessment per applicable global/asset/strategy/instrument scope is
+the gate state as of a signal assessment timestamp. A blocking state rejects a
+PostgreSQL `VALIDATED` signal both in the application repository and in a
+database trigger; a later clean immutable assessment reopens only that scope.

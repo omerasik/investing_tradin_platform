@@ -9,6 +9,7 @@ from enum import Enum
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .data_health import DataHealthBlockedError, PostgresDataHealthStore
 from .domain import AssetClass, Instrument, OrderSide, Signal, SignalStatus, utc_now
 from .instruments import (
     InstrumentAlreadyExistsError,
@@ -205,13 +206,24 @@ class PostgresSignalStore:
     def append_validation(self, result: SignalValidationResult) -> None:
         try:
             with self._database.transaction() as connection, connection.cursor() as cursor:
-                cursor.execute("SELECT 1 FROM runtime_signal_proposals WHERE signal_id = %s", (result.signal_id,))
-                if cursor.fetchone() is None:
+                cursor.execute(
+                    "SELECT p.instrument_id,p.strategy_version,i.asset_class FROM runtime_signal_proposals p JOIN runtime_instruments i ON i.instrument_id=p.instrument_id WHERE p.signal_id=%s",
+                    (result.signal_id,),
+                )
+                proposal = cursor.fetchone()
+                if proposal is None:
                     raise SignalEngineError("unknown_signal")
+            if result.status is DetailedSignalStatus.VALIDATED:
+                PostgresDataHealthStore(self._database).require_signal_validation_allowed(
+                    str(proposal[0]), str(proposal[1]), str(proposal[2]), result.assessed_at
+                )
+            with self._database.transaction() as connection, connection.cursor() as cursor:
                 cursor.execute(
                     "INSERT INTO runtime_signal_validations VALUES (%s,%s,%s,%s::jsonb,%s::jsonb,%s)",
                     (result.assessment_id, result.signal_id, result.status.value, json.dumps([value.value for value in result.passed_stages]), json.dumps([value.value for value in result.failures]), result.assessed_at),
                 )
+        except DataHealthBlockedError as error:
+            raise SignalEngineError("signal_validation_blocked_by_data_health") from error
         except SignalEngineError:
             raise
         except Exception as error:

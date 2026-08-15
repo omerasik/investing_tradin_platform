@@ -34,3 +34,8 @@ capture, normalization, quality status, sealed dataset versioning and PIT
 research queries for the US equity/ETF slice. The provider adapter remains
 outside the trusted core and cannot register a source without recorded terms
 and authorization evidence.
+
+`PostgresDataHealthStore` is between historical normalization/research and
+operational signal validation. It persists policy-versioned findings and its
+fail-closed gate is duplicated at the PostgreSQL signal-validation boundary so
+a caller cannot bypass it with a direct repository insert.

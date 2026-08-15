@@ -74,3 +74,7 @@ The full requirement-level matrix is in
   query core is implemented with synthetic fixtures only. No licensed or
   legally approved real provider/data terms were supplied, so actual authorized
   ingestion is `EXTERNAL_BLOCKED`; this cycle cannot be called a real-data proof.
+- Cycle 12 Data Health is deterministic and PostgreSQL-gated, but its expected
+  windows, provider-comparison inputs and calendar/session verdicts must still
+  come from an authorized ingestion job. It is not yet calibrated on a licensed
+  production feed and does not make the fixture dataset real.

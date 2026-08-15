@@ -42,6 +42,8 @@ CRITICAL_TABLES = (
     "historical_normalized_observations",
     "historical_dataset_versions",
     "historical_dataset_members",
+    "data_health_assessments",
+    "data_health_findings",
 )
 
 
