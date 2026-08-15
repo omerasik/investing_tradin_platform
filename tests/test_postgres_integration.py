@@ -270,10 +270,11 @@ class PostgresIntegrationTests(unittest.TestCase):
 
         database = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
         instrument_id = str(self.instrument_id)
+        runtime_venue = f"RUNTIME-{str(self.exchange_id)[:8]}"
         instruments = PostgresInstrumentStore(database)
         instrument = Instrument(
             instrument_id,
-            "RUNTIME",
+            runtime_venue,
             "RUNTIME",
             AssetClass.ETF,
             "USD",
@@ -294,7 +295,9 @@ class PostgresIntegrationTests(unittest.TestCase):
         )
         instruments.append_risk_profile(profile)
         instruments.add_trading_session(
-            TradingSession("RUNTIME", self.now.weekday(), time(0), time(23, 59), "UTC")
+            TradingSession(
+                runtime_venue, self.now.weekday(), time(0), time(23, 59), "UTC"
+            )
         )
         proposal = SignalProposal.create(
             instrument_id=instrument_id,
@@ -369,7 +372,9 @@ class PostgresIntegrationTests(unittest.TestCase):
         recovered_instruments = PostgresInstrumentStore(restarted)
         self.assertEqual(recovered_instruments.get(instrument_id), instrument)
         self.assertEqual(recovered_instruments.risk_profile_as_of(instrument_id, self.now), profile)
-        self.assertTrue(recovered_instruments.is_trading_session("RUNTIME", self.now))
+        self.assertTrue(
+            recovered_instruments.is_trading_session(runtime_venue, self.now)
+        )
         self.assertEqual(
             PostgresSignalStore(restarted).risk_signal(proposal.signal_id, as_of=self.now).signal_id,
             proposal.signal_id,
