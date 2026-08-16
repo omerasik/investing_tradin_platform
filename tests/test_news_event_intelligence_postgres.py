@@ -65,6 +65,10 @@ class NewsEventIntelligencePostgresTests(unittest.TestCase):
                     hashlib.sha256(b"cycle206-health").hexdigest(),
                 ),
             )
+            cursor.execute("SELECT COUNT(*) FROM paper_order_intents")
+            prior_order_count = int(cursor.fetchone()[0])
+            cursor.execute("SELECT COUNT(*) FROM strategy_activation_events")
+            prior_activation_count = int(cursor.fetchone()[0])
 
         policy = source()
         initial = document(policy, published_at=now, ingested_at=now + timedelta(minutes=1))
@@ -168,14 +172,10 @@ class NewsEventIntelligencePostgresTests(unittest.TestCase):
                 (correction.document_revision_id, retraction.document_revision_id),
             )
             self.assertEqual(int(cursor.fetchone()[0]), 2)
-            cursor.execute(
-                "SELECT COUNT(*) FROM paper_order_intents WHERE instrument_id=%s", (INSTRUMENT,)
-            )
-            self.assertEqual(int(cursor.fetchone()[0]), 0)
-            cursor.execute(
-                "SELECT COUNT(*) FROM strategy_activation_events WHERE reason LIKE '%%cycle206%%'"
-            )
-            self.assertEqual(int(cursor.fetchone()[0]), 0)
+            cursor.execute("SELECT COUNT(*) FROM paper_order_intents")
+            self.assertEqual(int(cursor.fetchone()[0]), prior_order_count)
+            cursor.execute("SELECT COUNT(*) FROM strategy_activation_events")
+            self.assertEqual(int(cursor.fetchone()[0]), prior_activation_count)
         reopened.close()
 
 
