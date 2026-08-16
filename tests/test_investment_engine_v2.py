@@ -157,6 +157,26 @@ class InvestmentEngineV2Tests(unittest.TestCase):
         first = fixture_analysis()
         second = fixture_analysis()
         self.assertEqual(first, second)
+        scaled_facts = tuple(
+            replace(
+                item,
+                fact=replace(
+                    item.fact,
+                    as_reported_value=item.fact.as_reported_value.quantize(Decimal("0.000000000001")),
+                    standardized_value=item.fact.standardized_value.quantize(Decimal("0.000000000001"))
+                    if item.fact.standardized_value is not None
+                    else None,
+                ),
+            )
+            for item in fixture_facts()
+        )
+        database_scaled = InvestmentResearchOrchestratorV2(
+            FixtureFundamentals(scaled_facts), FixtureMacro({"POLICY_RATE": (fixture_macro(),)})
+        ).analyze(
+            fixture_thesis(), as_of=NOW, data_health_status="HEALTHY",
+            data_health_assessment_ids=(HEALTH_ID,),
+        )
+        self.assertEqual(first.content_hash, database_scaled.content_hash)
         self.assertEqual(first.status, InvestmentReviewStatus.REVIEW_REQUIRED)
         self.assertEqual(first.quality.state, InvestmentEvidenceState.MEASURED)
         self.assertIsNotNone(first.valuation.intrinsic_value_per_share)

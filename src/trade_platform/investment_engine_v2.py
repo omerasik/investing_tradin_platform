@@ -79,6 +79,14 @@ def _digest(payload: object) -> str:
     return hashlib.sha256(_canonical(payload).encode()).hexdigest()
 
 
+def _decimal(value: Decimal) -> str:
+    """Canonicalize equal NUMERIC values independent of database scale."""
+    if not value.is_finite():
+        raise InvestmentEngineV2Error("non_finite_investment_decimal")
+    normalized = value.normalize()
+    return "0" if normalized == 0 else format(normalized, "f")
+
+
 @dataclass(frozen=True, slots=True)
 class InvalidationRuleV2:
     metric: str
@@ -170,15 +178,15 @@ class InvestmentThesisVersionV2:
             "catalysts": self.catalysts,
             "risks": self.risks,
             "invalidation_rules": tuple(
-                {"metric": rule.metric, "operator": rule.operator.value, "threshold": str(rule.threshold)}
+                {"metric": rule.metric, "operator": rule.operator.value, "threshold": _decimal(rule.threshold)}
                 for rule in self.invalidation_rules
             ),
             "required_fundamental_metrics": self.required_fundamental_metrics,
             "required_macro_series": self.required_macro_series,
             "valuation": {
-                "growth_rate": str(self.valuation.growth_rate),
-                "discount_rate": str(self.valuation.discount_rate),
-                "terminal_growth_rate": str(self.valuation.terminal_growth_rate),
+                "growth_rate": _decimal(self.valuation.growth_rate),
+                "discount_rate": _decimal(self.valuation.discount_rate),
+                "terminal_growth_rate": _decimal(self.valuation.terminal_growth_rate),
                 "forecast_years": self.valuation.forecast_years,
                 "model_version": self.valuation.model_version,
             },
@@ -248,13 +256,13 @@ class CompanyQualityEvidenceV2:
     def payload(self) -> dict[str, object]:
         return {
             "state": self.state.value,
-            "score": None if self.score is None else str(self.score),
+            "score": None if self.score is None else _decimal(self.score),
             "formula_version": self.formula_version,
             "metrics": tuple(
                 {
                     "name": item.name,
                     "state": item.state.value,
-                    "value": None if item.value is None else str(item.value),
+                    "value": None if item.value is None else _decimal(item.value),
                     "unit": item.unit,
                     "source_fact_ids": tuple(str(value) for value in item.source_fact_ids),
                 }
@@ -290,7 +298,7 @@ class ValuationEvidenceV2:
     def payload(self) -> dict[str, object]:
         return {
             "state": self.state.value,
-            "intrinsic_value_per_share": None if self.intrinsic_value_per_share is None else str(self.intrinsic_value_per_share),
+            "intrinsic_value_per_share": None if self.intrinsic_value_per_share is None else _decimal(self.intrinsic_value_per_share),
             "currency": self.currency,
             "model_version": self.model_version,
             "source_fact_ids": tuple(str(value) for value in self.source_fact_ids),
@@ -321,7 +329,7 @@ class ThesisDriftEvidenceV2:
         return {
             "state": self.state.value,
             "breached_rules": self.breached_rules,
-            "evaluated_values": tuple((name, str(value)) for name, value in self.evaluated_values),
+            "evaluated_values": tuple((name, _decimal(value)) for name, value in self.evaluated_values),
             "fundamental_fact_ids": tuple(str(value) for value in self.fundamental_fact_ids),
             "macro_observation_ids": tuple(str(value) for value in self.macro_observation_ids),
             "missing_inputs": self.missing_inputs,
@@ -541,9 +549,9 @@ class InvestmentResearchOrchestratorV2:
         shares = latest.get("shares_outstanding")
         shares_value = None if shares is None else shares.fact.standardized_value
         assumptions = {
-            "growth_rate": str(thesis.valuation.growth_rate),
-            "discount_rate": str(thesis.valuation.discount_rate),
-            "terminal_growth_rate": str(thesis.valuation.terminal_growth_rate),
+            "growth_rate": _decimal(thesis.valuation.growth_rate),
+            "discount_rate": _decimal(thesis.valuation.discount_rate),
+            "terminal_growth_rate": _decimal(thesis.valuation.terminal_growth_rate),
             "forecast_years": str(thesis.valuation.forecast_years),
         }
         if (
@@ -616,7 +624,7 @@ class InvestmentResearchOrchestratorV2:
                 continue
             values[rule.metric] = value
             if rule.breached(value):
-                breached.append(f"{rule.metric}:{rule.operator.value}:{rule.threshold}")
+                breached.append(f"{rule.metric}:{rule.operator.value}:{_decimal(rule.threshold)}")
         state = InvestmentEvidenceState.UNAVAILABLE if missing else InvestmentEvidenceState.MEASURED
         return ThesisDriftEvidenceV2(
             state,
@@ -667,10 +675,10 @@ class InvestmentPortfolioPolicyV2:
         return {
             "policy_id": str(self.policy_id), "version": self.version,
             "account_id": self.account_id, "base_currency": self.base_currency,
-            "maximum_investment_value": str(self.maximum_investment_value),
-            "maximum_single_weight": str(self.maximum_single_weight),
-            "minimum_cash_weight": str(self.minimum_cash_weight),
-            "maximum_rebalance_turnover": str(self.maximum_rebalance_turnover),
+            "maximum_investment_value": _decimal(self.maximum_investment_value),
+            "maximum_single_weight": _decimal(self.maximum_single_weight),
+            "minimum_cash_weight": _decimal(self.minimum_cash_weight),
+            "maximum_rebalance_turnover": _decimal(self.maximum_rebalance_turnover),
             "approved_by": self.approved_by, "approved_at": self.approved_at,
             "limitations": self.limitations, "capital_domain": self.capital_domain,
         }
@@ -714,9 +722,9 @@ class RebalanceCandidateV2:
             "policy_version_id": str(self.policy_version_id), "account_id": self.account_id,
             "as_of": self.as_of, "holdings_snapshot_hash": self.holdings_snapshot_hash,
             "analysis_evidence_ids": tuple(str(value) for value in self.analysis_evidence_ids),
-            "current_weights": tuple((name, str(value)) for name, value in self.current_weights),
-            "candidate_weights": tuple((name, str(value)) for name, value in self.candidate_weights),
-            "turnover": str(self.turnover), "status": self.status.value,
+            "current_weights": tuple((name, _decimal(value)) for name, value in self.current_weights),
+            "candidate_weights": tuple((name, _decimal(value)) for name, value in self.candidate_weights),
+            "turnover": _decimal(self.turnover), "status": self.status.value,
             "reasons": self.reasons, "limitations": self.limitations,
             "execution_authority": self.execution_authority,
         }
