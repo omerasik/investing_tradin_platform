@@ -95,6 +95,16 @@ CRITICAL_TABLES = (
     "news_event_assessments",
     "news_event_assessment_data_health",
     "news_event_research_candidates",
+    "sre_service_versions",
+    "sre_slo_policy_versions",
+    "sre_telemetry_events",
+    "sre_dependency_probes",
+    "sre_sli_windows",
+    "sre_alert_policy_versions",
+    "sre_alerts",
+    "sre_alert_events",
+    "sre_incidents",
+    "sre_failure_drill_runs",
 )
 
 

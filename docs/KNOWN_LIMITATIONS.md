@@ -90,8 +90,14 @@ The full requirement-level matrix is in
   real corpus, measured mapping/classification threshold, multilingual model,
   object-stored raw document, operational strategy feed or alpha evidence is
   present. PR CI run `31922911169` passed the PostgreSQL/restart/immutability
-  checks and matched all 81 restored tables; exact-merge verification remains
-  pending.
+  checks and matched all 81 restored tables; exact-merge run `31923127659`
+  closed Cycle 206.
+- Cycle 207 Observability/SRE V2 remains local engineering evidence. It does not
+  deploy infrastructure, route external pages, define an approved production
+  SLO, prove a staged soak, provide managed telemetry, or exercise cloud/KMS
+  rollback. Provider activation and live/paper execution authority are absent.
+  PR CI run `31923500129` passed all PostgreSQL/restart/immutability and
+  91-table restore gates; exact-merge verification remains pending.
 - Social/narrative intelligence is not started: no lawful connector, bot/spam
   controls, narrative clustering, crowding or price/sentiment divergence.
 - Regime, ensemble, ML and agent layers are local governance/research contracts;
