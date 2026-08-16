@@ -328,7 +328,7 @@ mainline CI run `31921534291` applied migration 0018, ran all 328 tests without
 skips, matched the 62-table restore, and passed every configured backend,
 security, dependency, frontend and dashboard gate. Cycle 204 is `VERIFIED`.
 
-## Cycle 205 PR-verified — Multi-Strategy Portfolio Construction
+## Cycle 205 VERIFIED — Multi-Strategy Portfolio Construction
 
 The Cycle 205 branch adds one content-addressed portfolio policy and construction
 run over exact Strategy Version, Scorecard V2, verified Validation Package,
@@ -354,5 +354,37 @@ with 30 PostgreSQL-only skips and passed compileall, Ruff, mypy 120/120, the
 zero-error 24-file critical slice and Alembic's sole 0019 head. PR CI run
 `31922197235` on `6a0d82e` applied migration 0019, ran all 333 tests without
 skips, matched the 71-table restore, and passed every configured backend,
-security, dependency, frontend and dashboard gate. Final `VERIFIED` status
-still requires PR #7 merge and green CI on the exact mainline merge commit.
+security, dependency, frontend and dashboard gate. PR #7 merged as `9bf966a7`;
+exact-merge mainline CI run `31922415005` passed the complete workflow. Cycle
+205 is `VERIFIED`.
+
+## Cycle 206 PR-verified — News/Event Intelligence Core
+
+The Cycle 206 branch adds a provider-neutral, correction-aware research evidence
+authority. Versioned source policy records retain terms, authorization reference,
+raw-storage and derived-use rights, permitted languages and reliability while a
+database constraint keeps every provider unactivated. Immutable document
+revisions preserve publication, source-update and ingestion clocks, source/root
+IDs, content and raw-payload hashes, official/reported/rumor status, sanitation
+flags and correction/retraction/follow-up lineage.
+
+Deterministic content/headline clustering retains every duplicate member;
+professional-instrument links expose confidence and ambiguity; versioned event
+extractions preserve taxonomy, model, novelty, urgency, uncertainty, horizon,
+facts and limitations. Rights, language, late ingestion, untrusted content,
+rumor, ambiguous links, future evidence and Data Health all fail closed. A
+point-in-time query selects only the latest then-known revision, so a retraction
+withdraws the prior story instead of leaving it valid.
+
+Research candidates can only be `BLOCKED`, `REVIEW_REQUIRED` or `WITHDRAWN`,
+and their action can only maintain, reduce or withdraw confidence. They are
+database-enforced research-only with false automatic authority and have no
+signal, order, OMS, broker, provider activation or execution route. Migration
+0020 adds ten normalized immutable tables and expands the restore manifest to
+81. Local verification discovered 340 tests with 31 PostgreSQL-only skips and
+passed all runnable tests, compileall, Ruff, mypy 120/120, the zero-error
+25-file critical slice, Bandit and Alembic's sole 0020 head. Hosted PostgreSQL
+CI run `31922911169` on `275e230` applied migration 0020, ran all 340 tests
+without skips, matched all 81 restored tables and passed every configured
+backend, security, dependency, frontend and dashboard gate. Exact-merge
+mainline evidence remains required before Cycle 206 is verified.

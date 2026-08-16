@@ -85,6 +85,16 @@ CRITICAL_TABLES = (
     "portfolio_target_sleeve_weights",
     "portfolio_constraint_evaluations",
     "portfolio_risk_gate_evidence",
+    "news_source_policy_versions",
+    "news_document_revisions",
+    "news_document_entity_links",
+    "news_event_extractions",
+    "news_event_clusters",
+    "news_event_cluster_members",
+    "news_event_lineage",
+    "news_event_assessments",
+    "news_event_assessment_data_health",
+    "news_event_research_candidates",
 )
 
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-08-16
+
+- Verified Cycle 205 multi-strategy portfolio construction on exact merged main
+  commit `9bf966a7` in CI run `31922415005`.
+- Added Cycle 206 PostgreSQL-native news/event research evidence with versioned
+  source rights, immutable correction/retraction lineage, deterministic dedupe
+  clusters, professional-instrument linking, event taxonomy, credibility and
+  Data Health gates, point-in-time replacement, and confidence withdrawal.
+- Kept providers unactivated and all news/event output research-only with no
+  signal, order, OMS, broker, execution, or automatic risk-increase authority.
+
 ## 2026-07-30
 
 - Created Phase 0 documentation from the authoritative specifications.
