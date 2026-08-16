@@ -169,8 +169,8 @@ def run_golden_vector_event_reconciliation(
     """
     if not dataset_version.strip() or not strategy_version.strip() or len(bars) < 2 or len(bars) != len(signals):
         raise GoldenRunValidationError("invalid_golden_run_inputs")
-    if any(signal not in {Decimal("0"), Decimal("1")} for signal in signals):
-        raise GoldenRunValidationError("golden_run_requires_binary_long_flat_signals")
+    if any(not Decimal("0") <= signal <= Decimal("1") for signal in signals):
+        raise GoldenRunValidationError("golden_run_requires_bounded_long_flat_signals")
     previous_time: datetime | None = None
     for bar in bars:
         bar.validate(instrument_id)
@@ -256,8 +256,8 @@ def run_realistic_golden_vector_event_reconciliation(
     assumptions = scenario.assumptions()
     if not dataset_version.strip() or not strategy_version.strip() or not instrument_id.strip() or len(bars) < 2 or len(bars) != len(signals):
         raise GoldenRunValidationError("invalid_realistic_golden_run_inputs")
-    if any(signal not in {Decimal("0"), Decimal("1")} for signal in signals):
-        raise GoldenRunValidationError("golden_run_requires_binary_long_flat_signals")
+    if any(not Decimal("0") <= signal <= Decimal("1") for signal in signals):
+        raise GoldenRunValidationError("golden_run_requires_bounded_long_flat_signals")
     previous_time: datetime | None = None
     for bar in bars:
         bar.validate(instrument_id, require_single_price=False)
