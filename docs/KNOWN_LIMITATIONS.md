@@ -83,13 +83,15 @@ The full requirement-level matrix is in
   narrow public-source boundaries. There is no activated licensed provider,
   streaming feed, full SEC parser, economic calendar or real-time source health
   deployment.
-- Cycle 206 news/event intelligence is locally verified only. It adds immutable
+- Cycle 206 news/event intelligence is PR-verified only. It adds immutable
   rights, revision, dedupe/cluster, entity-link, taxonomy, credibility, Data
   Health, correction/retraction and research-confidence-withdrawal contracts,
   but uses deterministic attributed fixtures. No licensed provider, labeled
   real corpus, measured mapping/classification threshold, multilingual model,
   object-stored raw document, operational strategy feed or alpha evidence is
-  present; hosted PostgreSQL and complete CI evidence remain pending.
+  present. PR CI run `31922911169` passed the PostgreSQL/restart/immutability
+  checks and matched all 81 restored tables; exact-merge verification remains
+  pending.
 - Social/narrative intelligence is not started: no lawful connector, bot/spam
   controls, narrative clustering, crowding or price/sentiment divergence.
 - Regime, ensemble, ML and agent layers are local governance/research contracts;

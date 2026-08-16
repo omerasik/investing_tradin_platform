@@ -358,7 +358,7 @@ security, dependency, frontend and dashboard gate. PR #7 merged as `9bf966a7`;
 exact-merge mainline CI run `31922415005` passed the complete workflow. Cycle
 205 is `VERIFIED`.
 
-## Cycle 206 local-verified — News/Event Intelligence Core
+## Cycle 206 PR-verified — News/Event Intelligence Core
 
 The Cycle 206 branch adds a provider-neutral, correction-aware research evidence
 authority. Versioned source policy records retain terms, authorization reference,
@@ -384,4 +384,7 @@ signal, order, OMS, broker, provider activation or execution route. Migration
 81. Local verification discovered 340 tests with 31 PostgreSQL-only skips and
 passed all runnable tests, compileall, Ruff, mypy 120/120, the zero-error
 25-file critical slice, Bandit and Alembic's sole 0020 head. Hosted PostgreSQL
-and complete workflow evidence remain required before Cycle 206 is verified.
+CI run `31922911169` on `275e230` applied migration 0020, ran all 340 tests
+without skips, matched all 81 restored tables and passed every configured
+backend, security, dependency, frontend and dashboard gate. Exact-merge
+mainline evidence remains required before Cycle 206 is verified.
