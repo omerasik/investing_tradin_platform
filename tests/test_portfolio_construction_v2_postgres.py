@@ -146,9 +146,12 @@ class PortfolioConstructionV2PostgresTests(unittest.TestCase):
                 )
                 package_hash = hashlib.sha256(manifest.encode()).hexdigest()
                 cursor.execute(
-                    "INSERT INTO validation_packages VALUES "
+                    "INSERT INTO validation_packages "
+                    "(package_id,strategy_version_id,dataset_version_id,cost_model_version,"
+                    "content_hash,status,created_at,limitations,feature_versions,manifest_version,"
+                    "canonical_manifest,integrity_status) VALUES "
                     "(%s,%s,%s,'cost-v1',%s,'REVIEW_REQUIRED_OR_BLOCKED',%s,'[]'::jsonb,"
-                    "'validation-package-manifest-v1',%s,'VERIFIED')",
+                    "'[]'::jsonb,'validation-package-manifest-v1',%s,'VERIFIED')",
                     (
                         package_id,
                         strategy_version_id,
