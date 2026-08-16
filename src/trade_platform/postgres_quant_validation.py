@@ -62,7 +62,7 @@ class PostgresQuantValidationStore:
         try:
             with self._database.transaction() as connection, connection.cursor() as cursor:
                 cursor.execute(
-                    "INSERT INTO quant_validation_artifacts (quant_artifact_id, artifact_type, strategy_version_id, dataset_version_id, artifact_version, content_hash, passed, evaluated_at, payload) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)",
+                    "INSERT INTO quant_validation_artifacts (quant_artifact_id, artifact_type, strategy_version_id, dataset_version_id, artifact_version, content_hash, passed, evaluated_at, payload) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb) ON CONFLICT DO NOTHING RETURNING content_hash",
                     (
                         identity.artifact_id,
                         evidence_type,
@@ -75,7 +75,32 @@ class PostgresQuantValidationStore:
                         json.dumps(payload, sort_keys=True),
                     ),
                 )
+                inserted = cursor.fetchone()
+                if inserted is None:
+                    cursor.execute(
+                        "SELECT quant_artifact_id,artifact_type,strategy_version_id,"
+                        "dataset_version_id,artifact_version,content_hash,payload "
+                        "FROM quant_validation_artifacts WHERE quant_artifact_id=%s "
+                        "OR content_hash=%s",
+                        (identity.artifact_id, identity.content_hash),
+                    )
+                    existing = cursor.fetchone()
+                    if (
+                        existing is None
+                        or UUID(str(existing[0])) != identity.artifact_id
+                        or str(existing[1]) != evidence_type
+                        or UUID(str(existing[2])) != strategy_id
+                        or UUID(str(existing[3])) != dataset_id
+                        or str(existing[4]) != identity.artifact_version
+                        or str(existing[5]) != identity.content_hash
+                        or dict(existing[6]) != payload
+                    ):
+                        raise QuantValidationError(
+                            "validation_artifact_idempotency_conflict"
+                        )
             return identity.artifact_id
+        except QuantValidationError:
+            raise
         except Exception as error:
             raise QuantValidationError("postgres_validation_artifact_persistence_failed") from error
 

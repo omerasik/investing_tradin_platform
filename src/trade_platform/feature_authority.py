@@ -326,6 +326,28 @@ class PostgresFeatureAuthority:
         except Exception as error:
             raise FeatureAuthorityError("feature_materialization_failed") from error
 
+    def definition(self, feature_id: UUID) -> FeatureDefinitionVersion:
+        """Resolve the immutable definition instead of trusting caller metadata."""
+        with self._database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT * FROM feature_definition_versions WHERE feature_id=%s",
+                (feature_id,),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            raise FeatureAuthorityError("feature_definition_not_found")
+        datasets = row[6] if isinstance(row[6], list) else json.loads(row[6])
+        fields = row[7] if isinstance(row[7], list) else json.loads(row[7])
+        parameters = row[11] if isinstance(row[11], dict) else json.loads(row[11])
+        return FeatureDefinitionVersion(
+            str(row[1]), FeatureFamily(str(row[2])), str(row[3]), str(row[4]), str(row[5]),
+            tuple(str(item) for item in datasets), tuple(str(item) for item in fields),
+            str(row[8]), str(row[9]), int(row[10]), parameters, str(row[12]), str(row[13]),
+            str(row[14]), None if row[15] is None else Decimal(str(row[15])),
+            None if row[16] is None else Decimal(str(row[16])), str(row[17]), str(row[18]),
+            row[19], row[20], UUID(str(row[0])),
+        )
+
     def latest_as_of(
         self, feature_id: UUID, instrument_id: str, dataset_version: str, decision_at: datetime
     ) -> tuple[FeatureMaterialization, ...]:

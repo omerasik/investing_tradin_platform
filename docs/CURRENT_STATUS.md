@@ -38,15 +38,16 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
-- A fresh local audit on 2026-08-16 completed **297 Python tests**. It skipped
-  **23 PostgreSQL-dependent tests** because no disposable PostgreSQL DSN is
+- A fresh local audit on 2026-08-16 discovered **318 Python tests** and passed
+  all locally runnable tests. It skipped **27 PostgreSQL-dependent tests**
+  because no disposable PostgreSQL DSN is
   configured on this workstation; this is not substituted for CI evidence.
-- The latest no-skip PostgreSQL CI evidence is Cycle 200: GitHub Actions run
-  `31917391040` on `6d9d11b` applied migrations through `0014`, ran all 304
-  Python tests without skips, restored and reconciled 38 critical tables, and
-  passed the configured quality, security, dependency, frontend and dashboard
-  gates. Its provider fixtures remain provider-neutral and external source
-  activation is still blocked.
+- The latest no-skip PostgreSQL PR evidence is Cycle 202 GitHub Actions run
+  `31919611400` on `f3bd1ec`: migration 0016, all **318 tests without skips**,
+  matched **48-table** restore/reconciliation, Ruff, mypy 120/120 ratchet,
+  zero-error 21-file critical slice, security/dependency/SBOM/secret gates and
+  frontend/dashboard gates. Mainline verification is still required before
+  final Cycle 202 `VERIFIED` status.
 
 - A historic implementation baseline passed 274 Python tests without skips in
   GitHub Actions
@@ -60,12 +61,12 @@ snapshot, not a second roadmap.
 - Validation-package focused local tests pass (including capacity, slippage, latency,
   bootstrap/Monte Carlo, stability, multiple-testing and persisted-package
   promotion regressions).
-- Cycle 201 implementation adds an immutable, normalized PostgreSQL scorecard
+- Cycle 201 verified adds an immutable, normalized PostgreSQL scorecard
   authority. It derives deterministic identities from canonical raw evidence,
   records measured/assumed/unavailable metrics and transparent non-authoritative
   components, and refuses scorecard eligibility until a hash-verified,
-  version-bound validation package is linked. It remains pending no-skip CI
-  verification; synthetic fixtures are not an investment conclusion.
+  version-bound validation package is linked. Mainline CI run `31918548340` on
+  `3a45028` passed without skips; synthetic fixtures are not an investment conclusion.
 - Next.js production build has passed using the installed locked dependencies.
 - Browser E2E has exercised configured paper OMS evidence, investments/alerts,
   research strategy creation, backtest launch with held-out evidence, and an
@@ -88,6 +89,8 @@ snapshot, not a second roadmap.
 2. Keep authorized real-data activation EXTERNAL_BLOCKED until the operator
    approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
+4. Merge PR #4 only after its final documentation commit receives fresh green
+   CI; then require green mainline CI before calling Cycle 202 `VERIFIED`.
 
 ## PostgreSQL persistence progress
 
@@ -225,7 +228,7 @@ fundamental/macro definitions are declared but deliberately receive no
 fabricated value without authorized PIT input. The activation package keeps
 provider, SEC and macro activation `EXTERNAL_BLOCKED`.
 
-## Cycle 201 implemented — immutable strategy scorecards, pending CI
+## Cycle 201 verified — immutable strategy scorecards
 
 Migration 0015 introduces immutable `strategy_scorecards`, normalized raw
 metric observations, transparent components and validation-package bindings.
@@ -241,5 +244,31 @@ Promotion eligibility remains `REVIEW_REQUIRED` only and fails closed without
 a verified complete validation package whose manifest matches the scorecard's
 strategy, dataset, feature and cost bindings. The PostgreSQL fixture test covers
 missing-package blocking, immutable rows, replay/restart and wrong-binding
-rejection; hosted PostgreSQL CI is still required before calling this cycle
-VERIFIED. No provider, broker or real-market endpoint was called.
+rejection. GitHub Actions run `31918548340` on merge commit `3a45028` passed
+the no-skip PostgreSQL migration/integration path, 43-table fresh restore,
+security, dependency and frontend/dashboard gates. No provider, broker or
+real-market endpoint was called.
+
+## Cycle 202 PR-verified — Professional Trend Strategy Engine V2
+
+Four immutable `RESEARCH_ONLY` Trend definitions consume exact Cycle 200
+Feature Authority IDs/versions and produce deterministic bounded signal series.
+Unavailable/rejected feature values remain explicitly `UNAVAILABLE`; version,
+dataset, future-knowledge, incomplete-history and Data Health violations fail
+closed.
+
+One deterministic orchestration binds a sealed dataset, strategy, feature
+materializations and cost model, then executes next-period vector accounting,
+separate iterative accounting, realistic event simulation, golden divergence
+reconciliation, purged/embargoed walk-forward holdout, the eight-part quant
+validation chain, Scorecard V2 and a complete immutable package. PostgreSQL
+persists and replays definition/version, experiment, walk-forward, golden,
+validation, scorecard and package evidence without adding execution authority.
+
+PR CI run `31919611400` on `f3bd1ec` passed migration 0016, all 318 tests without
+skips and the 48-table restore plus every configured backend, security,
+dependency, frontend and dashboard gate. Evidence is explicitly
+`SYNTHETIC_ENGINEERING_EVIDENCE_ONLY`; real capacity/slippage/impact, regime
+performance and live consistency are unavailable. Maximum automatic state is
+`REVIEW_REQUIRED`; there is no paper/live activation. Final `VERIFIED` remains
+pending PR #4 merge and green mainline CI.
