@@ -25,9 +25,7 @@ class PostgresIntegrationTests(unittest.TestCase):
         import psycopg
 
         self.connection = psycopg.connect(os.environ["POSTGRES_TEST_DSN"])
-        # The calendar assertion below is about a configured weekday session,
-        # not the wall-clock day on which CI happened to run.
-        self.now = datetime(2025, 1, 2, 12, tzinfo=UTC)
+        self.now = datetime.now(UTC)
         self.exchange_id, self.instrument_id = uuid4(), uuid4()
         self.dataset_id, self.dataset_version_id = uuid4(), uuid4()
         self.strategy_id, self.strategy_version_id = uuid4(), uuid4()
@@ -374,9 +372,10 @@ class PostgresIntegrationTests(unittest.TestCase):
         recovered_instruments = PostgresInstrumentStore(restarted)
         self.assertEqual(recovered_instruments.get(instrument_id), instrument)
         self.assertEqual(recovered_instruments.risk_profile_as_of(instrument_id, self.now), profile)
-        self.assertTrue(
-            recovered_instruments.is_trading_session(runtime_venue, self.now)
-        )
+        # The session assertion is about the configured weekday calendar, not
+        # the wall-clock weekday on which CI happens to run.
+        weekday_probe = self.now + timedelta(days=(-self.now.weekday()) % 7)
+        self.assertTrue(recovered_instruments.is_trading_session(runtime_venue, weekday_probe))
         self.assertEqual(
             PostgresSignalStore(restarted).risk_signal(proposal.signal_id, as_of=self.now).signal_id,
             proposal.signal_id,
