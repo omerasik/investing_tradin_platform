@@ -273,7 +273,7 @@ dependency, frontend and dashboard gate. Evidence is explicitly
 performance and live consistency are unavailable. Maximum automatic state is
 `REVIEW_REQUIRED`; there is no paper/live activation. Cycle 202 is `VERIFIED`.
 
-## Cycle 203 in progress — Professional Long-Term Investment Engine V2
+## Cycle 203 PR-verified — Professional Long-Term Investment Engine V2
 
 The first Cycle 203 increment extends the existing normalized investment thesis
 and evidence tables instead of introducing a parallel authority. Immutable
@@ -292,5 +292,8 @@ single-weight and turnover limits, and are limited to `REVIEW_REQUIRED` or
 missing normalized policy/candidate authorities and makes the existing thesis,
 evidence and review tables immutable. The restore manifest now covers 54
 critical tables. Local evidence is 323 tests discovered with 28 PostgreSQL-only
-skips, Ruff, compileall, mypy 120/120 and a zero-error 22-file critical slice;
-hosted PostgreSQL CI is still required before this increment is verified.
+skips, Ruff, compileall, mypy 120/120 and a zero-error 22-file critical slice.
+PR CI run `31920513640` on `8ed8adf` passed migration 0017, all 323 tests
+without skips, matched the 54-table restore, and passed every configured
+backend, security, dependency, frontend and dashboard gate. Final `VERIFIED`
+status requires PR #5 merge and green CI on the exact mainline merge commit.

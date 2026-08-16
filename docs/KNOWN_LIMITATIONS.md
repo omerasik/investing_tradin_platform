@@ -59,8 +59,8 @@ The full requirement-level matrix is in
   policy, and non-executable rebalance-candidate foundation. Its deterministic
   company-quality and valuation fixture is attributed and point-in-time, but is
   not a real-company conclusion, price target, recommendation, or authorization
-  to allocate capital. Hosted migration/restart/immutability/restore evidence is
-  pending; local PostgreSQL coverage is skipped without a disposable DSN.
+  to allocate capital. Hosted migration/restart/immutability and 54-table restore
+  evidence passed in PR CI run `31920513640`; mainline verification is pending.
 - Strategy coverage is four transparent long-only baselines. Cross-sectional,
   factor, macro, relative-value, event, sentiment, crypto-basis and
   market-neutral families remain incomplete.
