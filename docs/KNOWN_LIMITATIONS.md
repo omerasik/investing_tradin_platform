@@ -3,10 +3,10 @@
 The full requirement-level matrix is in
 [`MASTER_ROADMAP.md`](MASTER_ROADMAP.md). These are the material current limits.
 
-- A 2026-08-16 local regression run completed 297 Python tests but skipped 23
+- A 2026-08-16 local regression discovered 318 Python tests but skipped 27
   PostgreSQL-dependent tests because no disposable PostgreSQL DSN is configured.
-  The current full no-skip evidence remains the Cycle 15 CI run, not this local
-  fixture-only execution.
+  The current full no-skip evidence is PR CI run `31919611400`, not the local
+  fixture-only execution; mainline verification remains pending.
 
 - This is a local, paper-only system. Live trading is intentionally unavailable.
 - SQLite stores provide durable local evidence but are not the normalized
@@ -47,7 +47,14 @@ The full requirement-level matrix is in
   not establish real-market alpha: factor/correlation/regime/cross-market,
   empirical capacity and live-consistency metrics remain `UNAVAILABLE` until
   attributable prerequisite data exists. PostgreSQL scorecard/recovery evidence
-  remains pending no-skip hosted CI; this workstation has no disposable DSN.
+  is hosted-CI verified; this workstation still has no disposable DSN.
+- Cycle 202 closes the engineering Trend vertical slice only. Its four
+  feature-bound long/flat strategies, vector/independent/event reconciliation,
+  walk-forward, quant evidence, scorecard and package use an attributed
+  deterministic fixture and are labelled
+  `SYNTHETIC_ENGINEERING_EVIDENCE_ONLY`. They do not establish alpha, real
+  capacity, real slippage/impact, regime performance or live consistency, and
+  cannot progress beyond `REVIEW_REQUIRED` or create a paper/live activation.
 - Strategy coverage is four transparent long-only baselines. Cross-sectional,
   factor, macro, relative-value, event, sentiment, crypto-basis and
   market-neutral families remain incomplete.
