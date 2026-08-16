@@ -41,9 +41,9 @@ snapshot, not a second roadmap.
 - A fresh local audit on 2026-08-16 completed **297 Python tests**. It skipped
   **23 PostgreSQL-dependent tests** because no disposable PostgreSQL DSN is
   configured on this workstation; this is not substituted for CI evidence.
-- The latest no-skip PostgreSQL CI evidence is Cycle 199: GitHub Actions run
-  `31916415858` on `edcefcd` applied migrations through `0013`, ran all 301
-  Python tests without skips, restored and reconciled 36 critical tables, and
+- The latest no-skip PostgreSQL CI evidence is Cycle 200: GitHub Actions run
+  `31917391040` on `6d9d11b` applied migrations through `0014`, ran all 304
+  Python tests without skips, restored and reconciled 38 critical tables, and
   passed the configured quality, security, dependency, frontend and dashboard
   gates. Its provider fixtures remain provider-neutral and external source
   activation is still blocked.
@@ -206,3 +206,15 @@ revision before release and ingestion. GitHub Actions verify run `31890332414`
 passed on commit `b67a35f`: migration 0012, all 297 tests without skips, a
 fresh 35-table restore and every quality/security/frontend gate. Actual
 authoritative source activation remains `EXTERNAL_BLOCKED` until terms are approved.
+
+## Cycle 200 verified — Feature Platform V2
+
+Migration 0014 adds versioned feature-definition and immutable feature-
+materialization authorities. Every materialization records instrument, feature
+version, dataset version, event/effective/knowledge/computed times, source
+manifest, value, quality status and content hash. Decision-time reads are
+dataset-isolated and reject future knowledge. Transparent offline market
+baselines now cover price/returns, trend, momentum, volatility and liquidity;
+fundamental/macro definitions are declared but deliberately receive no
+fabricated value without authorized PIT input. The activation package keeps
+provider, SEC and macro activation `EXTERNAL_BLOCKED`.
