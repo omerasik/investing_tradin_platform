@@ -38,16 +38,16 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
-- A fresh local audit on 2026-08-16 discovered **328 Python tests** and passed
+- A fresh local audit on 2026-08-16 discovered **333 Python tests** and passed
   all locally runnable tests. It skipped **27 PostgreSQL-dependent tests**
-  plus the Cycle 203/204 PostgreSQL tests (**29 total**) because no disposable PostgreSQL DSN is
+  plus the Cycle 203–205 PostgreSQL tests (**30 total**) because no disposable PostgreSQL DSN is
   configured on this workstation; this is not substituted for CI evidence.
-- The latest no-skip PostgreSQL evidence is Cycle 203 mainline GitHub Actions
-  run `31920718692` on merge commit `bd38d35`: migration 0017, all **323 tests
+- The latest no-skip PostgreSQL evidence is Cycle 204 mainline GitHub Actions
+  run `31921534291` on merge commit `cb3a38c`: migration 0018, all **328 tests
   without skips**,
-  matched **54-table** restore/reconciliation, Ruff, mypy 120/120 ratchet,
-  zero-error 22-file critical slice, security/dependency/SBOM/secret gates and
-  frontend/dashboard gates. This closes the Cycle 203 `VERIFIED` exit gate.
+  matched **62-table** restore/reconciliation, Ruff, mypy 120/120 ratchet,
+  zero-error 23-file critical slice, security/dependency/SBOM/secret gates and
+  frontend/dashboard gates. This closes the Cycle 204 `VERIFIED` exit gate.
 
 - A historic implementation baseline passed 274 Python tests without skips in
   GitHub Actions
@@ -299,7 +299,7 @@ without skips, matched the 54-table restore, and passed every configured
 backend, security, dependency, frontend and dashboard gate. Cycle 203 is
 `VERIFIED`.
 
-## Cycle 204 PR-verified — Regime Engine V2
+## Cycle 204 VERIFIED — Regime Engine V2
 
 The Cycle 204 branch replaces the unbound three-label helper gap with an
 immutable, feature-authority-bound research path. A versioned model consumes
@@ -322,8 +322,34 @@ Migration 0018 adds normalized immutable model, run, observation, method
 evaluation, evidence-membership and risk-candidate tables. The restore manifest
 now covers 62 critical tables. Local verification discovered 328 tests with 29
 PostgreSQL-only skips and passed compileall, Ruff, mypy 120/120, the zero-error
-23-file critical slice, and Alembic's sole 0018 head. PR CI run `31921339310`
-on `62a5316` applied migration 0018, ran all 328 tests without skips, matched
-the 62-table restore, and passed every configured backend, security, dependency,
-frontend and dashboard gate. Final `VERIFIED` status still requires PR #6 merge
-and green CI on the exact mainline merge commit.
+23-file critical slice, and Alembic's sole 0018 head. PR #6's final run
+`31921443854` passed on `3239912`, then merged as `cb3a38c`. Exact-merge
+mainline CI run `31921534291` applied migration 0018, ran all 328 tests without
+skips, matched the 62-table restore, and passed every configured backend,
+security, dependency, frontend and dashboard gate. Cycle 204 is `VERIFIED`.
+
+## Cycle 205 in progress — Multi-Strategy Portfolio Construction
+
+The Cycle 205 branch adds one content-addressed portfolio policy and construction
+run over exact Strategy Version, Scorecard V2, verified Validation Package,
+Regime V2 reduction-candidate and Data Health identities. It normalizes
+strategy signals into sleeves, applies risk budgets, capacity, liquidity,
+drawdown and signal-decay controls, and estimates marginal/component risk from
+an exact sealed return-history dataset and declared covariance matrix. Covariance
+uncertainty and correlation-convergence stress can only reduce targets.
+
+Aggregate gross/net, sleeve, asset/sector/country/currency/broker/exchange/
+correlation-cluster, factor, derivative delta, FX and pending-order exposures
+are constrained before the existing independent `portfolio_risk` engine checks
+the same candidate. Missing/mismatched/future/blocked evidence, regime risk
+increases and hidden leverage fail closed. Output is an immutable
+`REVIEW_REQUIRED` or `BLOCKED` target-weight candidate with database-enforced
+false automatic authority; there is no signal, order, OMS, broker or activation
+path.
+
+Migration 0019 adds nine normalized immutable portfolio policy/run/input,
+covariance, target, constraint and independent-risk evidence tables. The restore
+manifest now covers 71 critical tables. Local verification discovered 333 tests
+with 30 PostgreSQL-only skips and passed compileall, Ruff, mypy 120/120, the
+zero-error 24-file critical slice and Alembic's sole 0019 head. Hosted PostgreSQL
+migration/replay/restart/immutability and restore evidence remains required.

@@ -76,6 +76,15 @@ CRITICAL_TABLES = (
     "regime_method_evaluations",
     "regime_run_method_evaluations",
     "regime_risk_adjustment_candidates",
+    "portfolio_construction_policy_versions",
+    "portfolio_construction_runs",
+    "portfolio_construction_run_data_health_assessments",
+    "portfolio_sleeve_inputs",
+    "portfolio_covariance_estimates",
+    "portfolio_target_candidates",
+    "portfolio_target_sleeve_weights",
+    "portfolio_constraint_evaluations",
+    "portfolio_risk_gate_evidence",
 )
 
 
