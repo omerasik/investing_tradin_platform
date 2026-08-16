@@ -68,6 +68,14 @@ CRITICAL_TABLES = (
     "investment_reviews",
     "investment_policy_versions",
     "investment_rebalance_candidates",
+    "regime_model_versions",
+    "regime_runs",
+    "regime_run_data_health_assessments",
+    "regime_observations",
+    "regime_run_observations",
+    "regime_method_evaluations",
+    "regime_run_method_evaluations",
+    "regime_risk_adjustment_candidates",
 )
 
 
