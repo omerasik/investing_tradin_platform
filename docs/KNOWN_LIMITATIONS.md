@@ -76,8 +76,9 @@ The full requirement-level matrix is in
   covariance fixture, not a calibrated multi-market covariance forecast or
   empirical portfolio result. The review-only candidate binds exact strategy,
   scorecard, package, regime and Data Health identities and constrains hidden
-  derivative/FX/pending exposure, but cannot create a signal or order. Hosted
-  PostgreSQL and 71-table restore verification is pending.
+  derivative/FX/pending exposure, but cannot create a signal or order. PR CI
+  run `31922197235` passed the PostgreSQL/restart/immutability checks and matched
+  the 71-table restore; exact-merge mainline verification remains pending.
 - Market, macro, fundamental and news adapters are configuration/fixture or
   narrow public-source boundaries. There is no activated licensed provider,
   streaming feed, full SEC parser, economic calendar or real-time source health

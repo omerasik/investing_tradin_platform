@@ -328,7 +328,7 @@ mainline CI run `31921534291` applied migration 0018, ran all 328 tests without
 skips, matched the 62-table restore, and passed every configured backend,
 security, dependency, frontend and dashboard gate. Cycle 204 is `VERIFIED`.
 
-## Cycle 205 in progress — Multi-Strategy Portfolio Construction
+## Cycle 205 PR-verified — Multi-Strategy Portfolio Construction
 
 The Cycle 205 branch adds one content-addressed portfolio policy and construction
 run over exact Strategy Version, Scorecard V2, verified Validation Package,
@@ -351,5 +351,8 @@ Migration 0019 adds nine normalized immutable portfolio policy/run/input,
 covariance, target, constraint and independent-risk evidence tables. The restore
 manifest now covers 71 critical tables. Local verification discovered 333 tests
 with 30 PostgreSQL-only skips and passed compileall, Ruff, mypy 120/120, the
-zero-error 24-file critical slice and Alembic's sole 0019 head. Hosted PostgreSQL
-migration/replay/restart/immutability and restore evidence remains required.
+zero-error 24-file critical slice and Alembic's sole 0019 head. PR CI run
+`31922197235` on `6a0d82e` applied migration 0019, ran all 333 tests without
+skips, matched the 71-table restore, and passed every configured backend,
+security, dependency, frontend and dashboard gate. Final `VERIFIED` status
+still requires PR #7 merge and green CI on the exact mainline merge commit.
