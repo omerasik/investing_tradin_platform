@@ -38,16 +38,16 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
-- A fresh local audit on 2026-08-16 discovered **318 Python tests** and passed
+- A fresh local audit on 2026-08-16 discovered **323 Python tests** and passed
   all locally runnable tests. It skipped **27 PostgreSQL-dependent tests**
-  because no disposable PostgreSQL DSN is
+  plus the new Cycle 203 PostgreSQL test (**28 total**) because no disposable PostgreSQL DSN is
   configured on this workstation; this is not substituted for CI evidence.
-- The latest no-skip PostgreSQL PR evidence is Cycle 202 GitHub Actions run
-  `31919611400` on `f3bd1ec`: migration 0016, all **318 tests without skips**,
+- The latest no-skip PostgreSQL evidence is Cycle 202 mainline GitHub Actions
+  run `31919886932` on merge commit `72c48bd`: migration 0016, all **318 tests
+  without skips**,
   matched **48-table** restore/reconciliation, Ruff, mypy 120/120 ratchet,
   zero-error 21-file critical slice, security/dependency/SBOM/secret gates and
-  frontend/dashboard gates. Mainline verification is still required before
-  final Cycle 202 `VERIFIED` status.
+  frontend/dashboard gates. This closes the Cycle 202 `VERIFIED` exit gate.
 
 - A historic implementation baseline passed 274 Python tests without skips in
   GitHub Actions
@@ -89,8 +89,8 @@ snapshot, not a second roadmap.
 2. Keep authorized real-data activation EXTERNAL_BLOCKED until the operator
    approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
-4. Merge PR #4 only after its final documentation commit receives fresh green
-   CI; then require green mainline CI before calling Cycle 202 `VERIFIED`.
+4. Begin Cycle 203 with PostgreSQL-native, point-in-time investment evidence;
+   retain strict separation from trading capital and execution authority.
 
 ## PostgreSQL persistence progress
 
@@ -249,7 +249,7 @@ the no-skip PostgreSQL migration/integration path, 43-table fresh restore,
 security, dependency and frontend/dashboard gates. No provider, broker or
 real-market endpoint was called.
 
-## Cycle 202 PR-verified — Professional Trend Strategy Engine V2
+## Cycle 202 VERIFIED — Professional Trend Strategy Engine V2
 
 Four immutable `RESEARCH_ONLY` Trend definitions consume exact Cycle 200
 Feature Authority IDs/versions and produce deterministic bounded signal series.
@@ -265,10 +265,32 @@ validation chain, Scorecard V2 and a complete immutable package. PostgreSQL
 persists and replays definition/version, experiment, walk-forward, golden,
 validation, scorecard and package evidence without adding execution authority.
 
-PR CI run `31919611400` on `f3bd1ec` passed migration 0016, all 318 tests without
-skips and the 48-table restore plus every configured backend, security,
+PR CI run `31919806804` passed on the final PR head `bd07172`; PR #4 then merged
+as `72c48bd`. Mainline CI run `31919886932` passed migration 0016, all 318 tests
+without skips and the 48-table restore plus every configured backend, security,
 dependency, frontend and dashboard gate. Evidence is explicitly
 `SYNTHETIC_ENGINEERING_EVIDENCE_ONLY`; real capacity/slippage/impact, regime
 performance and live consistency are unavailable. Maximum automatic state is
-`REVIEW_REQUIRED`; there is no paper/live activation. Final `VERIFIED` remains
-pending PR #4 merge and green mainline CI.
+`REVIEW_REQUIRED`; there is no paper/live activation. Cycle 202 is `VERIFIED`.
+
+## Cycle 203 in progress — Professional Long-Term Investment Engine V2
+
+The first Cycle 203 increment extends the existing normalized investment thesis
+and evidence tables instead of introducing a parallel authority. Immutable
+thesis versions now bind their complete contract, PIT instrument, knowledge
+cutoff, parent version and content hash. One deterministic orchestrator reads
+the Cycle 14/15 PIT fundamental and macro authorities, rejects future evidence,
+requires explicit Data Health evidence, and produces source-bound company
+quality, transparent finite-DCF valuation and thesis-drift evidence. Missing
+inputs remain `UNAVAILABLE` and block review; fixture valuations are explicitly
+not price targets or recommendations.
+
+Versioned investment policy is restricted to `INVESTMENT` accounts. Rebalance
+candidates bind the policy, holdings hash and analysis evidence, enforce cash,
+single-weight and turnover limits, and are limited to `REVIEW_REQUIRED` or
+`BLOCKED` with `execution_authority = false`. Migration 0017 adds the smallest
+missing normalized policy/candidate authorities and makes the existing thesis,
+evidence and review tables immutable. The restore manifest now covers 54
+critical tables. Local evidence is 323 tests discovered with 28 PostgreSQL-only
+skips, Ruff, compileall, mypy 120/120 and a zero-error 22-file critical slice;
+hosted PostgreSQL CI is still required before this increment is verified.

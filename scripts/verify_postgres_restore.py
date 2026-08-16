@@ -62,6 +62,12 @@ CRITICAL_TABLES = (
     "scorecard_components",
     "scorecard_data_health_assessments",
     "scorecard_validation_packages",
+    "investment_theses",
+    "investment_evidence",
+    "investment_evidence_data_health_assessments",
+    "investment_reviews",
+    "investment_policy_versions",
+    "investment_rebalance_candidates",
 )
 
 

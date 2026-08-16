@@ -3,10 +3,10 @@
 The full requirement-level matrix is in
 [`MASTER_ROADMAP.md`](MASTER_ROADMAP.md). These are the material current limits.
 
-- A 2026-08-16 local regression discovered 318 Python tests but skipped 27
+- A 2026-08-16 local regression discovered 323 Python tests but skipped 28
   PostgreSQL-dependent tests because no disposable PostgreSQL DSN is configured.
-  The current full no-skip evidence is PR CI run `31919611400`, not the local
-  fixture-only execution; mainline verification remains pending.
+  The current full no-skip evidence is mainline CI run `31919886932` on merge
+  commit `72c48bd`, not the local fixture-only execution.
 
 - This is a local, paper-only system. Live trading is intentionally unavailable.
 - SQLite stores provide durable local evidence but are not the normalized
@@ -55,6 +55,12 @@ The full requirement-level matrix is in
   `SYNTHETIC_ENGINEERING_EVIDENCE_ONLY`. They do not establish alpha, real
   capacity, real slippage/impact, regime performance or live consistency, and
   cannot progress beyond `REVIEW_REQUIRED` or create a paper/live activation.
+- Cycle 203 has begun with an immutable PostgreSQL investment evidence,
+  policy, and non-executable rebalance-candidate foundation. Its deterministic
+  company-quality and valuation fixture is attributed and point-in-time, but is
+  not a real-company conclusion, price target, recommendation, or authorization
+  to allocate capital. Hosted migration/restart/immutability/restore evidence is
+  pending; local PostgreSQL coverage is skipped without a disposable DSN.
 - Strategy coverage is four transparent long-only baselines. Cross-sectional,
   factor, macro, relative-value, event, sentiment, crypto-basis and
   market-neutral families remain incomplete.
