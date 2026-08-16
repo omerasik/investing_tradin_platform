@@ -60,6 +60,12 @@ snapshot, not a second roadmap.
 - Validation-package focused local tests pass (including capacity, slippage, latency,
   bootstrap/Monte Carlo, stability, multiple-testing and persisted-package
   promotion regressions).
+- Cycle 201 implementation adds an immutable, normalized PostgreSQL scorecard
+  authority. It derives deterministic identities from canonical raw evidence,
+  records measured/assumed/unavailable metrics and transparent non-authoritative
+  components, and refuses scorecard eligibility until a hash-verified,
+  version-bound validation package is linked. It remains pending no-skip CI
+  verification; synthetic fixtures are not an investment conclusion.
 - Next.js production build has passed using the installed locked dependencies.
 - Browser E2E has exercised configured paper OMS evidence, investments/alerts,
   research strategy creation, backtest launch with held-out evidence, and an
@@ -218,3 +224,22 @@ baselines now cover price/returns, trend, momentum, volatility and liquidity;
 fundamental/macro definitions are declared but deliberately receive no
 fabricated value without authorized PIT input. The activation package keeps
 provider, SEC and macro activation `EXTERNAL_BLOCKED`.
+
+## Cycle 201 implemented — immutable strategy scorecards, pending CI
+
+Migration 0015 introduces immutable `strategy_scorecards`, normalized raw
+metric observations, transparent components and validation-package bindings.
+The scorecard identity includes the strategy/research/dataset/feature/cost/PIT
+cutoffs, data-health status, limitations and evidence manifest; replay is
+idempotent only for identical canonical evidence. Performance and tail-risk
+helpers mark unavailable statistics explicitly, while arbitrary robustness,
+execution, data-quality and signal-decay observations retain their evidence
+state rather than inventing values. Components, including a disclosed
+complexity penalty, are navigation aids and cannot promote a strategy.
+
+Promotion eligibility remains `REVIEW_REQUIRED` only and fails closed without
+a verified complete validation package whose manifest matches the scorecard's
+strategy, dataset, feature and cost bindings. The PostgreSQL fixture test covers
+missing-package blocking, immutable rows, replay/restart and wrong-binding
+rejection; hosted PostgreSQL CI is still required before calling this cycle
+VERIFIED. No provider, broker or real-market endpoint was called.

@@ -42,6 +42,12 @@ The full requirement-level matrix is in
   generation is not yet an automated backtest-launch workflow or dashboard
   view, and critical application composition still contains legacy SQLite
   authorities outside this verified package boundary.
+- Cycle 201 scorecards preserve immutable, version-bound synthetic engineering
+  evidence and can never authorize promotion beyond `REVIEW_REQUIRED`. They do
+  not establish real-market alpha: factor/correlation/regime/cross-market,
+  empirical capacity and live-consistency metrics remain `UNAVAILABLE` until
+  attributable prerequisite data exists. PostgreSQL scorecard/recovery evidence
+  remains pending no-skip hosted CI; this workstation has no disposable DSN.
 - Strategy coverage is four transparent long-only baselines. Cross-sectional,
   factor, macro, relative-value, event, sentiment, crypto-basis and
   market-neutral families remain incomplete.
