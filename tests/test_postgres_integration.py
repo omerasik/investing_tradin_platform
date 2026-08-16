@@ -25,7 +25,9 @@ class PostgresIntegrationTests(unittest.TestCase):
         import psycopg
 
         self.connection = psycopg.connect(os.environ["POSTGRES_TEST_DSN"])
-        self.now = datetime.now(UTC)
+        # The calendar assertion below is about a configured weekday session,
+        # not the wall-clock day on which CI happened to run.
+        self.now = datetime(2025, 1, 2, 12, tzinfo=UTC)
         self.exchange_id, self.instrument_id = uuid4(), uuid4()
         self.dataset_id, self.dataset_version_id = uuid4(), uuid4()
         self.strategy_id, self.strategy_version_id = uuid4(), uuid4()
