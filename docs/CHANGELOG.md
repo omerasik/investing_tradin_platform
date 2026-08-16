@@ -10,6 +10,11 @@
   Data Health gates, point-in-time replacement, and confidence withdrawal.
 - Kept providers unactivated and all news/event output research-only with no
   signal, order, OMS, broker, execution, or automatic risk-increase authority.
+- Verified Cycle 206 on exact merged main commit `8b2b3a15` in CI run
+  `31923127659`.
+- Added Cycle 207 immutable correlated telemetry, dependency/business probes,
+  candidate SLO/SLI evidence, actionable alert/incident lifecycles and measured
+  failure drills without asserting production deployment or SLO attainment.
 
 ## 2026-07-30
 

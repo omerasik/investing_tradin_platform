@@ -358,7 +358,7 @@ security, dependency, frontend and dashboard gate. PR #7 merged as `9bf966a7`;
 exact-merge mainline CI run `31922415005` passed the complete workflow. Cycle
 205 is `VERIFIED`.
 
-## Cycle 206 PR-verified — News/Event Intelligence Core
+## Cycle 206 VERIFIED — News/Event Intelligence Core
 
 The Cycle 206 branch adds a provider-neutral, correction-aware research evidence
 authority. Versioned source policy records retain terms, authorization reference,
@@ -386,5 +386,21 @@ passed all runnable tests, compileall, Ruff, mypy 120/120, the zero-error
 25-file critical slice, Bandit and Alembic's sole 0020 head. Hosted PostgreSQL
 CI run `31922911169` on `275e230` applied migration 0020, ran all 340 tests
 without skips, matched all 81 restored tables and passed every configured
-backend, security, dependency, frontend and dashboard gate. Exact-merge
-mainline evidence remains required before Cycle 206 is verified.
+backend, security, dependency, frontend and dashboard gate. PR #8 merged as
+`8b2b3a15`; exact-merge mainline run `31923127659` passed the complete workflow.
+Cycle 206 is `VERIFIED`.
+
+## Cycle 207 local-verified — Observability/SRE V2
+
+Cycle 207 adds immutable PostgreSQL engineering evidence for versioned service
+build/environment identities, correlated log/span/metric events, dependency and
+business-health probes, candidate SLO policies and SLI windows, actionable alert
+policies, append-only alert lifecycles, incidents with mandatory post-incident
+review, and measured failure drills. Secret-shaped telemetry is rejected.
+
+SLOs remain unapproved `CANDIDATE_ONLY`; insufficient baseline is explicit and
+no production attainment is claimed. Services remain `EVIDENCE_ONLY` in local,
+CI or staging-candidate environments. Alerts require an owner, runbook,
+escalation, deduplication fingerprint, trace and evidence link. Migration 0021
+adds ten immutable tables and expands the restore manifest to 91. Hosted
+PostgreSQL and complete CI evidence remain pending.
