@@ -96,6 +96,8 @@ The full requirement-level matrix is in
   deploy infrastructure, route external pages, define an approved production
   SLO, prove a staged soak, provide managed telemetry, or exercise cloud/KMS
   rollback. Provider activation and live/paper execution authority are absent.
+  PR CI run `31923500129` passed all PostgreSQL/restart/immutability and
+  91-table restore gates; exact-merge verification remains pending.
 - Social/narrative intelligence is not started: no lawful connector, bot/spam
   controls, narrative clustering, crowding or price/sentiment divergence.
 - Regime, ensemble, ML and agent layers are local governance/research contracts;

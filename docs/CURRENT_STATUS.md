@@ -390,7 +390,7 @@ backend, security, dependency, frontend and dashboard gate. PR #8 merged as
 `8b2b3a15`; exact-merge mainline run `31923127659` passed the complete workflow.
 Cycle 206 is `VERIFIED`.
 
-## Cycle 207 local-verified — Observability/SRE V2
+## Cycle 207 PR-verified — Observability/SRE V2
 
 Cycle 207 adds immutable PostgreSQL engineering evidence for versioned service
 build/environment identities, correlated log/span/metric events, dependency and
@@ -402,5 +402,8 @@ SLOs remain unapproved `CANDIDATE_ONLY`; insufficient baseline is explicit and
 no production attainment is claimed. Services remain `EVIDENCE_ONLY` in local,
 CI or staging-candidate environments. Alerts require an owner, runbook,
 escalation, deduplication fingerprint, trace and evidence link. Migration 0021
-adds ten immutable tables and expands the restore manifest to 91. Hosted
-PostgreSQL and complete CI evidence remain pending.
+adds ten immutable tables and expands the restore manifest to 91. PR CI run
+`31923500129` on `112adff` applied migration 0021, ran all 346 tests without
+skips, matched all 91 restored tables and passed every configured backend,
+security, dependency, frontend and dashboard gate. Exact-merge mainline evidence
+remains required before Cycle 207 is verified.
