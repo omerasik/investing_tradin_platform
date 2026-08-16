@@ -50,6 +50,8 @@ CRITICAL_TABLES = (
     "pit_fundamental_facts",
     "pit_macro_sources",
     "pit_macro_observations",
+    "feature_definition_versions",
+    "feature_materializations",
 )
 
 
