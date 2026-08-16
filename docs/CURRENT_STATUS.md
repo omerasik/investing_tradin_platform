@@ -38,16 +38,16 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
-- A fresh local audit on 2026-08-16 discovered **323 Python tests** and passed
+- A fresh local audit on 2026-08-16 discovered **328 Python tests** and passed
   all locally runnable tests. It skipped **27 PostgreSQL-dependent tests**
-  plus the new Cycle 203 PostgreSQL test (**28 total**) because no disposable PostgreSQL DSN is
+  plus the Cycle 203/204 PostgreSQL tests (**29 total**) because no disposable PostgreSQL DSN is
   configured on this workstation; this is not substituted for CI evidence.
-- The latest no-skip PostgreSQL evidence is Cycle 202 mainline GitHub Actions
-  run `31919886932` on merge commit `72c48bd`: migration 0016, all **318 tests
+- The latest no-skip PostgreSQL evidence is Cycle 203 mainline GitHub Actions
+  run `31920718692` on merge commit `bd38d35`: migration 0017, all **323 tests
   without skips**,
-  matched **48-table** restore/reconciliation, Ruff, mypy 120/120 ratchet,
-  zero-error 21-file critical slice, security/dependency/SBOM/secret gates and
-  frontend/dashboard gates. This closes the Cycle 202 `VERIFIED` exit gate.
+  matched **54-table** restore/reconciliation, Ruff, mypy 120/120 ratchet,
+  zero-error 22-file critical slice, security/dependency/SBOM/secret gates and
+  frontend/dashboard gates. This closes the Cycle 203 `VERIFIED` exit gate.
 
 - A historic implementation baseline passed 274 Python tests without skips in
   GitHub Actions
@@ -273,7 +273,7 @@ dependency, frontend and dashboard gate. Evidence is explicitly
 performance and live consistency are unavailable. Maximum automatic state is
 `REVIEW_REQUIRED`; there is no paper/live activation. Cycle 202 is `VERIFIED`.
 
-## Cycle 203 PR-verified — Professional Long-Term Investment Engine V2
+## Cycle 203 VERIFIED — Professional Long-Term Investment Engine V2
 
 The first Cycle 203 increment extends the existing normalized investment thesis
 and evidence tables instead of introducing a parallel authority. Immutable
@@ -293,7 +293,34 @@ missing normalized policy/candidate authorities and makes the existing thesis,
 evidence and review tables immutable. The restore manifest now covers 54
 critical tables. Local evidence is 323 tests discovered with 28 PostgreSQL-only
 skips, Ruff, compileall, mypy 120/120 and a zero-error 22-file critical slice.
-PR CI run `31920513640` on `8ed8adf` passed migration 0017, all 323 tests
+PR #5's final run `31920627370` passed on `b737797`, then merged as `bd38d35`.
+Exact-merge mainline CI run `31920718692` passed migration 0017, all 323 tests
 without skips, matched the 54-table restore, and passed every configured
-backend, security, dependency, frontend and dashboard gate. Final `VERIFIED`
-status requires PR #5 merge and green CI on the exact mainline merge commit.
+backend, security, dependency, frontend and dashboard gate. Cycle 203 is
+`VERIFIED`.
+
+## Cycle 204 in progress — Regime Engine V2
+
+The Cycle 204 branch replaces the unbound three-label helper gap with an
+immutable, feature-authority-bound research path. A versioned model consumes
+exact feature IDs/versions from a sealed dataset and emits probabilities,
+labels and uncertainty across trend, volatility level/direction, liquidity
+level/direction, risk appetite, macro cycle and stress. Together those eight
+dimensions cover every state listed in platform section 10, including crisis,
+credit/currency/commodity stress and correlation breakdown.
+
+Rule-based and transparent probabilistic-ensemble outputs are compared against
+immutable out-of-sample labels with Brier score and accuracy. HMM,
+change-point, clustering, Bayesian-state and tree methods remain explicitly
+`UNAVAILABLE` without trained, calibrated models. Reads occur as of each event,
+prefix invariance is tested, and missing/rejected/future features or blocked
+Data Health fail closed. Regime risk changes are non-executing candidates only;
+automatic increases are prohibited and the database enforces no automatic
+authority.
+
+Migration 0018 adds normalized immutable model, run, observation, method
+evaluation, evidence-membership and risk-candidate tables. The restore manifest
+now covers 62 critical tables. Local verification discovered 328 tests with 29
+PostgreSQL-only skips and passed compileall, Ruff, mypy 120/120, the zero-error
+23-file critical slice, and Alembic's sole 0018 head. Hosted PostgreSQL CI is
+required before Cycle 204 can be verified.

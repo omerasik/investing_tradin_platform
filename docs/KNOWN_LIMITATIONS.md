@@ -3,10 +3,10 @@
 The full requirement-level matrix is in
 [`MASTER_ROADMAP.md`](MASTER_ROADMAP.md). These are the material current limits.
 
-- A 2026-08-16 local regression discovered 323 Python tests but skipped 28
+- A 2026-08-16 local regression discovered 328 Python tests but skipped 29
   PostgreSQL-dependent tests because no disposable PostgreSQL DSN is configured.
-  The current full no-skip evidence is mainline CI run `31919886932` on merge
-  commit `72c48bd`, not the local fixture-only execution.
+  The current full no-skip evidence is mainline CI run `31920718692` on merge
+  commit `bd38d35`, not the local fixture-only execution.
 
 - This is a local, paper-only system. Live trading is intentionally unavailable.
 - SQLite stores provide durable local evidence but are not the normalized
@@ -60,10 +60,17 @@ The full requirement-level matrix is in
   company-quality and valuation fixture is attributed and point-in-time, but is
   not a real-company conclusion, price target, recommendation, or authorization
   to allocate capital. Hosted migration/restart/immutability and 54-table restore
-  evidence passed in PR CI run `31920513640`; mainline verification is pending.
+  evidence passed in mainline CI run `31920718692` on merge commit `bd38d35`.
 - Strategy coverage is four transparent long-only baselines. Cross-sectional,
   factor, macro, relative-value, event, sentiment, crypto-basis and
   market-neutral families remain incomplete.
+- Cycle 204's multidimensional regime evidence currently implements only a
+  transparent rule method and a deliberately softened probabilistic ensemble.
+  HMM, change-point, clustering, Bayesian-state and tree models remain
+  `UNAVAILABLE`; the deterministic attributed fixture is not empirical proof
+  of real-time regime skill. Regime risk output is review-only, cannot activate
+  a strategy, and blocks all automatic risk increases. Hosted PostgreSQL and
+  62-table restore verification is pending.
 - Market, macro, fundamental and news adapters are configuration/fixture or
   narrow public-source boundaries. There is no activated licensed provider,
   streaming feed, full SEC parser, economic calendar or real-time source health
