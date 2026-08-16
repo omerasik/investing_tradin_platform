@@ -299,7 +299,7 @@ without skips, matched the 54-table restore, and passed every configured
 backend, security, dependency, frontend and dashboard gate. Cycle 203 is
 `VERIFIED`.
 
-## Cycle 204 in progress — Regime Engine V2
+## Cycle 204 PR-verified — Regime Engine V2
 
 The Cycle 204 branch replaces the unbound three-label helper gap with an
 immutable, feature-authority-bound research path. A versioned model consumes
@@ -322,5 +322,8 @@ Migration 0018 adds normalized immutable model, run, observation, method
 evaluation, evidence-membership and risk-candidate tables. The restore manifest
 now covers 62 critical tables. Local verification discovered 328 tests with 29
 PostgreSQL-only skips and passed compileall, Ruff, mypy 120/120, the zero-error
-23-file critical slice, and Alembic's sole 0018 head. Hosted PostgreSQL CI is
-required before Cycle 204 can be verified.
+23-file critical slice, and Alembic's sole 0018 head. PR CI run `31921339310`
+on `62a5316` applied migration 0018, ran all 328 tests without skips, matched
+the 62-table restore, and passed every configured backend, security, dependency,
+frontend and dashboard gate. Final `VERIFIED` status still requires PR #6 merge
+and green CI on the exact mainline merge commit.

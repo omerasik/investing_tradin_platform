@@ -69,8 +69,9 @@ The full requirement-level matrix is in
   HMM, change-point, clustering, Bayesian-state and tree models remain
   `UNAVAILABLE`; the deterministic attributed fixture is not empirical proof
   of real-time regime skill. Regime risk output is review-only, cannot activate
-  a strategy, and blocks all automatic risk increases. Hosted PostgreSQL and
-  62-table restore verification is pending.
+  a strategy, and blocks all automatic risk increases. PR CI run `31921339310`
+  passed the PostgreSQL/restart/immutability checks and matched the 62-table
+  restore; exact-merge mainline verification remains pending.
 - Market, macro, fundamental and news adapters are configuration/fixture or
   narrow public-source boundaries. There is no activated licensed provider,
   streaming feed, full SEC parser, economic calendar or real-time source health
