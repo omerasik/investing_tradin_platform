@@ -52,6 +52,11 @@ CRITICAL_TABLES = (
     "pit_macro_observations",
     "feature_definition_versions",
     "feature_materializations",
+    "strategy_scorecards",
+    "scorecard_metric_observations",
+    "scorecard_components",
+    "scorecard_data_health_assessments",
+    "scorecard_validation_packages",
 )
 
 

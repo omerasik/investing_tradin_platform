@@ -58,3 +58,12 @@ includes all three PIT fundamental tables (**33 critical tables total**).
 The Cycle 15 core tests the controlled catalogue plus initial release,
 ingestion delay, revision visibility, immutability and restart in PostgreSQL.
 Restore hashing expands to **35 critical tables**.
+
+Cycle 201 adds scorecard unit coverage for insufficient samples, no-trade and
+zero-volatility availability, negative-return drawdown/Sortino, tail risk,
+transparent complexity penalty, data-health blocking, deterministic identities
+and labelled assumptions. The PostgreSQL fixture test creates a complete
+immutable validation package, proves a scorecard is ineligible until linked,
+rejects wrong dataset/feature/cost bindings and mutation, replays idempotently,
+and reconstructs eligibility after restart. The restore allow-list includes
+the scorecard, metric, component, Data Health link and package-link tables.
