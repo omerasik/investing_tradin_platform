@@ -41,11 +41,12 @@ snapshot, not a second roadmap.
 - A fresh local audit on 2026-08-16 completed **297 Python tests**. It skipped
   **23 PostgreSQL-dependent tests** because no disposable PostgreSQL DSN is
   configured on this workstation; this is not substituted for CI evidence.
-- The latest no-skip PostgreSQL CI evidence is Cycle 15: GitHub Actions run
-  `31890332414` on `b67a35f` applied migrations through `0012`, ran all 297
-  Python tests without skips, restored and reconciled 35 critical tables, and
+- The latest no-skip PostgreSQL CI evidence is Cycle 199: GitHub Actions run
+  `31916415858` on `edcefcd` applied migrations through `0013`, ran all 301
+  Python tests without skips, restored and reconciled 36 critical tables, and
   passed the configured quality, security, dependency, frontend and dashboard
-  gates. Its macro/fundamental/historical fixtures remain provider-neutral.
+  gates. Its provider fixtures remain provider-neutral and external source
+  activation is still blocked.
 
 - A historic implementation baseline passed 274 Python tests without skips in
   GitHub Actions

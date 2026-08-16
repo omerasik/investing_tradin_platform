@@ -1554,3 +1554,14 @@ authorized P1 instrument/calendar foundation.
   passed on commit `b67a35f`: migrations through 0012, all **297 tests without
   skips**, a fresh **35-table** restore and all quality, security, dependency,
   frontend and artifact gates. Provider-neutral core status: **VERIFIED**.
+
+## Cycle 199 evidence — provider-ingestion framework
+
+- Migration 0013 adds immutable, append-only historical-ingestion checkpoints.
+  A fixture adapter records source scope, version stamp, cursor, capture count,
+  and explicit `HEALTHY`, `STALE`, or `ERROR`; no fallback is implicit.
+- CI [run 31916415858](https://github.com/omerasik/investing_tradin_platform/actions/runs/31916415858)
+  passed on `edcefcd`: migrations through 0013, **301 tests without skips**,
+  and a fresh restore of **36 critical tables**, including checkpoints. No
+  provider was selected, authorized, configured, or called; activation remains
+  `EXTERNAL_BLOCKED`.
