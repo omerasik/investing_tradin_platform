@@ -276,7 +276,8 @@ class PostgresFeatureAuthority:
         try:
             with self._database.transaction() as connection, connection.cursor() as cursor:
                 cursor.execute(
-                    "INSERT INTO feature_definition_versions VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    "INSERT INTO feature_definition_versions VALUES ("
+                    "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                     (
                         definition.feature_id, definition.name, definition.family.value,
                         definition.semantic_version, definition.owner, definition.description,
