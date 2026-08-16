@@ -3,10 +3,10 @@
 The full requirement-level matrix is in
 [`MASTER_ROADMAP.md`](MASTER_ROADMAP.md). These are the material current limits.
 
-- A 2026-08-16 local regression discovered 328 Python tests but skipped 29
+- A 2026-08-16 local regression discovered 333 Python tests but skipped 30
   PostgreSQL-dependent tests because no disposable PostgreSQL DSN is configured.
-  The current full no-skip evidence is mainline CI run `31920718692` on merge
-  commit `bd38d35`, not the local fixture-only execution.
+  The current full no-skip evidence is mainline CI run `31921534291` on merge
+  commit `cb3a38c`, not the local fixture-only execution.
 
 - This is a local, paper-only system. Live trading is intentionally unavailable.
 - SQLite stores provide durable local evidence but are not the normalized
@@ -55,7 +55,7 @@ The full requirement-level matrix is in
   `SYNTHETIC_ENGINEERING_EVIDENCE_ONLY`. They do not establish alpha, real
   capacity, real slippage/impact, regime performance or live consistency, and
   cannot progress beyond `REVIEW_REQUIRED` or create a paper/live activation.
-- Cycle 203 has begun with an immutable PostgreSQL investment evidence,
+- Cycle 203 provides an immutable PostgreSQL investment evidence,
   policy, and non-executable rebalance-candidate foundation. Its deterministic
   company-quality and valuation fixture is attributed and point-in-time, but is
   not a real-company conclusion, price target, recommendation, or authorization
@@ -70,8 +70,15 @@ The full requirement-level matrix is in
   `UNAVAILABLE`; the deterministic attributed fixture is not empirical proof
   of real-time regime skill. Regime risk output is review-only, cannot activate
   a strategy, and blocks all automatic risk increases. PR CI run `31921339310`
-  passed the PostgreSQL/restart/immutability checks and matched the 62-table
-  restore; exact-merge mainline verification remains pending.
+  passed the PostgreSQL/restart/immutability checks; exact-merge mainline run
+  `31921534291` matched the 62-table restore and closed Cycle 204.
+- Cycle 205 portfolio construction currently uses a deterministic attributed
+  covariance fixture, not a calibrated multi-market covariance forecast or
+  empirical portfolio result. The review-only candidate binds exact strategy,
+  scorecard, package, regime and Data Health identities and constrains hidden
+  derivative/FX/pending exposure, but cannot create a signal or order. PR CI
+  run `31922197235` passed the PostgreSQL/restart/immutability checks and matched
+  the 71-table restore; exact-merge mainline verification remains pending.
 - Market, macro, fundamental and news adapters are configuration/fixture or
   narrow public-source boundaries. There is no activated licensed provider,
   streaming feed, full SEC parser, economic calendar or real-time source health
