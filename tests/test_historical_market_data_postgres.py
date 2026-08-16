@@ -4,6 +4,7 @@ import os
 import unittest
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 
 @unittest.skipUnless(os.environ.get("POSTGRES_TEST_DSN"), "POSTGRES_TEST_DSN not configured")
@@ -26,6 +27,7 @@ class HistoricalMarketDataPostgresTests(unittest.TestCase):
             AdjustmentStatus,
             AuthorizedHistoricalSource,
             HistoricalDataQualityError,
+            HistoricalMarketDataError,
             ObservationKind,
             PostgresHistoricalMarketDataPipeline,
             QualityStatus,
@@ -117,6 +119,17 @@ class HistoricalMarketDataPostgresTests(unittest.TestCase):
             ),
         ]
         raw_ids = pipeline.capture_raw(raw)
+        replay_ids = pipeline.capture_raw([
+            replace(item, raw_observation_id=uuid4()) for item in raw
+        ])
+        self.assertEqual(replay_ids, raw_ids)
+        with self.assertRaisesRegex(HistoricalMarketDataError, "observation_conflict"):
+            pipeline.capture_raw([
+                replace(raw[0], raw_observation_id=uuid4(), raw_payload={
+                    "interval": "1d", "open": "100", "high": "104", "low": "99",
+                    "close": "103", "volume": "1000",
+                })
+            ])
         normalized_at = event + timedelta(days=7)
         normalized = tuple(
             pipeline.normalize(raw_id, "us-equity-normalizer-v1", normalized_at)

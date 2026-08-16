@@ -272,22 +272,43 @@ class PostgresHistoricalMarketDataPipeline:
         for observation in observations:
             observation.validate()
         try:
+            persisted_ids: list[UUID] = []
             with self._database.transaction() as connection, connection.cursor() as cursor:
                 for observation in observations:
                     payload = _canonical(observation.raw_payload)
+                    payload_sha256 = hashlib.sha256(payload.encode()).hexdigest()
                     cursor.execute(
-                        "INSERT INTO historical_raw_observations VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)",
+                        "INSERT INTO historical_raw_observations VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s) "
+                        "ON CONFLICT (source_id,provider_identifier,observation_kind,event_at,revision) DO NOTHING "
+                        "RETURNING raw_observation_id",
                         (observation.raw_observation_id, observation.source_id,
                          observation.observation_kind.value, observation.provider_identifier,
                          observation.provider_symbol, observation.exchange, observation.event_at,
                          observation.effective_at, observation.ingested_at,
                          observation.adjustment_status.value, observation.revision,
-                         observation.provenance_uri, payload,
-                         hashlib.sha256(payload.encode()).hexdigest()),
+                         observation.provenance_uri, payload, payload_sha256),
                     )
+                    inserted = cursor.fetchone()
+                    if inserted is not None:
+                        persisted_ids.append(UUID(str(inserted[0])))
+                        continue
+                    cursor.execute(
+                        "SELECT raw_observation_id,raw_payload_sha256 FROM historical_raw_observations "
+                        "WHERE source_id=%s AND provider_identifier=%s AND observation_kind=%s "
+                        "AND event_at=%s AND revision=%s",
+                        (observation.source_id, observation.provider_identifier,
+                         observation.observation_kind.value, observation.event_at,
+                         observation.revision),
+                    )
+                    existing = cursor.fetchone()
+                    if existing is None or str(existing[1]) != payload_sha256:
+                        raise HistoricalMarketDataError("raw_historical_observation_conflict")
+                    persisted_ids.append(UUID(str(existing[0])))
+        except HistoricalMarketDataError:
+            raise
         except Exception as error:
             raise HistoricalMarketDataError("raw_historical_capture_failed") from error
-        return tuple(item.raw_observation_id for item in observations)
+        return tuple(persisted_ids)
 
     def normalize(
         self, raw_observation_id: UUID, normalization_version: str, normalized_at: datetime

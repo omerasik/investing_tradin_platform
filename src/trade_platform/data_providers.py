@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from datetime import time as clock_time
 from decimal import Decimal
+from enum import StrEnum
 from typing import Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -27,6 +28,14 @@ class ProviderError(RuntimeError):
 
 class ProviderConfigurationError(ProviderError):
     pass
+
+
+class ProviderOperationalStatus(StrEnum):
+    """Explicit provider state; callers must never mistake stale data for healthy data."""
+
+    HEALTHY = "HEALTHY"
+    STALE = "STALE"
+    ERROR = "ERROR"
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +110,14 @@ class ProviderHealth:
     healthy: bool
     reason: str | None
     consecutive_failures: int
+    status: ProviderOperationalStatus | None = None
+
+    @property
+    def operational_status(self) -> ProviderOperationalStatus:
+        """Explicit status, with a safe `ERROR` fallback for legacy health records."""
+        if self.status is not None:
+            return self.status
+        return ProviderOperationalStatus.HEALTHY if self.healthy else ProviderOperationalStatus.ERROR
 
 
 class ProviderHealthRegistry:
@@ -109,12 +126,24 @@ class ProviderHealthRegistry:
         self._health: dict[str, ProviderHealth] = {}
 
     def success(self, provider: str) -> None:
-        self._health[provider] = ProviderHealth(provider, self._now(), True, None, 0)
+        self._health[provider] = ProviderHealth(
+            provider, self._now(), True, None, 0, ProviderOperationalStatus.HEALTHY
+        )
 
     def failure(self, provider: str, reason: str) -> None:
         previous = self._health.get(provider)
         failures = 1 if previous is None else previous.consecutive_failures + 1
-        self._health[provider] = ProviderHealth(provider, self._now(), False, reason, failures)
+        self._health[provider] = ProviderHealth(
+            provider, self._now(), False, reason, failures, ProviderOperationalStatus.ERROR
+        )
+
+    def stale(self, provider: str, reason: str) -> None:
+        """Record stale output separately from a transport or provider failure."""
+        previous = self._health.get(provider)
+        failures = 0 if previous is None else previous.consecutive_failures
+        self._health[provider] = ProviderHealth(
+            provider, self._now(), False, reason, failures, ProviderOperationalStatus.STALE
+        )
 
     def get(self, provider: str) -> ProviderHealth | None:
         return self._health.get(provider)

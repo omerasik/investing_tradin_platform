@@ -372,9 +372,10 @@ class PostgresIntegrationTests(unittest.TestCase):
         recovered_instruments = PostgresInstrumentStore(restarted)
         self.assertEqual(recovered_instruments.get(instrument_id), instrument)
         self.assertEqual(recovered_instruments.risk_profile_as_of(instrument_id, self.now), profile)
-        self.assertTrue(
-            recovered_instruments.is_trading_session(runtime_venue, self.now)
-        )
+        # Probe the middle of the configured session on the same weekday,
+        # rather than depending on the wall-clock minute when CI runs.
+        session_probe = self.now.replace(hour=12, minute=0, second=0, microsecond=0)
+        self.assertTrue(recovered_instruments.is_trading_session(runtime_venue, session_probe))
         self.assertEqual(
             PostgresSignalStore(restarted).risk_signal(proposal.signal_id, as_of=self.now).signal_id,
             proposal.signal_id,
