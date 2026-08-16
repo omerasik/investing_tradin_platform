@@ -1,6 +1,7 @@
 import hashlib
 import os
 import unittest
+from uuid import NAMESPACE_URL, uuid5
 
 from tests.test_trend_research_v2 import (
     dataset,
@@ -38,6 +39,7 @@ class TrendResearchV2PostgresTests(unittest.TestCase):
         data = dataset()
         feature = feature_definition("multi_horizon_momentum", FeatureFamily.MOMENTUM)
         dataset_hash = hashlib.sha256(data.version.encode()).hexdigest()
+        historical_source_id = uuid5(NAMESPACE_URL, "cycle202:historical-source")
         with database.transaction() as connection, connection.cursor() as cursor:
             cursor.execute(
                 "INSERT INTO datasets VALUES (%s,%s,'synthetic-fixture','terms-test-only',%s) "
@@ -52,6 +54,26 @@ class TrendResearchV2PostgresTests(unittest.TestCase):
                     data.dataset_id,
                     data.version,
                     dataset_hash,
+                    data.bars[0].occurred_at,
+                ),
+            )
+            cursor.execute(
+                "INSERT INTO historical_data_sources VALUES "
+                "(%s,'synthetic-fixture','cycle202-trend','FIXTURE','terms-test-only',"
+                "'test-only:cycle202',%s,'US_EQUITIES_ETFS',%s) "
+                "ON CONFLICT (source_id) DO NOTHING",
+                (historical_source_id, data.bars[0].occurred_at, data.bars[0].occurred_at),
+            )
+            cursor.execute(
+                "INSERT INTO historical_dataset_versions VALUES "
+                "(%s,%s,%s,'synthetic-normalization-v1',%s,%s,NULL,%s,'SEALED') "
+                "ON CONFLICT (dataset_version_id) DO NOTHING",
+                (
+                    data.dataset_version_id,
+                    historical_source_id,
+                    data.version,
+                    dataset_hash,
+                    data.bars[0].occurred_at,
                     data.bars[0].occurred_at,
                 ),
             )
