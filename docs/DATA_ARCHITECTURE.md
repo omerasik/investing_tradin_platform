@@ -26,6 +26,14 @@ Initial canonical contracts cover instruments, OHLCV bars, corporate actions, ma
 
 News/event metadata is stored separately from raw provider content. Each event has a provider-local item ID, canonical entity, URL, publication and ingestion times, topics, optional sentiment, extraction confidence, source reliability and data version. An event can be eligible for research only when its source license is explicitly approved and its sentiment is available; its uncertainty is preserved rather than inferred away. No external source is connected until licensing and credentials are approved.
 
+Cycle 206 extends this prototype with PostgreSQL-native versioned source-rights
+policies, publication/source-update/ingestion clocks, hashed document revisions,
+deterministic duplicate clusters, explicit professional-instrument links,
+versioned event taxonomy, Data Health bindings and correction/retraction lineage.
+Point-in-time reads select the latest then-known revision and retractions produce
+confidence withdrawal. These are research evidence contracts only: provider
+activation and automatic confidence/risk increases are structurally absent.
+
 ## Professional instrument and calendar master
 
 Migration 0008 is the PostgreSQL authority for canonical metadata, temporal
