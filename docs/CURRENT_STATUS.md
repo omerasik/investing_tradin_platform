@@ -1,6 +1,6 @@
 # Current Status
 
-Last synchronized: 2026-08-16. The requirement-level source of truth is
+Last synchronized: 2026-08-18. The requirement-level source of truth is
 [`MASTER_ROADMAP.md`](MASTER_ROADMAP.md); this document is a concise operational
 snapshot, not a second roadmap.
 
@@ -42,12 +42,11 @@ snapshot, not a second roadmap.
   all locally runnable tests. It skipped **27 PostgreSQL-dependent tests**
   plus the Cycle 203–205 PostgreSQL tests (**30 total**) because no disposable PostgreSQL DSN is
   configured on this workstation; this is not substituted for CI evidence.
-- The latest no-skip PostgreSQL evidence is Cycle 204 mainline GitHub Actions
-  run `31921534291` on merge commit `cb3a38c`: migration 0018, all **328 tests
-  without skips**,
-  matched **62-table** restore/reconciliation, Ruff, mypy 120/120 ratchet,
-  zero-error 23-file critical slice, security/dependency/SBOM/secret gates and
-  frontend/dashboard gates. This closes the Cycle 204 `VERIFIED` exit gate.
+- The latest completed no-skip PostgreSQL evidence is Cycle 207 exact-merge
+  mainline GitHub Actions run `31923709319` on merge commit `2e3b701`: migration
+  0021, all **346 tests without skips**, matched **91-table** restore/
+  reconciliation, Ruff, mypy 120/120 ratchet, zero-error 26-file critical slice,
+  security/dependency/SBOM/secret gates and frontend/dashboard gates.
 
 - A historic implementation baseline passed 274 Python tests without skips in
   GitHub Actions
@@ -390,7 +389,7 @@ backend, security, dependency, frontend and dashboard gate. PR #8 merged as
 `8b2b3a15`; exact-merge mainline run `31923127659` passed the complete workflow.
 Cycle 206 is `VERIFIED`.
 
-## Cycle 207 PR-verified — Observability/SRE V2
+## Cycle 207 VERIFIED — Observability/SRE V2
 
 Cycle 207 adds immutable PostgreSQL engineering evidence for versioned service
 build/environment identities, correlated log/span/metric events, dependency and
@@ -405,5 +404,38 @@ escalation, deduplication fingerprint, trace and evidence link. Migration 0021
 adds ten immutable tables and expands the restore manifest to 91. PR CI run
 `31923500129` on `112adff` applied migration 0021, ran all 346 tests without
 skips, matched all 91 restored tables and passed every configured backend,
-security, dependency, frontend and dashboard gate. Exact-merge mainline evidence
-remains required before Cycle 207 is verified.
+security, dependency, frontend and dashboard gate. Exact-merge mainline run
+`31923709319` passed the same complete workflow on merge `2e3b701`; Cycle 207 is
+`VERIFIED`.
+
+## Cycle 208 PARTIAL — protected operator authority workspaces
+
+Cycle 208 now projects the existing Cycle 200–207 PostgreSQL authorities through
+one centralized read-only query service, typed protected FastAPI `GET` routes, a
+server-side allowlisted Next proxy and strict frontend contracts. Feature
+definitions/materializations retain bounded PIT event/effective/knowledge/
+computed timestamps and source manifests. Scorecards retain grouped raw metrics
+and separate `MEASURED`, `ASSUMED` and `UNAVAILABLE` evidence states. Regime,
+portfolio construction, news/correction and SRE/SLO/incident views preserve
+their authoritative versions, reductions, hashes and limitations. The Command
+Center summarizes those records but does not become an authority.
+
+No dashboard endpoint mutates an authority, triggers a job, contacts a provider,
+activates a strategy, changes risk, submits an order or exposes a backend token.
+The Next runtime requires a separate dashboard-view bearer credential and fails
+closed when it is absent; the backend operator token remains server-only. Live
+trading remains `DISABLED`.
+News provider activation remains `EXTERNAL_BLOCKED`, fixture documents are
+labelled as persisted research evidence rather than live news, and synthetic
+scorecard/covariance evidence remains explicit.
+
+Local validation discovered **350 Python tests** and passed all runnable tests,
+with **33 PostgreSQL-only skips** because this workstation still has no
+`POSTGRES_TEST_DSN`. Compile and Ruff checks pass; the complete mypy ratchet
+remains **120/120** and the new dashboard query/service slice has zero mypy
+errors. TypeScript, ESLint and the Next production build pass. Dashboard HTTP
+smoke passes. Playwright ran the unconfigured browser fail-closed scenario
+(**1 passed**) and skipped the **10 configured PostgreSQL scenarios** locally;
+those configured scenarios and the new six-authority PostgreSQL query-plan test
+are mandatory in GitHub CI. Cycle 208 remains `PARTIAL` until no-skip PostgreSQL
+CI and the configured browser suite pass; no push, PR or merge has occurred.

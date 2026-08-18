@@ -3,10 +3,11 @@
 The full requirement-level matrix is in
 [`MASTER_ROADMAP.md`](MASTER_ROADMAP.md). These are the material current limits.
 
-- A 2026-08-16 local regression discovered 333 Python tests but skipped 30
+- A 2026-08-18 local regression discovered 350 Python tests but skipped 33
   PostgreSQL-dependent tests because no disposable PostgreSQL DSN is configured.
-  The current full no-skip evidence is mainline CI run `31921534291` on merge
-  commit `cb3a38c`, not the local fixture-only execution.
+  The new Cycle 208 six-authority projection/query-plan integration test and ten
+  configured browser scenarios therefore remain hosted-CI evidence, not local
+  execution evidence.
 
 - This is a local, paper-only system. Live trading is intentionally unavailable.
 - SQLite stores provide durable local evidence but are not the normalized
@@ -97,15 +98,21 @@ The full requirement-level matrix is in
   SLO, prove a staged soak, provide managed telemetry, or exercise cloud/KMS
   rollback. Provider activation and live/paper execution authority are absent.
   PR CI run `31923500129` passed all PostgreSQL/restart/immutability and
-  91-table restore gates; exact-merge verification remains pending.
+  91-table restore gates; exact-merge run `31923709319` passed on main commit
+  `2e3b701` and closes the Cycle 207 engineering exit gate.
 - Social/narrative intelligence is not started: no lawful connector, bot/spam
   controls, narrative clustering, crowding or price/sentiment divergence.
 - Regime, ensemble, ML and agent layers are local governance/research contracts;
   they do not have validated production models, retrieval, orchestration,
   empirical evaluation or execution authority.
-- The dashboard has selected browser E2E evidence, but lacks production
-  authentication/RBAC/MFA, interactive charts, accessibility verification and
-  the full required operator workflow suite.
+- Cycle 208 adds a separate deployment-owned dashboard-view bearer boundary,
+  protected typed read models for Feature Authority, Strategy Scorecard V2,
+  Regime V2, Portfolio Construction V2, News/Event V2 and SRE V2, plus a
+  Playwright exit matrix. This remains development-grade authentication, not
+  production sessions/RBAC/MFA. The locally executable unconfigured browser
+  scenario passed, while ten configured PostgreSQL browser scenarios await CI.
+  Interactive charts and comprehensive automated accessibility auditing remain
+  incomplete.
 - Authentication remains development-grade bearer-token auth. Production
   sessions/RBAC/MFA, CSRF/session hardening, managed secrets, encrypted off-site
   backup and incident-operated RPO/RTO remain open. Full-package static/security
