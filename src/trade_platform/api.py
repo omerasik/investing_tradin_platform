@@ -1,6 +1,7 @@
 """Local-only API exposing system state and audit events, never execution controls."""
 
 import json
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
@@ -18,6 +19,19 @@ from .investments import (
 )
 from .observability import MetricsRegistry, StructuredEventLogger
 from .operational_alerts import AlertError, AlertStatus, SQLiteOperationalAlertStore
+from .operator_dashboard import (
+    DashboardObjectNotFound,
+    DashboardQueryError,
+    FeatureDefinitionPage,
+    FeatureDefinitionView,
+    FeatureMaterializationPage,
+    NewsEventPage,
+    PortfolioConstructionView,
+    PostgresOperatorDashboardQueries,
+    RegimeRunView,
+    SreOverviewView,
+    StrategyScorecardView,
+)
 from .paper_oms import PaperOmsError, SQLitePaperOms
 from .portfolio_risk import (
     PortfolioExposure,
@@ -178,6 +192,7 @@ def build_app(
     strategy_registry: SQLiteStrategyRegistry | None = None,
     experiment_store: SQLiteExperimentStore | None = None,
     promotion_ledger: SQLitePromotionLedger | None = None,
+    operator_dashboard_queries: PostgresOperatorDashboardQueries | None = None,
 ) -> FastAPI:
     platform_config = config or PlatformConfig()
     store = audit_store or SQLiteAuditStore()
@@ -196,6 +211,7 @@ def build_app(
     app.state.strategy_registry = strategy_registry
     app.state.experiment_store = experiment_store
     app.state.promotion_ledger = promotion_ledger
+    app.state.operator_dashboard_queries = operator_dashboard_queries
 
     @app.get("/health/live")
     def liveness() -> dict[str, str]:
@@ -259,6 +275,24 @@ def build_app(
                 evidence_references=[], details={},
             ),
         ]
+        if app.state.operator_dashboard_queries is not None:
+            try:
+                for summary in app.state.operator_dashboard_queries.command_summaries():
+                    states.append(OperatorEvidenceState(
+                        id=summary.id, status=summary.status, version="postgres-authority-v1",
+                        source="postgresql", as_of=now if summary.as_of is None else summary.as_of.isoformat(),
+                        freshness="LATEST_PERSISTED_RECORD", limitations=[],
+                        evidence_references=[] if summary.evidence_id is None else [
+                            OperatorEvidenceReference(id=summary.evidence_id, kind=summary.id)
+                        ], details={"detail": summary.detail},
+                    ))
+            except DashboardQueryError:
+                states.append(OperatorEvidenceState(
+                    id="postgres-authorities", status="ERROR", version="postgres-authority-v1",
+                    source="postgresql", as_of=now, freshness="QUERY_FAILED",
+                    limitations=["Authoritative dashboard evidence could not be read."],
+                    evidence_references=[], details={},
+                ))
         return CommandCenterResponse(
             id="command-center", status="AVAILABLE", version="operator-dashboard-v1",
             source="trade_platform.api", as_of=now, freshness="QUERY_AT_REQUEST",
@@ -266,6 +300,97 @@ def build_app(
             evidence_references=[], platform_mode=platform_config.environment,
             live_trading_enabled=False, states=states,
         )
+
+    def dashboard_queries() -> PostgresOperatorDashboardQueries:
+        service = app.state.operator_dashboard_queries
+        if service is None:
+            raise HTTPException(status_code=503, detail="PostgreSQL dashboard authority unavailable.")
+        return service
+
+    def read_dashboard(call: Callable[[], object]) -> object:
+        try:
+            return call()
+        except DashboardObjectNotFound as error:
+            raise HTTPException(status_code=404, detail="Dashboard evidence not found.") from error
+        except DashboardQueryError as error:
+            raise HTTPException(status_code=503, detail="Dashboard evidence unavailable.") from error
+
+    @app.get("/operator-dashboard/feature-definitions", response_model=FeatureDefinitionPage)
+    def feature_definitions(
+        family: str | None = Query(default=None, min_length=1, max_length=40),
+        limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10_000),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        return read_dashboard(lambda: queries.feature_definitions(family=family, limit=limit, offset=offset))
+
+    @app.get("/operator-dashboard/feature-definitions/{feature_id}", response_model=FeatureDefinitionView)
+    def feature_definition(
+        feature_id: UUID, _: None = Depends(protected_operator),
+        queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        return read_dashboard(lambda: queries.feature_definition(feature_id))
+
+    @app.get("/operator-dashboard/feature-materializations", response_model=FeatureMaterializationPage)
+    def feature_materializations(
+        feature_id: UUID, instrument: str = Query(min_length=1, max_length=160),
+        dataset_version: str = Query(min_length=1, max_length=160), decision_time: datetime = Query(),
+        limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10_000),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        if decision_time.tzinfo is None or decision_time.utcoffset() is None:
+            raise HTTPException(status_code=422, detail="Decision time must be timezone-aware.")
+        return read_dashboard(lambda: queries.feature_materializations(
+            feature_id=feature_id, instrument=instrument, dataset_version=dataset_version,
+            decision_time=decision_time, limit=limit, offset=offset,
+        ))
+
+    @app.get("/operator-dashboard/strategy-scorecards/{scorecard_id}", response_model=StrategyScorecardView)
+    def strategy_scorecard(
+        scorecard_id: UUID, _: None = Depends(protected_operator),
+        queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        return read_dashboard(lambda: queries.strategy_scorecard(scorecard_id))
+
+    @app.get("/operator-dashboard/regime-runs/{run_id}", response_model=RegimeRunView)
+    def regime_run(
+        run_id: UUID, _: None = Depends(protected_operator),
+        queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        return read_dashboard(lambda: queries.regime_run(run_id))
+
+    @app.get("/operator-dashboard/portfolio-construction-runs/{run_id}", response_model=PortfolioConstructionView)
+    def portfolio_construction(
+        run_id: UUID, _: None = Depends(protected_operator),
+        queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        return read_dashboard(lambda: queries.portfolio_construction(run_id))
+
+    @app.get("/operator-dashboard/news-events", response_model=NewsEventPage)
+    def news_events(
+        instrument: str | None = Query(default=None, min_length=1, max_length=160),
+        entity: str | None = Query(default=None, min_length=1, max_length=160),
+        category: str | None = Query(default=None, min_length=1, max_length=80),
+        start: datetime | None = Query(default=None), end: datetime | None = Query(default=None),
+        correction_state: str | None = Query(default=None, pattern="^(INITIAL|CORRECTION|RETRACTION|FOLLOW_UP)$"),
+        limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10_000),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        for instant in (start, end):
+            if instant is not None and (instant.tzinfo is None or instant.utcoffset() is None):
+                raise HTTPException(status_code=422, detail="News timestamps must be timezone-aware.")
+        if start is not None and end is not None and (end < start or end - start > timedelta(days=366)):
+            raise HTTPException(status_code=422, detail="News time range must be ordered and at most 366 days.")
+        return read_dashboard(lambda: queries.news_events(
+            instrument=instrument, entity=entity, category=category, start=start, end=end,
+            correction_state=correction_state, limit=limit, offset=offset,
+        ))
+
+    @app.get("/operator-dashboard/sre-overview", response_model=SreOverviewView)
+    def sre_overview(
+        service_version_id: UUID | None = None, _: None = Depends(protected_operator),
+        queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        return read_dashboard(lambda: queries.sre_overview(service_version_id))
 
     @app.get("/alerts")
     def active_alerts(_: None = Depends(protected_operator)) -> list[dict[str, object]]:
