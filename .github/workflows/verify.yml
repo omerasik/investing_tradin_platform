@@ -53,7 +53,7 @@ jobs:
       - run: ruff check src tests migrations scripts
       - name: Complete-package mypy regression ratchet
         run: python scripts/check_mypy_baseline.py
-      - run: mypy --follow-imports=skip src/trade_platform/persistence.py src/trade_platform/postgres_schema.py src/trade_platform/postgres_backfill.py src/trade_platform/legacy_migration_fixture.py src/trade_platform/postgres_repositories.py src/trade_platform/postgres_runtime.py src/trade_platform/postgres_recovery.py src/trade_platform/postgres_pretrade.py src/trade_platform/postgres_market_context.py src/trade_platform/postgres_decision_authorities.py src/trade_platform/professional_instruments.py src/trade_platform/historical_market_data.py src/trade_platform/data_health.py src/trade_platform/pit_fundamentals.py src/trade_platform/pit_macro.py src/trade_platform/feature_authority.py src/trade_platform/trend_strategy_v2.py src/trade_platform/trend_research_v2.py src/trade_platform/investment_engine_v2.py src/trade_platform/regime_engine_v2.py src/trade_platform/portfolio_construction_v2.py src/trade_platform/news_event_intelligence.py src/trade_platform/observability_sre_v2.py src/trade_platform/postgres_quant_validation.py src/trade_platform/strategy_scorecard_v2.py scripts/verify_postgres_restore.py
+      - run: mypy --follow-imports=skip src/trade_platform/persistence.py src/trade_platform/postgres_schema.py src/trade_platform/postgres_backfill.py src/trade_platform/legacy_migration_fixture.py src/trade_platform/postgres_repositories.py src/trade_platform/postgres_runtime.py src/trade_platform/postgres_recovery.py src/trade_platform/postgres_pretrade.py src/trade_platform/postgres_market_context.py src/trade_platform/postgres_decision_authorities.py src/trade_platform/professional_instruments.py src/trade_platform/historical_market_data.py src/trade_platform/data_health.py src/trade_platform/pit_fundamentals.py src/trade_platform/pit_macro.py src/trade_platform/feature_authority.py src/trade_platform/trend_strategy_v2.py src/trade_platform/trend_research_v2.py src/trade_platform/investment_engine_v2.py src/trade_platform/regime_engine_v2.py src/trade_platform/portfolio_construction_v2.py src/trade_platform/news_event_intelligence.py src/trade_platform/observability_sre_v2.py src/trade_platform/postgres_quant_validation.py src/trade_platform/strategy_scorecard_v2.py src/trade_platform/operator_dashboard.py scripts/verify_postgres_restore.py scripts/serve_postgres_dashboard_evidence.py
       - run: bandit -q -r src/trade_platform
       - name: Audit resolved Python dependencies
         run: |
@@ -81,6 +81,8 @@ jobs:
         working-directory: web
       - name: Verify built dashboard and fail-closed risk proxy
         working-directory: web
+        env:
+          TRADE_PLATFORM_DASHBOARD_VIEW_TOKEN: fixture-view-token
         run: |
           pnpm exec next start -p 3000 > /tmp/dashboard.log 2>&1 &
           dashboard_pid=$!
@@ -90,6 +92,36 @@ jobs:
             sleep 1
           done
           DASHBOARD_URL=http://127.0.0.1:3000 node scripts/verify-dashboard.mjs
+      - name: Install Playwright Chromium
+        working-directory: web
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Browser E2E against protected PostgreSQL authorities
+        env:
+          CYCLE208_DASHBOARD_CONFIG_PATH: /tmp/cycle208-dashboard.config.json
+          CYCLE208_DASHBOARD_TOKEN_PATH: /tmp/cycle208-dashboard.token
+          TRADE_PLATFORM_DASHBOARD_CONFIG_PATH: /tmp/cycle208-dashboard.config.json
+          CYCLE208_API_URL: http://127.0.0.1:8766
+          DASHBOARD_URL: http://127.0.0.1:3000
+          TRADE_PLATFORM_DASHBOARD_VIEW_TOKEN: fixture-view-token
+        run: |
+          python scripts/serve_postgres_dashboard_evidence.py > /tmp/cycle208-api.log 2>&1 &
+          api_pid=$!
+          for attempt in {1..30}; do
+            test -f "$CYCLE208_DASHBOARD_CONFIG_PATH" && curl --fail --silent http://127.0.0.1:8766/health/live && break
+            sleep 1
+          done
+          test -f "$CYCLE208_DASHBOARD_CONFIG_PATH"
+          curl --fail --silent http://127.0.0.1:8766/health/live >/dev/null
+          cd web
+          pnpm exec next start -p 3000 > /tmp/cycle208-dashboard.log 2>&1 &
+          dashboard_pid=$!
+          trap 'kill $dashboard_pid $api_pid 2>/dev/null || true; rm -f "$CYCLE208_DASHBOARD_CONFIG_PATH" "$CYCLE208_DASHBOARD_TOKEN_PATH"' EXIT
+          for attempt in {1..30}; do
+            curl --fail --silent -H "Authorization: Bearer $TRADE_PLATFORM_DASHBOARD_VIEW_TOKEN" http://127.0.0.1:3000/ && break
+            sleep 1
+          done
+          curl --fail --silent -H "Authorization: Bearer $TRADE_PLATFORM_DASHBOARD_VIEW_TOKEN" http://127.0.0.1:3000/ >/dev/null
+          pnpm test:e2e
       - name: Retain dependency and licensing evidence
         uses: actions/upload-artifact@v7
         with:
