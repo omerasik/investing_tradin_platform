@@ -102,6 +102,39 @@ class StrategyCreateRequest(BaseModel):
     expected_regimes: list[str] = Field(min_length=1, max_length=50); parameter_schema: dict[str, str] = Field(min_length=1, max_length=100); failure_conditions: list[str] = Field(min_length=1, max_length=100); limitations: list[str] = Field(min_length=1, max_length=100); idempotency_key: str = Field(min_length=1, max_length=200)
 
 
+class OperatorEvidenceReference(BaseModel):
+    id: str
+    kind: str
+
+
+class OperatorEvidenceState(BaseModel):
+    """Stable, read-only dashboard contract; no client derives operational truth."""
+
+    id: str
+    status: str
+    version: str
+    source: str
+    as_of: str
+    freshness: str
+    limitations: list[str]
+    evidence_references: list[OperatorEvidenceReference]
+    details: dict[str, object]
+
+
+class CommandCenterResponse(BaseModel):
+    id: str
+    status: str
+    version: str
+    source: str
+    as_of: str
+    freshness: str
+    limitations: list[str]
+    evidence_references: list[OperatorEvidenceReference]
+    platform_mode: str
+    live_trading_enabled: bool
+    states: list[OperatorEvidenceState]
+
+
 def _serialize(event: AuditEvent) -> AuditEventResponse:
     return AuditEventResponse(
         event_id=str(event.event_id),
@@ -168,6 +201,71 @@ def build_app(
     def liveness() -> dict[str, str]:
         app.state.metrics.increment("health.liveness.requests")
         return {"status": "ok"}
+
+    @app.get("/operator-dashboard/command-center", response_model=CommandCenterResponse)
+    def command_center(_: None = Depends(protected_operator)) -> CommandCenterResponse:
+        """Read-only operating evidence.  Absence is preserved as unavailable evidence."""
+        now = datetime.now(timezone.utc).isoformat()
+        active_alerts = [] if app.state.alert_store is None else app.state.alert_store.active()
+        critical_alerts = [item for item in active_alerts if item.severity.value == "CRITICAL"]
+        persistence_status = (
+            "POSTGRES_CONFIGURED"
+            if platform_config.persistence_target.value == "POSTGRES"
+            else "SQLITE_NON_PRODUCTION"
+        )
+        states = [
+            OperatorEvidenceState(
+                id="database-authority", status=persistence_status, version="platform-config-v1",
+                source="platform_config", as_of=now, freshness="CONFIGURATION_AT_REQUEST",
+                limitations=["Configuration is not a database connectivity probe."],
+                evidence_references=[], details={"persistence_target": platform_config.persistence_target.value},
+            ),
+            OperatorEvidenceState(
+                id="live-trading", status="DISABLED", version="platform-config-v1",
+                source="platform_config", as_of=now, freshness="CONFIGURATION_AT_REQUEST",
+                limitations=["This build prohibits live execution."], evidence_references=[],
+                details={"live_trading_enabled": False, "paper_trading_enabled": platform_config.paper_trading_enabled},
+            ),
+            OperatorEvidenceState(
+                id="critical-alerts", status="AVAILABLE" if app.state.alert_store is not None else "UNAVAILABLE",
+                version="operational-alerts-v1", source="operational_alert_store", as_of=now,
+                freshness="QUERY_AT_REQUEST" if app.state.alert_store is not None else "NO_CONFIGURED_SOURCE",
+                limitations=[] if app.state.alert_store is not None else ["Operational alert store is not configured."],
+                evidence_references=[OperatorEvidenceReference(id=str(item.alert_id), kind="operational_alert") for item in critical_alerts],
+                details={"active_critical_alert_count": len(critical_alerts)},
+            ),
+            OperatorEvidenceState(
+                id="recovery-reconciliation", status="UNAVAILABLE", version="recovery-v1",
+                source="not_configured", as_of=now, freshness="NO_CONFIGURED_SOURCE",
+                limitations=["No recovery or reconciliation authority is wired into this API process."],
+                evidence_references=[], details={},
+            ),
+            OperatorEvidenceState(
+                id="kill-switch", status="UNAVAILABLE", version="kill-switch-v1",
+                source="not_configured", as_of=now, freshness="NO_CONFIGURED_SOURCE",
+                limitations=["No kill-switch authority is wired into this API process."],
+                evidence_references=[], details={},
+            ),
+            OperatorEvidenceState(
+                id="backup-restore", status="UNAVAILABLE", version="backup-restore-v1",
+                source="not_configured", as_of=now, freshness="NO_CONFIGURED_SOURCE",
+                limitations=["No backup or restore-drill authority is wired into this API process."],
+                evidence_references=[], details={},
+            ),
+            OperatorEvidenceState(
+                id="ci-build", status="UNAVAILABLE", version="ci-evidence-v1",
+                source="not_configured", as_of=now, freshness="NO_CONFIGURED_SOURCE",
+                limitations=["This runtime has no configured immutable CI evidence source."],
+                evidence_references=[], details={},
+            ),
+        ]
+        return CommandCenterResponse(
+            id="command-center", status="AVAILABLE", version="operator-dashboard-v1",
+            source="trade_platform.api", as_of=now, freshness="QUERY_AT_REQUEST",
+            limitations=["Evidence reflects only authorities injected into this API process."],
+            evidence_references=[], platform_mode=platform_config.environment,
+            live_trading_enabled=False, states=states,
+        )
 
     @app.get("/alerts")
     def active_alerts(_: None = Depends(protected_operator)) -> list[dict[str, object]]:

@@ -77,6 +77,16 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.json()["live_trading_enabled"])
 
+    def test_command_center_contract_is_protected_read_only_and_never_claims_live_trading(self) -> None:
+        self.assertEqual(self.client.get("/operator-dashboard/command-center").status_code, 401)
+        response = self.client.get("/operator-dashboard/command-center", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        states = {item["id"]: item for item in payload["states"]}
+        self.assertEqual((payload["id"], payload["version"], payload["live_trading_enabled"], states["database-authority"]["status"]), ("command-center", "operator-dashboard-v1", False, "SQLITE_NON_PRODUCTION"))
+        self.assertEqual(states["backup-restore"]["status"], "UNAVAILABLE")
+        self.assertEqual(self.client.post("/operator-dashboard/command-center", headers=self.headers).status_code, 405)
+
     def test_operational_alerts_are_protected_and_acknowledged_with_actor(self) -> None:
         alerts = SQLiteOperationalAlertStore(); alert = alerts.raise_alert(source="investment_review", code="THESIS_DRIFT_DETECTED", severity=AlertSeverity.WARNING, resource="thesis:test", details={"breached_metrics":"free_cash_flow"})
         client = TestClient(build_app(PlatformConfig(), SQLiteAuditStore(), OperatorAuthenticator("test-token"), InMemoryRateLimiter(max_requests=10), alert_store=alerts))
