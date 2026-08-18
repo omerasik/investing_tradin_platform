@@ -15,6 +15,15 @@ export type DashboardConfig = {
   strategyId?: string;
   experimentId?: string;
   promotionDecisionId?: string;
+  featureDefinitionId?: string;
+  featureInstrument?: string;
+  featureDatasetVersion?: string;
+  featureDecisionTime?: string;
+  scorecardId?: string;
+  regimeRunId?: string;
+  portfolioConstructionRunId?: string;
+  newsInstrument?: string;
+  sreServiceVersionId?: string;
   dashboardOrigin: string;
 };
 
@@ -80,6 +89,15 @@ export function loadDashboardConfig(): DashboardConfig {
     strategyId: optionalText(raw.strategy_id ?? env.TRADE_PLATFORM_STRATEGY_ID, "strategy_id"),
     experimentId: optionalText(raw.experiment_id ?? env.TRADE_PLATFORM_EXPERIMENT_ID, "experiment_id"),
     promotionDecisionId: optionalText(raw.promotion_decision_id ?? env.TRADE_PLATFORM_PROMOTION_DECISION_ID, "promotion_decision_id"),
+    featureDefinitionId: optionalText(raw.feature_definition_id ?? env.TRADE_PLATFORM_FEATURE_DEFINITION_ID, "feature_definition_id"),
+    featureInstrument: optionalText(raw.feature_instrument ?? env.TRADE_PLATFORM_FEATURE_INSTRUMENT, "feature_instrument"),
+    featureDatasetVersion: optionalText(raw.feature_dataset_version ?? env.TRADE_PLATFORM_FEATURE_DATASET_VERSION, "feature_dataset_version"),
+    featureDecisionTime: optionalText(raw.feature_decision_time ?? env.TRADE_PLATFORM_FEATURE_DECISION_TIME, "feature_decision_time"),
+    scorecardId: optionalText(raw.scorecard_id ?? env.TRADE_PLATFORM_SCORECARD_ID, "scorecard_id"),
+    regimeRunId: optionalText(raw.regime_run_id ?? env.TRADE_PLATFORM_REGIME_RUN_ID, "regime_run_id"),
+    portfolioConstructionRunId: optionalText(raw.portfolio_construction_run_id ?? env.TRADE_PLATFORM_PORTFOLIO_CONSTRUCTION_RUN_ID, "portfolio_construction_run_id"),
+    newsInstrument: optionalText(raw.news_instrument ?? env.TRADE_PLATFORM_NEWS_INSTRUMENT, "news_instrument"),
+    sreServiceVersionId: optionalText(raw.sre_service_version_id ?? env.TRADE_PLATFORM_SRE_SERVICE_VERSION_ID, "sre_service_version_id"),
     dashboardOrigin: validateUrl(optionalText(raw.dashboard_origin ?? env.TRADE_PLATFORM_DASHBOARD_ORIGIN ?? "http://127.0.0.1:3000", "dashboard_origin"), "dashboard_origin")!,
   };
 }

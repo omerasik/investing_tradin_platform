@@ -26,10 +26,83 @@ export type EvidenceResult<T> =
   | { state: "ERROR"; detail: string }
   | { state: "EXTERNAL_BLOCKED"; detail: string };
 
+export type MetricEvidenceState = "MEASURED" | "ASSUMED" | "UNAVAILABLE";
+export type PageInfo = { limit: number; offset: number; returned: number; has_more: boolean };
+export type FeatureDefinition = {
+  feature_definition_id: string; feature_name: string; family: string; semantic_version: string; status: string;
+  required_dataset_types: string[]; required_fields: string[]; frequency: string; timestamp_semantics: string;
+  lookback: number; parameters: Record<string, string | number | boolean | null>; missing_value_policy: string;
+  outlier_policy: string; leakage_policy: string; units: string; calculation_version: string;
+  created_at: string; retired_at: string | null;
+};
+export type FeatureMaterialization = {
+  materialization_id: string; instrument: string; feature_definition_id: string; feature_name: string;
+  semantic_version: string; dataset_version: string; event_time: string; effective_time: string;
+  knowledge_time: string; computed_time: string; value: string | null; quality_state: string;
+  content_hash: string; source_manifest: string[];
+};
+export type FeatureMaterializationPage = { state: EvidenceStatus; decision_time: string; items: FeatureMaterialization[]; page: PageInfo };
+export type ScorecardMetric = { metric_id: string; family: string; name: string; value: string | null; unit: string; evidence_state: MetricEvidenceState; dimensions: string[]; evidence_reference: string };
+export type StrategyScorecard = {
+  scorecard_id: string; schema_version: string; strategy_id: string; strategy_version: string; research_run_id: string;
+  dataset_version: string; feature_versions: string[]; cost_model_version: string; evaluated_at: string; knowledge_cutoff: string;
+  status: string; limitations: string[]; dataset_health_status: string; validation_package_id: string | null;
+  validation_package_content_hash: string | null; evidence_classification: string; evidence_manifest_references: string[];
+  content_hash: string; groups: { name: string; metrics: ScorecardMetric[] }[];
+  complexity_components: { component_id: string; name: string; formula_version: string; value: string | null; rationale: string }[];
+};
+export type RegimeRun = {
+  regime_assessment_id: string; model_version_id: string; model_version: string; rule_version: string; dataset_version: string;
+  instrument: string; as_of_timestamp: string; knowledge_timestamp: string | null; status: string; limitations: string[];
+  evidence_hash: string; risk_boundary: string; dimensions: { observation_id: string; event_time: string; method: string;
+    dimension: string; evidence_state: string; hard_label: string | null; probabilities: { state: string; probability: string }[];
+    uncertainty: string | null; input_materialization_ids: string[]; content_hash: string }[];
+  risk_effects: { candidate_id: string; strategy_version_id: string; current_risk_multiplier: string; proposed_risk_multiplier: string;
+    preapproved_maximum: string; action: string; status: string; reasons: string[]; automatic_authority: false }[];
+};
+export type PortfolioConstruction = {
+  portfolio_construction_run_id: string; policy_version_id: string; policy_version: string; regime_run_id: string;
+  constructed_at: string; status: string; review_only: true; automatic_authority: false; equity: string; target_volatility: string | null;
+  cash_weight: string; gross_weight: string; net_weight: string; portfolio_volatility: string; stressed_volatility: string;
+  risk_gate_approved: boolean; risk_gate_reasons: string[]; limitations: string[]; content_hash: string;
+  covariance: { covariance_id: string; dataset_version: string; dataset_content_hash: string; estimation_version: string; observations: number;
+    as_of: string; uncertainty: string; correlation_stress: string; source_provider: string; source_terms_version: string;
+    provider_backed: boolean; classification: string };
+  sleeves: { sleeve_input_id: string; strategy_key: string; requested_allocation: string; review_allocation: string | null;
+    effective_notional: string | null; risk_budget: string; capacity_weight: string; liquidity_score: string; drawdown: string;
+    regime_current_multiplier: string; regime_proposed_multiplier: string; marginal_risk: string | null; component_risk: string | null;
+    adjustment_reasons: string[]; rejected: boolean; rejection_reasons: string[] }[];
+  constraints: { constraint_id: string; name: string; state: string; observed: string | null; limit: string | null; reasons: string[] }[];
+};
+export type NewsEventPage = { state: EvidenceStatus; provider_state: string; page: PageInfo; items: {
+  event_id: string; document_revision_id: string; source: string; source_version: string; source_terms_version: string;
+  published_at: string; source_updated_at: string; ingested_at: string; correction_or_retraction_at: string | null;
+  revision: number; revision_kind: string; headline: string; category: string; novelty: string; credibility: string | null;
+  uncertainty: string; urgency: string; horizon: string; assessment_status: string | null; rights_state: string;
+  authorization_state: string; provider_activated: boolean; content_fingerprint: string; provenance_reference: string; limitations: string[];
+  entities: { entity_link_id: string; instrument: string; method: string; confidence: string; ambiguous: boolean }[];
+  correction_chain: { predecessor_id: string; successor_id: string; relation: string }[];
+}[] };
+export type SreOverview = {
+  state: EvidenceStatus; service_version_id: string; subsystem: string; version: string; environment: string; deployment_status: string;
+  postgres_state: string; provider_state: string; ingestion_checkpoint_freshness: string; dataset_freshness: string; feature_freshness: string;
+  research_job_health: string; signal_freshness: string; risk_status: string; reconciliation_status: string; backup_restore_status: string;
+  kill_switch_state: string; dependencies: { dependency: string; status: string; checked_at: string; latency_ms: string | null; reason: string | null }[];
+  slos: { slo_policy_version_id: string; name: string; indicator: string; target: string; target_state: "TARGET"; window_seconds: number;
+    measured_value: string | null; measured_state: string; window_start: string | null; window_end: string | null; claim_status: string | null }[];
+  incidents: { incident_id: string; severity: string; subsystem: string; opened_at: string; acknowledged_at: string | null;
+    resolved_at: string | null; status: string; reason: string; evidence_reference: string }[];
+  failure_drills: { drill_run_id: string; scenario: string; expected_protection: string; observed_protection: string; completed_at: string; passed: boolean; evidence_reference: string }[];
+};
+
 export async function readEvidence<T>(url: string, configured: boolean, missingDetail: string): Promise<EvidenceResult<T>> {
   if (!configured) return { state: "EXTERNAL_BLOCKED", detail: missingDetail };
   try {
-    const response = await fetch(url, { cache: "no-store" });
+    const dashboardViewToken = process.env.TRADE_PLATFORM_DASHBOARD_VIEW_TOKEN;
+    const response = await fetch(url, {
+      cache: "no-store",
+      headers: dashboardViewToken ? { Authorization: `Bearer ${dashboardViewToken}` } : undefined,
+    });
     if (response.ok) return { state: "AVAILABLE", value: await response.json() as T };
     if (response.status === 404) return { state: "EMPTY", detail: "No durable evidence matched this configured reference." };
     return { state: "ERROR", detail: `Evidence source responded ${response.status}.` };
