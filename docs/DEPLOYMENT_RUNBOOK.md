@@ -19,6 +19,23 @@ CDN change, because an intermediary can remove or replace them. The dashboard
 CSP's framework-required inline allowances are not a waiver for arbitrary
 inline application code. Response headers do not provide OIDC, MFA or RBAC.
 
+For the temporary bearer boundary, inject `TRADE_PLATFORM_OPERATOR_TOKEN` only
+through the deployment secret manager, set a non-blank
+`TRADE_PLATFORM_OPERATOR_SUBJECT`, and assign exactly one
+`TRADE_PLATFORM_OPERATOR_ROLE`. Omission defaults to `viewer`; an unrecognized
+role fails closed with service unavailable. Use the narrowest role:
+
+- `viewer`: authenticated evidence reads only;
+- `researcher`: reads plus strategy creation and research backtest launch;
+- `data_steward`: reads plus fundamental materialization and ingestion cadence;
+- `risk_reviewer`: reads plus portfolio-risk evaluation and alert acknowledgement;
+- `auditor`: reads plus append-only audit-event creation;
+- `operator`: all currently defined permissions.
+
+Roles are deployment-owned and never supplied by a browser/API request. Do not
+represent this static one-token mapping as OIDC, MFA, production sessions or a
+managed identity directory; replace it at that boundary before production.
+
 After any restore, run `scripts/verify_postgres_restore.py --source-dsn ...
 --restored-dsn ...` against a separately created database. Do not release the
 append-only recovery gate unless revision, critical hashes/counts, validation

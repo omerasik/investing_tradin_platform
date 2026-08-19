@@ -5,6 +5,7 @@ import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from enum import StrEnum
 
 from fastapi import Header, HTTPException, Request, status
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -48,16 +49,74 @@ class AuthenticationUnavailableError(RuntimeError):
     """Raised when a mutating/operational endpoint has no configured operator credential."""
 
 
+class OperatorRole(StrEnum):
+    """Deployment-assigned role for the temporary bearer-token identity boundary."""
+
+    VIEWER = "viewer"
+    RESEARCHER = "researcher"
+    DATA_STEWARD = "data_steward"
+    RISK_REVIEWER = "risk_reviewer"
+    AUDITOR = "auditor"
+    OPERATOR = "operator"
+
+
+class OperatorPermission(StrEnum):
+    READ_EVIDENCE = "read_evidence"
+    RUN_RESEARCH = "run_research"
+    MANAGE_DATA = "manage_data"
+    REVIEW_RISK = "review_risk"
+    ACKNOWLEDGE_ALERT = "acknowledge_alert"
+    WRITE_AUDIT = "write_audit"
+
+
+ROLE_PERMISSIONS: dict[OperatorRole, frozenset[OperatorPermission]] = {
+    OperatorRole.VIEWER: frozenset({OperatorPermission.READ_EVIDENCE}),
+    OperatorRole.RESEARCHER: frozenset(
+        {OperatorPermission.READ_EVIDENCE, OperatorPermission.RUN_RESEARCH}
+    ),
+    OperatorRole.DATA_STEWARD: frozenset(
+        {OperatorPermission.READ_EVIDENCE, OperatorPermission.MANAGE_DATA}
+    ),
+    OperatorRole.RISK_REVIEWER: frozenset(
+        {
+            OperatorPermission.READ_EVIDENCE,
+            OperatorPermission.REVIEW_RISK,
+            OperatorPermission.ACKNOWLEDGE_ALERT,
+        }
+    ),
+    OperatorRole.AUDITOR: frozenset(
+        {OperatorPermission.READ_EVIDENCE, OperatorPermission.WRITE_AUDIT}
+    ),
+    OperatorRole.OPERATOR: frozenset(OperatorPermission),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class OperatorPrincipal:
+    subject: str
+    role: OperatorRole
+
+
 @dataclass(frozen=True, slots=True)
 class OperatorAuthenticator:
     token: str | None
     subject: str = "local-operator"
+    role: OperatorRole | None = OperatorRole.OPERATOR
 
     @classmethod
     def from_environment(cls) -> "OperatorAuthenticator":
-        return cls(os.getenv("TRADE_PLATFORM_OPERATOR_TOKEN"), os.getenv("TRADE_PLATFORM_OPERATOR_SUBJECT", "local-operator"))
+        role_value = os.getenv("TRADE_PLATFORM_OPERATOR_ROLE", OperatorRole.VIEWER.value)
+        try:
+            role = OperatorRole(role_value)
+        except ValueError:
+            role = None
+        return cls(
+            os.getenv("TRADE_PLATFORM_OPERATOR_TOKEN"),
+            os.getenv("TRADE_PLATFORM_OPERATOR_SUBJECT", "local-operator"),
+            role,
+        )
 
-    def verify(self, authorization: str | None) -> str:
+    def verify(self, authorization: str | None) -> OperatorPrincipal:
         if not self.token:
             raise AuthenticationUnavailableError("Operator authentication is not configured.")
         expected = f"Bearer {self.token}"
@@ -65,7 +124,9 @@ class OperatorAuthenticator:
             raise PermissionError("Invalid operator credentials.")
         if not self.subject.strip():
             raise AuthenticationUnavailableError("Operator subject is not configured.")
-        return self.subject
+        if not isinstance(self.role, OperatorRole):
+            raise AuthenticationUnavailableError("Operator role is not configured.")
+        return OperatorPrincipal(self.subject.strip(), self.role)
 
 
 @dataclass(slots=True)
@@ -84,14 +145,14 @@ class InMemoryRateLimiter:
         events.append(now)
 
 
-def protected_operator(
+def _authenticated_principal(
     request: Request,
-    authorization: str | None = Header(default=None),
-) -> str:
+    authorization: str | None,
+) -> OperatorPrincipal:
     authenticator: OperatorAuthenticator = request.app.state.authenticator
     limiter: InMemoryRateLimiter = request.app.state.rate_limiter
     try:
-        subject = authenticator.verify(authorization)
+        principal = authenticator.verify(authorization)
     except AuthenticationUnavailableError as error:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
     except PermissionError as error:
@@ -102,4 +163,32 @@ def protected_operator(
         ) from error
     client = request.client.host if request.client else "unknown"
     limiter.check(client)
-    return subject
+    return principal
+
+
+@dataclass(frozen=True, slots=True)
+class RequireOperatorPermission:
+    """FastAPI dependency that authenticates and enforces one explicit permission."""
+
+    permission: OperatorPermission
+
+    def __call__(
+        self,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> str:
+        principal = _authenticated_principal(request, authorization)
+        if self.permission not in ROLE_PERMISSIONS[principal.role]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Forbidden.",
+            )
+        return principal.subject
+
+
+protected_operator = RequireOperatorPermission(OperatorPermission.READ_EVIDENCE)
+research_operator = RequireOperatorPermission(OperatorPermission.RUN_RESEARCH)
+data_steward_operator = RequireOperatorPermission(OperatorPermission.MANAGE_DATA)
+risk_reviewer_operator = RequireOperatorPermission(OperatorPermission.REVIEW_RISK)
+alert_reviewer_operator = RequireOperatorPermission(OperatorPermission.ACKNOWLEDGE_ALERT)
+audit_writer_operator = RequireOperatorPermission(OperatorPermission.WRITE_AUDIT)

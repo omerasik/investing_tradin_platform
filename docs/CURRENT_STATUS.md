@@ -39,6 +39,16 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
+- Cycle 218 PR-head GitHub Actions
+  [run 32297293629](https://github.com/omerasik/investing_tradin_platform/actions/runs/32297293629)
+  verifies all **388 tests without skips**, the explicit six-role permission
+  matrix and endpoint denial boundaries, unchanged **111-table** restore,
+  **117/117** mypy ratchet, zero errors across the **39-file** critical slice,
+  all dependency/security gates, production build and configured browser suite.
+- Cycle 217 exact-main GitHub Actions
+  [run 32296711621](https://github.com/omerasik/investing_tradin_platform/actions/runs/32296711621)
+  passed the complete workflow on merge commit
+  `1f4352c7cea7cd36a33f29e142aff184ac305f47`.
 - Cycle 217 PR-head GitHub Actions
   [run 32295559967](https://github.com/omerasik/investing_tradin_platform/actions/runs/32295559967)
   verifies all **383 tests without skips**, centralized API/dashboard response
@@ -107,11 +117,12 @@ snapshot, not a second roadmap.
   gates, production dashboard build and all eleven protected PostgreSQL browser
   scenarios.
 - The latest completed exact-mainline PostgreSQL evidence is GitHub Actions
-  [run 32294785184](https://github.com/omerasik/investing_tradin_platform/actions/runs/32294785184)
-  on main commit `c89a5de`: migration 0028, all **382 tests without skips**,
+  [run 32296711621](https://github.com/omerasik/investing_tradin_platform/actions/runs/32296711621)
+  on main commit `1f4352c`: migration 0028, all **383 tests without skips**,
   matched **111-table** restore/reconciliation, Ruff, mypy **117/117** ratchet,
-  the zero-error **38-file** critical slice, security/dependency/SBOM/secret
-  gates, frontend build/smoke and every configured browser scenario.
+  the zero-error **39-file** critical slice, security/dependency/SBOM/secret
+  gates, frontend build/smoke, twelve configured browser scenarios and zero Axe
+  WCAG A/AA violations.
 - Cycle 208 final PR CI [run 32276487834](https://github.com/omerasik/investing_tradin_platform/actions/runs/32276487834)
   on `39c3885` applied the unchanged migration head, ran all **351 tests without
   skips**, matched the **91-table** restore/reconciliation manifest, and passed
@@ -161,9 +172,9 @@ snapshot, not a second roadmap.
    approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
 4. Cycle 209 re-audited all RQ-001–RQ-030 rows and is exact-mainline verified.
-   Cycles 212–216 are exact-mainline verified. Cycle 217 is PR-head verified and
+   Cycles 212–217 are exact-mainline verified. Cycle 218 is PR-head verified and
    awaits exact-merge verification; next provider-independent work is container/
-   performance hardening and deeper role/session abstractions.
+   performance hardening and deeper session/OIDC integration boundaries.
 
 ## PostgreSQL persistence progress
 
@@ -677,3 +688,26 @@ runs all **383 tests without skips**, matches **111 restore-critical tables**,
 passes the **117/117** mypy ratchet, zero-error **39-file** critical slice,
 production build, smoke and **12 configured browser scenarios** including zero
 Axe WCAG A/AA violations.
+
+Exact merged-main run `32296711621` verifies the unchanged Cycle 217 result on
+commit `1f4352c7cea7cd36a33f29e142aff184ac305f47`.
+
+## Cycle 218 VERIFIED — least-privilege operator permissions
+
+Cycle 218 separates authenticated evidence reads from research creation,
+fundamental/ingestion stewardship, portfolio-risk review, alert acknowledgement
+and audit writing. Viewer, researcher, data-steward, risk-reviewer, auditor and
+operator roles receive an explicit fixed permission set; the environment-owned
+role defaults to viewer and an invalid role fails closed before any endpoint
+logic. Authentication failures remain 401 with a bearer challenge, valid but
+unauthorized identities receive 403, and unavailable deployment identity/role
+configuration receives 503.
+
+The role is never accepted from a request, and endpoint actors continue to use
+the authenticated server-owned subject. This remains a static one-token local/
+paper boundary rather than OIDC, MFA, short-lived sessions, managed RBAC or a
+durable authorization audit service. Local verification discovers **388 tests**,
+passes **348** and skips **40 PostgreSQL-only tests**. PR-head run `32297293629`
+runs all **388 tests without skips**, matches **111 restore-critical tables**,
+passes the **117/117** mypy ratchet, zero-error **39-file** critical slice and
+every configured quality, security, supply-chain, build, smoke and browser gate.

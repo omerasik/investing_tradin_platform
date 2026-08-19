@@ -226,3 +226,21 @@ PR-head run `32295559967` runs all **383 tests without skips**, matches all
 Python dependency audits, SBOM/secret gates, the **117/117** mypy ratchet,
 zero-error **39-file** critical slice, production build/smoke and all **12
 configured browser scenarios**, including zero Axe WCAG A/AA violations.
+
+## Cycle 218 — Least-Privilege Operator Permissions
+
+Role tests require an explicit six-role matrix and prove that only `operator`
+has the complete permission set. API checks distinguish authentication from
+authorization: missing/invalid credentials return 401, authenticated identities
+without the endpoint permission return 403, and absent/invalid deployment role
+configuration returns 503. Viewer, researcher, data-steward, risk-reviewer and
+auditor tests prove that read, research, data, risk/alert and audit command
+boundaries cannot be crossed; actor attribution always comes from the verified
+server-owned subject rather than request data.
+
+Local verification discovers **388 tests**, passes **348** and skips **40
+PostgreSQL-only tests**. PR-head run `32297293629` runs all **388 tests without
+skips**, matches all **111 restored tables**, passes compileall, full Ruff,
+Bandit, dependency/SBOM/secret gates, the **117/117** mypy ratchet, zero-error
+**39-file** critical slice, production build/smoke and the complete configured
+browser matrix.

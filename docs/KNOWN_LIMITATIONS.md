@@ -6,10 +6,10 @@ The full requirement-level matrix is in
 - A disposable PostgreSQL DSN is not configured on this workstation. PostgreSQL
   migrations, restart/immutability, restore reconciliation and configured browser
   scenarios are therefore hosted-CI evidence, not local execution evidence.
-  Exact-main run `32294785184` verifies Cycle 216 migration 0028, 382 no-skip
-  tests and 111 restored tables. Cycle 217 PR-head run `32295559967` verifies
-  383 no-skip tests and the unchanged 111 restored tables; exact-merge proof
-  remains required.
+  Exact-main run `32296711621` verifies Cycle 217 on merge `1f4352c`, with 383
+  no-skip tests and 111 restored tables. Cycle 218 PR-head run `32297293629`
+  verifies 388 no-skip tests and the unchanged 111 restored tables; exact-merge
+  proof remains required.
 
 - This is a local, paper-only system. Live trading is intentionally unavailable.
 - SQLite stores provide durable local evidence but are not the normalized
@@ -161,15 +161,19 @@ The full requirement-level matrix is in
   Cycle 217 adds automated WCAG A/AA scanning across the full dashboard, but
   manual screen-reader, zoom/reflow, forced-colors and assistive-technology
   acceptance remain incomplete. Interactive charts are still absent.
-- Authentication remains development-grade bearer-token auth. Production
-  sessions/RBAC/MFA, CSRF/session hardening, managed secrets, encrypted off-site
-  backup and incident-operated RPO/RTO remain open. Full-package static/security
+- Authentication remains development-grade bearer-token auth. Cycle 218
+  separates six static roles across read, research, data, risk, alert and audit
+  permissions, but one deployment token still maps to one subject/role and
+  authorization denials are not a production identity-provider audit trail.
+  OIDC, managed claim/group mapping, short-lived sessions, MFA, CSRF/session
+  hardening, managed secrets, encrypted off-site backup and incident-operated
+  RPO/RTO remain open. Full-package static/security
   scans, dependency audits, secret detection, SBOM/license evidence and a fresh
   PostgreSQL restore/reconciliation drill are now CI gates, but they are not a
   penetration test. Cycle 217 response headers reduce browser exposure; the
   dashboard CSP still permits framework-required inline script/style, HSTS is
   effective only over HTTPS, and neither header policy substitutes for a TLS
-  terminator, OIDC or authorization roles.
+  terminator, OIDC or identity governance.
 - The repository is PUBLIC. It contains no approved credential or private
   dataset; mandatory tracked-file secret scanning reduces but does not remove
   accidental-disclosure risk. Visibility was not changed.
