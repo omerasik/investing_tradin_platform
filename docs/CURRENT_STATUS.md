@@ -39,6 +39,17 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
+- Cycle 221 PR-head GitHub Actions
+  [run 32302388728](https://github.com/omerasik/investing_tradin_platform/actions/runs/32302388728)
+  verifies all **401 tests without skips**, retains the exact scanned image as a
+  portable archive/checksum, creates Sigstore-signed SLSA provenance and
+  CycloneDX SBOM attestations, retains both bundles and independently verifies
+  both predicates. The downloaded **56,877,312-byte** archive matches its
+  checksum and re-verifies against GitHub; every existing gate passes.
+- Cycle 220 exact-main GitHub Actions
+  [run 32301746841](https://github.com/omerasik/investing_tradin_platform/actions/runs/32301746841)
+  passed the complete workflow on merge commit
+  `a9ca933245512b7f207f84201691719025b79ff6`.
 - Cycle 220 PR-head GitHub Actions
   [run 32300815517](https://github.com/omerasik/investing_tradin_platform/actions/runs/32300815517)
   verifies all **397 tests without skips**, the refreshed Python 3.12.14 image,
@@ -195,8 +206,8 @@ snapshot, not a second roadmap.
    approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
 4. Cycle 209 re-audited all RQ-001–RQ-030 rows and is exact-mainline verified.
-   Cycles 212–219 are exact-mainline verified. Cycle 220 is PR-head verified;
-   next provider-independent work is image signing/provenance, performance
+   Cycles 212–220 are exact-mainline verified. Cycle 221 is PR-head verified;
+   next provider-independent work is registry-native OCI signing, performance
    measurement once Chrome DevTools MCP is available, and deeper session/OIDC
    integration boundaries.
 
@@ -782,6 +793,30 @@ all **111 restore-critical tables** and passes every existing gate. Its SBOM has
 findings**. Those 26 remain visible debt and must be re-evaluated on every run;
 they are not a claim that the image is vulnerability-free.
 
-Image signing/provenance, registry policy, IaC/orchestration, deployment secret
+Registry-native OCI signing/publication, registry policy, IaC/orchestration, deployment secret
 management, network/TLS controls, rollback and staging soak remain open. The
 workstation Linux Docker daemon remains unavailable; hosted CI is authoritative.
+
+Exact merged-main run `32301746841` verifies the unchanged Cycle 220 result on
+commit `a9ca933245512b7f207f84201691719025b79ff6`.
+
+## Cycle 221 VERIFIED — signed research-image archive attestations
+
+Cycle 221 retains the exact scanned image as a portable gzip archive and
+SHA-256 checksum. The official `actions/attest` v4.2.1 is pinned by commit SHA
+and uses short-lived OIDC/Sigstore credentials to create separate SLSA build
+provenance and CycloneDX SBOM attestations. Both signed bundles are retained;
+CI then verifies the archive against the repository for both predicates.
+Attestation authority is skipped for untrusted fork PRs.
+
+PR-head run `32302388728` runs all **401 tests without skips**, matches all
+**111 restore-critical tables** and passes every existing gate. The downloaded
+archive is **56,877,312 bytes**, matches its retained checksum, and produces one
+valid result for each independent `gh attestation verify` command. GitHub stores
+the [provenance attestation](https://github.com/omerasik/investing_tradin_platform/attestations/41715852)
+and [CycloneDX attestation](https://github.com/omerasik/investing_tradin_platform/attestations/41715861).
+
+This signs attestations for a retained file artifact; it does not sign or push
+an OCI manifest, create a registry/storage/deployment record, provide release
+promotion, or prove reproducible builds. Registry-native signing, publication,
+retention policy, IaC/orchestration, rollback and staging soak remain open.

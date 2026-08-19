@@ -178,7 +178,7 @@ The full requirement-level matrix is in
   `local_research` API. Hosted CI proves its digest-pinned build, UID/GID 10001,
   read-only/capability-free/no-new-privileges runtime, health state and viewer
   authorization checks. It does not prove a production/PostgreSQL deployment,
-  image signature/provenance, registry, IaC/orchestration, network/TLS policy,
+  registry-native OCI signature/publication, registry, IaC/orchestration, network/TLS policy,
   resource sizing, rollback or staging soak. The local
   Linux Docker daemon is unavailable, so no workstation runtime claim is made.
 - Cycle 220 adds a complete retained container vulnerability report and
@@ -187,7 +187,13 @@ The full requirement-level matrix is in
   fix and remain unresolved, while the fixable HIGH/CRITICAL count is zero.
   CI fails when a HIGH/CRITICAL fix becomes available but is not applied, or
   when the OS is EOL. Scanner/database coverage and severity classifications
-  can change, and there is still no signature/provenance or registry policy.
+  can change, and there is still no registry policy.
+- Cycle 221 provides signed SLSA provenance and CycloneDX SBOM attestations for
+  a retained gzip image archive, with checksum and online verification. It does
+  not sign or publish an OCI manifest, create a registry/storage/deployment
+  record, establish release approval, prove reproducible builds or define
+  artifact retention. Sigstore/GitHub availability is an external dependency;
+  untrusted fork PRs intentionally receive no attestation authority.
 - The repository is PUBLIC. It contains no approved credential or private
   dataset; mandatory tracked-file secret scanning reduces but does not remove
   accidental-disclosure risk. Visibility was not changed.
