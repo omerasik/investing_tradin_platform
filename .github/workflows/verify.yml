@@ -93,7 +93,7 @@ jobs:
           done
           DASHBOARD_URL=http://127.0.0.1:3000 node scripts/verify-dashboard.mjs
       - name: Cache Playwright browser binaries
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-${{ hashFiles('web/pnpm-lock.yaml') }}
