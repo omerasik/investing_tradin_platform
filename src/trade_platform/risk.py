@@ -19,6 +19,7 @@ from .domain import (
     SignalStatus,
     utc_now,
 )
+from .operational_alerts import AlertSeverity, PostgresOperationalAlertStore
 from .persistence import PersistenceError, PostgresDatabase
 
 
@@ -392,8 +393,15 @@ class PostgresRiskStoreError(PersistenceError):
 class PostgresRiskStore:
     """One transaction for risk idempotency, reservation and immutable decision."""
 
-    def __init__(self, database: PostgresDatabase, risk_policy_version_id: UUID) -> None:
+    def __init__(
+        self,
+        database: PostgresDatabase,
+        risk_policy_version_id: UUID,
+        *,
+        alert_store: PostgresOperationalAlertStore | None = None,
+    ) -> None:
         self._database, self._risk_policy_version_id = database, risk_policy_version_id
+        self._alert_store = alert_store
 
     def persist(
         self,
@@ -402,9 +410,21 @@ class PostgresRiskStore:
         *,
         business_day: date,
         daily_limit: Decimal,
+        submission_approved: bool | None = None,
+        violation_reasons: tuple[str, ...] | None = None,
     ) -> RiskDecision:
         if decision.intent_id != intent.intent_id or daily_limit <= 0:
             raise PostgresRiskStoreError("invalid_risk_persistence_request")
+        final_approved = (
+            decision.decision is RiskDecisionType.APPROVE
+            if submission_approved is None
+            else submission_approved
+        )
+        if final_approved and decision.decision is RiskDecisionType.REJECT:
+            raise PostgresRiskStoreError("invalid_risk_persistence_request")
+        final_reasons = decision.reasons if violation_reasons is None else violation_reasons
+        if not final_approved and not final_reasons:
+            raise PostgresRiskStoreError("risk_violation_reasons_required")
         try:
             with self._database.transaction() as connection, connection.cursor() as cursor:
                 # Both the intent lock and account/day lock make duplicate and
@@ -427,7 +447,7 @@ class PostgresRiskStore:
                         existing[3],
                     )
                 approved = decision.decision is RiskDecisionType.APPROVE
-                if approved:
+                if approved and final_approved:
                     cursor.execute(
                         "SELECT pg_advisory_xact_lock(hashtext(%s))",
                         (f"risk-day:{intent.account_id}:{business_day.isoformat()}",),
@@ -443,6 +463,8 @@ class PostgresRiskStore:
                             ["daily_order_notional_limit"],
                         )
                         approved = False
+                        final_approved = False
+                        final_reasons = decision.reasons
                     else:
                         cursor.execute(
                             "INSERT INTO risk_reservations (reservation_id, account_id, intent_id, business_date, notional, created_at) VALUES (%s,%s,%s,%s,%s,%s)",
@@ -466,6 +488,30 @@ class PostgresRiskStore:
                         decision.decided_at,
                     ),
                 )
+                if not final_approved and self._alert_store is not None:
+                    severity = (
+                        AlertSeverity.CRITICAL
+                        if "kill_switch_active" in final_reasons
+                        else AlertSeverity.WARNING
+                    )
+                    self._alert_store.raise_alert_in_transaction(
+                        connection,
+                        source="risk_engine",
+                        code="PRETRADE_RISK_REJECTED",
+                        severity=severity,
+                        resource=f"intent:{intent.intent_id}",
+                        details={
+                            "account_id": intent.account_id,
+                            "business_day": business_day.isoformat(),
+                            "decision_id": str(decision.decision_id),
+                            "instrument_id": intent.instrument_id,
+                            "notional": str(intent.notional),
+                            "policy_version_id": str(self._risk_policy_version_id),
+                            "reasons": json.dumps(final_reasons, separators=(",", ":")),
+                            "signal_id": str(intent.signal_id),
+                        },
+                        occurred_at=decision.decided_at,
+                    )
                 return decision
         except PostgresRiskStoreError:
             raise

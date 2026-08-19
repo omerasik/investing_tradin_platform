@@ -88,6 +88,16 @@ class PostgresIntegrationTests(unittest.TestCase):
             self.assertIn(
                 "quant_validation_artifacts_immutable", {row[0] for row in cursor.fetchall()}
             )
+            cursor.execute("SELECT to_regclass('public.operational_alert_events')")
+            self.assertEqual(cursor.fetchone()[0], "operational_alert_events")
+            cursor.execute(
+                "SELECT tgname FROM pg_trigger "
+                "WHERE tgrelid = 'operational_alert_events'::regclass"
+            )
+            self.assertIn(
+                "operational_alert_events_immutable",
+                {row[0] for row in cursor.fetchall()},
+            )
 
     def test_policy_and_keyed_assessment_survive_restart_and_reject_tamper(self) -> None:
         from trade_platform.domain import RiskDecision, RiskDecisionType
@@ -556,6 +566,17 @@ class PostgresIntegrationTests(unittest.TestCase):
             self.assertFalse(blocked.assessment.approved)
             self.assertIn("kill_switch_active", blocked.assessment.risk_decision.reasons)
             self.assertIsNone(blocked.paper_order)
+            violation_alerts = tuple(
+                alert
+                for alert in runtime.core.alerts.active()
+                if alert.resource == f"intent:{blocked_intent.intent_id}"
+            )
+            self.assertEqual(len(violation_alerts), 1)
+            self.assertEqual(violation_alerts[0].severity.value, "CRITICAL")
+            self.assertEqual(
+                len(runtime.core.alerts.events(violation_alerts[0].alert_id)),
+                1,
+            )
             with runtime.core.database.transaction() as connection, connection.cursor() as cursor:
                 cursor.execute(
                     "SELECT count(*) FROM paper_order_intents WHERE intent_id=%s",
@@ -606,6 +627,16 @@ class PostgresIntegrationTests(unittest.TestCase):
             self.assertEqual(
                 recovered_assessment.per_trade_risk.gap_adjusted_loss,
                 Decimal("3.96"),
+            )
+            self.assertEqual(
+                len(
+                    tuple(
+                        alert
+                        for alert in restarted.core.alerts.active()
+                        if alert.resource == f"intent:{blocked_intent.intent_id}"
+                    )
+                ),
+                1,
             )
             with restarted.core.database.transaction() as connection, connection.cursor() as cursor:
                 cursor.execute(
@@ -768,6 +799,223 @@ class PostgresIntegrationTests(unittest.TestCase):
         for worker in workers:
             worker.join(timeout=10)
         self.assertEqual(sorted(outcomes), ["blocked", "reserved"])
+
+    def test_portfolio_rejection_alerts_without_reserving_daily_budget(self) -> None:
+        from trade_platform.domain import OrderIntent, OrderSide, RiskDecision, RiskDecisionType
+        from trade_platform.operational_alerts import (
+            AlertStatus,
+            PostgresOperationalAlertStore,
+        )
+        from trade_platform.persistence import PostgresDatabase
+        from trade_platform.risk import PostgresRiskStore
+
+        database = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        alerts = PostgresOperationalAlertStore(database)
+        risk = PostgresRiskStore(
+            database,
+            self.policy_version_id,
+            alert_store=alerts,
+        )
+        account_id = f"integration-paper-{str(self.exchange_id)[:8]}"
+        intent = OrderIntent(
+            uuid4(),
+            self.signal_id,
+            str(self.instrument_id),
+            account_id,
+            OrderSide.BUY,
+            Decimal("2"),
+            Decimal("100"),
+            self.now,
+        )
+        decision = RiskDecision.create(intent.intent_id, RiskDecisionType.APPROVE, [])
+        persisted = risk.persist(
+            intent,
+            decision,
+            business_day=self.now.date(),
+            daily_limit=Decimal("1000"),
+            submission_approved=False,
+            violation_reasons=("portfolio:gross_exposure_limit",),
+        )
+        self.assertEqual(persisted.decision, RiskDecisionType.APPROVE)
+        self.assertEqual(
+            risk.persist(
+                intent,
+                decision,
+                business_day=self.now.date(),
+                daily_limit=Decimal("1000"),
+                submission_approved=False,
+                violation_reasons=("portfolio:gross_exposure_limit",),
+            ),
+            persisted,
+        )
+        active = tuple(
+            alert
+            for alert in alerts.active()
+            if alert.resource == f"intent:{intent.intent_id}"
+        )
+        self.assertEqual(len(active), 1)
+        self.assertEqual(active[0].severity.value, "WARNING")
+        self.assertIn("portfolio:gross_exposure_limit", active[0].details["reasons"])
+        self.assertEqual(len(alerts.events(active[0].alert_id)), 1)
+        with database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM risk_reservations WHERE intent_id=%s",
+                (intent.intent_id,),
+            )
+            self.assertEqual(cursor.fetchone()[0], 0)
+        acknowledged = alerts.transition(
+            active[0].alert_id,
+            AlertStatus.ACKNOWLEDGED,
+            actor="integration-operator",
+            details={"reason": "review_started"},
+        )
+        self.assertEqual(acknowledged.status, AlertStatus.ACKNOWLEDGED)
+        self.assertEqual(len(alerts.events(active[0].alert_id)), 2)
+        database.close()
+
+        restarted = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        recovered = PostgresOperationalAlertStore(restarted).get(active[0].alert_id)
+        self.assertEqual(recovered.status, AlertStatus.ACKNOWLEDGED)
+        restarted.close()
+
+    def test_concurrent_risk_rejection_has_one_alert_and_one_decision(self) -> None:
+        from trade_platform.domain import OrderIntent, OrderSide, RiskDecision, RiskDecisionType
+        from trade_platform.operational_alerts import PostgresOperationalAlertStore
+        from trade_platform.persistence import PostgresDatabase
+        from trade_platform.risk import PostgresRiskStore
+
+        account_id = f"integration-paper-{str(self.exchange_id)[:8]}"
+        intent = OrderIntent(
+            uuid4(),
+            self.signal_id,
+            str(self.instrument_id),
+            account_id,
+            OrderSide.BUY,
+            Decimal("1"),
+            Decimal("100"),
+            self.now,
+        )
+        decision = RiskDecision.create(
+            intent.intent_id,
+            RiskDecisionType.REJECT,
+            ["maximum_order_notional"],
+        )
+        start = threading.Barrier(2)
+        outcomes: list[str] = []
+
+        def reject() -> None:
+            database = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+            store = PostgresRiskStore(
+                database,
+                self.policy_version_id,
+                alert_store=PostgresOperationalAlertStore(database),
+            )
+            try:
+                start.wait(timeout=5)
+                outcomes.append(
+                    str(
+                        store.persist(
+                            intent,
+                            decision,
+                            business_day=self.now.date(),
+                            daily_limit=Decimal("1000"),
+                        ).decision_id
+                    )
+                )
+            finally:
+                database.close()
+
+        workers = (threading.Thread(target=reject), threading.Thread(target=reject))
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=10)
+        self.assertEqual(outcomes, [str(decision.decision_id), str(decision.decision_id)])
+        with self.connection.transaction(), self.connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM risk_decisions WHERE intent_id=%s",
+                (intent.intent_id,),
+            )
+            self.assertEqual(cursor.fetchone()[0], 1)
+            cursor.execute(
+                "SELECT COUNT(*) FROM operational_alerts "
+                "WHERE payload->>'resource'=%s",
+                (f"intent:{intent.intent_id}",),
+            )
+            self.assertEqual(cursor.fetchone()[0], 1)
+            cursor.execute(
+                "SELECT COUNT(*) FROM operational_alert_events e "
+                "JOIN operational_alerts a ON a.alert_id=e.alert_id "
+                "WHERE a.payload->>'resource'=%s",
+                (f"intent:{intent.intent_id}",),
+            )
+            self.assertEqual(cursor.fetchone()[0], 1)
+
+    def test_alert_failure_rolls_back_risk_decision(self) -> None:
+        from trade_platform.domain import OrderIntent, OrderSide, RiskDecision, RiskDecisionType
+        from trade_platform.operational_alerts import PostgresOperationalAlertStore
+        from trade_platform.persistence import PostgresDatabase
+        from trade_platform.risk import PostgresRiskStore, PostgresRiskStoreError
+
+        account_id = f"integration-paper-{str(self.exchange_id)[:8]}"
+        intent = OrderIntent(
+            uuid4(),
+            self.signal_id,
+            str(self.instrument_id),
+            account_id,
+            OrderSide.BUY,
+            Decimal("1"),
+            Decimal("100"),
+            self.now,
+        )
+        decision = RiskDecision.create(
+            intent.intent_id,
+            RiskDecisionType.REJECT,
+            ["maximum_order_notional"],
+        )
+        database = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        with database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "CREATE OR REPLACE FUNCTION cycle213_alert_failure() RETURNS trigger "
+                "LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'cycle213_alert_failure'; END; $$"
+            )
+            cursor.execute(
+                "CREATE TRIGGER cycle213_alert_failure BEFORE INSERT "
+                "ON operational_alert_events FOR EACH ROW "
+                "EXECUTE FUNCTION cycle213_alert_failure()"
+            )
+        try:
+            with self.assertRaisesRegex(PostgresRiskStoreError, "risk_persistence_uncertain"):
+                PostgresRiskStore(
+                    database,
+                    self.policy_version_id,
+                    alert_store=PostgresOperationalAlertStore(database),
+                ).persist(
+                    intent,
+                    decision,
+                    business_day=self.now.date(),
+                    daily_limit=Decimal("1000"),
+                )
+        finally:
+            with database.transaction() as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "DROP TRIGGER IF EXISTS cycle213_alert_failure "
+                    "ON operational_alert_events"
+                )
+                cursor.execute("DROP FUNCTION IF EXISTS cycle213_alert_failure()")
+        with database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM risk_decisions WHERE intent_id=%s",
+                (intent.intent_id,),
+            )
+            self.assertEqual(cursor.fetchone()[0], 0)
+            cursor.execute(
+                "SELECT COUNT(*) FROM operational_alerts "
+                "WHERE payload->>'resource'=%s",
+                (f"intent:{intent.intent_id}",),
+            )
+            self.assertEqual(cursor.fetchone()[0], 0)
+        database.close()
 
     def test_runtime_oms_cursor_reconciliation_and_kill_switch_survive_restart(self) -> None:
         """Real PostgreSQL objects recover only from durable, immutable evidence."""

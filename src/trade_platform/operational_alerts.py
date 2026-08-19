@@ -6,9 +6,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 from .domain import utc_now
+from .persistence import PersistenceError, PostgresDatabase
 from .shadow_mode import FailureDrillResult
 
 
@@ -39,6 +41,247 @@ class OperationalAlert:
     status: AlertStatus
     created_at: datetime
     updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class OperationalAlertEvent:
+    event_id: UUID
+    alert_id: UUID
+    status: AlertStatus
+    actor: str
+    occurred_at: datetime
+    details: dict[str, str]
+
+
+class PostgresOperationalAlertStore:
+    """Concurrency-safe PostgreSQL alert authority with immutable transitions."""
+
+    def __init__(self, database: PostgresDatabase) -> None:
+        self._database = database
+
+    def raise_alert(
+        self,
+        *,
+        source: str,
+        code: str,
+        severity: AlertSeverity,
+        resource: str,
+        details: dict[str, str],
+        occurred_at: datetime | None = None,
+    ) -> OperationalAlert:
+        try:
+            with self._database.transaction() as connection:
+                return self.raise_alert_in_transaction(
+                    connection,
+                    source=source,
+                    code=code,
+                    severity=severity,
+                    resource=resource,
+                    details=details,
+                    occurred_at=occurred_at,
+                )
+        except (AlertError, PersistenceError):
+            raise
+        except Exception as error:
+            raise PersistenceError("operational_alert_persistence_uncertain") from error
+
+    def raise_alert_in_transaction(
+        self,
+        connection: Any,
+        *,
+        source: str,
+        code: str,
+        severity: AlertSeverity,
+        resource: str,
+        details: dict[str, str],
+        occurred_at: datetime | None = None,
+    ) -> OperationalAlert:
+        """Open an alert using the caller's transaction for atomic producers."""
+        _validate_alert_fields(source, code, resource, details)
+        when = occurred_at or utc_now()
+        if when.tzinfo is None or when.utcoffset() is None:
+            raise AlertError("alert_time_must_be_timezone_aware")
+        fingerprint = f"{source}:{code}:{resource}"
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                (f"operational-alert:{fingerprint}",),
+            )
+            cursor.execute(
+                "SELECT alert_id, payload->>'fingerprint', payload->>'source', "
+                "payload->>'code', severity, payload->>'resource', payload->'details', "
+                "status, opened_at, COALESCE((SELECT MAX(occurred_at) FROM "
+                "operational_alert_events WHERE alert_id=operational_alerts.alert_id), opened_at) "
+                "FROM operational_alerts WHERE payload->>'fingerprint'=%s "
+                "AND status <> 'RESOLVED'",
+                (fingerprint,),
+            )
+            existing = cursor.fetchone()
+            if existing is not None:
+                return self._from_row(existing)
+            alert_id = uuid4()
+            payload = {
+                "fingerprint": fingerprint,
+                "source": source,
+                "code": code,
+                "resource": resource,
+                "details": details,
+            }
+            cursor.execute(
+                "INSERT INTO operational_alerts "
+                "(alert_id, alert_type, severity, status, opened_at, acknowledged_at, payload) "
+                "VALUES (%s,%s,%s,'OPEN',%s,NULL,%s::jsonb)",
+                (alert_id, code, severity.value, when, json.dumps(payload, sort_keys=True)),
+            )
+            cursor.execute(
+                "INSERT INTO operational_alert_events "
+                "(event_id, alert_id, status, actor, occurred_at, details) "
+                "VALUES (%s,%s,'OPEN','system',%s,%s::jsonb)",
+                (uuid4(), alert_id, when, json.dumps(details, sort_keys=True)),
+            )
+        return OperationalAlert(
+            alert_id,
+            fingerprint,
+            source,
+            code,
+            severity,
+            resource,
+            dict(details),
+            AlertStatus.OPEN,
+            when,
+            when,
+        )
+
+    def transition(
+        self,
+        alert_id: UUID,
+        status: AlertStatus,
+        *,
+        actor: str,
+        details: dict[str, str] | None = None,
+    ) -> OperationalAlert:
+        if not actor.strip() or status is AlertStatus.OPEN:
+            raise AlertError("invalid_alert_transition")
+        event_details = details or {}
+        _validate_alert_details(event_details)
+        when = utc_now()
+        try:
+            with self._database.transaction() as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT status FROM operational_alerts WHERE alert_id=%s FOR UPDATE",
+                    (alert_id,),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    raise KeyError(str(alert_id))
+                if AlertStatus(str(row[0])) is AlertStatus.RESOLVED:
+                    raise AlertError("invalid_alert_transition")
+                cursor.execute(
+                    "UPDATE operational_alerts SET status=%s, "
+                    "acknowledged_at=CASE WHEN %s='ACKNOWLEDGED' THEN %s "
+                    "ELSE acknowledged_at END WHERE alert_id=%s",
+                    (status.value, status.value, when, alert_id),
+                )
+                cursor.execute(
+                    "INSERT INTO operational_alert_events "
+                    "(event_id, alert_id, status, actor, occurred_at, details) "
+                    "VALUES (%s,%s,%s,%s,%s,%s::jsonb)",
+                    (
+                        uuid4(),
+                        alert_id,
+                        status.value,
+                        actor,
+                        when,
+                        json.dumps(event_details, sort_keys=True),
+                    ),
+                )
+            return self.get(alert_id)
+        except (AlertError, KeyError, PersistenceError):
+            raise
+        except Exception as error:
+            raise PersistenceError("operational_alert_transition_uncertain") from error
+
+    def get(self, alert_id: UUID) -> OperationalAlert:
+        rows = self._read(
+            "WHERE operational_alerts.alert_id=%s",
+            (alert_id,),
+        )
+        if not rows:
+            raise KeyError(str(alert_id))
+        return rows[0]
+
+    def active(self) -> tuple[OperationalAlert, ...]:
+        return tuple(self._read("WHERE status <> 'RESOLVED' ORDER BY opened_at", ()))
+
+    def events(self, alert_id: UUID) -> tuple[OperationalAlertEvent, ...]:
+        try:
+            with self._database.transaction() as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT event_id, alert_id, status, actor, occurred_at, details "
+                    "FROM operational_alert_events WHERE alert_id=%s "
+                    "ORDER BY occurred_at, event_id",
+                    (alert_id,),
+                )
+                return tuple(
+                    OperationalAlertEvent(
+                        UUID(str(row[0])),
+                        UUID(str(row[1])),
+                        AlertStatus(str(row[2])),
+                        str(row[3]),
+                        row[4],
+                        dict(row[5]),
+                    )
+                    for row in cursor.fetchall()
+                )
+        except PersistenceError:
+            raise
+        except Exception as error:
+            raise PersistenceError("operational_alert_read_uncertain") from error
+
+    def _read(self, clause: str, parameters: tuple[object, ...]) -> list[OperationalAlert]:
+        try:
+            with self._database.transaction() as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT alert_id, payload->>'fingerprint', payload->>'source', "
+                    "payload->>'code', severity, payload->>'resource', payload->'details', "
+                    "status, opened_at, COALESCE((SELECT MAX(occurred_at) FROM "
+                    "operational_alert_events WHERE alert_id=operational_alerts.alert_id), opened_at) "
+                    f"FROM operational_alerts {clause}",  # nosec B608: private fixed clauses
+                    parameters,
+                )
+                return [self._from_row(row) for row in cursor.fetchall()]
+        except PersistenceError:
+            raise
+        except Exception as error:
+            raise PersistenceError("operational_alert_read_uncertain") from error
+
+    @staticmethod
+    def _from_row(row: tuple[object, ...]) -> OperationalAlert:
+        return OperationalAlert(
+            UUID(str(row[0])),
+            str(row[1]),
+            str(row[2]),
+            str(row[3]),
+            AlertSeverity(str(row[4])),
+            str(row[5]),
+            dict(cast(dict[str, str], row[6])),
+            AlertStatus(str(row[7])),
+            cast(datetime, row[8]),
+            cast(datetime, row[9]),
+        )
+
+
+def _validate_alert_details(details: dict[str, str]) -> None:
+    if any(not isinstance(key, str) or not isinstance(value, str) for key, value in details.items()):
+        raise AlertError("alert_details_must_be_strings")
+
+
+def _validate_alert_fields(
+    source: str, code: str, resource: str, details: dict[str, str]
+) -> None:
+    if not source.strip() or not code.strip() or not resource.strip():
+        raise AlertError("alert_requires_source_code_resource")
+    _validate_alert_details(details)
 
 
 class SQLiteOperationalAlertStore:
