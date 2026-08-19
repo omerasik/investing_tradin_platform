@@ -94,7 +94,8 @@ jobs:
           DASHBOARD_URL=http://127.0.0.1:3000 node scripts/verify-dashboard.mjs
       - name: Install Playwright Chromium
         working-directory: web
-        run: pnpm exec playwright install --with-deps chromium
+        timeout-minutes: 10
+        run: pnpm exec playwright install --with-deps --only-shell chromium
       - name: Browser E2E against protected PostgreSQL authorities
         env:
           CYCLE208_DASHBOARD_CONFIG_PATH: /tmp/cycle208-dashboard.config.json
