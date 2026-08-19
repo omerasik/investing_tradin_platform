@@ -261,3 +261,20 @@ skips**, matches all **111 restored tables**, passes the **117/117** mypy
 ratchet, zero-error **39-file** critical slice and every configured quality,
 security, supply-chain, container, frontend and browser gate. This is not an
 image-signing/provenance, container CVE, IaC, production deployment or load test.
+
+## Cycle 220 — Container Vulnerability and Image SBOM Evidence
+
+The scanner contract pins Trivy 0.73.0 by multi-architecture digest, forbids a
+Docker-socket mount and requires non-root/read-only/capability-free/
+no-new-privileges execution against a saved image archive. CI first writes the
+complete unfiltered JSON report and CycloneDX SBOM, then rejects EOL images or
+fixable HIGH/CRITICAL findings. The artifact step runs even after failure so the
+diagnostic evidence is retained.
+
+The first hosted scan correctly failed the stale Python 3.12.11/Debian 12.12
+base. After refreshing to digest-pinned Python 3.12.14/Debian 12.15, PR-head run
+`32300815517` passes all **397 tests without skips**, all **111 restore checks**
+and every configured gate. The retained CycloneDX 1.7 SBOM contains **124
+components**; the complete report has **212 findings**, **26 vendor-unfixed
+HIGH/CRITICAL findings** and **zero fixable HIGH/CRITICAL findings**. Unfixed
+findings remain explicit risk, not waived or relabelled as clean.

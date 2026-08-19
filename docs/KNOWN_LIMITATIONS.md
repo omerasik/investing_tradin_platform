@@ -178,9 +178,16 @@ The full requirement-level matrix is in
   `local_research` API. Hosted CI proves its digest-pinned build, UID/GID 10001,
   read-only/capability-free/no-new-privileges runtime, health state and viewer
   authorization checks. It does not prove a production/PostgreSQL deployment,
-  image signature/provenance, container CVE scan, registry, IaC/orchestration,
-  network/TLS policy, resource sizing, rollback or staging soak. The local
+  image signature/provenance, registry, IaC/orchestration, network/TLS policy,
+  resource sizing, rollback or staging soak. The local
   Linux Docker daemon is unavailable, so no workstation runtime claim is made.
+- Cycle 220 adds a complete retained container vulnerability report and
+  CycloneDX 1.7 SBOM, not a clean-image claim. Run `32300815517` records 212
+  total findings and 124 components; 26 HIGH/CRITICAL findings have no vendor
+  fix and remain unresolved, while the fixable HIGH/CRITICAL count is zero.
+  CI fails when a HIGH/CRITICAL fix becomes available but is not applied, or
+  when the OS is EOL. Scanner/database coverage and severity classifications
+  can change, and there is still no signature/provenance or registry policy.
 - The repository is PUBLIC. It contains no approved credential or private
   dataset; mandatory tracked-file secret scanning reduces but does not remove
   accidental-disclosure risk. Visibility was not changed.
