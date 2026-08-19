@@ -105,6 +105,9 @@ class PostgresIntegrationTests(unittest.TestCase):
                 "operational_job_runs",
                 "operational_alert_route_policy_versions",
                 "operational_alert_delivery_outbox",
+                "retention_policy_versions",
+                "object_evidence_manifests",
+                "retention_evaluations",
             ):
                 cursor.execute("SELECT to_regclass(%s)", (f"public.{table}",))
                 self.assertEqual(cursor.fetchone()[0], table)
@@ -1487,6 +1490,99 @@ class PostgresIntegrationTests(unittest.TestCase):
             cursor.execute(
                 "UPDATE operational_job_runs SET status='FAILED' WHERE run_id=%s",
                 (run.run_id,),
+            )
+        restarted.close()
+
+    def test_retention_manifest_evaluation_is_non_destructive_and_recovers(self) -> None:
+        from trade_platform.persistence import PersistenceError, PostgresDatabase
+        from trade_platform.retention_evidence import (
+            ObjectEvidenceKind,
+            PostgresRetentionEvidenceStore,
+            RetentionClassification,
+            RetentionDisposition,
+            RetentionEvidenceError,
+            build_object_manifest,
+            build_retention_policy,
+        )
+
+        database = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        store = PostgresRetentionEvidenceStore(database)
+        suffix = str(self.exchange_id)[:8]
+        policy = build_retention_policy(
+            policy_name=f"cycle216-backup-{suffix}",
+            version="v1",
+            classification=RetentionClassification.BACKUP,
+            retention=timedelta(days=30),
+            legal_hold=False,
+            owner="paper-operations",
+            approved_by="integration-operator",
+            approved_at=self.now,
+        )
+        manifest = build_object_manifest(
+            object_reference=f"backups/postgres/{suffix}.dump",
+            object_kind=ObjectEvidenceKind.DATABASE_BACKUP,
+            media_type="application/octet-stream",
+            byte_size=4096,
+            sha256=hashlib.sha256(f"cycle216:{suffix}".encode()).hexdigest(),
+            source_reference=f"postgres/paper-{suffix}",
+            policy_id=policy.policy_id,
+            captured_at=self.now,
+        )
+        self.assertEqual(store.append_policy(policy), policy)
+        self.assertEqual(store.append_policy(policy), policy)
+        self.assertEqual(store.append_manifest(manifest), manifest)
+        self.assertEqual(store.append_manifest(manifest), manifest)
+
+        evaluation_at = self.now + timedelta(days=30)
+        key = f"cycle216:{suffix}:day30"
+        self._install_failure_trigger("retention_evaluations")
+        try:
+            with self.assertRaises(PersistenceError):
+                store.evaluate(manifest.manifest_id, evaluated_at=evaluation_at, idempotency_key=key)
+        finally:
+            self._remove_failure_trigger("retention_evaluations")
+        with database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM retention_evaluations WHERE idempotency_key=%s",
+                (key,),
+            )
+            self.assertEqual(cursor.fetchone()[0], 0)
+
+        evaluation = store.evaluate(
+            manifest.manifest_id,
+            evaluated_at=evaluation_at,
+            idempotency_key=key,
+        )
+        self.assertEqual(evaluation.disposition, RetentionDisposition.ELIGIBLE_FOR_REVIEW)
+        self.assertEqual(
+            store.evaluate(
+                manifest.manifest_id,
+                evaluated_at=evaluation_at,
+                idempotency_key=key,
+            ),
+            evaluation,
+        )
+        with self.assertRaisesRegex(
+            RetentionEvidenceError, "retention_evaluation_idempotency_conflict"
+        ):
+            store.evaluate(
+                manifest.manifest_id,
+                evaluated_at=evaluation_at + timedelta(seconds=1),
+                idempotency_key=key,
+            )
+        database.close()
+
+        restarted = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        recovered = PostgresRetentionEvidenceStore(restarted)
+        self.assertEqual(recovered.get_manifest(manifest.manifest_id), manifest)
+        with (
+            self.assertRaises(PersistenceError),
+            restarted.transaction() as connection,
+            connection.cursor() as cursor,
+        ):
+            cursor.execute(
+                "DELETE FROM object_evidence_manifests WHERE manifest_id=%s",
+                (manifest.manifest_id,),
             )
         restarted.close()
 

@@ -44,6 +44,7 @@ from trade_platform.postgres_runtime import (
     PostgresRuntimeIdentityMap,
     build_postgres_paper_core,
 )
+from trade_platform.retention_evidence import PostgresRetentionEvidenceStore
 from trade_platform.risk import PostgresKillSwitchRegistry, PostgresRiskStore
 
 
@@ -113,6 +114,7 @@ class PostgresRuntimeCompositionTests(unittest.TestCase):
             core.paper_operations_evidence, PostgresPaperOperationsEvidenceStore
         )
         self.assertIsInstance(core.operational_jobs, PostgresOperationalJobStore)
+        self.assertIsInstance(core.retention_evidence, PostgresRetentionEvidenceStore)
         self.assertIsInstance(core.instruments, PostgresInstrumentStore)
         self.assertIsInstance(core.signals, PostgresSignalStore)
         self.assertIsInstance(core.models, PostgresModelRegistry)
@@ -133,6 +135,7 @@ class PostgresRuntimeCompositionTests(unittest.TestCase):
             core.return_history,
             core.paper_operations_evidence,
             core.operational_jobs,
+            core.retention_evidence,
             core.instruments,
             core.signals,
             core.models,
