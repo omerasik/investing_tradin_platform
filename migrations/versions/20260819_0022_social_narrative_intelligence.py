@@ -137,10 +137,12 @@ def upgrade() -> None:
             content_hash CHAR(64) NOT NULL UNIQUE,
             UNIQUE(source_policy_version_id,instrument_id,cluster_id,window_start,window_end),
             CHECK(window_end>window_start), CHECK(evaluated_at>=window_end),
-            CHECK(jsonb_object_length(category_distribution)=6),
             CHECK(category_distribution ?& ARRAY['RETAIL_SENTIMENT',
                   'PROFESSIONAL_COMMENTARY','NEWS_AMPLIFICATION','AUTOMATED_SPAM',
-                  'PROMOTIONAL_ACTIVITY','ORGANIC_DISCUSSION'])
+                  'PROMOTIONAL_ACTIVITY','ORGANIC_DISCUSSION']),
+            CHECK((category_distribution - ARRAY['RETAIL_SENTIMENT',
+                  'PROFESSIONAL_COMMENTARY','NEWS_AMPLIFICATION','AUTOMATED_SPAM',
+                  'PROMOTIONAL_ACTIVITY','ORGANIC_DISCUSSION']) = '{}'::jsonb)
         )""",
         (
             "CREATE INDEX social_narrative_window_pit_idx ON "
