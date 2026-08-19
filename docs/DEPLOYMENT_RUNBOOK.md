@@ -12,10 +12,16 @@ root filesystem, `--cap-drop=ALL`, `no-new-privileges` and a bounded no-exec
 requires readiness to state `local_research`, paper enabled and live disabled.
 Do not relabel this SQLite-backed artifact as a PostgreSQL environment.
 
+CI scans the built archive with digest-pinned Trivy without mounting the Docker
+socket. It retains the complete JSON inventory and CycloneDX image SBOM, rejects
+an EOL distribution and fails on fixable HIGH/CRITICAL findings. Do not describe
+a passing gate as vulnerability-free: vendor-unfixed findings remain in the
+retained report and require review on every base/scanner/database update.
+
 Before any staging/production use, add reviewed image signing and provenance,
-container CVE scanning, registry retention/access controls, IaC, network/TLS and
-resource policy, PostgreSQL migration/restore validation, rollback and soak
-evidence. A mutable tag, unsigned image or failed scan is not deployable.
+registry retention/access controls, IaC, network/TLS and resource policy,
+PostgreSQL migration/restore validation, rollback and soak evidence. A mutable
+tag, unsigned image, missing evidence or failed scan is not deployable.
 
 For a PostgreSQL environment, inject the DSN through the deployment secret
 manager, set `persistence_target=postgres`, and run `alembic upgrade head`

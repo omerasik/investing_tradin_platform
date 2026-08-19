@@ -39,6 +39,18 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
+- Cycle 220 PR-head GitHub Actions
+  [run 32300815517](https://github.com/omerasik/investing_tradin_platform/actions/runs/32300815517)
+  verifies all **397 tests without skips**, the refreshed Python 3.12.14 image,
+  isolated digest-pinned scanner, complete vulnerability inventory, CycloneDX
+  1.7 image SBOM and fail-closed fixable HIGH/CRITICAL/EOL policy. The retained
+  artifacts contain **124 components**, **212 total findings**, **26
+  vendor-unfixed HIGH/CRITICAL findings** and **zero fixable HIGH/CRITICAL
+  findings**; every existing restore, quality, frontend and browser gate passes.
+- Cycle 219 exact-main GitHub Actions
+  [run 32299780980](https://github.com/omerasik/investing_tradin_platform/actions/runs/32299780980)
+  passed the complete workflow on merge commit
+  `7710fbd4a9fad38f6c2a700f5695119c51434274`.
 - Cycle 219 PR-head GitHub Actions
   [run 32298849742](https://github.com/omerasik/investing_tradin_platform/actions/runs/32298849742)
   verifies all **393 tests without skips**, the digest-pinned/non-root research
@@ -183,8 +195,8 @@ snapshot, not a second roadmap.
    approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
 4. Cycle 209 re-audited all RQ-001–RQ-030 rows and is exact-mainline verified.
-   Cycles 212–218 are exact-mainline verified. Cycle 219 is PR-head verified;
-   next provider-independent work is container provenance/scanning, performance
+   Cycles 212–219 are exact-mainline verified. Cycle 220 is PR-head verified;
+   next provider-independent work is image signing/provenance, performance
    measurement once Chrome DevTools MCP is available, and deeper session/OIDC
    integration boundaries.
 
@@ -746,6 +758,30 @@ the **117/117** mypy ratchet, zero-error **39-file** critical slice and every
 configured quality, security, supply-chain, container, frontend and browser gate.
 
 This is not a production/PostgreSQL deployment, signed/provenanced artifact,
-container vulnerability scan, registry publication, IaC plan, orchestrator or
+registry publication, IaC plan, orchestrator or
 staging soak. The workstation's Linux Docker daemon is unavailable, so the
 hosted run is the authoritative container build/runtime evidence.
+
+Exact merged-main run `32299780980` verifies the unchanged Cycle 219 result on
+commit `7710fbd4a9fad38f6c2a700f5695119c51434274`.
+
+## Cycle 220 VERIFIED — container vulnerability and SBOM evidence
+
+Cycle 220 refreshes the digest-pinned base from Python 3.12.11/Debian 12.12 to
+Python 3.12.14/Debian 12.15 and scans the built image with Trivy 0.73.0 pinned
+by multi-architecture digest. The scanner receives a read-only saved archive,
+not the Docker socket, and itself runs non-root/read-only with all capabilities
+dropped and no-new-privileges.
+
+CI retains a complete JSON vulnerability inventory and CycloneDX 1.7 image SBOM
+even when a later gate fails. It rejects an EOL OS or any fixable HIGH/CRITICAL
+finding. PR-head run `32300815517` runs all **397 tests without skips**, matches
+all **111 restore-critical tables** and passes every existing gate. Its SBOM has
+**124 components**. The unfiltered report contains **212 findings**, including
+**26 vendor-unfixed HIGH/CRITICAL findings** and **zero fixable HIGH/CRITICAL
+findings**. Those 26 remain visible debt and must be re-evaluated on every run;
+they are not a claim that the image is vulnerability-free.
+
+Image signing/provenance, registry policy, IaC/orchestration, deployment secret
+management, network/TLS controls, rollback and staging soak remain open. The
+workstation Linux Docker daemon remains unavailable; hosted CI is authoritative.

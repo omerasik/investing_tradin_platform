@@ -39,5 +39,13 @@ explicit allow-list, no token is embedded, and the final process is UID/GID
 10001. CI runs it read-only with all capabilities dropped,
 `no-new-privileges`, a bounded no-exec tmpfs and explicit health/authorization
 probes. This is defense-in-depth for the local-research API only: there is no
-image signature/provenance, container CVE scan, registry policy, IaC/network
-policy, production secret manager, PostgreSQL deployment or penetration test.
+image signature/provenance, registry policy, IaC/network policy, production
+secret manager, PostgreSQL deployment or penetration test.
+
+Cycle 220 scans a saved copy of the built image with digest-pinned Trivy. The
+scanner has no Docker socket and runs non-root/read-only with capabilities
+dropped and no-new-privileges. CI retains the full vulnerability JSON and
+CycloneDX 1.7 SBOM even when the later fixable HIGH/CRITICAL or EOL gate fails.
+The verified report still contains 26 vendor-unfixed HIGH/CRITICAL findings;
+zero are currently fixable. This explicit risk inventory is not a waiver or a
+claim of vulnerability absence and must be revisited as fixes become available.

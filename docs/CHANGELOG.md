@@ -64,6 +64,16 @@
 - Verified Cycle 219 on PR head in CI run `32298849742`: all 393 tests without
   skips, unchanged 111-table restore, zero-error 39-file typed slice, the new
   hardened container runtime gate and every existing configured gate.
+- Verified Cycle 219 on exact merged main commit
+  `7710fbd4a9fad38f6c2a700f5695119c51434274` in CI run `32299780980`.
+- Added Cycle 220's digest-pinned Trivy image scan without Docker-socket access,
+  retained full JSON vulnerability inventory and CycloneDX 1.7 image SBOM, and
+  fail-closed fixable HIGH/CRITICAL and EOL gates. Refreshed the Python base from
+  3.12.11/Debian 12.12 to 3.12.14/Debian 12.15.
+- Verified Cycle 220 on PR head in CI run `32300815517`: all 397 tests without
+  skips, unchanged 111-table restore and every existing gate. Retained evidence
+  has 124 SBOM components, 212 total findings, 26 vendor-unfixed HIGH/CRITICAL
+  findings and zero fixable HIGH/CRITICAL findings.
 - Verified Cycle 210 social/narrative intelligence on exact merged main commit
   `4606848e8fd1aae19c7dde85be4a067ecd5ea9b9` in CI run `32281500037`.
 - Added Cycle 211 immutable reasoned signal lifecycle events, deterministic

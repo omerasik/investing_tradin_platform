@@ -38,7 +38,7 @@ class ContainerContractTests(unittest.TestCase):
         )
         self.assertRegex(
             image,
-            r"^FROM python:3\.12\.11-slim-bookworm@sha256:[0-9a-f]{64}$",
+            r"^FROM python:3\.12\.14-slim-bookworm@sha256:[0-9a-f]{64}$",
         )
         resolved = {
             line.split("==", 1)[0]
@@ -102,6 +102,43 @@ class ContainerContractTests(unittest.TestCase):
             'test "$viewer_write_status" = "403"',
         ):
             self.assertIn(required, self.workflow)
+
+    def test_container_scanner_is_version_and_digest_pinned(self) -> None:
+        self.assertIn(
+            "aquasec/trivy:0.73.0@sha256:"
+            "7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c",  # pragma: allowlist secret
+            self.workflow,
+        )
+
+    def test_container_scanner_has_no_engine_socket_or_root_runtime(self) -> None:
+        self.assertNotIn("/var/run/docker.sock", self.workflow)
+        for required in (
+            '--user "$(id -u):$(id -g)"',
+            "--read-only",
+            "--cap-drop=ALL",
+            "--security-opt=no-new-privileges:true",
+            '--volume "$scan_input:/input:ro"',
+        ):
+            self.assertIn(required, self.workflow)
+
+    def test_container_vulnerability_policy_fails_closed(self) -> None:
+        for required in (
+            "--scanners vuln",
+            "--ignore-unfixed",
+            "--severity HIGH,CRITICAL",
+            "--exit-code 1",
+            "--exit-on-eol 1",
+            "--input /input/research-api.tar",
+        ):
+            self.assertIn(required, self.workflow)
+
+    def test_container_security_evidence_is_retained(self) -> None:
+        for evidence in (
+            "container-security-evidence/vulnerability-report.json",
+            "container-security-evidence/sbom.cdx.json",
+            "if: always()",
+        ):
+            self.assertIn(evidence, self.workflow)
 
 
 if __name__ == "__main__":
