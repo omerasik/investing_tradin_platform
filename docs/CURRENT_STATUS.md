@@ -39,6 +39,12 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
+- Cycle 212 PR-head GitHub Actions
+  [run 32286392247](https://github.com/omerasik/investing_tradin_platform/actions/runs/32286392247)
+  verifies migration 0024, all **364 tests without skips**, the unchanged
+  **100-table** restore, the **117/117** package mypy ratchet, zero errors across
+  the widened **34-file** critical slice and every security, supply-chain,
+  production-build and protected browser gate.
 - Cycle 211 exact-main verification is GitHub Actions
   [run 32284687492](https://github.com/omerasik/investing_tradin_platform/actions/runs/32284687492)
   on merge commit `c19e32d`:
@@ -101,10 +107,8 @@ snapshot, not a second roadmap.
    approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
 4. Cycle 209 re-audited all RQ-001–RQ-030 rows and is exact-mainline verified.
-   Cycle 211 is exact-mainline verified. Cycle 212 implements policy-bound
-   per-trade stop/gap loss enforcement; hosted PostgreSQL proof is pending.
-   expiry/reason operations and a protected Signal Explorer locally; hosted
-   migration, restore and browser verification remain required before closure.
+   Cycle 211 is exact-mainline verified. Cycle 212 is PR-head verified and
+   awaits exact-merge verification.
 
 ## PostgreSQL persistence progress
 
@@ -509,7 +513,7 @@ fail-closed proxy smoke and all eleven configured browser scenarios.
 Exact merged-main run `32284687492` verifies the unchanged Cycle 211 result on
 commit `c19e32de5bb791cfb48e79c942d9221d6c64b9d9`.
 
-## Cycle 212 local — per-trade stop and gap-loss enforcement
+## Cycle 212 VERIFIED — per-trade stop and gap-loss enforcement
 
 Cycle 212 binds the detailed validated signal's entry range, direction and
 protective stop to an immutable reviewed risk-policy version. The independent
@@ -521,8 +525,8 @@ runtime refuses to start unless all three per-trade policy limits are present.
 
 Both SQLite and PostgreSQL keyed assessment payloads retain the exact inputs,
 limits and calculations. Migration 0024 validates the PostgreSQL JSON evidence
-shape without adding execution authority or another table. Local verification
-passes **330/364 tests** with **34 PostgreSQL-only skips**, compileall, full Ruff,
-the reduced **117/117** complete-package mypy ratchet and a zero-error **34-file**
-critical slice. Hosted migration 0024, no-skip suite, 100-table restore,
-security/build gates and protected browser matrix remain pending.
+shape without adding execution authority or another table. PR-head run
+`32286392247` verifies migration 0024, all **364 tests without skips**, the
+unchanged **100-table** restore, compileall, Ruff, the reduced **117/117**
+complete-package mypy ratchet, the zero-error **34-file** critical slice, Bandit,
+dependency/SBOM/secret gates, production build and protected browser matrix.

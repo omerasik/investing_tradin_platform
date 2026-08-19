@@ -7,7 +7,9 @@ The full requirement-level matrix is in
   migrations, restart/immutability, restore reconciliation and configured browser
   scenarios are therefore hosted-CI evidence, not local execution evidence.
   Exact-main run `32284687492` verifies migration 0023, 358 no-skip tests and
-  100 restored tables. Cycle 212 migration 0024 and 364-test result await CI.
+  100 restored tables. Cycle 212 PR-head run `32286392247` verifies migration
+  0024, 364 no-skip tests and the unchanged 100-table restore; exact-merge proof
+  remains required.
 
 - This is a local, paper-only system. Live trading is intentionally unavailable.
 - SQLite stores provide durable local evidence but are not the normalized
@@ -119,9 +121,8 @@ The full requirement-level matrix is in
 - Cycle 212 enforces policy-bound per-trade loss, stop distance and conservative
   gap loss in composed paper runtimes and persists the calculations in keyed
   assessment evidence. The buffer is a reviewed deterministic policy input, not
-  a calibrated empirical gap model; live source calibration and hosted migration
-  0024 verification remain outstanding. A stop is risk evidence, not proof that
-  any fill or exit can occur at that price.
+  a calibrated empirical gap model; live source calibration remains outstanding.
+  A stop is risk evidence, not proof that any fill or exit can occur at that price.
 - Regime, ensemble, ML and agent layers are local governance/research contracts;
   they do not have validated production models, retrieval, orchestration,
   empirical evaluation or execution authority.

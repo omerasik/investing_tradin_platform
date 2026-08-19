@@ -127,6 +127,7 @@ the immutable assessment payload, and migration 0024 validates that payload's
 shape. Local verification discovers **364 tests**, passes **330** and explicitly
 skips **34 PostgreSQL-only tests**. Compileall, full Ruff, the tightened
 **117/117** complete-package mypy ratchet and a zero-error **34-file** critical
-slice pass. Hosted migration 0024, all-test no-skip execution, the unchanged
-100-table restore, security/supply-chain gates, build and browser evidence are
-pending.
+slice pass. PR-head run `32286392247` then verifies migration 0024, all **364
+tests without skips**, the unchanged **100-table** restore, PostgreSQL restart
+and immutable calculations, every quality/security/supply-chain gate, the
+production build and protected browser matrix.

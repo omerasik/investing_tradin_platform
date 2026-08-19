@@ -7,6 +7,8 @@
 - Added Cycle 212 policy-bound per-trade stop and conservative gap-loss
   calculations, fail-closed composed-runtime policy requirements and immutable
   SQLite/PostgreSQL assessment evidence. All operation remains simulated paper-only.
+- Verified Cycle 212 on PR head in CI run `32286392247`: migration 0024, all
+  364 tests without skips, 100-table restore and every configured workflow gate.
 - Verified Cycle 210 social/narrative intelligence on exact merged main commit
   `4606848e8fd1aae19c7dde85be4a067ecd5ea9b9` in CI run `32281500037`.
 - Added Cycle 211 immutable reasoned signal lifecycle events, deterministic
