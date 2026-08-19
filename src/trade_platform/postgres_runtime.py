@@ -33,6 +33,7 @@ from .postgres_paper_oms import PostgresBrokerEventStore, PostgresPaperOms
 from .postgres_pretrade import PostgresPolicyRegistry, PostgresPreTradeAssessmentStore
 from .postgres_quant_validation import PostgresPromotionLedger, PostgresQuantValidationStore
 from .postgres_recovery import PostgresRecoveryGate
+from .retention_evidence import PostgresRetentionEvidenceStore
 from .risk import PostgresKillSwitchRegistry, PostgresRiskStore
 
 
@@ -87,6 +88,7 @@ class PostgresPaperCoreAuthorities:
     alerts: PostgresOperationalAlertStore
     paper_operations_evidence: PostgresPaperOperationsEvidenceStore
     operational_jobs: PostgresOperationalJobStore
+    retention_evidence: PostgresRetentionEvidenceStore
 
     @property
     def submission_ready(self) -> bool:
@@ -152,6 +154,7 @@ def build_postgres_paper_core(
             database, alert_store=alerts
         )
         operational_jobs = PostgresOperationalJobStore(database, alerts=alerts)
+        retention_evidence = PostgresRetentionEvidenceStore(database)
         broker = PaperBrokerSyncService(
             oms,
             adapter,
@@ -187,6 +190,7 @@ def build_postgres_paper_core(
             alerts=alerts,
             paper_operations_evidence=paper_operations_evidence,
             operational_jobs=operational_jobs,
+            retention_evidence=retention_evidence,
         )
     except Exception:
         database.close()

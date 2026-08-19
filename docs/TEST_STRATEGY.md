@@ -189,3 +189,22 @@ applies migration 0027, matches all **108 restored tables**, and passes
 compileall, full Ruff, Bandit, dependency/SBOM/secret gates, the **117/117**
 mypy ratchet, zero-error **37-file** critical slice, frontend checks,
 production build, smoke and the protected browser matrix.
+
+## Cycle 216 — Non-destructive Retention and Object Evidence
+
+Cycle 216 unit tests prove active windows, legal holds and disabled policies all
+retain; an elapsed window produces only `ELIGIBLE_FOR_REVIEW`. Opaque catalog
+references reject endpoints and path traversal, manifest evidence carries only
+metadata/hash, policy identity and capture time, and mismatched policy/time
+relationships fail closed.
+
+PostgreSQL coverage proves policy and manifest idempotency, injected evaluation
+rollback, conflicting replay rejection, restart reconstruction and immutable
+delete rejection. Migration 0028 adds three immutable tables and schema-enforces
+`REVIEW_ONLY_NO_DELETE`, `MANIFEST_ONLY`, and the two non-deletion disposition
+states. Local verification discovers **382 tests**, passes **342**, and skips
+**40 PostgreSQL-only tests**. PR-head run `32293960662` runs all **382 tests
+without skips**, applies migration 0028, matches all **111 restored tables**, and
+passes compileall, full Ruff, Bandit, dependency/SBOM/secret gates, the
+**117/117** mypy ratchet, zero-error **38-file** critical slice, frontend checks,
+production build, smoke and the protected browser matrix.

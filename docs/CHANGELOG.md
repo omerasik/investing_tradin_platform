@@ -31,6 +31,14 @@
   outbox. No scheduler, provider call or external delivery adapter is present.
 - Verified Cycle 215 on PR head in CI run `32292245989`: migration 0027, all
   377 tests without skips, 108-table restore and every configured workflow gate.
+- Verified Cycle 215 on exact merged main commit
+  `067cfd44755f919d33ea5c6f5c5e6537f562f0f2` in CI run `32293009334`.
+- Added Cycle 216 immutable retention-policy, manifest-only object-hash and
+  point-in-time disposition evidence. The only terminal states are `RETAIN`
+  and `ELIGIBLE_FOR_REVIEW`; no delete, object-store, network or credential
+  authority exists.
+- Verified Cycle 216 on PR head in CI run `32293960662`: migration 0028, all
+  382 tests without skips, 111-table restore and every configured workflow gate.
 - Verified Cycle 210 social/narrative intelligence on exact merged main commit
   `4606848e8fd1aae19c7dde85be4a067ecd5ea9b9` in CI run `32281500037`.
 - Added Cycle 211 immutable reasoned signal lifecycle events, deterministic

@@ -39,6 +39,17 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
+- Cycle 216 PR-head GitHub Actions
+  [run 32293960662](https://github.com/omerasik/investing_tradin_platform/actions/runs/32293960662)
+  verifies migration 0028, all **382 tests without skips**, immutable retention
+  policies/object manifests/evaluations, injected rollback and restart, the
+  **111-table** restore, **117/117** mypy ratchet, zero errors across the
+  **38-file** critical slice and every configured security, build and protected
+  browser gate.
+- Cycle 215 exact-main GitHub Actions
+  [run 32293009334](https://github.com/omerasik/investing_tradin_platform/actions/runs/32293009334)
+  passed the complete workflow on merge commit
+  `067cfd44755f919d33ea5c6f5c5e6537f562f0f2`.
 - Cycle 215 PR-head GitHub Actions
   [run 32292245989](https://github.com/omerasik/investing_tradin_platform/actions/runs/32292245989)
   verifies migration 0027, all **377 tests without skips**, immutable job/run/
@@ -85,10 +96,10 @@ snapshot, not a second roadmap.
   gates, production dashboard build and all eleven protected PostgreSQL browser
   scenarios.
 - The latest completed exact-mainline PostgreSQL evidence is GitHub Actions
-  [run 32288909541](https://github.com/omerasik/investing_tradin_platform/actions/runs/32288909541)
-  on main commit `315da7d`: migration 0025, all **367 tests without skips**,
-  matched **102-table** restore/reconciliation, Ruff, mypy **117/117** ratchet,
-  the zero-error **35-file** critical slice, security/dependency/SBOM/secret
+  [run 32293009334](https://github.com/omerasik/investing_tradin_platform/actions/runs/32293009334)
+  on main commit `067cfd4`: migration 0027, all **377 tests without skips**,
+  matched **108-table** restore/reconciliation, Ruff, mypy **117/117** ratchet,
+  the zero-error **37-file** critical slice, security/dependency/SBOM/secret
   gates, frontend build/smoke and every configured browser scenario.
 - Cycle 208 final PR CI [run 32276487834](https://github.com/omerasik/investing_tradin_platform/actions/runs/32276487834)
   on `39c3885` applied the unchanged migration head, ran all **351 tests without
@@ -139,9 +150,9 @@ snapshot, not a second roadmap.
    approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
 4. Cycle 209 re-audited all RQ-001–RQ-030 rows and is exact-mainline verified.
-   Cycles 212–214 are exact-mainline verified. Cycle 215 is PR-head verified and
-   awaits exact-merge verification; next is retention/object evidence and a
-   deployment-owned scheduler/external-delivery adapter boundary.
+   Cycles 212–215 are exact-mainline verified. Cycle 216 is PR-head verified and
+   awaits exact-merge verification; next is a deployment-owned scheduler and
+   separately authorized external-delivery adapter boundary.
 
 ## PostgreSQL persistence progress
 
@@ -619,3 +630,21 @@ the alert/event/outbox transaction back. PR-head run `32292245989` verifies
 migration 0027, all **377 tests without skips**, **108 restore-critical tables**,
 the **117/117** mypy ratchet, zero-error **37-file** critical slice and every
 configured gate.
+
+## Cycle 216 VERIFIED — non-destructive retention and object evidence
+
+Cycle 216 adds immutable PostgreSQL retention-policy versions binding data
+classification, duration, legal hold, owner, approval, enabled state and a
+schema-fixed `REVIEW_ONLY_NO_DELETE` authority. Manifest-only object evidence
+binds an opaque catalog reference, artifact kind, media type, byte size,
+SHA-256, source reference, exact policy and capture time; it stores no object
+bytes, endpoint or credential.
+
+Deterministic point-in-time evaluation fails safe to `RETAIN` while a window is
+active, a legal hold applies or a policy is disabled. An elapsed window can
+produce only `ELIGIBLE_FOR_REVIEW`, never deletion. Migration 0028 makes all
+three tables immutable and excludes any delete disposition. Injected evaluation
+failure proves rollback; replay conflict, restart and direct delete rejection
+are PostgreSQL-tested. PR-head run `32293960662` runs all **382 tests without
+skips**, matches **111 restore-critical tables**, passes the **117/117** mypy
+ratchet, zero-error **38-file** critical slice and every configured gate.
