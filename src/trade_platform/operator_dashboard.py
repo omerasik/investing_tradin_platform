@@ -597,8 +597,13 @@ class PostgresOperatorDashboardQueries:
     def portfolio_construction(self, run_id: UUID) -> PortfolioConstructionView:
         def operation(cursor: _Cursor) -> PortfolioConstructionView:
             cursor.execute(
-                "SELECT r.*,p.version,p.policy,t.*,c.*,hs.provider,hs.provider_identifier_namespace,"
-                "hs.provider_terms_version,hs.authorization_reference FROM portfolio_construction_runs r "
+                "SELECT r.run_id,r.policy_version_id,r.regime_run_id,r.constructed_at,r.status,"
+                "r.equity,r.limitations,r.content_hash,p.version,p.policy,"
+                "t.cash_weight,t.gross_weight,t.net_weight,t.portfolio_volatility,t.stressed_volatility,"
+                "c.covariance_id,c.dataset_version,c.dataset_content_hash,c.estimation_version,"
+                "c.observations,c.as_of,c.uncertainty,c.correlation_stress,"
+                "hs.provider,hs.provider_terms_version,hs.authorization_reference "
+                "FROM portfolio_construction_runs r "
                 "JOIN portfolio_construction_policy_versions p USING(policy_version_id) "
                 "JOIN portfolio_target_candidates t USING(run_id) JOIN portfolio_covariance_estimates c USING(run_id) "
                 "JOIN historical_dataset_versions hd ON hd.dataset_version_id=c.dataset_version_id "
@@ -608,8 +613,7 @@ class PostgresOperatorDashboardQueries:
             row = cursor.fetchone()
             if row is None:
                 raise DashboardObjectNotFound("portfolio_construction_not_found")
-            policy = _mapping(row[12])
-            # target begins at 13, covariance begins at 23 in this joined projection.
+            policy = _mapping(row[9])
             cursor.execute(
                 "SELECT s.sleeve_input_id,s.strategy_key,s.payload,w.target_weight,w.effective_notional,"
                 "w.marginal_risk,w.component_risk,w.adjustment_reasons FROM portfolio_sleeve_inputs s "
@@ -642,25 +646,25 @@ class PostgresOperatorDashboardQueries:
             gate = cursor.fetchone()
             if gate is None:
                 raise DashboardQueryError("portfolio_risk_gate_missing")
-            dataset_version = str(row[26])
-            provider_backed = str(row[37]).upper() != "FIXTURE" and bool(str(row[39]).strip())
+            dataset_version = str(row[16])
+            provider_backed = str(row[23]).upper() != "FIXTURE" and bool(str(row[25]).strip())
             return PortfolioConstructionView(
                 portfolio_construction_run_id=row[0], policy_version_id=row[1], regime_run_id=row[2],
-                constructed_at=row[4], status=str(row[5]), review_only=True, automatic_authority=False,
-                equity=str(row[6]), limitations=_strings(row[7]), content_hash=str(row[9]),
-                policy_version=str(row[10]), target_volatility=_decimal(policy.get("target_volatility")),
-                cash_weight=str(row[16]), gross_weight=str(row[17]), net_weight=str(row[18]),
-                portfolio_volatility=str(row[19]), stressed_volatility=str(row[20]),
+                constructed_at=row[3], status=str(row[4]), review_only=True, automatic_authority=False,
+                equity=str(row[5]), limitations=_strings(row[6]), content_hash=str(row[7]),
+                policy_version=str(row[8]), target_volatility=_decimal(policy.get("target_volatility")),
+                cash_weight=str(row[10]), gross_weight=str(row[11]), net_weight=str(row[12]),
+                portfolio_volatility=str(row[13]), stressed_volatility=str(row[14]),
                 risk_gate_approved=bool(gate[0]), risk_gate_reasons=_strings(gate[1]),
                 covariance=CovarianceEvidenceView(
-                    covariance_id=row[23], dataset_version=dataset_version, dataset_content_hash=str(row[27]),
-                    estimation_version=str(row[28]), observations=int(row[29]), as_of=row[30],
-                    uncertainty=str(row[33]), correlation_stress=str(row[34]),
-                    source_provider=str(row[36]), source_terms_version=str(row[38]), provider_backed=provider_backed,
+                    covariance_id=row[15], dataset_version=dataset_version, dataset_content_hash=str(row[17]),
+                    estimation_version=str(row[18]), observations=int(row[19]), as_of=row[20],
+                    uncertainty=str(row[21]), correlation_stress=str(row[22]),
+                    source_provider=str(row[23]), source_terms_version=str(row[24]), provider_backed=provider_backed,
                     classification=(
-                        f"PROVIDER_BACKED_COVARIANCE; SOURCE={row[36]}; TERMS={row[38]}"
+                        f"PROVIDER_BACKED_COVARIANCE; SOURCE={row[23]}; TERMS={row[24]}"
                         if provider_backed else
-                        f"NO_REAL_PROVIDER_BACKED_COVARIANCE_EVIDENCE; SOURCE={row[36]}; TERMS={row[38]}"
+                        f"NO_REAL_PROVIDER_BACKED_COVARIANCE_EVIDENCE; SOURCE={row[23]}; TERMS={row[24]}"
                     ),
                 ), sleeves=sleeves, constraints=constraints,
             )
