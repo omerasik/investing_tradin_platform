@@ -106,7 +106,7 @@ class ContainerContractTests(unittest.TestCase):
     def test_container_scanner_is_version_and_digest_pinned(self) -> None:
         self.assertIn(
             "aquasec/trivy:0.73.0@sha256:"
-            "7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c",
+            "7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c",  # pragma: allowlist secret
             self.workflow,
         )
 
