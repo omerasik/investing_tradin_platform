@@ -39,6 +39,17 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
+- Cycle 214 PR-head GitHub Actions
+  [run 32290318303](https://github.com/omerasik/investing_tradin_platform/actions/runs/32290318303)
+  verifies migration 0026, all **372 tests without skips**, immutable/hash-bound
+  simulated execution-quality and shadow-rehearsal evidence, atomic alert
+  rollback, the **104-table** restore, **117/117** mypy ratchet, zero errors
+  across the **36-file** critical slice and every configured security, build
+  and protected browser gate.
+- Cycle 213 exact-main GitHub Actions
+  [run 32288909541](https://github.com/omerasik/investing_tradin_platform/actions/runs/32288909541)
+  passed the complete workflow on merge commit
+  `315da7dfc809dc6a3732f3ff5b0f24fda059c06e`.
 - Cycle 213 PR-head GitHub Actions
   [run 32288130114](https://github.com/omerasik/investing_tradin_platform/actions/runs/32288130114)
   verifies migration 0025, all **367 tests without skips**, the expanded
@@ -63,10 +74,10 @@ snapshot, not a second roadmap.
   gates, production dashboard build and all eleven protected PostgreSQL browser
   scenarios.
 - The latest completed exact-mainline PostgreSQL evidence is GitHub Actions
-  [run 32287192826](https://github.com/omerasik/investing_tradin_platform/actions/runs/32287192826)
-  on main commit `aa357de`: migration 0024, all **364 tests without skips**,
-  matched **100-table** restore/reconciliation, Ruff, mypy **117/117** ratchet,
-  the zero-error **34-file** critical slice, security/dependency/SBOM/secret
+  [run 32288909541](https://github.com/omerasik/investing_tradin_platform/actions/runs/32288909541)
+  on main commit `315da7d`: migration 0025, all **367 tests without skips**,
+  matched **102-table** restore/reconciliation, Ruff, mypy **117/117** ratchet,
+  the zero-error **35-file** critical slice, security/dependency/SBOM/secret
   gates, frontend build/smoke and every configured browser scenario.
 - Cycle 208 final PR CI [run 32276487834](https://github.com/omerasik/investing_tradin_platform/actions/runs/32276487834)
   on `39c3885` applied the unchanged migration head, ran all **351 tests without
@@ -117,9 +128,9 @@ snapshot, not a second roadmap.
    approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
 4. Cycle 209 re-audited all RQ-001–RQ-030 rows and is exact-mainline verified.
-   Cycle 212 is exact-mainline verified. Cycle 213 is PR-head verified and
-   awaits exact-merge verification; next is provider-neutral execution-quality
-   and operational shadow evidence.
+   Cycles 212–213 are exact-mainline verified. Cycle 214 is PR-head verified and
+   awaits exact-merge verification; next is durable scheduler/retention/alert-
+   routing operations evidence.
 
 ## PostgreSQL persistence progress
 
@@ -562,3 +573,21 @@ failure rolls the risk decision back. PR-head run `32288130114` verifies
 migration 0025, all **367 tests without skips**, **102 restore-critical tables**,
 the **117/117** mypy ratchet, zero-error **35-file** critical slice and every
 configured gate. External notification routing remains intentionally absent.
+
+## Cycle 214 VERIFIED — simulated paper operations evidence
+
+Cycle 214 adds immutable PostgreSQL execution-quality observations bound to the
+exact terminal paper order, fill IDs, policy parameters, reference prices,
+evaluation time and canonical content hash. Metrics include directional
+arrival/decision slippage, VWAP, fill ratio, realized filled-quantity shortfall
+and intent-to-fill latency. Threshold breaches open a warning in the same
+transaction; an injected alert-event failure proves the observation rolls back.
+
+It also persists idempotent simulated primary/shadow order comparisons and
+opens a local divergence warning atomically. Every record is constrained to
+`SIMULATED_PAPER_REFERENCE` and carries explicit limitations: no live data,
+broker-sandbox comparison, venue-ack latency, complete opportunity cost, fees,
+operational shadow credit or live-activation credit. PR-head run `32290318303`
+verifies migration 0026, all **372 tests without skips**, **104 restore-critical
+tables**, the **117/117** mypy ratchet, zero-error **36-file** critical slice and
+every configured gate.

@@ -148,3 +148,25 @@ run `32288130114` verifies all **367 tests without skips**, migration 0025,
 **102 restore-critical tables**, the widened zero-error **35-file** critical
 slice, every quality/security/supply-chain gate, production build and protected
 browser matrix.
+
+## Cycle 214 — Simulated Paper Operations Evidence
+
+Cycle 214 adds deterministic unit coverage for terminal-state requirements,
+exact OMS fill quantity/VWAP reconciliation, BUY/SELL directional slippage,
+fill ratio, realized filled-quantity shortfall, intent-to-fill latency, policy
+thresholds, numeric scale and mandatory simulated-only limitations. Shadow
+rehearsals preserve divergence reasons and explicit non-activation status.
+
+Migration 0026 adds two immutable tables and expands the fresh-restore manifest
+to **104 critical tables**. Hosted PostgreSQL exercises policy/content hash
+binding, idempotent replay, local threshold/divergence alerts, restart reads,
+direct mutation rejection and injected alert-event failure rollback. Local
+verification discovers **372 tests**, passes **334**, and explicitly skips **38
+PostgreSQL-only tests** because no disposable local DSN exists. Corrected
+PR-head run `32290318303` runs all **372 tests without skips**, applies migration
+0026, matches all **104 restored tables**, and passes compileall, full Ruff,
+Bandit, dependency/SBOM/secret gates, the **117/117** mypy ratchet, zero-error
+**36-file** critical slice, frontend checks, production build, smoke and the
+protected browser matrix. Initial run `32290146999` correctly retained a prior
+Cycle 213 alert; only the over-exclusive new integration assertion failed and
+was narrowed to coexist with valid earlier evidence.
