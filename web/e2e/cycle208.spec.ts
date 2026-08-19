@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import AxeBuilder from "@axe-core/playwright";
 import { readFileSync, writeFileSync } from "node:fs";
 
 const apiUrl = process.env.CYCLE208_API_URL ?? "http://127.0.0.1:8766";
@@ -23,6 +24,15 @@ test("authenticated command center and disabled execution boundary render", asyn
   expect(body).not.toContain("fixture-token");
   expect(body).not.toContain("fixture-view-token");
   expect(body).not.toContain("postgresql://");
+});
+
+test("configured dashboard headers and WCAG A/AA scan pass", async ({ page }) => {
+  const response = await page.goto("/");
+  expect(response?.headers()["x-content-type-options"]).toBe("nosniff");
+  expect(response?.headers()["x-frame-options"]).toBe("DENY");
+  expect(response?.headers()["content-security-policy"]).toContain("frame-ancestors 'none'");
+  const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+  expect(results.violations).toEqual([]);
 });
 
 test("Feature Authority exposes versioned PIT provenance and unavailable is not zero", async ({ page }) => {

@@ -44,7 +44,12 @@ from .portfolio_risk import (
 from .research import CostModel, ResearchValidationError, SQLiteExperimentStore, WalkForwardProtocol
 from .return_history import ReturnIngestionCadence, SQLitePortfolioReturnStore
 from .risk import SQLiteRiskDecisionStore
-from .security import InMemoryRateLimiter, OperatorAuthenticator, protected_operator
+from .security import (
+    InMemoryRateLimiter,
+    OperatorAuthenticator,
+    SecurityHeadersMiddleware,
+    protected_operator,
+)
 from .signal_engine import DetailedSignalStatus
 from .strategy_promotion import SQLitePromotionLedger
 from .strategy_validation import SQLiteStrategyRegistry, StrategyRunCard, StrategyValidationError
@@ -199,7 +204,18 @@ def build_app(
 ) -> FastAPI:
     platform_config = config or PlatformConfig()
     store = audit_store or SQLiteAuditStore()
-    app = FastAPI(title="Trade Investing Panel", version="0.1.0")
+    protected_deployment = platform_config.environment in {"paper", "production"}
+    app = FastAPI(
+        title="Trade Investing Panel",
+        version="0.1.0",
+        docs_url=None if protected_deployment else "/docs",
+        redoc_url=None if protected_deployment else "/redoc",
+        openapi_url=None if protected_deployment else "/openapi.json",
+    )
+    app.add_middleware(
+        SecurityHeadersMiddleware,
+        production=platform_config.environment == "production",
+    )
     app.state.authenticator = authenticator or OperatorAuthenticator.from_environment()
     app.state.rate_limiter = rate_limiter or InMemoryRateLimiter()
     app.state.metrics = metrics or MetricsRegistry()

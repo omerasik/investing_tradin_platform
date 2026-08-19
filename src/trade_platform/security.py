@@ -7,6 +7,41 @@ from collections import deque
 from dataclasses import dataclass, field
 
 from fastapi import Header, HTTPException, Request, status
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.responses import Response
+from starlette.types import ASGIApp
+
+API_SECURITY_HEADERS = {
+    "Cache-Control": "no-store",
+    "Content-Security-Policy": (
+        "default-src 'none'; base-uri 'none'; form-action 'none'; "
+        "frame-ancestors 'none'; object-src 'none'"
+    ),
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "Permissions-Policy": "camera=(), geolocation=(), microphone=(), payment=()",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+}
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Apply one fail-closed header policy to success and error responses."""
+
+    def __init__(self, app: ASGIApp, *, production: bool) -> None:
+        super().__init__(app)
+        self._production = production
+
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        response = await call_next(request)
+        for name, value in API_SECURITY_HEADERS.items():
+            response.headers[name] = value
+        if self._production:
+            response.headers["Strict-Transport-Security"] = (
+                "max-age=31536000; includeSubDomains"
+            )
+        return response
 
 
 class AuthenticationUnavailableError(RuntimeError):
@@ -60,7 +95,11 @@ def protected_operator(
     except AuthenticationUnavailableError as error:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
     except PermissionError as error:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized.") from error
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized.",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from error
     client = request.client.host if request.client else "unknown"
     limiter.check(client)
     return subject

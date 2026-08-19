@@ -1,3 +1,27 @@
 import type { NextConfig } from "next";
-const nextConfig: NextConfig = { reactStrictMode: true };
+
+const dashboardSecurityHeaders = [
+  { key: "Cache-Control", value: "no-store" },
+  {
+    key: "Content-Security-Policy",
+    value: "default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; form-action 'self'",
+  },
+  { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+  { key: "Cross-Origin-Resource-Policy", value: "same-origin" },
+  { key: "Permissions-Policy", value: "camera=(), geolocation=(), microphone=(), payment=()" },
+  { key: "Referrer-Policy", value: "no-referrer" },
+  { key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains" },
+  { key: "X-Content-Type-Options", value: "nosniff" },
+  { key: "X-Frame-Options", value: "DENY" },
+];
+
+const nextConfig: NextConfig = {
+  reactStrictMode: true,
+  async headers() {
+    return [
+      { source: "/", headers: dashboardSecurityHeaders },
+      { source: "/api/:path*", headers: dashboardSecurityHeaders },
+    ];
+  },
+};
 export default nextConfig;
