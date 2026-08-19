@@ -1,0 +1,6 @@
+**
+!Dockerfile
+!.dockerignore
+!requirements-runtime.txt
+!src/
+!src/**
