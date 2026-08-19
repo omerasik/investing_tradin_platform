@@ -6,9 +6,9 @@ The full requirement-level matrix is in
 - A disposable PostgreSQL DSN is not configured on this workstation. PostgreSQL
   migrations, restart/immutability, restore reconciliation and configured browser
   scenarios are therefore hosted-CI evidence, not local execution evidence.
-  Exact-main run `32288909541` verifies Cycle 213 migration 0025, 367 no-skip
-  tests and 102 restored tables. Cycle 214 PR-head run `32290318303` verifies
-  migration 0026, 372 no-skip tests and 104 restored tables; exact-merge proof
+  Exact-main run `32291280787` verifies Cycle 214 migration 0026, 372 no-skip
+  tests and 104 restored tables. Cycle 215 PR-head run `32292245989` verifies
+  migration 0027, 377 no-skip tests and 108 restored tables; exact-merge proof
   remains required.
 
 - This is a local, paper-only system. Live trading is intentionally unavailable.
@@ -136,6 +136,12 @@ The full requirement-level matrix is in
   unfilled opportunity cost and fees, and do not constitute real execution
   quality, broker-sandbox soak, operational shadow mode or activation evidence.
   Divergence/threshold alerts remain local; external routing is absent.
+- Cycle 215 records durable job policies, terminal runs, overdue/recovery alert
+  transitions and a local outbox handoff. It does not deploy a scheduler, run a
+  job, invoke a provider, retain payload objects, call a webhook/email/pager or
+  prove external delivery. Outbox entries deliberately remain
+  `PENDING_EXTERNAL_DELIVERY`; a future consumer must re-check current alert
+  status and requires separate authorization, secrets and failure evidence.
 - Regime, ensemble, ML and agent layers are local governance/research contracts;
   they do not have validated production models, retrieval, orchestration,
   empirical evaluation or execution authority.

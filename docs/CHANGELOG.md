@@ -24,6 +24,13 @@
   or activation credit is introduced.
 - Verified Cycle 214 on PR head in CI run `32290318303`: migration 0026, all
   372 tests without skips, 104-table restore and every configured workflow gate.
+- Verified Cycle 214 on exact merged main commit
+  `ba50671af94ab4c106f0666b8752a076eb2d0621` in CI run `32291280787`.
+- Added Cycle 215 immutable PostgreSQL job policies/terminal runs, deterministic
+  due/overdue monitoring, recovery transitions and a versioned local-only alert
+  outbox. No scheduler, provider call or external delivery adapter is present.
+- Verified Cycle 215 on PR head in CI run `32292245989`: migration 0027, all
+  377 tests without skips, 108-table restore and every configured workflow gate.
 - Verified Cycle 210 social/narrative intelligence on exact merged main commit
   `4606848e8fd1aae19c7dde85be4a067ecd5ea9b9` in CI run `32281500037`.
 - Added Cycle 211 immutable reasoned signal lifecycle events, deterministic

@@ -39,6 +39,17 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
+- Cycle 215 PR-head GitHub Actions
+  [run 32292245989](https://github.com/omerasik/investing_tradin_platform/actions/runs/32292245989)
+  verifies migration 0027, all **377 tests without skips**, immutable job/run/
+  local-outbox evidence, transactional alert/outbox rollback and recovery, the
+  **108-table** restore, **117/117** mypy ratchet, zero errors across the
+  **37-file** critical slice and every configured security, build and protected
+  browser gate.
+- Cycle 214 exact-main GitHub Actions
+  [run 32291280787](https://github.com/omerasik/investing_tradin_platform/actions/runs/32291280787)
+  passed the complete workflow on merge commit
+  `ba50671af94ab4c106f0666b8752a076eb2d0621`.
 - Cycle 214 PR-head GitHub Actions
   [run 32290318303](https://github.com/omerasik/investing_tradin_platform/actions/runs/32290318303)
   verifies migration 0026, all **372 tests without skips**, immutable/hash-bound
@@ -128,9 +139,9 @@ snapshot, not a second roadmap.
    approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
 4. Cycle 209 re-audited all RQ-001–RQ-030 rows and is exact-mainline verified.
-   Cycles 212–213 are exact-mainline verified. Cycle 214 is PR-head verified and
-   awaits exact-merge verification; next is durable scheduler/retention/alert-
-   routing operations evidence.
+   Cycles 212–214 are exact-mainline verified. Cycle 215 is PR-head verified and
+   awaits exact-merge verification; next is retention/object evidence and a
+   deployment-owned scheduler/external-delivery adapter boundary.
 
 ## PostgreSQL persistence progress
 
@@ -591,3 +602,20 @@ operational shadow credit or live-activation credit. PR-head run `32290318303`
 verifies migration 0026, all **372 tests without skips**, **104 restore-critical
 tables**, the **117/117** mypy ratchet, zero-error **36-file** critical slice and
 every configured gate.
+
+## Cycle 215 VERIFIED — durable job monitoring and local routing boundary
+
+Cycle 215 adds immutable PostgreSQL job-policy versions and terminal job-run
+records with owner, runbook, approval, interval/grace, idempotency and canonical
+hash evidence. Deterministic reads distinguish current, due and overdue work;
+the monitor opens one local `OPERATIONAL_JOB_OVERDUE` warning and resolves it
+only after a successful run makes the schedule current. It never runs the job.
+
+Versioned alert-route policies accept only opaque destination references and
+the fixed `LOCAL_OUTBOX` channel. Matching warnings create immutable
+`PENDING_EXTERNAL_DELIVERY` outbox records; no URL, credential, transport,
+delivery attempt or delivered-state claim exists. Injected outbox failure rolls
+the alert/event/outbox transaction back. PR-head run `32292245989` verifies
+migration 0027, all **377 tests without skips**, **108 restore-critical tables**,
+the **117/117** mypy ratchet, zero-error **37-file** critical slice and every
+configured gate.
