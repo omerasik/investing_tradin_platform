@@ -9,7 +9,7 @@ from uuid import uuid4
 
 @unittest.skipUnless(os.environ.get("POSTGRES_TEST_DSN"), "POSTGRES_TEST_DSN not configured")
 class OperatorDashboardPostgresTests(unittest.TestCase):
-    def test_six_authority_projections_are_bounded_pit_correct_and_read_only(self) -> None:
+    def test_authority_projections_are_bounded_pit_correct_and_read_only(self) -> None:
         from alembic import command
         from alembic.config import Config
 
@@ -40,7 +40,7 @@ class OperatorDashboardPostgresTests(unittest.TestCase):
             "regime_candidate", "policy", "policy_version", "portfolio_run", "sleeve", "covariance", "target",
             "constraint", "news_source", "news_policy", "news_initial", "news_retraction", "news_link", "news_extraction",
             "news_assessment", "service", "service_version", "slo", "sli", "probe", "alert_policy", "alert", "alert_open",
-            "alert_ack", "incident", "drill",
+            "alert_ack", "incident", "drill", "signal", "signal_validation", "signal_event",
         )}
         manifest = json.dumps({"cycle": 208, "synthetic": True}, sort_keys=True, separators=(",", ":"))
         package_hash = hashlib.sha256(manifest.encode()).hexdigest()
@@ -64,6 +64,23 @@ class OperatorDashboardPostgresTests(unittest.TestCase):
             cursor.execute(
                 "INSERT INTO data_health_assessments VALUES (%s,%s,'GLOBAL','*','cycle208-health-v1',%s,%s,%s,'INFO',FALSE,%s,'{}'::jsonb)",
                 (ids["health"], ids["historical_dataset"], now, now - timedelta(days=2), now, digest("health")),
+            )
+            signal_payload = json.dumps({
+                "direction": "BUY", "strength": "0.8", "confidence": "0.7",
+                "data_quality_score": "1", "explanation": "Synthetic review signal",
+                "contradicting_evidence": ["fixture risk"],
+            })
+            cursor.execute(
+                "INSERT INTO runtime_signal_proposals VALUES (%s,%s,'trend-cycle208-v1',%s,%s,%s::jsonb)",
+                (ids["signal"], instrument.instrument_id, now - timedelta(hours=2), now + timedelta(hours=1), signal_payload),
+            )
+            cursor.execute(
+                "INSERT INTO runtime_signal_validations VALUES (%s,%s,'VALIDATED','[\"data\",\"risk\"]'::jsonb,'[]'::jsonb,%s)",
+                (ids["signal_validation"], ids["signal"], now - timedelta(hours=1)),
+            )
+            cursor.execute(
+                "INSERT INTO runtime_signal_lifecycle_events (event_id,signal_id,from_status,to_status,actor,reason,evidence_references,occurred_at) VALUES (%s,%s,'CANDIDATE','VALIDATED','signal_validation','all_validation_stages_passed',%s::jsonb,%s)",
+                (ids["signal_event"], ids["signal"], json.dumps([f"signal-validation:{ids['signal_validation']}"]), now - timedelta(hours=1)),
             )
             cursor.execute(
                 "INSERT INTO feature_definition_versions VALUES (%s,'cycle208_simple_return','PRICE_RETURNS','1.0.0','quant','Cycle 208 fixture','[\"OHLCV\"]'::jsonb,'[\"close\",\"knowledge_at\"]'::jsonb,'1d','PIT event/effective/knowledge',1,'{\"horizon\":1}'::jsonb,'reject','reject','reject_future_knowledge',NULL,NULL,'decimal','transparent-v1',%s,NULL)",
@@ -194,6 +211,7 @@ class OperatorDashboardPostgresTests(unittest.TestCase):
             decision_time=now - timedelta(minutes=90), limit=10, offset=0,
         )
         scorecard = queries.strategy_scorecard(ids["scorecard"])
+        signals = queries.signals(as_of=now, status="VALIDATED", instrument=instrument.instrument_id, strategy_version=None, limit=10, offset=0)
         regime = queries.regime_run(ids["regime_run"])
         portfolio = queries.portfolio_construction(ids["portfolio_run"])
         news = queries.news_events(
@@ -208,6 +226,7 @@ class OperatorDashboardPostgresTests(unittest.TestCase):
         evidence_states = {metric.evidence_state for group in scorecard.groups for metric in group.metrics}
         self.assertEqual(evidence_states, {"MEASURED", "ASSUMED", "UNAVAILABLE"})
         self.assertEqual(scorecard.evidence_classification, "SYNTHETIC_ENGINEERING_EVIDENCE_ONLY")
+        self.assertEqual((signals.state, signals.items[0].latest_reason, signals.items[0].automatic_authority), ("AVAILABLE", "all_validation_stages_passed", False))
         self.assertEqual((regime.dimensions[0].dimension, regime.risk_effects[0].action), ("TREND", "REDUCE"))
         self.assertFalse(regime.risk_effects[0].automatic_authority)
         self.assertEqual((portfolio.review_only, portfolio.sleeves[0].adjustment_reasons, portfolio.covariance.provider_backed), (True, ["capacity_reduction", "regime_reduction"], False))

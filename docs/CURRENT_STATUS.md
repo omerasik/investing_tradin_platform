@@ -39,15 +39,18 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
-- Cycle 209 local verification discovered all **351 Python tests** and passed
-  **318**, with **33 PostgreSQL-dependent tests skipped** because no disposable
-  DSN is configured. This does not substitute for hosted integration evidence.
+- Cycle 211 PR-head verification is GitHub Actions
+  [run 32283931250](https://github.com/omerasik/investing_tradin_platform/actions/runs/32283931250):
+  migration 0023, all **358 tests without skips**, matched **100-table**
+  restore/reconciliation, the complete Python quality/security/supply-chain
+  gates, production dashboard build and all eleven protected PostgreSQL browser
+  scenarios.
 - The latest completed exact-mainline PostgreSQL evidence is GitHub Actions
-  [run 32278879487](https://github.com/omerasik/investing_tradin_platform/actions/runs/32278879487)
-  on main commit `51f0aa8`: migration 0021, all **351 tests without skips**,
-  matched **91-table** restore/reconciliation, Ruff, mypy **120/120** ratchet,
-  zero-error **28-file** critical slice, security/dependency/SBOM/secret gates,
-  frontend build/smoke and all **10 configured PostgreSQL browser scenarios**.
+  [run 32281500037](https://github.com/omerasik/investing_tradin_platform/actions/runs/32281500037)
+  on main commit `4606848`: migration 0022, all **357 tests without skips**,
+  matched **97-table** restore/reconciliation, Ruff, mypy **120/120** ratchet,
+  the zero-error critical slice, security/dependency/SBOM/secret gates,
+  frontend build/smoke and every configured PostgreSQL browser scenario.
 - Cycle 208 final PR CI [run 32276487834](https://github.com/omerasik/investing_tradin_platform/actions/runs/32276487834)
   on `39c3885` applied the unchanged migration head, ran all **351 tests without
   skips**, matched the **91-table** restore/reconciliation manifest, and passed
@@ -97,8 +100,9 @@ snapshot, not a second roadmap.
    approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
 4. Cycle 209 re-audited all RQ-001–RQ-030 rows and is exact-mainline verified.
-   Cycle 210 verifies the provider-neutral RQ-008 social/narrative evidence
-   core. Signal expiry/reason operations are next after merge verification.
+   Cycle 210 is exact-mainline verified. Cycle 211 implements bounded signal
+   expiry/reason operations and a protected Signal Explorer locally; hosted
+   migration, restore and browser verification remain required before closure.
 
 ## PostgreSQL persistence progress
 
@@ -478,3 +482,24 @@ frontend, build, smoke and browser gate. Initial run `32280620168` failed before
 tests on an unsupported JSONB function; the supported exact-key constraint is
 verified by the corrected run. No provider, credential, real corpus or live path
 was added.
+
+Exact merged-main run `32281500037` verifies the unchanged Cycle 210 result on
+commit `4606848e8fd1aae19c7dde85be4a067ecd5ea9b9`, including all 97 restored
+tables and the protected PostgreSQL browser matrix.
+
+## Cycle 211 VERIFIED — signal lifecycle operations and Signal Explorer
+
+Cycle 211 adds mandatory transition reasons and evidence references, monotonic
+append-only lifecycle time, deterministic idempotent expiry processing, and
+point-in-time PostgreSQL status/timeline reads. Migration 0023 adds the immutable
+`runtime_signal_lifecycle_events` authority and expands the restore manifest to
+100 tables. A protected GET-only Signal Explorer exposes proposal quality,
+validation stages, expiry state, reasons, contradicting evidence and lifecycle
+history. It has no mutation, activation, order, OMS or broker control and always
+labels evidence research/paper-only with false automatic authority.
+
+PR-head run `32283931250` verifies PostgreSQL migration, restart and
+immutability behavior, all 358 tests without skips, 100-table restore, Ruff,
+the complete-package mypy ratchet and zero-error critical slice, Bandit,
+dependency audit, SBOM and secret scan, TypeScript/ESLint, production build,
+fail-closed proxy smoke and all eleven configured browser scenarios.

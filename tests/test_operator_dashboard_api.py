@@ -23,6 +23,9 @@ from trade_platform.operator_dashboard import (
     RegimeDimensionView,
     RegimeProbabilityView,
     RegimeRunView,
+    SignalLifecycleEventView,
+    SignalPage,
+    SignalView,
     SloEvidenceView,
     SreOverviewView,
     StrategyScorecardView,
@@ -55,6 +58,22 @@ class OperatorDashboardApiTests(unittest.TestCase):
                 event_time=now, effective_time=now, knowledge_time=now, computed_time=now,
                 value="0.01", quality_state="VALIDATED", content_hash="a" * 64,
                 source_manifest=["raw:bar-1"],
+            )], page=PageInfo(limit=50, offset=0, returned=1, has_more=False),
+        )
+        self.queries.signals.return_value = SignalPage(
+            state="AVAILABLE", as_of=now,
+            items=[SignalView(
+                signal_id=identity, instrument="fixture:SPY", strategy_version="trend-v1",
+                direction="BUY", status="VALIDATED", expiry_state="CURRENT",
+                created_at=now, expires_at=now, strength="0.8", confidence="0.7",
+                data_quality_score="1", explanation="Fixture signal",
+                contradicting_evidence=["fixture risk"], validation_id=uuid4(),
+                passed_stages=["data", "risk"], failed_stages=[], latest_reason="all_validation_stages_passed",
+                lifecycle=[SignalLifecycleEventView(
+                    event_id=uuid4(), from_status="CANDIDATE", to_status="VALIDATED",
+                    actor="signal_validation", reason="all_validation_stages_passed",
+                    evidence_references=["signal-validation:fixture"], occurred_at=now,
+                )], research_or_paper_only=True, automatic_authority=False,
             )], page=PageInfo(limit=50, offset=0, returned=1, has_more=False),
         )
         self.queries.strategy_scorecard.return_value = StrategyScorecardView(
@@ -132,6 +151,7 @@ class OperatorDashboardApiTests(unittest.TestCase):
             "/operator-dashboard/feature-definitions",
             f"/operator-dashboard/feature-definitions/{identity}",
             f"/operator-dashboard/feature-materializations?feature_id={identity}&instrument=fixture%3ASPY&dataset_version=fixture-v1&decision_time={now}",
+            f"/operator-dashboard/signals?as_of={now}&limit=20",
             f"/operator-dashboard/strategy-scorecards/{identity}",
             f"/operator-dashboard/regime-runs/{identity}",
             f"/operator-dashboard/portfolio-construction-runs/{identity}",
@@ -162,7 +182,8 @@ class OperatorDashboardApiTests(unittest.TestCase):
             headers=self.headers,
         )
         invalid_id = self.client.get("/operator-dashboard/regime-runs/not-a-uuid", headers=self.headers)
-        self.assertEqual((naive.status_code, oversized.status_code, inverted.status_code, invalid_id.status_code), (422, 422, 422, 422))
+        invalid_signal = self.client.get("/operator-dashboard/signals?as_of=2026-01-01T00%3A00%3A00&status=UNKNOWN", headers=self.headers)
+        self.assertEqual((naive.status_code, oversized.status_code, inverted.status_code, invalid_id.status_code, invalid_signal.status_code), (422, 422, 422, 422, 422))
 
 
 if __name__ == "__main__":
