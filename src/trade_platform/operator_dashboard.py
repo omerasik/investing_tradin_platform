@@ -602,7 +602,8 @@ class PostgresOperatorDashboardQueries:
                 "t.cash_weight,t.gross_weight,t.net_weight,t.portfolio_volatility,t.stressed_volatility,"
                 "c.covariance_id,c.dataset_version,c.dataset_content_hash,c.estimation_version,"
                 "c.observations,c.as_of,c.uncertainty,c.correlation_stress,"
-                "hs.provider,hs.provider_terms_version,hs.authorization_reference "
+                "hs.provider,hs.provider_identifier_namespace,hs.provider_terms_version,"
+                "hs.authorization_reference "
                 "FROM portfolio_construction_runs r "
                 "JOIN portfolio_construction_policy_versions p USING(policy_version_id) "
                 "JOIN portfolio_target_candidates t USING(run_id) JOIN portfolio_covariance_estimates c USING(run_id) "
@@ -647,7 +648,7 @@ class PostgresOperatorDashboardQueries:
             if gate is None:
                 raise DashboardQueryError("portfolio_risk_gate_missing")
             dataset_version = str(row[16])
-            provider_backed = str(row[23]).upper() != "FIXTURE" and bool(str(row[25]).strip())
+            provider_backed = str(row[24]).upper() != "FIXTURE" and bool(str(row[26]).strip())
             return PortfolioConstructionView(
                 portfolio_construction_run_id=row[0], policy_version_id=row[1], regime_run_id=row[2],
                 constructed_at=row[3], status=str(row[4]), review_only=True, automatic_authority=False,
@@ -660,11 +661,11 @@ class PostgresOperatorDashboardQueries:
                     covariance_id=row[15], dataset_version=dataset_version, dataset_content_hash=str(row[17]),
                     estimation_version=str(row[18]), observations=int(row[19]), as_of=row[20],
                     uncertainty=str(row[21]), correlation_stress=str(row[22]),
-                    source_provider=str(row[23]), source_terms_version=str(row[24]), provider_backed=provider_backed,
+                    source_provider=str(row[23]), source_terms_version=str(row[25]), provider_backed=provider_backed,
                     classification=(
-                        f"PROVIDER_BACKED_COVARIANCE; SOURCE={row[23]}; TERMS={row[24]}"
+                        f"PROVIDER_BACKED_COVARIANCE; SOURCE={row[23]}; TERMS={row[25]}"
                         if provider_backed else
-                        f"NO_REAL_PROVIDER_BACKED_COVARIANCE_EVIDENCE; SOURCE={row[23]}; TERMS={row[24]}"
+                        f"NO_REAL_PROVIDER_BACKED_COVARIANCE_EVIDENCE; SOURCE={row[23]}; TERMS={row[25]}"
                     ),
                 ), sleeves=sleeves, constraints=constraints,
             )
