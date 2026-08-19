@@ -42,18 +42,19 @@ snapshot, not a second roadmap.
   all locally runnable tests. It skipped **27 PostgreSQL-dependent tests**
   plus the Cycle 203–205 PostgreSQL tests (**30 total**) because no disposable PostgreSQL DSN is
   configured on this workstation; this is not substituted for CI evidence.
-- The latest completed exact-mainline PostgreSQL evidence is Cycle 207
-  mainline GitHub Actions run `31923709319` on merge commit `2e3b701`: migration
-  0021, all **346 tests without skips**, matched **91-table** restore/
-  reconciliation, Ruff, mypy 120/120 ratchet, zero-error 26-file critical slice,
-  security/dependency/SBOM/secret gates and frontend/dashboard gates.
-- Cycle 208 PR CI [run 32275992875](https://github.com/omerasik/investing_tradin_platform/actions/runs/32275992875)
-  on `562849a` applied the unchanged migration head, ran all **351 tests without
+- The latest completed exact-mainline PostgreSQL evidence is Cycle 208 GitHub
+  Actions [run 32276800878](https://github.com/omerasik/investing_tradin_platform/actions/runs/32276800878)
+  on merge commit `24eebc4`: migration 0021, all **351 tests without skips**,
+  matched **91-table** restore/reconciliation, Ruff, mypy **120/120** ratchet,
+  zero-error **28-file** critical slice, security/dependency/SBOM/secret gates,
+  frontend build/smoke and all **10 configured PostgreSQL browser scenarios**.
+- Cycle 208 final PR CI [run 32276487834](https://github.com/omerasik/investing_tradin_platform/actions/runs/32276487834)
+  on `39c3885` applied the unchanged migration head, ran all **351 tests without
   skips**, matched the **91-table** restore/reconciliation manifest, and passed
   Ruff, the mypy **120/120** ratchet, the zero-error **28-file** critical slice,
   security/dependency/SBOM/secret gates, TypeScript, ESLint, the Next production
   build, dashboard smoke, and all **10 configured PostgreSQL browser scenarios**.
-  This is PR-head evidence; exact-merge mainline verification remains pending.
+  PR #10 merged as `24eebc4`, and the exact merge passed the same complete gate.
 
 - A historic implementation baseline passed 274 Python tests without skips in
   GitHub Actions
@@ -95,8 +96,8 @@ snapshot, not a second roadmap.
 2. Keep authorized real-data activation EXTERNAL_BLOCKED until the operator
    approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
-4. Close Cycle 208 through merge and exact-mainline verification, then execute
-   the Cycle 209 RQ-001–RQ-030 evidence audit without weakening external blocks.
+4. Execute the Cycle 209 RQ-001–RQ-030 evidence audit without weakening
+   external blocks, then choose the highest-priority feasible closure cycle.
 
 ## PostgreSQL persistence progress
 
@@ -415,7 +416,7 @@ security, dependency, frontend and dashboard gate. Exact-merge mainline run
 `31923709319` passed the same complete workflow on merge `2e3b701`; Cycle 207 is
 `VERIFIED`.
 
-## Cycle 208 TESTED — protected operator authority workspaces
+## Cycle 208 VERIFIED — protected operator authority workspaces
 
 Cycle 208 now projects the existing Cycle 200–207 PostgreSQL authorities through
 one centralized read-only query service, typed protected FastAPI `GET` routes, a
@@ -444,9 +445,11 @@ errors. TypeScript, ESLint and the Next production build pass. Dashboard HTTP
 smoke passes. Playwright ran the unconfigured browser fail-closed scenario
 (**1 passed**) and skipped the **10 configured PostgreSQL scenarios** locally;
 those configured scenarios and the new six-authority PostgreSQL query-plan test
-are mandatory in GitHub CI. PR #10 head `562849a` passed them in GitHub Actions
-[run 32275992875](https://github.com/omerasik/investing_tradin_platform/actions/runs/32275992875):
+are mandatory in GitHub CI. Final PR #10 head `39c3885` passed them in GitHub
+Actions [run 32276487834](https://github.com/omerasik/investing_tradin_platform/actions/runs/32276487834):
 all **351 Python tests ran without skips**, the **91-table** restore matched and
 all quality, security, dependency, build, smoke and **10 configured browser**
-gates passed. Cycle 208 is `TESTED`, not `VERIFIED`, until the final PR head and
-exact merge commit pass the complete workflow.
+gates passed. PR #10 merged as `24eebc4`; exact-merge mainline
+[run 32276800878](https://github.com/omerasik/investing_tradin_platform/actions/runs/32276800878)
+passed the same complete workflow. Cycle 208 is `VERIFIED` for this bounded
+read-only operator-workspace scope; it is not production or live-trading approval.

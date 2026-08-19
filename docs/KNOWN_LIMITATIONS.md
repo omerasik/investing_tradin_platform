@@ -7,7 +7,8 @@ The full requirement-level matrix is in
   PostgreSQL-dependent tests because no disposable PostgreSQL DSN is configured.
   The Cycle 208 six-authority projection/query-plan integration test and ten
   configured browser scenarios are therefore hosted-CI evidence, not local
-  execution evidence; all passed on PR head `562849a` in run `32275992875`.
+  execution evidence; all passed on exact merge `24eebc4` in mainline run
+  `32276800878`.
 
 - This is a local, paper-only system. Live trading is intentionally unavailable.
 - SQLite stores provide durable local evidence but are not the normalized
@@ -111,9 +112,9 @@ The full requirement-level matrix is in
   Playwright exit matrix. This remains development-grade authentication, not
   production sessions/RBAC/MFA. The locally executable unconfigured browser
   scenario passed, and all ten configured PostgreSQL browser scenarios passed
-  in PR CI run `32275992875`; exact-merge mainline verification is still
-  pending. Interactive charts and comprehensive automated accessibility
-  auditing remain incomplete.
+  in final PR run `32276487834` and exact-merge mainline run `32276800878`.
+  Interactive charts and comprehensive automated accessibility auditing remain
+  incomplete.
 - Authentication remains development-grade bearer-token auth. Production
   sessions/RBAC/MFA, CSRF/session hardening, managed secrets, encrypted off-site
   backup and incident-operated RPO/RTO remain open. Full-package static/security
