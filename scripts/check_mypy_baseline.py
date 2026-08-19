@@ -19,7 +19,7 @@ BASELINE = {
     "investments.py": 7,
     "macro_data.py": 1,
     "paper_runtime.py": 4,
-    "policy_registry.py": 7,
+    "policy_registry.py": 4,
     "postgres_runtime.py": 5,
     "pretrade_assessment.py": 3,
     "quant_validation.py": 46,

@@ -100,7 +100,12 @@ class PaperRuntime:
             strategy_enabled = self.promotions.strategy_enabled_as_of(signal.strategy_version, observed_at)
         except ValueError:
             strategy_enabled = False
-        if any(self.instruments.get(instrument_id).quote_currency != account_evidence.snapshot.cash.currency for instrument_id in account_evidence.snapshot.positions):
+        priced_instruments = set(account_evidence.snapshot.positions) | {intent.instrument_id}
+        if any(
+            self.instruments.get(instrument_id).quote_currency
+            != account_evidence.snapshot.cash.currency
+            for instrument_id in priced_instruments
+        ):
             raise PaperRuntimeError("multi_currency_equity_evidence_unavailable")
         equity = account_evidence.snapshot.cash.amount + sum(
             (position.quantity * self.quotes.latest_as_of(instrument_id, observed_at).last for instrument_id, position in account_evidence.snapshot.positions.items()),
@@ -220,7 +225,9 @@ def build_paper_runtime(
     promotions = SQLitePromotionLedger(path)
     reconciled_accounts = OmsReconciledAccountStore(oms)
     try:
-        policies.resolve_risk_policy(policy_selection.risk_policy_version)
+        risk_policy = policies.resolve_risk_policy(policy_selection.risk_policy_version)
+        if not risk_policy.per_trade_controls_configured:
+            raise PaperRuntimeError("per_trade_risk_policy_required")
         policies.resolve_portfolio_policy(policy_selection.portfolio_policy_version)
         stress_scenarios = policies.resolve_portfolio_scenarios(policy_selection.portfolio_policy_version)
         try:

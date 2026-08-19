@@ -194,7 +194,9 @@ def build_postgres_paper_runtime(
         risk_policy_version=policy_selection.risk_policy_version,
     )
     try:
-        core.policies.resolve_risk_policy(policy_selection.risk_policy_version)
+        risk_policy = core.policies.resolve_risk_policy(policy_selection.risk_policy_version)
+        if not risk_policy.per_trade_controls_configured:
+            raise PaperRuntimeError("per_trade_risk_policy_required")
         core.policies.resolve_portfolio_policy(policy_selection.portfolio_policy_version)
         scenarios = core.policies.resolve_portfolio_scenarios(
             policy_selection.portfolio_policy_version

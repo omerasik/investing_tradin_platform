@@ -30,7 +30,7 @@ from .portfolio_risk import (
     evaluate_portfolio,
 )
 from .pretrade_context import build_pre_trade_execution_context
-from .risk import RiskEngine
+from .risk import PerTradeRiskEvidence, RiskEngine, evaluate_per_trade_risk
 from .signal_engine import SignalEngineError, SQLiteSignalStore
 
 if TYPE_CHECKING:
@@ -53,6 +53,7 @@ class PreTradeAssessment:
     risk_policy_digest: str = ""
     portfolio_policy_digest: str = ""
     input_evidence: "PreTradeInputEvidence | None" = None
+    per_trade_risk: PerTradeRiskEvidence | None = None
 
     @property
     def approved(self) -> bool:
@@ -85,6 +86,9 @@ class PreTradeAssessment:
             "risk_policy_digest": self.risk_policy_digest,
             "portfolio_policy_digest": self.portfolio_policy_digest,
             "input_evidence": None if self.input_evidence is None else self.input_evidence.to_payload(),
+            "per_trade_risk": None
+            if self.per_trade_risk is None
+            else self.per_trade_risk.to_payload(),
         }
         return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
@@ -186,7 +190,8 @@ class SQLitePreTradeAssessmentStore:
             risk_policy_version TEXT NOT NULL DEFAULT 'risk:default', portfolio_policy_version TEXT NOT NULL DEFAULT 'portfolio:default',
             risk_policy_digest TEXT NOT NULL DEFAULT '', portfolio_policy_digest TEXT NOT NULL DEFAULT '',
             input_evidence_json TEXT, assessment_digest TEXT NOT NULL DEFAULT '', assessment_mac TEXT NOT NULL DEFAULT '',
-            stress_results_json TEXT NOT NULL DEFAULT '[]')""")
+            stress_results_json TEXT NOT NULL DEFAULT '[]',
+            per_trade_risk_json TEXT)""")
         columns = {row[1] for row in self._connection.execute("PRAGMA table_info(pretrade_assessments)")}
         if "risk_policy_version" not in columns:
             self._connection.execute("ALTER TABLE pretrade_assessments ADD COLUMN risk_policy_version TEXT NOT NULL DEFAULT 'risk:default'")
@@ -204,6 +209,8 @@ class SQLitePreTradeAssessmentStore:
             self._connection.execute("ALTER TABLE pretrade_assessments ADD COLUMN assessment_mac TEXT NOT NULL DEFAULT ''")
         if "stress_results_json" not in columns:
             self._connection.execute("ALTER TABLE pretrade_assessments ADD COLUMN stress_results_json TEXT NOT NULL DEFAULT '[]'")
+        if "per_trade_risk_json" not in columns:
+            self._connection.execute("ALTER TABLE pretrade_assessments ADD COLUMN per_trade_risk_json TEXT")
         self._connection.commit()
 
     @property
@@ -219,8 +226,8 @@ class SQLitePreTradeAssessmentStore:
         portfolio = assessment.portfolio_decision
         try:
             self._connection.execute(
-                "INSERT INTO pretrade_assessments VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (str(assessment.assessment_id), str(assessment.risk_decision.intent_id), str(assessment.risk_decision.decision_id), assessment.risk_decision.decision.value, json.dumps(assessment.risk_decision.reasons), None if portfolio is None else int(portfolio.approved), None if portfolio is None else json.dumps(portfolio.reasons), None if portfolio is None else str(portfolio.gross), None if portfolio is None else str(portfolio.net), None if portfolio is None else str(portfolio.stress_loss), None if portfolio is None or portfolio.var_loss is None else str(portfolio.var_loss), None if portfolio is None or portfolio.cvar_loss is None else str(portfolio.cvar_loss), None if portfolio is None or portfolio.drawdown_loss is None else str(portfolio.drawdown_loss), assessment.evidence_block_reason, assessment.assessed_at.isoformat(), assessment.risk_policy_version, assessment.portfolio_policy_version, assessment.risk_policy_digest, assessment.portfolio_policy_digest, None if assessment.input_evidence is None else json.dumps(assessment.input_evidence.to_payload(), sort_keys=True), assessment.digest, self._mac(assessment.digest), json.dumps([{"scenario": result.scenario, "loss": str(result.loss), "contributions": {name: str(value) for name, value in sorted(result.contributions.items())}} for result in (() if portfolio is None else portfolio.stress_results)], sort_keys=True)),
+                "INSERT INTO pretrade_assessments VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (str(assessment.assessment_id), str(assessment.risk_decision.intent_id), str(assessment.risk_decision.decision_id), assessment.risk_decision.decision.value, json.dumps(assessment.risk_decision.reasons), None if portfolio is None else int(portfolio.approved), None if portfolio is None else json.dumps(portfolio.reasons), None if portfolio is None else str(portfolio.gross), None if portfolio is None else str(portfolio.net), None if portfolio is None else str(portfolio.stress_loss), None if portfolio is None or portfolio.var_loss is None else str(portfolio.var_loss), None if portfolio is None or portfolio.cvar_loss is None else str(portfolio.cvar_loss), None if portfolio is None or portfolio.drawdown_loss is None else str(portfolio.drawdown_loss), assessment.evidence_block_reason, assessment.assessed_at.isoformat(), assessment.risk_policy_version, assessment.portfolio_policy_version, assessment.risk_policy_digest, assessment.portfolio_policy_digest, None if assessment.input_evidence is None else json.dumps(assessment.input_evidence.to_payload(), sort_keys=True), assessment.digest, self._mac(assessment.digest), json.dumps([{"scenario": result.scenario, "loss": str(result.loss), "contributions": {name: str(value) for name, value in sorted(result.contributions.items())}} for result in (() if portfolio is None else portfolio.stress_results)], sort_keys=True), None if assessment.per_trade_risk is None else json.dumps(assessment.per_trade_risk.to_payload(), sort_keys=True)),
             )
         except sqlite3.IntegrityError as error:
             raise ValueError("duplicate_pretrade_assessment_intent") from error
@@ -234,7 +241,8 @@ class SQLitePreTradeAssessmentStore:
         portfolio = None if row[5] is None else PortfolioRiskDecision(bool(row[5]), tuple(json.loads(row[6])), Decimal(row[7]), Decimal(row[8]), Decimal(row[9]), None if row[10] is None else Decimal(row[10]), None if row[11] is None else Decimal(row[11]), None if row[12] is None else Decimal(row[12]), stress_results)
         risk = RiskDecision(UUID(row[2]), UUID(row[1]), RiskDecisionType(row[3]), tuple(json.loads(row[4])), datetime.fromisoformat(row[14]))
         evidence = None if row[19] is None else PreTradeInputEvidence.from_payload(json.loads(row[19]))
-        assessment = PreTradeAssessment(UUID(row[0]), risk, portfolio, row[13], datetime.fromisoformat(row[14]), row[15], row[16], row[17], row[18], evidence)
+        per_trade_risk = None if row[23] is None else PerTradeRiskEvidence.from_payload(json.loads(row[23]))
+        assessment = PreTradeAssessment(UUID(row[0]), risk, portfolio, row[13], datetime.fromisoformat(row[14]), row[15], row[16], row[17], row[18], evidence, per_trade_risk)
         if assessment.digest != row[20]:
             raise ValueError("pretrade_assessment_digest_mismatch")
         if self._integrity_key is not None and not hmac.compare_digest(self._mac(assessment.digest), row[21]):
@@ -303,8 +311,9 @@ def assess_pretrade(
 
     try:
         risk_document = policy_registry.get("risk", risk_policy_version)
+        risk_policy = policy_registry.resolve_risk_policy(risk_policy_version)
         risk_engine = RiskEngine(
-            policy_registry.resolve_risk_policy(risk_policy_version),
+            risk_policy,
             kill_switches=kill_switch_registry,
         )
         risk_policy_digest = risk_document.digest
@@ -409,6 +418,7 @@ def assess_pretrade(
     except SignalEngineError as error:
         reason = f"detailed_signal_evidence_unavailable:{error}"
         return reject(reason)
+    per_trade_risk, _per_trade_reasons = evaluate_per_trade_risk(intent, signal, risk_policy)
     execution = build_pre_trade_execution_context(
         instrument_id=intent.instrument_id, account_id=intent.account_id, observed_at=observed_at,
         instruments=instruments, broker_snapshot=account_evidence.snapshot, broker_healthy=account_evidence.healthy,
@@ -419,7 +429,7 @@ def assess_pretrade(
     )
     risk_decision = risk_engine.assess(intent, signal, market, portfolio_state, execution)
     portfolio_decision = evaluate_portfolio(expected_exposures, portfolio_equity, scenario, portfolio_policy, historical_returns=historical_returns)
-    assessment = PreTradeAssessment(uuid4(), risk_decision, portfolio_decision, risk_policy_version=risk_policy_version, portfolio_policy_version=portfolio_policy_version, risk_policy_digest=risk_policy_digest, portfolio_policy_digest=portfolio_policy_digest, input_evidence=input_evidence)
+    assessment = PreTradeAssessment(uuid4(), risk_decision, portfolio_decision, risk_policy_version=risk_policy_version, portfolio_policy_version=portfolio_policy_version, risk_policy_digest=risk_policy_digest, portfolio_policy_digest=portfolio_policy_digest, input_evidence=input_evidence, per_trade_risk=per_trade_risk)
     if assessment_store is not None:
         assessment_store.append(assessment)
     return assessment

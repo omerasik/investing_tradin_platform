@@ -399,7 +399,14 @@ class PostgresSignalStore:
             if row[1] <= as_of:
                 raise SignalEngineError("risk_signal_is_expired")
             payload = dict(row[0])
-            return Signal(signal_id, str(payload["instrument_id"]), str(payload["strategy_version"]), SignalStatus.VALIDATED, row[2], row[1], Decimal(str(payload["data_quality_score"])), OrderSide(str(payload["direction"])), str(payload["explanation"]))
+            return Signal(
+                signal_id, str(payload["instrument_id"]), str(payload["strategy_version"]),
+                SignalStatus.VALIDATED, row[2], row[1],
+                Decimal(str(payload["data_quality_score"])),
+                OrderSide(str(payload["direction"])), str(payload["explanation"]),
+                Decimal(str(payload["entry_low"])), Decimal(str(payload["entry_high"])),
+                Decimal(str(payload["stop_level"])),
+            )
         except SignalEngineError:
             raise
         except Exception as error:

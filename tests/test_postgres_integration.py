@@ -440,6 +440,9 @@ class PostgresIntegrationTests(unittest.TestCase):
                 {
                     "maximum_order_notional": "10000",
                     "maximum_daily_order_notional": "10000",
+                    "maximum_per_trade_loss": "100",
+                    "maximum_stop_distance_fraction": "0.05",
+                    "stop_gap_buffer_fraction": "0.02",
                 },
                 "risk-reviewer",
                 self.now,
@@ -535,12 +538,16 @@ class PostgresIntegrationTests(unittest.TestCase):
             )
             result = runtime.assess_and_submit(intent, observed_at=self.now)
             self.assertTrue(result.assessment.approved, result.assessment.risk_decision.reasons)
+            self.assertEqual(result.assessment.per_trade_risk.loss_at_stop, Decimal("2"))
+            self.assertEqual(result.assessment.per_trade_risk.gap_adjusted_loss, Decimal("3.96"))
             self.assertEqual(result.paper_order.status.value, "ACKNOWLEDGED")
             with runtime.core.database.transaction() as connection, connection.cursor() as cursor:
                 cursor.execute("SELECT count(*) FROM risk_reservations WHERE intent_id=%s", (intent.intent_id,))
                 self.assertEqual(cursor.fetchone()[0], 1)
                 cursor.execute("SELECT count(*) FROM runtime_pretrade_assessments WHERE intent_id=%s", (intent.intent_id,))
                 self.assertEqual(cursor.fetchone()[0], 1)
+                cursor.execute("SELECT payload->'per_trade_risk'->>'gap_adjusted_loss' FROM runtime_pretrade_assessments WHERE intent_id=%s", (intent.intent_id,))
+                self.assertEqual(Decimal(cursor.fetchone()[0]), Decimal("3.96"))
                 cursor.execute("SELECT count(*) FROM paper_order_intents WHERE intent_id=%s", (intent.intent_id,))
                 self.assertEqual(cursor.fetchone()[0], 1)
             runtime.core.kill_switches.activate("GLOBAL", actor="integration-risk")
@@ -595,6 +602,11 @@ class PostgresIntegrationTests(unittest.TestCase):
             self.assertEqual(recovered_account.cash.amount, Decimal(9900))
             self.assertEqual(recovered_account.positions[instrument_id].quantity, Decimal(1))
             self.assertIn("GLOBAL", restarted.core.kill_switches.active_scopes())
+            recovered_assessment = restarted.core.assessments.get_for_intent(intent.intent_id)
+            self.assertEqual(
+                recovered_assessment.per_trade_risk.gap_adjusted_loss,
+                Decimal("3.96"),
+            )
             with restarted.core.database.transaction() as connection, connection.cursor() as cursor:
                 cursor.execute(
                     "SELECT count(*) FROM risk_reservations WHERE intent_id=%s",

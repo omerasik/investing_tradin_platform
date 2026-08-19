@@ -299,7 +299,9 @@ class SQLiteSignalStore:
             raise SignalEngineError("risk_signal_is_expired")
         return Signal(signal_id, payload["instrument_id"], payload["strategy_version"], SignalStatus.VALIDATED,
                       datetime.fromisoformat(payload["created_at"]), expires_at, Decimal(payload["data_quality_score"]),
-                      OrderSide(payload["direction"]), payload["explanation"])
+                      OrderSide(payload["direction"]), payload["explanation"],
+                      Decimal(payload["entry_low"]), Decimal(payload["entry_high"]),
+                      Decimal(payload["stop_level"]))
 
     def get_validation(self, assessment_id: UUID) -> SignalValidationResult:
         row = self._connection.execute("SELECT * FROM signal_validations WHERE assessment_id = ?", (str(assessment_id),)).fetchone()

@@ -68,7 +68,10 @@ class PreTradeAssessmentTests(unittest.TestCase):
         self.signals = SQLiteSignalStore()
         self.policy_registry = SQLitePolicyRegistry()
         approved_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        self.policy_registry.append(PolicyDocument("risk", "risk:default", {"maximum_order_notional": "10000"}, "risk-committee", approved_at))
+        self.policy_registry.append(PolicyDocument("risk", "risk:default", {
+            "maximum_order_notional": "10000", "maximum_per_trade_loss": "100",
+            "maximum_stop_distance_fraction": "0.05", "stop_gap_buffer_fraction": "0.02",
+        }, "risk-committee", approved_at))
         self.policy_registry.append(PolicyDocument("portfolio", "portfolio:default", {"maximum_gross_notional": "10000", "maximum_single_weight": "1", "maximum_scenario_loss": "10000"}, "risk-committee", approved_at))
         self.execution_evidence = SQLiteExecutionEvidenceStore()
         self.execution_evidence.append_halt(HaltObservation(uuid4(), "TEST:SPY", False, "venue", "halt-1", self.now, self.now))
@@ -117,6 +120,24 @@ class PreTradeAssessmentTests(unittest.TestCase):
         proposal = self._proposal(); self.signals.append(proposal); self.signals.append_validation(SignalEngine().validate(proposal, {stage: True for stage in ValidationStage}))
         result = self._assess(OrderIntent(uuid4(), proposal.signal_id, "TEST:SPY", "paper", OrderSide.BUY, Decimal("10"), Decimal("100")))
         self.assertTrue(result.approved, (result.risk_decision.reasons, result.portfolio_decision.reasons)); self.assertEqual(result.risk_decision.decision, RiskDecisionType.APPROVE); self.assertTrue(result.portfolio_decision.approved)
+        self.assertEqual(result.per_trade_risk.loss_at_stop, Decimal("20"))
+        self.assertEqual(result.per_trade_risk.gap_adjusted_loss, Decimal("39.60"))
+
+    def test_gap_adjusted_loss_rejects_before_paper_submission_and_is_durable(self) -> None:
+        proposal = self._proposal(); self.signals.append(proposal); self.signals.append_validation(SignalEngine().validate(proposal, {stage: True for stage in ValidationStage}))
+        self.policy_registry.append(PolicyDocument("risk", "risk:gap-block", {
+            "maximum_order_notional": "10000", "maximum_per_trade_loss": "30",
+            "maximum_stop_distance_fraction": "0.05", "stop_gap_buffer_fraction": "0.02",
+        }, "risk-committee", datetime(2026, 1, 1, tzinfo=timezone.utc)))
+        intent = OrderIntent(uuid4(), proposal.signal_id, "TEST:SPY", "paper", OrderSide.BUY, Decimal("10"), Decimal("100"))
+        store = SQLitePreTradeAssessmentStore(integrity_key=self.integrity_key)
+        result = self._assess(intent, store, risk_policy_version="risk:gap-block")
+        self.assertFalse(result.approved)
+        self.assertIn("per_trade_gap_loss_limit", result.risk_decision.reasons)
+        restored = store.get_for_intent(intent.intent_id)
+        self.assertEqual(restored.per_trade_risk, result.per_trade_risk)
+        self.assertEqual(restored.per_trade_risk.gap_adjusted_loss, Decimal("39.60"))
+        store.close()
 
     def test_pretrade_requires_registry_and_explicit_policy_versions(self) -> None:
         parameters = signature(assess_pretrade).parameters
@@ -128,13 +149,18 @@ class PreTradeAssessmentTests(unittest.TestCase):
     def test_assessment_persists_explicit_policy_versions(self) -> None:
         proposal = self._proposal(); self.signals.append(proposal); self.signals.append_validation(SignalEngine().validate(proposal, {stage: True for stage in ValidationStage}))
         store = SQLitePreTradeAssessmentStore()
-        self.policy_registry.append(PolicyDocument("risk", "risk:2026-01", {"maximum_order_notional": "10000"}, "risk-committee", datetime(2026, 1, 1, tzinfo=timezone.utc)))
+        self.policy_registry.append(PolicyDocument("risk", "risk:2026-01", {
+            "maximum_order_notional": "10000", "maximum_per_trade_loss": "100",
+            "maximum_stop_distance_fraction": "0.05", "stop_gap_buffer_fraction": "0.02",
+        }, "risk-committee", datetime(2026, 1, 1, tzinfo=timezone.utc)))
         self.policy_registry.append(PolicyDocument("portfolio", "portfolio:2026-01", {"maximum_gross_notional": "10000", "maximum_single_weight": "1", "maximum_scenario_loss": "10000"}, "risk-committee", datetime(2026, 1, 1, tzinfo=timezone.utc)))
         assessment = self._assess(OrderIntent(uuid4(), proposal.signal_id, "TEST:SPY", "paper", OrderSide.BUY, Decimal("10"), Decimal("100")), store, risk_policy_version="risk:2026-01", portfolio_policy_version="portfolio:2026-01")
         restored = store.get_for_intent(assessment.risk_decision.intent_id)
         self.assertEqual((assessment.risk_policy_version, restored.portfolio_policy_version), ("risk:2026-01", "portfolio:2026-01"))
         self.assertEqual((restored.risk_policy_digest, restored.portfolio_policy_digest), (self.policy_registry.get("risk", "risk:2026-01").digest, self.policy_registry.get("portfolio", "portfolio:2026-01").digest))
         self.assertEqual(restored.input_evidence, assessment.input_evidence)
+        self.assertEqual(restored.per_trade_risk, assessment.per_trade_risk)
+        self.assertEqual(restored.per_trade_risk.gap_adjusted_loss, Decimal("39.60"))
         store.close()
 
     def test_unknown_registry_risk_policy_fails_closed(self) -> None:
