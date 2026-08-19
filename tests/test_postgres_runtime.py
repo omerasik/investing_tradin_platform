@@ -12,6 +12,7 @@ from trade_platform.broker_adapter import (
 )
 from trade_platform.config import PlatformConfig
 from trade_platform.execution_quality import PostgresPaperOperationsEvidenceStore
+from trade_platform.operational_jobs import PostgresOperationalJobStore
 from trade_platform.paper_execution import CashBalance
 from trade_platform.paper_runtime import (
     PaperPolicySelection,
@@ -111,6 +112,7 @@ class PostgresRuntimeCompositionTests(unittest.TestCase):
         self.assertIsInstance(
             core.paper_operations_evidence, PostgresPaperOperationsEvidenceStore
         )
+        self.assertIsInstance(core.operational_jobs, PostgresOperationalJobStore)
         self.assertIsInstance(core.instruments, PostgresInstrumentStore)
         self.assertIsInstance(core.signals, PostgresSignalStore)
         self.assertIsInstance(core.models, PostgresModelRegistry)
@@ -130,6 +132,7 @@ class PostgresRuntimeCompositionTests(unittest.TestCase):
             core.execution_evidence,
             core.return_history,
             core.paper_operations_evidence,
+            core.operational_jobs,
             core.instruments,
             core.signals,
             core.models,
