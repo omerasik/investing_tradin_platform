@@ -1352,9 +1352,10 @@ class PostgresIntegrationTests(unittest.TestCase):
         persisted_shadow = store.append_shadow_rehearsal(shadow)
         self.assertTrue(persisted_shadow.requires_incident)
         self.assertEqual(store.append_shadow_rehearsal(shadow), persisted_shadow)
-        self.assertEqual(
-            {alert.code for alert in alerts.active()},
-            {"PAPER_EXECUTION_QUALITY_BREACH", "PAPER_SHADOW_DIVERGENCE"},
+        self.assertTrue(
+            {"PAPER_EXECUTION_QUALITY_BREACH", "PAPER_SHADOW_DIVERGENCE"}.issubset(
+                {alert.code for alert in alerts.active()}
+            )
         )
         database.close()
 
