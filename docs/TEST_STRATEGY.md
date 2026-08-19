@@ -67,3 +67,26 @@ immutable validation package, proves a scorecard is ineligible until linked,
 rejects wrong dataset/feature/cost bindings and mutation, replays idempotently,
 and reconstructs eligibility after restart. The restore allow-list includes
 the scorecard, metric, component, Data Health link and package-link tables.
+
+## Cycle 210 — Social/Narrative Intelligence Core
+
+Cycle 210 adds deterministic coverage for rights and derived-use rejection,
+raw-storage and geographic privacy limits, author hashing, untrusted-text
+sanitization, all six required discussion classes, narrative clustering and
+PIT windows. Metric tests cover mention/author acceleration, sentiment change,
+disagreement, emotional intensity, influencer concentration, bot/spam/
+coordination and pump risk, persistence, emergence and price divergence. Data
+Health and high pump risk block evidence; database fields enforce research-only,
+false standalone-trigger and false automatic authority.
+
+Migration 0022 adds six immutable tables and expands the fresh-restore allow-list
+to **97 critical tables**. The PostgreSQL test requires idempotent publication,
+PIT visibility, restart reconstruction, immutable no-authority constraints and
+unchanged OMS/strategy-activation counts. Local verification discovers **357
+tests**, passes **323**, and skips the **34 PostgreSQL-only tests** explicitly
+because no disposable local DSN exists. Corrected PR run `32280796788` applies
+migration 0022, runs all **357 tests without skips**, matches all **97 restored
+tables** and passes every configured quality, security, dependency, frontend,
+build, smoke and browser gate. Initial run `32280620168` failed before tests on
+an unsupported JSONB object-length function; the corrected exact-key constraint
+uses supported containment/removal operators and is migration-verified.
