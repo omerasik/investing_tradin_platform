@@ -437,7 +437,7 @@ class PostgresOperatorDashboardQueries:
     def feature_definitions(self, *, family: str | None, limit: int, offset: int) -> FeatureDefinitionPage:
         def operation(cursor: _Cursor) -> FeatureDefinitionPage:
             cursor.execute(
-                "SELECT * FROM feature_definition_versions WHERE (%s IS NULL OR family=%s) "
+                "SELECT * FROM feature_definition_versions WHERE (CAST(%s AS text) IS NULL OR family=%s) "
                 "ORDER BY family,name,semantic_version,feature_id LIMIT %s OFFSET %s",
                 (family, family, limit + 1, offset),
             )
@@ -684,10 +684,12 @@ class PostgresOperatorDashboardQueries:
                 "JOIN news_source_policy_versions s USING(source_policy_version_id) "
                 "JOIN news_event_extractions x USING(document_revision_id) "
                 "LEFT JOIN news_event_assessments a ON a.document_revision_id=d.document_revision_id AND a.extraction_id=x.extraction_id "
-                "WHERE (%s IS NULL OR x.event_type=%s) AND (%s IS NULL OR d.published_at>=%s) "
-                "AND (%s IS NULL OR d.published_at<=%s) AND (%s IS NULL OR d.revision_kind=%s) "
-                "AND (%s IS NULL OR EXISTS (SELECT 1 FROM news_document_entity_links l WHERE l.document_revision_id=d.document_revision_id AND l.instrument_id=%s)) "
-                "AND (%s IS NULL OR d.headline ILIKE '%%' || %s || '%%') "
+                "WHERE (CAST(%s AS text) IS NULL OR x.event_type=%s) "
+                "AND (CAST(%s AS timestamptz) IS NULL OR d.published_at>=%s) "
+                "AND (CAST(%s AS timestamptz) IS NULL OR d.published_at<=%s) "
+                "AND (CAST(%s AS text) IS NULL OR d.revision_kind=%s) "
+                "AND (CAST(%s AS text) IS NULL OR EXISTS (SELECT 1 FROM news_document_entity_links l WHERE l.document_revision_id=d.document_revision_id AND l.instrument_id=%s)) "
+                "AND (CAST(%s AS text) IS NULL OR d.headline ILIKE '%%' || %s || '%%') "
                 "ORDER BY d.published_at DESC,d.document_revision_id,x.extraction_id LIMIT %s OFFSET %s",
                 (category, category, start, start, end, end, correction_state, correction_state,
                  instrument, instrument, entity, entity, limit + 1, offset),
