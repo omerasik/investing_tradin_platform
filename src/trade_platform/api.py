@@ -33,6 +33,7 @@ from .operator_dashboard import (
     StrategyScorecardView,
 )
 from .paper_oms import PaperOmsError, SQLitePaperOms
+from .persistence import PersistenceTarget
 from .portfolio_risk import (
     PortfolioExposure,
     PortfolioRiskPolicy,
@@ -226,7 +227,7 @@ def build_app(
         critical_alerts = [item for item in active_alerts if item.severity.value == "CRITICAL"]
         persistence_status = (
             "POSTGRES_CONFIGURED"
-            if platform_config.persistence_target.value == "POSTGRES"
+            if platform_config.persistence_target is PersistenceTarget.POSTGRES
             else "SQLITE_NON_PRODUCTION"
         )
         states = [

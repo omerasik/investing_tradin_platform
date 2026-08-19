@@ -48,6 +48,7 @@ from trade_platform.investments import (
 from trade_platform.operational_alerts import AlertSeverity, SQLiteOperationalAlertStore
 from trade_platform.paper_execution import CashBalance, PaperOrder, Position, ReconciliationResult
 from trade_platform.paper_oms import SQLitePaperOms
+from trade_platform.persistence import PersistenceTarget
 from trade_platform.research import SQLiteExperimentStore
 from trade_platform.return_history import PortfolioReturnObservation, SQLitePortfolioReturnStore
 from trade_platform.risk import SQLiteRiskDecisionStore
@@ -86,6 +87,23 @@ class ApiTests(unittest.TestCase):
         self.assertEqual((payload["id"], payload["version"], payload["live_trading_enabled"], states["database-authority"]["status"]), ("command-center", "operator-dashboard-v1", False, "SQLITE_NON_PRODUCTION"))
         self.assertEqual(states["backup-restore"]["status"], "UNAVAILABLE")
         self.assertEqual(self.client.post("/operator-dashboard/command-center", headers=self.headers).status_code, 405)
+
+    def test_command_center_identifies_configured_postgres_authority(self) -> None:
+        client = TestClient(build_app(
+            PlatformConfig(
+                environment="ci",
+                persistence_target=PersistenceTarget.POSTGRES,
+                persistence_location="postgresql://test.invalid/trade_platform",
+            ),
+            SQLiteAuditStore(),
+            OperatorAuthenticator("test-token"),
+            InMemoryRateLimiter(max_requests=2),
+        ))
+        response = client.get("/operator-dashboard/command-center", headers=self.headers)
+        states = {item["id"]: item for item in response.json()["states"]}
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(states["database-authority"]["status"], "POSTGRES_CONFIGURED")
+        self.assertEqual(states["database-authority"]["details"]["persistence_target"], "postgres")
 
     def test_operational_alerts_are_protected_and_acknowledged_with_actor(self) -> None:
         alerts = SQLiteOperationalAlertStore(); alert = alerts.raise_alert(source="investment_review", code="THESIS_DRIFT_DETECTED", severity=AlertSeverity.WARNING, resource="thesis:test", details={"breached_metrics":"free_cash_flow"})
