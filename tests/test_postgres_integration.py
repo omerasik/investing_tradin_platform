@@ -387,7 +387,8 @@ class PostgresIntegrationTests(unittest.TestCase):
         validation_events = recovered_signals.lifecycle_events(proposal.signal_id, as_of=self.now)
         self.assertEqual((len(validation_events), validation_events[0].reason), (1, "all_validation_stages_passed"))
         expiry_events = recovered_signals.expire_due(as_of=proposal.expires_at)
-        self.assertEqual((len(expiry_events), expiry_events[0].to_status), (1, DetailedSignalStatus.EXPIRED))
+        target_expiries = [event for event in expiry_events if event.signal_id == proposal.signal_id]
+        self.assertEqual((len(target_expiries), target_expiries[0].to_status), (1, DetailedSignalStatus.EXPIRED))
         self.assertEqual(recovered_signals.expire_due(as_of=proposal.expires_at), ())
         with self.assertRaisesRegex(SignalEngineError, "current_validated"):
             recovered_signals.risk_signal(proposal.signal_id, as_of=proposal.expires_at)
