@@ -9,6 +9,7 @@ node_modules/
 
 # Re-creatable local analysis and browser-test artifacts
 tmp/
+graphify-out/
 
 # Deployment secrets and local dashboard configuration
 .env
