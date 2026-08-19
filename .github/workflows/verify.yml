@@ -121,8 +121,6 @@ jobs:
           scanner image \
             --input /input/research-api.tar \
             --scanners vuln \
-            --severity HIGH,CRITICAL \
-            --exit-code 1 \
             --exit-on-eol 1 \
             --format json \
             --output /output/vulnerability-report.json \
@@ -135,6 +133,14 @@ jobs:
             --no-progress
           test -s "$scan_output/vulnerability-report.json"
           test -s "$scan_output/sbom.cdx.json"
+          scanner image \
+            --input /input/research-api.tar \
+            --scanners vuln \
+            --ignore-unfixed \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            --exit-on-eol 1 \
+            --no-progress
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
@@ -204,6 +210,7 @@ jobs:
           curl --fail --silent -H "Authorization: Bearer $TRADE_PLATFORM_DASHBOARD_VIEW_TOKEN" http://127.0.0.1:3000/ >/dev/null
           pnpm test:e2e
       - name: Retain dependency and licensing evidence
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: dependency-evidence

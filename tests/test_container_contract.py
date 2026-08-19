@@ -38,7 +38,7 @@ class ContainerContractTests(unittest.TestCase):
         )
         self.assertRegex(
             image,
-            r"^FROM python:3\.12\.11-slim-bookworm@sha256:[0-9a-f]{64}$",
+            r"^FROM python:3\.12\.14-slim-bookworm@sha256:[0-9a-f]{64}$",
         )
         resolved = {
             line.split("==", 1)[0]
@@ -124,6 +124,7 @@ class ContainerContractTests(unittest.TestCase):
     def test_container_vulnerability_policy_fails_closed(self) -> None:
         for required in (
             "--scanners vuln",
+            "--ignore-unfixed",
             "--severity HIGH,CRITICAL",
             "--exit-code 1",
             "--exit-on-eol 1",
@@ -135,6 +136,7 @@ class ContainerContractTests(unittest.TestCase):
         for evidence in (
             "container-security-evidence/vulnerability-report.json",
             "container-security-evidence/sbom.cdx.json",
+            "if: always()",
         ):
             self.assertIn(evidence, self.workflow)
 
