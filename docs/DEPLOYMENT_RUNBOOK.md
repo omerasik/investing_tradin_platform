@@ -29,3 +29,12 @@ Alert routing currently ends at immutable `LOCAL_OUTBOX` rows whose status is
 not endpoints. Do not configure network delivery, credentials or a claim of
 successful notification until an independently approved adapter implements
 retry, current-alert recheck, delivery attempts, escalation and secret handling.
+
+Retention evaluation is evidence-only. Register an approved immutable policy,
+then a manifest containing an opaque catalog reference and independently
+computed SHA-256. This application does not upload/download object bytes and
+must not be given object-store credentials. `ELIGIBLE_FOR_REVIEW` never permits
+automatic deletion: verify current policy, legal hold, artifact hash, backup
+topology and named human authorization in a separately approved lifecycle
+system. Until that system exists, retain the object and append no deletion
+claim.
