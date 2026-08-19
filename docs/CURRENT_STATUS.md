@@ -39,6 +39,16 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
+- Cycle 213 PR-head GitHub Actions
+  [run 32288130114](https://github.com/omerasik/investing_tradin_platform/actions/runs/32288130114)
+  verifies migration 0025, all **367 tests without skips**, the expanded
+  **102-table** restore, atomic alert rollback and concurrent idempotency, the
+  **117/117** mypy ratchet, zero errors across the **35-file** critical slice
+  and every configured security, build and protected browser gate.
+- Cycle 212 exact-main GitHub Actions
+  [run 32287192826](https://github.com/omerasik/investing_tradin_platform/actions/runs/32287192826)
+  passed the complete workflow on merge commit
+  `aa357de89985a62e22eec72df9def7d85f3bd211`.
 - Cycle 212 PR-head GitHub Actions
   [run 32286392247](https://github.com/omerasik/investing_tradin_platform/actions/runs/32286392247)
   verifies migration 0024, all **364 tests without skips**, the unchanged
@@ -53,11 +63,11 @@ snapshot, not a second roadmap.
   gates, production dashboard build and all eleven protected PostgreSQL browser
   scenarios.
 - The latest completed exact-mainline PostgreSQL evidence is GitHub Actions
-  [run 32284687492](https://github.com/omerasik/investing_tradin_platform/actions/runs/32284687492)
-  on main commit `c19e32d`: migration 0023, all **358 tests without skips**,
-  matched **100-table** restore/reconciliation, Ruff, mypy **120/120** ratchet,
-  the zero-error critical slice, security/dependency/SBOM/secret gates,
-  frontend build/smoke and every configured PostgreSQL browser scenario.
+  [run 32287192826](https://github.com/omerasik/investing_tradin_platform/actions/runs/32287192826)
+  on main commit `aa357de`: migration 0024, all **364 tests without skips**,
+  matched **100-table** restore/reconciliation, Ruff, mypy **117/117** ratchet,
+  the zero-error **34-file** critical slice, security/dependency/SBOM/secret
+  gates, frontend build/smoke and every configured browser scenario.
 - Cycle 208 final PR CI [run 32276487834](https://github.com/omerasik/investing_tradin_platform/actions/runs/32276487834)
   on `39c3885` applied the unchanged migration head, ran all **351 tests without
   skips**, matched the **91-table** restore/reconciliation manifest, and passed
@@ -107,8 +117,9 @@ snapshot, not a second roadmap.
    approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
 4. Cycle 209 re-audited all RQ-001–RQ-030 rows and is exact-mainline verified.
-   Cycle 211 is exact-mainline verified. Cycle 212 is PR-head verified and
-   awaits exact-merge verification.
+   Cycle 212 is exact-mainline verified. Cycle 213 is PR-head verified and
+   awaits exact-merge verification; next is provider-neutral execution-quality
+   and operational shadow evidence.
 
 ## PostgreSQL persistence progress
 
@@ -530,3 +541,24 @@ shape without adding execution authority or another table. PR-head run
 unchanged **100-table** restore, compileall, Ruff, the reduced **117/117**
 complete-package mypy ratchet, the zero-error **34-file** critical slice, Bandit,
 dependency/SBOM/secret gates, production build and protected browser matrix.
+
+Exact merged-main run `32287192826` verifies the unchanged Cycle 212 result on
+commit `aa357de89985a62e22eec72df9def7d85f3bd211`.
+
+## Cycle 213 VERIFIED — atomic risk-violation operations
+
+Cycle 213 adds a concurrency-safe PostgreSQL operational-alert authority with
+immutable status events and active-condition deduplication. Every composed
+PostgreSQL paper runtime atomically records a `PRETRADE_RISK_REJECTED` alert
+with its risk decision; kill-switch rejections are critical and other bounded
+violations are warnings. The payload contains only identifiers, policy version,
+notional and reason evidence—no credential or broker submission path.
+
+The persistence transaction now reserves daily notional only when both the
+individual and portfolio decisions approve. Tests prove a portfolio rejection
+opens one durable alert without a reservation, concurrent retry creates one
+decision/alert/event, restart retains acknowledgement, and injected alert-event
+failure rolls the risk decision back. PR-head run `32288130114` verifies
+migration 0025, all **367 tests without skips**, **102 restore-critical tables**,
+the **117/117** mypy ratchet, zero-error **35-file** critical slice and every
+configured gate. External notification routing remains intentionally absent.

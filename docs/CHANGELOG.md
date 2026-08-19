@@ -9,6 +9,13 @@
   SQLite/PostgreSQL assessment evidence. All operation remains simulated paper-only.
 - Verified Cycle 212 on PR head in CI run `32286392247`: migration 0024, all
   364 tests without skips, 100-table restore and every configured workflow gate.
+- Verified Cycle 212 on exact merged main commit
+  `aa357de89985a62e22eec72df9def7d85f3bd211` in CI run `32287192826`.
+- Added Cycle 213 atomic PostgreSQL risk-violation alerts, immutable alert
+  transitions, portfolio-rejection reservation safety and concurrency/failure
+  evidence. Live trading and external notification delivery remain disabled.
+- Verified Cycle 213 on PR head in CI run `32288130114`: migration 0025, all
+  367 tests without skips, 102-table restore and every configured workflow gate.
 - Verified Cycle 210 social/narrative intelligence on exact merged main commit
   `4606848e8fd1aae19c7dde85be4a067ecd5ea9b9` in CI run `32281500037`.
 - Added Cycle 211 immutable reasoned signal lifecycle events, deterministic

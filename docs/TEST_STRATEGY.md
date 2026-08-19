@@ -131,3 +131,20 @@ slice pass. PR-head run `32286392247` then verifies migration 0024, all **364
 tests without skips**, the unchanged **100-table** restore, PostgreSQL restart
 and immutable calculations, every quality/security/supply-chain gate, the
 production build and protected browser matrix.
+
+## Cycle 213 — Atomic Risk-Violation Operations
+
+Cycle 213 tests migration 0025, concurrency-safe active-alert deduplication,
+immutable alert status events, restart recovery and authenticated actor
+transitions. PostgreSQL integration proves a final portfolio rejection opens a
+warning without consuming daily notional, a kill-switch rejection opens one
+critical alert, simultaneous replay creates one decision/alert/open event, and
+an injected alert-event failure rolls the entire risk-decision transaction back.
+
+Local verification discovers **367 tests**, passes **330** and explicitly skips
+**37 PostgreSQL-only tests**. Compileall, full Ruff, Bandit, the **117/117**
+complete-package mypy ratchet and a zero-error changed-file slice pass. PR-head
+run `32288130114` verifies all **367 tests without skips**, migration 0025,
+**102 restore-critical tables**, the widened zero-error **35-file** critical
+slice, every quality/security/supply-chain gate, production build and protected
+browser matrix.

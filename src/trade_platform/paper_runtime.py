@@ -156,11 +156,20 @@ class PaperRuntime:
             risk_policy = self.policies.resolve_risk_policy(
                 self.policy_selection.risk_policy_version
             )
+            violation_reasons = list(assessment.risk_decision.reasons)
+            if assessment.evidence_block_reason is not None:
+                violation_reasons.append(assessment.evidence_block_reason)
+            if assessment.portfolio_decision is not None and not assessment.portfolio_decision.approved:
+                violation_reasons.extend(
+                    f"portfolio:{reason}" for reason in assessment.portfolio_decision.reasons
+                )
             persisted = self.durable_risk_store.persist(
                 intent,
                 assessment.risk_decision,
                 business_day=observed_at.date(),
                 daily_limit=risk_policy.maximum_daily_order_notional,
+                submission_approved=assessment.approved,
+                violation_reasons=tuple(dict.fromkeys(violation_reasons)),
             )
             if persisted != assessment.risk_decision:
                 assessment = replace(assessment, risk_decision=persisted)

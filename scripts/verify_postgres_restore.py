@@ -24,6 +24,8 @@ CRITICAL_TABLES = (
     "broker_event_cursors",
     "risk_reservations",
     "risk_decisions",
+    "operational_alerts",
+    "operational_alert_events",
     "kill_switch_events",
     "reconciliations",
     "reconciled_account_evidence",

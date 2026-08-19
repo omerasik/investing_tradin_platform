@@ -10,3 +10,10 @@ buffer. The engine binds these limits to the validated signal's direction, entry
 range and protective stop, then records both loss at stop and gap-adjusted loss.
 Missing, wrong-side, out-of-range or breached evidence rejects the intent. A
 protective stop is a risk-sizing assumption—not a guarantee of execution price.
+
+In the PostgreSQL paper runtime, a rejected final pre-trade assessment opens a
+deduplicated durable operator alert in the same transaction as the risk
+decision. Portfolio rejection cannot reserve daily notional. Alert persistence
+failure rolls the decision back and fails closed; concurrent replay cannot
+duplicate the decision, alert or opening event. This is local evidence, not an
+external paging service or execution authority.

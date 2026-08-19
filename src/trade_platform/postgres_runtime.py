@@ -13,6 +13,7 @@ from uuid import UUID
 from .broker_adapter import PaperBrokerAdapter
 from .broker_sync import PaperBrokerSyncService
 from .config import PlatformConfig
+from .operational_alerts import PostgresOperationalAlertStore
 from .paper_runtime import PaperPolicySelection, PaperRuntime, PaperRuntimeError
 from .persistence import PersistenceTarget, PostgresDatabase
 from .portfolio_evidence import OmsReconciledAccountStore
@@ -81,6 +82,7 @@ class PostgresPaperCoreAuthorities:
     signals: PostgresSignalStore
     models: PostgresModelRegistry
     recovery: PostgresRecoveryGate
+    alerts: PostgresOperationalAlertStore
 
     @property
     def submission_ready(self) -> bool:
@@ -141,6 +143,7 @@ def build_postgres_paper_core(
         assessments = PostgresPreTradeAssessmentStore(
             database, integrity_key=config.assessment_integrity_key()
         )
+        alerts = PostgresOperationalAlertStore(database)
         broker = PaperBrokerSyncService(
             oms,
             adapter,
@@ -155,7 +158,7 @@ def build_postgres_paper_core(
             reconciled_accounts=reconciled_accounts,
             broker=broker,
             kill_switches=PostgresKillSwitchRegistry(database),
-            risk=PostgresRiskStore(database, risk_policy_id),
+            risk=PostgresRiskStore(database, risk_policy_id, alert_store=alerts),
             validation=PostgresQuantValidationStore(
                 database,
                 strategy_versions=identities.strategy_versions,
@@ -173,6 +176,7 @@ def build_postgres_paper_core(
             signals=PostgresSignalStore(database),
             models=PostgresModelRegistry(database),
             recovery=PostgresRecoveryGate(database),
+            alerts=alerts,
         )
     except Exception:
         database.close()
