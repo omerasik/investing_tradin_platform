@@ -39,9 +39,12 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
-- Cycle 211 local verification discovered all **358 Python tests** and passed
-  **324**, with **34 PostgreSQL-dependent tests skipped** because no disposable
-  DSN is configured. This does not substitute for hosted integration evidence.
+- Cycle 211 PR-head verification is GitHub Actions
+  [run 32283931250](https://github.com/omerasik/investing_tradin_platform/actions/runs/32283931250):
+  migration 0023, all **358 tests without skips**, matched **100-table**
+  restore/reconciliation, the complete Python quality/security/supply-chain
+  gates, production dashboard build and all eleven protected PostgreSQL browser
+  scenarios.
 - The latest completed exact-mainline PostgreSQL evidence is GitHub Actions
   [run 32281500037](https://github.com/omerasik/investing_tradin_platform/actions/runs/32281500037)
   on main commit `4606848`: migration 0022, all **357 tests without skips**,
@@ -484,7 +487,7 @@ Exact merged-main run `32281500037` verifies the unchanged Cycle 210 result on
 commit `4606848e8fd1aae19c7dde85be4a067ecd5ea9b9`, including all 97 restored
 tables and the protected PostgreSQL browser matrix.
 
-## Cycle 211 local — signal lifecycle operations and Signal Explorer
+## Cycle 211 VERIFIED — signal lifecycle operations and Signal Explorer
 
 Cycle 211 adds mandatory transition reasons and evidence references, monotonic
 append-only lifecycle time, deterministic idempotent expiry processing, and
@@ -495,7 +498,8 @@ validation stages, expiry state, reasons, contradicting evidence and lifecycle
 history. It has no mutation, activation, order, OMS or broker control and always
 labels evidence research/paper-only with false automatic authority.
 
-Local verification passes 324 tests and skips 34 PostgreSQL-only tests out of
-358 discovered, plus compile, focused Ruff/mypy, TypeScript and ESLint. Hosted
-PostgreSQL migration/restart/immutability, 100-table restore, production build,
-security gates and the expanded configured browser matrix remain pending.
+PR-head run `32283931250` verifies PostgreSQL migration, restart and
+immutability behavior, all 358 tests without skips, 100-table restore, Ruff,
+the complete-package mypy ratchet and zero-error critical slice, Bandit,
+dependency audit, SBOM and secret scan, TypeScript/ESLint, production build,
+fail-closed proxy smoke and all eleven configured browser scenarios.

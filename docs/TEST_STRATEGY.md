@@ -106,5 +106,9 @@ Migration 0023 adds one immutable lifecycle table. Runtime proposal, validation
 and lifecycle authorities are now all included in the fresh-restore manifest,
 raising it from 97 to **100 critical tables**. Local verification discovers
 **358 tests**, passes **324**, and explicitly skips **34 PostgreSQL-only tests**.
-Hosted no-skip migration, restart, restore, production build and browser evidence
-remain required before Cycle 211 is marked verified.
+PR-head run `32283931250` then verifies migration 0023, restart/immutability,
+all **358 tests without skips**, all **100 restore-critical tables**, every
+quality/security/supply-chain gate, the production build and all eleven
+protected configured browser scenarios. Earlier runs `32283521769` and
+`32283691569` exposed and closed, respectively, an over-specific expiry-batch
+assertion and stale secret-baseline line metadata.

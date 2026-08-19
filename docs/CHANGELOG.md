@@ -7,6 +7,9 @@
 - Added Cycle 211 immutable reasoned signal lifecycle events, deterministic
   expiry processing, point-in-time protected signal reads and a read-only
   accessible Signal Explorer. Live trading and automatic authority remain off.
+- Verified Cycle 211 on PR head in CI run `32283931250`: migration 0023, all
+  358 tests without skips, 100-table restore and the complete protected browser,
+  quality, security, supply-chain and production-build workflow.
 
 ## 2026-08-16
 

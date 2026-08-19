@@ -6,8 +6,8 @@ The full requirement-level matrix is in
 - A disposable PostgreSQL DSN is not configured on this workstation. PostgreSQL
   migrations, restart/immutability, restore reconciliation and configured browser
   scenarios are therefore hosted-CI evidence, not local execution evidence.
-  The latest exact-main baseline is 357 no-skip tests and 97 restored tables on
-  `4606848` in run `32281500037`; Cycle 211's 100-table result is pending CI.
+  Cycle 211 PR-head run `32283931250` verifies migration 0023, 358 no-skip tests
+  and 100 restored tables; exact-merge verification is still required.
 
 - This is a local, paper-only system. Live trading is intentionally unavailable.
 - SQLite stores provide durable local evidence but are not the normalized
@@ -111,11 +111,11 @@ The full requirement-level matrix is in
   real corpus, measured classifier quality, production cadence, feature feed or
   operator workspace.
 - Cycle 211 adds an immutable reasoned signal timeline, bounded idempotent expiry
-  batch and read-only Signal Explorer. The local 358-test suite passes with the
-  34 PostgreSQL tests explicitly skipped; migration 0023, 100-table restore and
-  the new configured browser scenario still require hosted CI. The scheduler is
-  callable but not deployed continuously, and no signal can activate a strategy,
-  create an order or contact a broker through this workspace.
+  batch and read-only Signal Explorer. PR-head run `32283931250` verifies all
+  358 tests without skips, migration 0023, 100-table restore and all eleven
+  configured browser scenarios. The scheduler is callable but not deployed
+  continuously, and no signal can activate a strategy, create an order or
+  contact a broker through this workspace.
 - Regime, ensemble, ML and agent layers are local governance/research contracts;
   they do not have validated production models, retrieval, orchestration,
   empirical evaluation or execution authority.
