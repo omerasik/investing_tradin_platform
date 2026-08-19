@@ -96,6 +96,45 @@ jobs:
           test "$viewer_read_status" = "200"
           viewer_write_status="$(curl --silent --output /dev/null --write-out '%{http_code}' --request POST --header 'Authorization: Bearer container-role-token' --header 'Content-Type: application/json' --data '{"event_type":"container.probe","actor":"ignored","payload":{}}' http://127.0.0.1:8767/audit/events)"
           test "$viewer_write_status" = "403"
+      - name: Scan research API image and generate its SBOM
+        run: |
+          image_ref="trade-platform-research:${GITHUB_SHA}"
+          scanner_ref="aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c"
+          scan_input="$RUNNER_TEMP/trivy-input"
+          scan_cache="$RUNNER_TEMP/trivy-cache"
+          scan_output="$GITHUB_WORKSPACE/container-security-evidence"
+          mkdir -p "$scan_input" "$scan_cache" "$scan_output"
+          docker save --output "$scan_input/research-api.tar" "$image_ref"
+          scanner() {
+            docker run --rm \
+              --user "$(id -u):$(id -g)" \
+              --read-only \
+              --cap-drop=ALL \
+              --security-opt=no-new-privileges:true \
+              --tmpfs /tmp:rw,noexec,nosuid,size=256m \
+              --volume "$scan_input:/input:ro" \
+              --volume "$scan_cache:/cache:rw" \
+              --volume "$scan_output:/output:rw" \
+              --env TRIVY_CACHE_DIR=/cache \
+              "$scanner_ref" "$@"
+          }
+          scanner image \
+            --input /input/research-api.tar \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            --exit-on-eol 1 \
+            --format json \
+            --output /output/vulnerability-report.json \
+            --no-progress
+          scanner image \
+            --input /input/research-api.tar \
+            --scanners vuln \
+            --format cyclonedx \
+            --output /output/sbom.cdx.json \
+            --no-progress
+          test -s "$scan_output/vulnerability-report.json"
+          test -s "$scan_output/sbom.cdx.json"
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
@@ -171,3 +210,5 @@ jobs:
           path: |
             sbom-python.json
             web/frontend-licenses.json
+            container-security-evidence/vulnerability-report.json
+            container-security-evidence/sbom.cdx.json
