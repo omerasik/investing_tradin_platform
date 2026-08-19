@@ -98,6 +98,19 @@ class PostgresIntegrationTests(unittest.TestCase):
                 "operational_alert_events_immutable",
                 {row[0] for row in cursor.fetchall()},
             )
+            for table in (
+                "paper_execution_quality_evidence",
+                "paper_shadow_rehearsal_evidence",
+            ):
+                cursor.execute("SELECT to_regclass(%s)", (f"public.{table}",))
+                self.assertEqual(cursor.fetchone()[0], table)
+                cursor.execute(
+                    "SELECT tgname FROM pg_trigger WHERE tgrelid = %s::regclass",
+                    (table,),
+                )
+                self.assertIn(
+                    f"{table}_immutable", {row[0] for row in cursor.fetchall()}
+                )
 
     def test_policy_and_keyed_assessment_survive_restart_and_reject_tamper(self) -> None:
         from trade_platform.domain import RiskDecision, RiskDecisionType
@@ -1251,6 +1264,120 @@ class PostgresIntegrationTests(unittest.TestCase):
             )
         )
         reopened.close()
+
+    def test_paper_operations_evidence_alerts_and_survives_restart(self) -> None:
+        from trade_platform.domain import OrderIntent, OrderSide, OrderStatus
+        from trade_platform.execution_quality import (
+            ExecutionQualityPolicy,
+            PostgresPaperOperationsEvidenceStore,
+            build_shadow_rehearsal_evidence,
+            evaluate_execution_quality,
+        )
+        from trade_platform.operational_alerts import PostgresOperationalAlertStore
+        from trade_platform.paper_execution import PaperOrder
+        from trade_platform.persistence import PersistenceError, PostgresDatabase
+        from trade_platform.postgres_paper_oms import PostgresPaperOms
+        from trade_platform.shadow_mode import compare_paper_orders
+
+        account_id = f"integration-paper-{str(self.exchange_id)[:8]}"
+        database = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        oms = PostgresPaperOms(database)
+        orders = []
+        for quantity in (Decimal(10), Decimal(8)):
+            intent = OrderIntent(
+                uuid4(),
+                self.signal_id,
+                str(self.instrument_id),
+                account_id,
+                OrderSide.BUY,
+                Decimal(10),
+                Decimal(100),
+                self.now,
+            )
+            oms.create(PaperOrder(intent))
+            for status in (
+                OrderStatus.RISK_PENDING,
+                OrderStatus.APPROVED,
+                OrderStatus.SUBMISSION_PENDING,
+                OrderStatus.SUBMITTED,
+                OrderStatus.ACKNOWLEDGED,
+            ):
+                oms.transition(intent.intent_id, status)
+            order = oms.ingest_fill(
+                f"cycle214-fill-{intent.intent_id}",
+                intent.intent_id,
+                quantity,
+                Decimal(102),
+                occurred_at=self.now + timedelta(seconds=2),
+            )
+            if quantity < intent.quantity:
+                order = oms.cancel(intent.intent_id, actor="cycle214-fixture")
+            orders.append(order)
+
+        alerts = PostgresOperationalAlertStore(database)
+        store = PostgresPaperOperationsEvidenceStore(database, alert_store=alerts)
+        policy = ExecutionQualityPolicy(
+            "cycle214-quality:v1", Decimal("0.95"), Decimal("0.01"), Decimal("0.01"), 1_000
+        )
+        quality = evaluate_execution_quality(
+            order=orders[0],
+            fills=tuple(oms.fills(orders[0].intent.intent_id)),
+            arrival_price=Decimal(100),
+            decision_price=Decimal(100),
+            reference_source="deterministic-cycle214-fixture",
+            policy=policy,
+            evaluated_at=self.now + timedelta(seconds=3),
+        )
+        self._install_failure_trigger("operational_alert_events")
+        try:
+            with self.assertRaises(PersistenceError):
+                store.append_execution_quality(quality)
+        finally:
+            self._remove_failure_trigger("operational_alert_events")
+        with database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM paper_execution_quality_evidence "
+                "WHERE evidence_id=%s",
+                (quality.evidence_id,),
+            )
+            self.assertEqual(cursor.fetchone()[0], 0)
+        persisted_quality = store.append_execution_quality(quality)
+        self.assertFalse(persisted_quality.passed)
+        self.assertEqual(store.append_execution_quality(quality), persisted_quality)
+
+        shadow = build_shadow_rehearsal_evidence(
+            compare_paper_orders(orders[0], orders[1]),
+            campaign_reference="cycle214-simulated-rehearsal",
+        )
+        persisted_shadow = store.append_shadow_rehearsal(shadow)
+        self.assertTrue(persisted_shadow.requires_incident)
+        self.assertEqual(store.append_shadow_rehearsal(shadow), persisted_shadow)
+        self.assertEqual(
+            {alert.code for alert in alerts.active()},
+            {"PAPER_EXECUTION_QUALITY_BREACH", "PAPER_SHADOW_DIVERGENCE"},
+        )
+        database.close()
+
+        restarted = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        recovered = PostgresPaperOperationsEvidenceStore(restarted)
+        self.assertEqual(
+            recovered.get_execution_quality(quality.intent_id, quality.policy_version),
+            persisted_quality,
+        )
+        self.assertEqual(
+            recovered.get_shadow_rehearsal(shadow.evidence_id), persisted_shadow
+        )
+        with (
+            self.assertRaises(PersistenceError),
+            restarted.transaction() as connection,
+            connection.cursor() as cursor,
+        ):
+            cursor.execute(
+                "UPDATE paper_execution_quality_evidence SET passed=true "
+                "WHERE evidence_id=%s",
+                (quality.evidence_id,),
+            )
+        restarted.close()
 
     def _install_failure_trigger(self, table: str) -> None:
         with self.connection.transaction(), self.connection.cursor() as cursor:
