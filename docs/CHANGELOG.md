@@ -47,6 +47,14 @@
 - Verified Cycle 217 on PR head in CI run `32295559967`: all 383 tests without
   skips, 111-table restore, 39-file typed slice and the twelve-scenario
   configured PostgreSQL browser matrix including zero Axe A/AA violations.
+- Verified Cycle 217 on exact merged main commit
+  `1f4352c7cea7cd36a33f29e142aff184ac305f47` in CI run `32296711621`.
+- Added Cycle 218 deployment-assigned viewer, researcher, data-steward,
+  risk-reviewer, auditor and operator roles with explicit endpoint permissions,
+  viewer-by-default environment composition and fail-closed invalid roles.
+- Verified Cycle 218 on PR head in CI run `32297293629`: all 388 tests without
+  skips, unchanged 111-table restore, 39-file typed slice and every configured
+  security, supply-chain, build and browser gate.
 - Verified Cycle 210 social/narrative intelligence on exact merged main commit
   `4606848e8fd1aae19c7dde85be4a067ecd5ea9b9` in CI run `32281500037`.
 - Added Cycle 211 immutable reasoned signal lifecycle events, deterministic
