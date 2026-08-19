@@ -3,12 +3,11 @@
 The full requirement-level matrix is in
 [`MASTER_ROADMAP.md`](MASTER_ROADMAP.md). These are the material current limits.
 
-- A 2026-08-18 local regression discovered 350 Python tests but skipped 33
-  PostgreSQL-dependent tests because no disposable PostgreSQL DSN is configured.
-  The Cycle 208 six-authority projection/query-plan integration test and ten
-  configured browser scenarios are therefore hosted-CI evidence, not local
-  execution evidence; all passed on exact merge `24eebc4` in mainline run
-  `32276800878`.
+- A disposable PostgreSQL DSN is not configured on this workstation. The Cycle
+  208 six-authority projection/query-plan integration test and ten configured
+  browser scenarios are therefore hosted-CI evidence, not local execution
+  evidence; all 351 tests, 91 restored tables and configured browser scenarios
+  passed on exact main `2fd0a38` in run `32277549784`.
 
 - This is a local, paper-only system. Live trading is intentionally unavailable.
 - SQLite stores provide durable local evidence but are not the normalized
@@ -21,12 +20,12 @@ The full requirement-level matrix is in
   disposable local PostgreSQL DSN is not configured; CI remains the authoritative
   PostgreSQL integration environment.
 - PostgreSQL configuration can no longer enter the legacy SQLite paper-runtime
-  constructor, and an explicit PostgreSQL-only core authority graph exists.
-  That graph is deliberately not submission-ready. Policy and signed
-  assessment plus point-in-time quotes, execution context and return history
-  are PostgreSQL-CI verified. Instrument/risk-profile/session, validated-signal
-  and model-approval authorities are implemented pending CI. Their full managed
-  lifecycles and return-provider health/cadence remain open.
+  constructor. The unconfigured PostgreSQL-only core graph is deliberately not
+  submission-ready, while the configured simulated-paper facade resolves all
+  required policies and point-in-time authorities and is PostgreSQL-CI verified
+  through approval, fill, kill-switch rejection, reconciliation and restart.
+  Full managed signal/model lifecycles and return-provider health/cadence remain
+  open, and network-connected/live broker adapters remain prohibited.
 - Golden artifacts now retain declared spread, fee, latency, participation and
   impact assumptions, partial/unfilled-order observations, and raw versus
   explained divergence. They are deterministic synthetic regressions, not

@@ -6,8 +6,9 @@ snapshot, not a second roadmap.
 
 ## What is implemented locally
 
-- A Python modular monolith with append-only SQLite evidence stores, a protected
-  local FastAPI control plane, and a Next.js operator dashboard.
+- A Python modular monolith with Alembic-managed PostgreSQL production/paper
+  authorities, explicitly research-only SQLite stores, a protected local
+  FastAPI control plane, and a Next.js operator dashboard.
 - Point-in-time market/fundamental/macro/corporate-action contracts; normalized
   provider and broker adapter boundaries; no credentials or live transport.
 - Research baselines with next-period timing, pessimistic costs, idempotent
@@ -38,13 +39,12 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
-- A fresh local audit on 2026-08-16 discovered **333 Python tests** and passed
-  all locally runnable tests. It skipped **27 PostgreSQL-dependent tests**
-  plus the Cycle 203–205 PostgreSQL tests (**30 total**) because no disposable PostgreSQL DSN is
-  configured on this workstation; this is not substituted for CI evidence.
-- The latest completed exact-mainline PostgreSQL evidence is Cycle 208 GitHub
-  Actions [run 32276800878](https://github.com/omerasik/investing_tradin_platform/actions/runs/32276800878)
-  on merge commit `24eebc4`: migration 0021, all **351 tests without skips**,
+- Cycle 209 local verification discovered all **351 Python tests** and passed
+  **318**, with **33 PostgreSQL-dependent tests skipped** because no disposable
+  DSN is configured. This does not substitute for hosted integration evidence.
+- The latest completed exact-mainline PostgreSQL evidence is GitHub Actions
+  [run 32277549784](https://github.com/omerasik/investing_tradin_platform/actions/runs/32277549784)
+  on main commit `2fd0a38`: migration 0021, all **351 tests without skips**,
   matched **91-table** restore/reconciliation, Ruff, mypy **120/120** ratchet,
   zero-error **28-file** critical slice, security/dependency/SBOM/secret gates,
   frontend build/smoke and all **10 configured PostgreSQL browser scenarios**.
@@ -96,8 +96,9 @@ snapshot, not a second roadmap.
 2. Keep authorized real-data activation EXTERNAL_BLOCKED until the operator
    approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
-4. Execute the Cycle 209 RQ-001–RQ-030 evidence audit without weakening
-   external blocks, then choose the highest-priority feasible closure cycle.
+4. Cycle 209 re-audited all RQ-001–RQ-030 rows without weakening external
+   blocks. The ordered queue is canonical in `MASTER_ROADMAP.md`; Cycle 210 is
+   the provider-neutral RQ-008 social/narrative evidence core.
 
 ## PostgreSQL persistence progress
 
@@ -116,11 +117,10 @@ snapshot, not a second roadmap.
   reservation/decision idempotency, paper OMS creation/event evidence, external
   fill deduplication and validation-package creation. They retain no broker or
   execution authority.
-- GitHub Actions run [31721923194](https://github.com/omerasik/investing_tradin_platform/actions/runs/31721923194)
-  successfully exercised the ephemeral PostgreSQL migration and integration
-  suite along with all configured Python/frontend quality gates. Critical live
-  application services still use legacy SQLite paths, so this is integration
-  evidence for repository adapters—not a completed persistence migration.
+- The mapped SQLite-to-PostgreSQL backfill and critical PostgreSQL repositories
+  are hosted-CI verified. Unsupported legacy records fail closed and
+  research-only SQLite surfaces are not silently treated as paper authorities;
+  this is still not a complete queue/object-store/production deployment.
 - The unsafe low-level validation-package insert path now fails closed.
   PostgresQuantValidationStore is the sole package writer and requires exact
   canonical manifest plus evidence hashes. Migration 0003 marks prior rows
@@ -128,16 +128,16 @@ snapshot, not a second roadmap.
   run 31859646575 verifies this boundary against PostgreSQL 16 after restart and
   deliberate manifest, projection, membership and evidence-hash tampering.
 - `build_postgres_paper_core` explicitly composes PostgreSQL OMS/event cursor,
-  reconciliation view, kill-switch, risk, validation and promotion authorities
+  reconciliation, policy/assessment, instrument/session, signal/model,
+  quote/execution/return, kill-switch, risk, validation and promotion authorities
   on one connection owner. The legacy `build_paper_runtime` refuses every
-  PostgreSQL target before any SQLite constructor can run. The matrix records
-  the remaining pre-trade stores as `MUST_MIGRATE`, and the core intentionally
-  remains `submission_ready = False` rather than falling back.
-- A separate configured PostgreSQL runtime builder now requires reviewed policy,
-  stress and model evidence and persists the daily risk reservation/decision
-  before appending an approvable keyed assessment or touching OMS. GitHub
-  Actions run 31861000439 verifies the configured approval path and proves an
-  active PostgreSQL global kill switch rejects before OMS.
+  PostgreSQL target before any SQLite constructor can run. The unconfigured core
+  intentionally remains `submission_ready = False` rather than falling back.
+- The configured PostgreSQL runtime requires reviewed policy, stress and model
+  evidence and persists risk/assessment/OMS evidence on the simulated-paper
+  path. Current CI verifies approval, rejection, fills, reconciliation and
+  restart. Full managed signal/model lifecycle and return-ingestion cadence are
+  still incomplete; live and network-connected broker paths remain prohibited.
 
 All completion/limitation claims must be updated in `MASTER_ROADMAP.md` with
 executed evidence; do not infer production readiness from unit tests.
