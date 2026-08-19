@@ -11,6 +11,7 @@ from trade_platform.broker_adapter import (
     SandboxPaperBrokerAdapter,
 )
 from trade_platform.config import PlatformConfig
+from trade_platform.execution_quality import PostgresPaperOperationsEvidenceStore
 from trade_platform.paper_execution import CashBalance
 from trade_platform.paper_runtime import (
     PaperPolicySelection,
@@ -107,6 +108,9 @@ class PostgresRuntimeCompositionTests(unittest.TestCase):
         self.assertIsInstance(core.quotes, PostgresQuoteStore)
         self.assertIsInstance(core.execution_evidence, PostgresExecutionEvidenceStore)
         self.assertIsInstance(core.return_history, PostgresPortfolioReturnStore)
+        self.assertIsInstance(
+            core.paper_operations_evidence, PostgresPaperOperationsEvidenceStore
+        )
         self.assertIsInstance(core.instruments, PostgresInstrumentStore)
         self.assertIsInstance(core.signals, PostgresSignalStore)
         self.assertIsInstance(core.models, PostgresModelRegistry)
@@ -125,6 +129,7 @@ class PostgresRuntimeCompositionTests(unittest.TestCase):
             core.quotes,
             core.execution_evidence,
             core.return_history,
+            core.paper_operations_evidence,
             core.instruments,
             core.signals,
             core.models,

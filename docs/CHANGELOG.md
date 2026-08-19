@@ -16,6 +16,14 @@
   evidence. Live trading and external notification delivery remain disabled.
 - Verified Cycle 213 on PR head in CI run `32288130114`: migration 0025, all
   367 tests without skips, 102-table restore and every configured workflow gate.
+- Verified Cycle 213 on exact merged main commit
+  `315da7dfc809dc6a3732f3ff5b0f24fda059c06e` in CI run `32288909541`.
+- Added Cycle 214 immutable PostgreSQL simulated-paper execution-quality and
+  shadow-rehearsal evidence, policy/content binding, atomic local divergence/
+  threshold alerts and restart/rollback coverage. No network broker, live data
+  or activation credit is introduced.
+- Verified Cycle 214 on PR head in CI run `32290318303`: migration 0026, all
+  372 tests without skips, 104-table restore and every configured workflow gate.
 - Verified Cycle 210 social/narrative intelligence on exact merged main commit
   `4606848e8fd1aae19c7dde85be4a067ecd5ea9b9` in CI run `32281500037`.
 - Added Cycle 211 immutable reasoned signal lifecycle events, deterministic

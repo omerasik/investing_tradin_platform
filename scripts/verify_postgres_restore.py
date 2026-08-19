@@ -26,6 +26,8 @@ CRITICAL_TABLES = (
     "risk_decisions",
     "operational_alerts",
     "operational_alert_events",
+    "paper_execution_quality_evidence",
+    "paper_shadow_rehearsal_evidence",
     "kill_switch_events",
     "reconciliations",
     "reconciled_account_evidence",

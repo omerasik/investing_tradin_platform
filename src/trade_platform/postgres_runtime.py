@@ -13,6 +13,7 @@ from uuid import UUID
 from .broker_adapter import PaperBrokerAdapter
 from .broker_sync import PaperBrokerSyncService
 from .config import PlatformConfig
+from .execution_quality import PostgresPaperOperationsEvidenceStore
 from .operational_alerts import PostgresOperationalAlertStore
 from .paper_runtime import PaperPolicySelection, PaperRuntime, PaperRuntimeError
 from .persistence import PersistenceTarget, PostgresDatabase
@@ -83,6 +84,7 @@ class PostgresPaperCoreAuthorities:
     models: PostgresModelRegistry
     recovery: PostgresRecoveryGate
     alerts: PostgresOperationalAlertStore
+    paper_operations_evidence: PostgresPaperOperationsEvidenceStore
 
     @property
     def submission_ready(self) -> bool:
@@ -144,6 +146,9 @@ def build_postgres_paper_core(
             database, integrity_key=config.assessment_integrity_key()
         )
         alerts = PostgresOperationalAlertStore(database)
+        paper_operations_evidence = PostgresPaperOperationsEvidenceStore(
+            database, alert_store=alerts
+        )
         broker = PaperBrokerSyncService(
             oms,
             adapter,
@@ -177,6 +182,7 @@ def build_postgres_paper_core(
             models=PostgresModelRegistry(database),
             recovery=PostgresRecoveryGate(database),
             alerts=alerts,
+            paper_operations_evidence=paper_operations_evidence,
         )
     except Exception:
         database.close()

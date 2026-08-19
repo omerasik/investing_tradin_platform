@@ -6,10 +6,10 @@ The full requirement-level matrix is in
 - A disposable PostgreSQL DSN is not configured on this workstation. PostgreSQL
   migrations, restart/immutability, restore reconciliation and configured browser
   scenarios are therefore hosted-CI evidence, not local execution evidence.
-  Exact-main run `32287192826` verifies migration 0024, 364 no-skip tests and
-  100 restored tables. Cycle 213 PR-head run `32288130114` verifies migration
-  0025, 367 no-skip tests and 102 restored tables; exact-merge proof remains
-  required.
+  Exact-main run `32288909541` verifies Cycle 213 migration 0025, 367 no-skip
+  tests and 102 restored tables. Cycle 214 PR-head run `32290318303` verifies
+  migration 0026, 372 no-skip tests and 104 restored tables; exact-merge proof
+  remains required.
 
 - This is a local, paper-only system. Live trading is intentionally unavailable.
 - SQLite stores provide durable local evidence but are not the normalized
@@ -129,6 +129,13 @@ The full requirement-level matrix is in
   producer coverage or production on-call integration. Snapshot/reconciliation
   reads are still not one serializable transaction, and empirical risk inputs
   remain unavailable.
+- Cycle 214 persists policy/hash-bound execution-quality observations and
+  primary/shadow comparisons, but both are deterministic simulated-paper
+  engineering evidence. They use caller-supplied simulated reference prices,
+  measure latency from intent creation rather than venue acknowledgement, omit
+  unfilled opportunity cost and fees, and do not constitute real execution
+  quality, broker-sandbox soak, operational shadow mode or activation evidence.
+  Divergence/threshold alerts remain local; external routing is absent.
 - Regime, ensemble, ML and agent layers are local governance/research contracts;
   they do not have validated production models, retrieval, orchestration,
   empirical evaluation or execution authority.
