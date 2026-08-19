@@ -48,7 +48,12 @@ from .security import (
     InMemoryRateLimiter,
     OperatorAuthenticator,
     SecurityHeadersMiddleware,
+    alert_reviewer_operator,
+    audit_writer_operator,
+    data_steward_operator,
     protected_operator,
+    research_operator,
+    risk_reviewer_operator,
 )
 from .signal_engine import DetailedSignalStatus
 from .strategy_promotion import SQLitePromotionLedger
@@ -535,7 +540,7 @@ def build_app(
         return {"strategy_id": str(card.strategy_id), "strategy_version": card.strategy_version, "family": card.family, "hypothesis": card.hypothesis, "required_datasets": card.required_datasets, "feature_versions": card.feature_versions, "universe_rules": card.universe_rules, "entry_logic": card.entry_logic, "exit_logic": card.exit_logic, "sizing_policy": card.sizing_policy, "risk_policy": card.risk_policy, "cost_model_version": card.cost_model_version, "capacity_model": card.capacity_model, "expected_regimes": card.expected_regimes, "parameter_schema": card.parameter_schema, "failure_conditions": card.failure_conditions, "limitations": card.limitations, "created_at": card.created_at.isoformat()}
 
     @app.post("/research/strategies", status_code=201)
-    def create_strategy_research_card(request: StrategyCreateRequest, subject: str = Depends(protected_operator)) -> dict[str, object]:
+    def create_strategy_research_card(request: StrategyCreateRequest, subject: str = Depends(research_operator)) -> dict[str, object]:
         if app.state.strategy_registry is None: raise HTTPException(status_code=503, detail="Strategy research evidence unavailable.")
         try:
             card = StrategyRunCard.create(strategy_version=request.strategy_version, family=request.family, hypothesis=request.hypothesis, required_datasets=tuple(request.required_datasets), feature_versions=tuple(request.feature_versions), universe_rules=request.universe_rules, entry_logic=request.entry_logic, exit_logic=request.exit_logic, sizing_policy=request.sizing_policy, risk_policy=request.risk_policy, cost_model_version=request.cost_model_version, capacity_model=request.capacity_model, expected_regimes=tuple(request.expected_regimes), parameter_schema=request.parameter_schema, failure_conditions=tuple(request.failure_conditions), limitations=tuple(request.limitations)); card = app.state.strategy_registry.create(card, idempotency_key=request.idempotency_key, actor=subject)
@@ -563,7 +568,7 @@ def build_app(
         return {"decision_id": str(decision.decision_id), "strategy_id": str(decision.strategy_id), "strategy_version": decision.strategy_version, "status": decision.status.value, "reasons": decision.reasons, "held_out_periods": decision.held_out_periods, "held_out_total_return": None if decision.held_out_total_return is None else str(decision.held_out_total_return), "decided_at": decision.decided_at.isoformat()}
 
     @app.post("/research/backtests", status_code=201)
-    def launch_research_backtest(request: BacktestLaunchRequest, subject: str = Depends(protected_operator)) -> dict[str, object]:
+    def launch_research_backtest(request: BacktestLaunchRequest, subject: str = Depends(research_operator)) -> dict[str, object]:
         if app.state.strategy_registry is None or app.state.experiment_store is None:
             raise HTTPException(status_code=503, detail="Research launch evidence unavailable.")
         protocol_fields = (request.walk_forward_train_size, request.walk_forward_validation_size, request.walk_forward_test_size, request.walk_forward_step)
@@ -586,7 +591,7 @@ def build_app(
         return {"experiment_id": str(experiment.experiment_id), "strategy_id": str(card.strategy_id), "strategy_version": experiment.strategy_version, "report": experiment.report, "idempotency_key": request.idempotency_key}
 
     @app.post("/alerts/{alert_id}/acknowledge")
-    def acknowledge_alert(alert_id: UUID, subject: str = Depends(protected_operator)) -> dict[str, object]:
+    def acknowledge_alert(alert_id: UUID, subject: str = Depends(alert_reviewer_operator)) -> dict[str, object]:
         if app.state.alert_store is None: raise HTTPException(status_code=503, detail="Operational alerts unavailable.")
         try:
             alert = app.state.alert_store.transition(alert_id, AlertStatus.ACKNOWLEDGED, actor=subject)
@@ -606,7 +611,7 @@ def build_app(
 
     @app.post("/audit/events", response_model=AuditEventResponse, status_code=201)
     def create_audit_event(
-        request: AuditEventRequest, subject: str = Depends(protected_operator)
+        request: AuditEventRequest, subject: str = Depends(audit_writer_operator)
     ) -> AuditEventResponse:
         try:
             event = store.append(request.event_type, subject, request.payload)
@@ -695,7 +700,7 @@ def build_app(
         return {"portfolio_id": portfolio_id, "as_of": instant.isoformat(), "policy": {"base_currency": policy[1], "maximum_investment_value": policy[2], "maximum_single_weight": policy[3]}, "assessment": {"total_value": str(assessment.total_value), "approved": assessment.approved, "reasons": assessment.reasons}, "holdings": [{"instrument_id": x[0], "market_value": x[1], "observed_at": x[2], "source_reference": x[3]} for x in holdings], "rebalance_decisions": [{"decision_id": x[0], "rationale": x[3], "approved_by": x[6]} for x in decisions], "performance": [{"observed_at": x[1], "net_asset_value": x[2], "cumulative_return": x[3], "source_reference": x[4]} for x in performance], "themes": [{"instrument_id": x[0], "theme": x[1], "exposure": x[2], "source_reference": x[4]} for x in themes], "macro_sensitivities": [{"instrument_id": x[0], "series_id": x[1], "sensitivity": x[2], "source_reference": x[4]} for x in macro]}
 
     @app.post("/investments/fundamental-materializations", status_code=201)
-    def materialize_investment_fundamentals(request: FundamentalMaterializationRequest, subject: str = Depends(protected_operator)) -> dict[str, object]:
+    def materialize_investment_fundamentals(request: FundamentalMaterializationRequest, subject: str = Depends(data_steward_operator)) -> dict[str, object]:
         if app.state.investment_store is None or app.state.fundamental_store is None:
             raise HTTPException(status_code=503, detail="Investment fundamental evidence unavailable.")
         try:
@@ -740,7 +745,7 @@ def build_app(
         }
 
     @app.post("/data-health/return-ingestion/cadence", status_code=201)
-    def set_return_ingestion_cadence(request: ReturnIngestionCadenceRequest, subject: str = Depends(protected_operator)) -> dict[str, object]:
+    def set_return_ingestion_cadence(request: ReturnIngestionCadenceRequest, subject: str = Depends(data_steward_operator)) -> dict[str, object]:
         if app.state.return_history is None:
             raise HTTPException(status_code=503, detail="Return-history evidence unavailable.")
         cadence = ReturnIngestionCadence(request.account_id, request.provider, timedelta(seconds=request.interval_seconds), timedelta(seconds=request.grace_seconds), subject, datetime.now(timezone.utc))
@@ -772,7 +777,7 @@ def build_app(
         return [{"account_id": item.account_id, "provider": item.provider, "interval_seconds": int(item.interval.total_seconds()), "grace_seconds": int(item.grace.total_seconds()), "approved_by": item.approved_by, "updated_at": item.updated_at.isoformat(), "due": (state := due.get((item.account_id, item.provider))) is not None, "overdue": False if state is None else state[1], "last_successful_at": None if state is None or state[0] is None else state[0].isoformat()} for item in app.state.return_history.ingestion_cadences()]
 
     @app.post("/risk/portfolio")
-    def portfolio_risk_report(request: PortfolioRiskRequest, _: None = Depends(protected_operator)) -> dict[str, object]:
+    def portfolio_risk_report(request: PortfolioRiskRequest, _: None = Depends(risk_reviewer_operator)) -> dict[str, object]:
         from decimal import Decimal
         exposures = [PortfolioExposure(item.instrument_id, Decimal(str(item.notional)), item.asset_class, item.sector) for item in request.exposures]
         scenario = StressScenario("operator_scenario", {key: Decimal(str(value)) for key, value in request.shocks.items()})
