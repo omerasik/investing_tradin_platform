@@ -103,8 +103,9 @@ The full requirement-level matrix is in
 - Cycle 210 adds a provider-neutral social/narrative evidence core with explicit
   rights/privacy, all six discussion classes, deterministic clusters, PIT
   metric windows, bot/spam/coordination/pump controls and price/sentiment
-  divergence. It remains synthetic engineering evidence pending hosted
-  PostgreSQL verification. There is no lawful activated connector, labeled
+  divergence. Hosted run `32280796788` verifies migration 0022, restart,
+  immutability and the 97-table restore. It remains synthetic engineering
+  evidence: there is no lawful activated connector, labeled
   real corpus, measured classifier quality, production cadence, feature feed or
   operator workspace.
 - Regime, ensemble, ML and agent layers are local governance/research contracts;

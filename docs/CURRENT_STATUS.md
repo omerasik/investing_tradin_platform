@@ -97,8 +97,8 @@ snapshot, not a second roadmap.
    approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
 4. Cycle 209 re-audited all RQ-001–RQ-030 rows and is exact-mainline verified.
-   Cycle 210 implements the provider-neutral RQ-008 social/narrative evidence
-   core; hosted PostgreSQL/migration/restore verification is the current gate.
+   Cycle 210 verifies the provider-neutral RQ-008 social/narrative evidence
+   core. Signal expiry/reason operations are next after merge verification.
 
 ## PostgreSQL persistence progress
 
@@ -454,7 +454,7 @@ gates passed. PR #10 merged as `24eebc4`; exact-merge mainline
 passed the same complete workflow. Cycle 208 is `VERIFIED` for this bounded
 read-only operator-workspace scope; it is not production or live-trading approval.
 
-## Cycle 210 in verification — social/narrative intelligence core
+## Cycle 210 verified — social/narrative intelligence core
 
 Cycle 210 implements the provider-neutral RQ-008 evidence boundary. Versioned
 source policies retain terms, authorization, rights, derived/raw-use,
@@ -471,5 +471,10 @@ module has no signal, strategy activation, OMS, broker or execution dependency.
 Local verification discovers **357 tests**, passes **323**, and skips **34
 PostgreSQL-only tests** because no local disposable DSN exists. Compileall,
 full-tree Ruff, mypy **120/120** and a zero-error new-module slice pass.
-Migration 0022, restart/immutability and the **97-table** restore remain pending
-hosted CI. No provider, credential, real corpus or live path was added.
+Corrected PR run `32280796788` applies migration 0022, runs all **357 tests
+without skips**, reconstructs PIT evidence after restart, matches all **97
+restored tables** and passes every configured quality, security, dependency,
+frontend, build, smoke and browser gate. Initial run `32280620168` failed before
+tests on an unsupported JSONB function; the supported exact-key constraint is
+verified by the corrected run. No provider, credential, real corpus or live path
+was added.

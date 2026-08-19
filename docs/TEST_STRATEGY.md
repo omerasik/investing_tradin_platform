@@ -84,5 +84,9 @@ to **97 critical tables**. The PostgreSQL test requires idempotent publication,
 PIT visibility, restart reconstruction, immutable no-authority constraints and
 unchanged OMS/strategy-activation counts. Local verification discovers **357
 tests**, passes **323**, and skips the **34 PostgreSQL-only tests** explicitly
-because no disposable local DSN exists. Hosted PostgreSQL CI is required before
-the Cycle 210 engineering slice can be marked verified.
+because no disposable local DSN exists. Corrected PR run `32280796788` applies
+migration 0022, runs all **357 tests without skips**, matches all **97 restored
+tables** and passes every configured quality, security, dependency, frontend,
+build, smoke and browser gate. Initial run `32280620168` failed before tests on
+an unsupported JSONB object-length function; the corrected exact-key constraint
+uses supported containment/removal operators and is migration-verified.
