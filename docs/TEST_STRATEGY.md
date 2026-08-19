@@ -90,3 +90,21 @@ tables** and passes every configured quality, security, dependency, frontend,
 build, smoke and browser gate. Initial run `32280620168` failed before tests on
 an unsupported JSONB object-length function; the corrected exact-key constraint
 uses supported containment/removal operators and is migration-verified.
+
+## Cycle 211 — Signal Lifecycle Operations and Explorer
+
+Cycle 211 adds unit coverage for mandatory actor/reason/evidence metadata,
+monotonic lifecycle time, invalid/terminal transitions, deterministic expiry,
+idempotent replay and rejection of expired signals by the risk adapter. The
+PostgreSQL integration path exercises validation-to-lifecycle persistence,
+restart reconstruction and expiry. Operator API tests keep the point-in-time
+signal route authenticated, typed, GET-only and bounded; the configured browser
+matrix adds a Signal Explorer scenario that verifies reasons while asserting no
+execution or strategy-activation controls.
+
+Migration 0023 adds one immutable lifecycle table. Runtime proposal, validation
+and lifecycle authorities are now all included in the fresh-restore manifest,
+raising it from 97 to **100 critical tables**. Local verification discovers
+**358 tests**, passes **324**, and explicitly skips **34 PostgreSQL-only tests**.
+Hosted no-skip migration, restart, restore, production build and browser evidence
+remain required before Cycle 211 is marked verified.

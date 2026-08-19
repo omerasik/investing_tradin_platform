@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -33,10 +34,16 @@ class SignalEngineTests(unittest.TestCase):
     def test_validated_signal_is_durable_but_not_an_order(self) -> None:
         signal = proposal(); result = SignalEngine().validate(signal, {stage: True for stage in ValidationStage})
         self.assertEqual(result.status, DetailedSignalStatus.VALIDATED)
+        invalid_store = SQLiteSignalStore()
+        with self.assertRaisesRegex(SignalEngineError, "timezone_aware"):
+            invalid_store.append_validation(replace(result, assessed_at=result.assessed_at.replace(tzinfo=None)))
+        invalid_store.close()
         with TemporaryDirectory() as directory:
             store = SQLiteSignalStore(Path(directory) / "signals.sqlite")
             store.append(signal); store.append_validation(result)
             self.assertEqual(store.get_validation(result.assessment_id), result)
+            with self.assertRaisesRegex(SignalEngineError, "already_validated"):
+                store.append_validation(SignalEngine().validate(signal, {stage: True for stage in ValidationStage}))
             with self.assertRaisesRegex(SignalEngineError, "duplicate_signal"):
                 store.append(signal)
             store.close()
@@ -48,14 +55,17 @@ class SignalEngineTests(unittest.TestCase):
             store.append(signal); store.append_validation(result)
             self.assertEqual(store.status(signal.signal_id), DetailedSignalStatus.VALIDATED)
             with self.assertRaisesRegex(SignalEngineError, "invalid_signal_transition"):
-                store.transition(signal.signal_id, DetailedSignalStatus.FILLED, actor="operator")
-            store.transition(signal.signal_id, DetailedSignalStatus.WAITING_FOR_ENTRY, actor="operator")
-            store.transition(signal.signal_id, DetailedSignalStatus.ACTIVE, actor="operator")
-            store.transition(signal.signal_id, DetailedSignalStatus.FILLED, actor="broker_evidence")
-            store.transition(signal.signal_id, DetailedSignalStatus.CLOSED, actor="operator")
+                store.transition(signal.signal_id, DetailedSignalStatus.FILLED, actor="operator", reason="skip")
+            store.transition(signal.signal_id, DetailedSignalStatus.WAITING_FOR_ENTRY, actor="operator", reason="entry_window_open")
+            with self.assertRaisesRegex(SignalEngineError, "time_regression"):
+                store.transition(signal.signal_id, DetailedSignalStatus.ACTIVE, actor="operator", reason="backdated", occurred_at=signal.created_at - timedelta(seconds=1))
+            store.transition(signal.signal_id, DetailedSignalStatus.ACTIVE, actor="operator", reason="paper_position_opened")
+            store.transition(signal.signal_id, DetailedSignalStatus.FILLED, actor="broker_evidence", reason="paper_fill_complete", evidence_references=("paper-fill:1",))
+            store.transition(signal.signal_id, DetailedSignalStatus.CLOSED, actor="operator", reason="paper_position_closed")
             self.assertEqual(len(store.lifecycle_events(signal.signal_id)), 5)
+            self.assertEqual(store.lifecycle_events(signal.signal_id)[3].evidence_references, ("paper-fill:1",))
             with self.assertRaisesRegex(SignalEngineError, "invalid_signal_transition"):
-                store.transition(signal.signal_id, DetailedSignalStatus.ACTIVE, actor="operator")
+                store.transition(signal.signal_id, DetailedSignalStatus.ACTIVE, actor="operator", reason="invalid")
             store.close()
 
     def test_only_current_unexpired_validated_signal_adapts_to_shared_risk_contract(self) -> None:
@@ -65,7 +75,19 @@ class SignalEngineTests(unittest.TestCase):
         self.assertEqual(adapted.signal_id, signal.signal_id)
         self.assertEqual(adapted.instrument_id, signal.instrument_id)
         self.assertEqual(adapted.data_quality_score, signal.data_quality_score)
-        store.transition(signal.signal_id, DetailedSignalStatus.WAITING_FOR_ENTRY, actor="operator")
+        store.transition(signal.signal_id, DetailedSignalStatus.WAITING_FOR_ENTRY, actor="operator", reason="entry_window_open")
+        with self.assertRaisesRegex(SignalEngineError, "current_validated"):
+            store.risk_signal(signal.signal_id, as_of=signal.created_at)
+        store.close()
+
+    def test_expiry_scheduler_is_reasoned_idempotent_and_fail_closed(self) -> None:
+        signal = proposal(); result = SignalEngine().validate(signal, {stage: True for stage in ValidationStage})
+        store = SQLiteSignalStore(); store.append(signal); store.append_validation(result)
+        with self.assertRaisesRegex(SignalEngineError, "timezone_aware"):
+            store.expire_due(as_of=signal.expires_at.replace(tzinfo=None))
+        events = store.expire_due(as_of=signal.expires_at)
+        self.assertEqual((len(events), events[0].to_status, events[0].reason), (1, DetailedSignalStatus.EXPIRED, "signal_expiry_reached"))
+        self.assertEqual(store.expire_due(as_of=signal.expires_at + timedelta(minutes=1)), ())
         with self.assertRaisesRegex(SignalEngineError, "current_validated"):
             store.risk_signal(signal.signal_id, as_of=signal.created_at)
         store.close()

@@ -3,11 +3,11 @@
 The full requirement-level matrix is in
 [`MASTER_ROADMAP.md`](MASTER_ROADMAP.md). These are the material current limits.
 
-- A disposable PostgreSQL DSN is not configured on this workstation. The Cycle
-  208 six-authority projection/query-plan integration test and ten configured
-  browser scenarios are therefore hosted-CI evidence, not local execution
-  evidence; all 351 tests, 91 restored tables and configured browser scenarios
-  passed on exact main `51f0aa8` in run `32278879487`.
+- A disposable PostgreSQL DSN is not configured on this workstation. PostgreSQL
+  migrations, restart/immutability, restore reconciliation and configured browser
+  scenarios are therefore hosted-CI evidence, not local execution evidence.
+  The latest exact-main baseline is 357 no-skip tests and 97 restored tables on
+  `4606848` in run `32281500037`; Cycle 211's 100-table result is pending CI.
 
 - This is a local, paper-only system. Live trading is intentionally unavailable.
 - SQLite stores provide durable local evidence but are not the normalized
@@ -24,8 +24,10 @@ The full requirement-level matrix is in
   submission-ready, while the configured simulated-paper facade resolves all
   required policies and point-in-time authorities and is PostgreSQL-CI verified
   through approval, fill, kill-switch rejection, reconciliation and restart.
-  Full managed signal/model lifecycles and return-provider health/cadence remain
-  open, and network-connected/live broker adapters remain prohibited.
+  Signal expiry and reasoned lifecycle operations now have a bounded immutable
+  core, but no continuously deployed scheduler exists. Full model lifecycle and
+  return-provider health/cadence remain open, and network-connected/live broker
+  adapters remain prohibited.
 - Golden artifacts now retain declared spread, fee, latency, participation and
   impact assumptions, partial/unfilled-order observations, and raw versus
   explained divergence. They are deterministic synthetic regressions, not
@@ -108,6 +110,12 @@ The full requirement-level matrix is in
   evidence: there is no lawful activated connector, labeled
   real corpus, measured classifier quality, production cadence, feature feed or
   operator workspace.
+- Cycle 211 adds an immutable reasoned signal timeline, bounded idempotent expiry
+  batch and read-only Signal Explorer. The local 358-test suite passes with the
+  34 PostgreSQL tests explicitly skipped; migration 0023, 100-table restore and
+  the new configured browser scenario still require hosted CI. The scheduler is
+  callable but not deployed continuously, and no signal can activate a strategy,
+  create an order or contact a broker through this workspace.
 - Regime, ensemble, ML and agent layers are local governance/research contracts;
   they do not have validated production models, retrieval, orchestration,
   empirical evaluation or execution authority.

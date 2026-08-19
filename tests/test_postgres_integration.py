@@ -263,7 +263,9 @@ class PostgresIntegrationTests(unittest.TestCase):
             PostgresSignalStore,
         )
         from trade_platform.signal_engine import (
+            DetailedSignalStatus,
             SignalEngine,
+            SignalEngineError,
             SignalProposal,
             ValidationStage,
         )
@@ -380,6 +382,15 @@ class PostgresIntegrationTests(unittest.TestCase):
             PostgresSignalStore(restarted).risk_signal(proposal.signal_id, as_of=self.now).signal_id,
             proposal.signal_id,
         )
+        recovered_signals = PostgresSignalStore(restarted)
+        self.assertEqual(recovered_signals.status(proposal.signal_id, as_of=self.now), DetailedSignalStatus.VALIDATED)
+        validation_events = recovered_signals.lifecycle_events(proposal.signal_id, as_of=self.now)
+        self.assertEqual((len(validation_events), validation_events[0].reason), (1, "all_validation_stages_passed"))
+        expiry_events = recovered_signals.expire_due(as_of=proposal.expires_at)
+        self.assertEqual((len(expiry_events), expiry_events[0].to_status), (1, DetailedSignalStatus.EXPIRED))
+        self.assertEqual(recovered_signals.expire_due(as_of=proposal.expires_at), ())
+        with self.assertRaisesRegex(SignalEngineError, "current_validated"):
+            recovered_signals.risk_signal(proposal.signal_id, as_of=proposal.expires_at)
         self.assertTrue(PostgresModelRegistry(restarted).is_approved(model.model_id))
         restarted.close()
 

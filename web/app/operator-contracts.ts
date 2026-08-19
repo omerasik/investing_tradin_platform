@@ -42,6 +42,15 @@ export type FeatureMaterialization = {
   content_hash: string; source_manifest: string[];
 };
 export type FeatureMaterializationPage = { state: EvidenceStatus; decision_time: string; items: FeatureMaterialization[]; page: PageInfo };
+export type SignalPage = { state: EvidenceStatus; as_of: string; page: PageInfo; items: {
+  signal_id: string; instrument: string; strategy_version: string; direction: string; status: string;
+  expiry_state: "CURRENT" | "OVERDUE" | "EXPIRED"; created_at: string; expires_at: string;
+  strength: string; confidence: string; data_quality_score: string; explanation: string;
+  contradicting_evidence: string[]; validation_id: string | null; passed_stages: string[]; failed_stages: string[];
+  latest_reason: string; research_or_paper_only: true; automatic_authority: false;
+  lifecycle: { event_id: string; from_status: string; to_status: string; actor: string; reason: string;
+    evidence_references: string[]; occurred_at: string }[];
+}[] };
 export type ScorecardMetric = { metric_id: string; family: string; name: string; value: string | null; unit: string; evidence_state: MetricEvidenceState; dimensions: string[]; evidence_reference: string };
 export type StrategyScorecard = {
   scorecard_id: string; schema_version: string; strategy_id: string; strategy_version: string; research_run_id: string;

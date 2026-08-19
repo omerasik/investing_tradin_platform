@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-19
+
+- Verified Cycle 210 social/narrative intelligence on exact merged main commit
+  `4606848e8fd1aae19c7dde85be4a067ecd5ea9b9` in CI run `32281500037`.
+- Added Cycle 211 immutable reasoned signal lifecycle events, deterministic
+  expiry processing, point-in-time protected signal reads and a read-only
+  accessible Signal Explorer. Live trading and automatic authority remain off.
+
 ## 2026-08-16
 
 - Verified Cycle 205 multi-strategy portfolio construction on exact merged main

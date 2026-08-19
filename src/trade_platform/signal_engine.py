@@ -112,6 +112,8 @@ class SignalLifecycleEvent:
     from_status: DetailedSignalStatus | None
     to_status: DetailedSignalStatus
     actor: str
+    reason: str
+    evidence_references: tuple[str, ...]
     occurred_at: datetime
 
 
@@ -159,7 +161,12 @@ class SQLiteSignalStore:
         if "current_status" not in columns:
             self._connection.execute("ALTER TABLE signals ADD COLUMN current_status TEXT NOT NULL DEFAULT 'CANDIDATE'")
         self._connection.execute("CREATE TABLE IF NOT EXISTS signal_validations (assessment_id TEXT PRIMARY KEY, signal_id TEXT NOT NULL, status TEXT NOT NULL, passed_json TEXT NOT NULL, failures_json TEXT NOT NULL, assessed_at TEXT NOT NULL, FOREIGN KEY(signal_id) REFERENCES signals(signal_id))")
-        self._connection.execute("CREATE TABLE IF NOT EXISTS signal_lifecycle_events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE, signal_id TEXT NOT NULL, from_status TEXT, to_status TEXT NOT NULL, actor TEXT NOT NULL, occurred_at TEXT NOT NULL, FOREIGN KEY(signal_id) REFERENCES signals(signal_id))")
+        self._connection.execute("CREATE TABLE IF NOT EXISTS signal_lifecycle_events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE, signal_id TEXT NOT NULL, from_status TEXT, to_status TEXT NOT NULL, actor TEXT NOT NULL, reason TEXT NOT NULL DEFAULT 'legacy_transition', evidence_json TEXT NOT NULL DEFAULT '[]', occurred_at TEXT NOT NULL, FOREIGN KEY(signal_id) REFERENCES signals(signal_id))")
+        event_columns = {row[1] for row in self._connection.execute("PRAGMA table_info(signal_lifecycle_events)")}
+        if "reason" not in event_columns:
+            self._connection.execute("ALTER TABLE signal_lifecycle_events ADD COLUMN reason TEXT NOT NULL DEFAULT 'legacy_transition'")
+        if "evidence_json" not in event_columns:
+            self._connection.execute("ALTER TABLE signal_lifecycle_events ADD COLUMN evidence_json TEXT NOT NULL DEFAULT '[]'")
         self._connection.commit()
 
     def append(self, proposal: SignalProposal) -> None:
@@ -175,14 +182,27 @@ class SQLiteSignalStore:
         self._connection.commit()
 
     def append_validation(self, result: SignalValidationResult) -> None:
+        if result.assessed_at.tzinfo is None or result.assessed_at.utcoffset() is None:
+            raise SignalEngineError("signal_validation_time_must_be_timezone_aware")
         if self._connection.execute("SELECT 1 FROM signals WHERE signal_id = ?", (str(result.signal_id),)).fetchone() is None:
             raise SignalEngineError("unknown_signal")
+        if self.status(result.signal_id) is not DetailedSignalStatus.CANDIDATE:
+            raise SignalEngineError("signal_already_validated")
         try:
             self._connection.execute("INSERT INTO signal_validations VALUES (?, ?, ?, ?, ?, ?)", (str(result.assessment_id), str(result.signal_id), result.status.value, json.dumps([value.value for value in result.passed_stages]), json.dumps([value.value for value in result.failures]), result.assessed_at.isoformat()))
         except sqlite3.IntegrityError as error:
             raise SignalEngineError("duplicate_signal_validation") from error
         self._connection.commit()
-        self.transition(result.signal_id, result.status, actor="signal_validation", occurred_at=result.assessed_at)
+        failures = ",".join(stage.value for stage in result.failures)
+        reason = "all_validation_stages_passed" if not failures else f"validation_failed:{failures}"
+        self.transition(
+            result.signal_id,
+            result.status,
+            actor="signal_validation",
+            reason=reason,
+            evidence_references=(f"signal-validation:{result.assessment_id}",),
+            occurred_at=result.assessed_at,
+        )
 
     def status(self, signal_id: UUID) -> DetailedSignalStatus:
         row = self._connection.execute("SELECT current_status FROM signals WHERE signal_id = ?", (str(signal_id),)).fetchone()
@@ -190,25 +210,79 @@ class SQLiteSignalStore:
             raise SignalEngineError("unknown_signal")
         return DetailedSignalStatus(row[0])
 
-    def transition(self, signal_id: UUID, to_status: DetailedSignalStatus, *, actor: str, occurred_at: datetime | None = None) -> SignalLifecycleEvent:
+    def transition(
+        self,
+        signal_id: UUID,
+        to_status: DetailedSignalStatus,
+        *,
+        actor: str,
+        reason: str,
+        evidence_references: tuple[str, ...] = (),
+        occurred_at: datetime | None = None,
+    ) -> SignalLifecycleEvent:
         if not actor.strip():
             raise SignalEngineError("signal_transition_actor_required")
+        if not reason.strip():
+            raise SignalEngineError("signal_transition_reason_required")
+        if any(not reference.strip() for reference in evidence_references):
+            raise SignalEngineError("signal_transition_evidence_reference_invalid")
         current = self.status(signal_id)
         if to_status not in _SIGNAL_TRANSITIONS[current]:
             raise SignalEngineError(f"invalid_signal_transition:{current.value}:{to_status.value}")
         timestamp = utc_now() if occurred_at is None else occurred_at
         if timestamp.tzinfo is None or timestamp.utcoffset() is None:
             raise SignalEngineError("signal_transition_time_must_be_timezone_aware")
-        event = SignalLifecycleEvent(uuid4(), signal_id, current, to_status, actor, timestamp)
-        self._connection.execute("INSERT INTO signal_lifecycle_events (event_id, signal_id, from_status, to_status, actor, occurred_at) VALUES (?, ?, ?, ?, ?, ?)", (str(event.event_id), str(signal_id), current.value, to_status.value, actor, timestamp.isoformat()))
+        latest = self._connection.execute(
+            "SELECT occurred_at FROM signal_lifecycle_events WHERE signal_id = ? ORDER BY sequence DESC LIMIT 1",
+            (str(signal_id),),
+        ).fetchone()
+        if latest is not None and datetime.fromisoformat(latest[0]) > timestamp:
+            raise SignalEngineError("signal_transition_time_regression")
+        event = SignalLifecycleEvent(
+            uuid4(), signal_id, current, to_status, actor.strip(), reason.strip(),
+            evidence_references, timestamp,
+        )
+        self._connection.execute(
+            "INSERT INTO signal_lifecycle_events (event_id, signal_id, from_status, to_status, actor, reason, evidence_json, occurred_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (str(event.event_id), str(signal_id), current.value, to_status.value, event.actor,
+             event.reason, json.dumps(event.evidence_references), timestamp.isoformat()),
+        )
         self._connection.execute("UPDATE signals SET current_status = ? WHERE signal_id = ?", (to_status.value, str(signal_id)))
         self._connection.commit()
         return event
 
     def lifecycle_events(self, signal_id: UUID) -> tuple[SignalLifecycleEvent, ...]:
         self.status(signal_id)
-        rows = self._connection.execute("SELECT event_id, signal_id, from_status, to_status, actor, occurred_at FROM signal_lifecycle_events WHERE signal_id = ? ORDER BY sequence", (str(signal_id),)).fetchall()
-        return tuple(SignalLifecycleEvent(UUID(row[0]), UUID(row[1]), None if row[2] is None else DetailedSignalStatus(row[2]), DetailedSignalStatus(row[3]), row[4], datetime.fromisoformat(row[5])) for row in rows)
+        rows = self._connection.execute("SELECT event_id, signal_id, from_status, to_status, actor, reason, evidence_json, occurred_at FROM signal_lifecycle_events WHERE signal_id = ? ORDER BY sequence", (str(signal_id),)).fetchall()
+        return tuple(
+            SignalLifecycleEvent(
+                UUID(row[0]), UUID(row[1]),
+                None if row[2] is None else DetailedSignalStatus(row[2]),
+                DetailedSignalStatus(row[3]), row[4], row[5], tuple(json.loads(row[6])),
+                datetime.fromisoformat(row[7]),
+            )
+            for row in rows
+        )
+
+    def expire_due(self, *, as_of: datetime, actor: str = "signal_expiry_scheduler") -> tuple[SignalLifecycleEvent, ...]:
+        """Materialize due expiries once; repeated scheduler runs are idempotent."""
+        if as_of.tzinfo is None or as_of.utcoffset() is None:
+            raise SignalEngineError("signal_expiry_as_of_must_be_timezone_aware")
+        if not actor.strip():
+            raise SignalEngineError("signal_transition_actor_required")
+        rows = self._connection.execute(
+            "SELECT signal_id, payload_json FROM signals WHERE current_status IN ('VALIDATED','WAITING_FOR_ENTRY','ACTIVE') ORDER BY created_at, signal_id"
+        ).fetchall()
+        events: list[SignalLifecycleEvent] = []
+        for signal_id, payload_json in rows:
+            expires_at = datetime.fromisoformat(json.loads(payload_json)["expires_at"])
+            if expires_at <= as_of:
+                events.append(self.transition(
+                    UUID(signal_id), DetailedSignalStatus.EXPIRED, actor=actor,
+                    reason="signal_expiry_reached",
+                    evidence_references=(f"signal-expiry:{expires_at.isoformat()}",), occurred_at=as_of,
+                ))
+        return tuple(events)
 
     def risk_signal(self, signal_id: UUID, *, as_of: datetime) -> Signal:
         """Expose only a current detailed `VALIDATED` proposal to the shared risk contract."""

@@ -29,6 +29,7 @@ from .operator_dashboard import (
     PortfolioConstructionView,
     PostgresOperatorDashboardQueries,
     RegimeRunView,
+    SignalPage,
     SreOverviewView,
     StrategyScorecardView,
 )
@@ -44,6 +45,7 @@ from .research import CostModel, ResearchValidationError, SQLiteExperimentStore,
 from .return_history import ReturnIngestionCadence, SQLitePortfolioReturnStore
 from .risk import SQLiteRiskDecisionStore
 from .security import InMemoryRateLimiter, OperatorAuthenticator, protected_operator
+from .signal_engine import DetailedSignalStatus
 from .strategy_promotion import SQLitePromotionLedger
 from .strategy_validation import SQLiteStrategyRegistry, StrategyRunCard, StrategyValidationError
 
@@ -343,6 +345,24 @@ def build_app(
         return read_dashboard(lambda: queries.feature_materializations(
             feature_id=feature_id, instrument=instrument, dataset_version=dataset_version,
             decision_time=decision_time, limit=limit, offset=offset,
+        ))
+
+    @app.get("/operator-dashboard/signals", response_model=SignalPage)
+    def signals(
+        as_of: datetime = Query(),
+        status: str | None = Query(default=None, min_length=1, max_length=32),
+        instrument: str | None = Query(default=None, min_length=1, max_length=160),
+        strategy_version: str | None = Query(default=None, min_length=1, max_length=160),
+        limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10_000),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        if as_of.tzinfo is None or as_of.utcoffset() is None:
+            raise HTTPException(status_code=422, detail="Signal as-of time must be timezone-aware.")
+        if status is not None and status not in {item.value for item in DetailedSignalStatus}:
+            raise HTTPException(status_code=422, detail="Invalid signal status.")
+        return read_dashboard(lambda: queries.signals(
+            as_of=as_of, status=status, instrument=instrument,
+            strategy_version=strategy_version, limit=limit, offset=offset,
         ))
 
     @app.get("/operator-dashboard/strategy-scorecards/{scorecard_id}", response_model=StrategyScorecardView)

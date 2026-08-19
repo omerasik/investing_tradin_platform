@@ -86,6 +86,46 @@ class FeatureMaterializationPage(BaseModel):
     page: PageInfo
 
 
+class SignalLifecycleEventView(BaseModel):
+    event_id: UUID
+    from_status: str
+    to_status: str
+    actor: str
+    reason: str
+    evidence_references: list[str]
+    occurred_at: datetime
+
+
+class SignalView(BaseModel):
+    signal_id: UUID
+    instrument: str
+    strategy_version: str
+    direction: str
+    status: str
+    expiry_state: Literal["CURRENT", "OVERDUE", "EXPIRED"]
+    created_at: datetime
+    expires_at: datetime
+    strength: str
+    confidence: str
+    data_quality_score: str
+    explanation: str
+    contradicting_evidence: list[str]
+    validation_id: UUID | None
+    passed_stages: list[str]
+    failed_stages: list[str]
+    latest_reason: str
+    lifecycle: list[SignalLifecycleEventView]
+    research_or_paper_only: Literal[True]
+    automatic_authority: Literal[False]
+
+
+class SignalPage(BaseModel):
+    state: Availability
+    as_of: datetime
+    items: list[SignalView]
+    page: PageInfo
+
+
 class ScorecardMetricView(BaseModel):
     metric_id: UUID
     family: str
@@ -485,6 +525,63 @@ class PostgresOperatorDashboardQueries:
             )
         return self._read(operation)
 
+    def signals(
+        self, *, as_of: datetime, status: str | None, instrument: str | None,
+        strategy_version: str | None, limit: int, offset: int,
+    ) -> SignalPage:
+        """Point-in-time signal projection; overdue state is visible but never mutated on read."""
+        def operation(cursor: _Cursor) -> SignalPage:
+            cursor.execute(
+                "SELECT p.signal_id,p.instrument_id,p.strategy_version,p.created_at,p.expires_at,p.payload,"
+                "COALESCE(e.to_status,v.status,'CANDIDATE') current_status,v.assessment_id,v.passed_stages,v.failures,e.reason "
+                "FROM runtime_signal_proposals p "
+                "LEFT JOIN LATERAL (SELECT to_status,reason FROM runtime_signal_lifecycle_events WHERE signal_id=p.signal_id AND occurred_at<=%s ORDER BY event_sequence DESC LIMIT 1) e ON TRUE "
+                "LEFT JOIN LATERAL (SELECT assessment_id,status,passed_stages,failures FROM runtime_signal_validations WHERE signal_id=p.signal_id AND assessed_at<=%s ORDER BY assessed_at DESC,assessment_id DESC LIMIT 1) v ON TRUE "
+                "WHERE p.created_at<=%s AND (CAST(%s AS text) IS NULL OR COALESCE(e.to_status,v.status,'CANDIDATE')=%s) "
+                "AND (CAST(%s AS text) IS NULL OR p.instrument_id=%s) AND (CAST(%s AS text) IS NULL OR p.strategy_version=%s) "
+                "ORDER BY p.created_at DESC,p.signal_id LIMIT %s OFFSET %s",
+                (as_of, as_of, as_of, status, status, instrument, instrument,
+                 strategy_version, strategy_version, limit + 1, offset),
+            )
+            rows, page = _page(cursor.fetchall(), limit, offset)
+            items: list[SignalView] = []
+            for row in rows:
+                payload = _mapping(row[5])
+                cursor.execute(
+                    "SELECT event_id,from_status,to_status,actor,reason,evidence_references,occurred_at "
+                    "FROM runtime_signal_lifecycle_events WHERE signal_id=%s AND occurred_at<=%s ORDER BY event_sequence",
+                    (row[0], as_of),
+                )
+                lifecycle = [SignalLifecycleEventView(
+                    event_id=event[0], from_status=str(event[1]), to_status=str(event[2]),
+                    actor=str(event[3]), reason=str(event[4]), evidence_references=_strings(event[5]),
+                    occurred_at=event[6],
+                ) for event in cursor.fetchall()]
+                current_status = str(row[6])
+                if current_status == "EXPIRED":
+                    expiry_state: Literal["CURRENT", "OVERDUE", "EXPIRED"] = "EXPIRED"
+                elif row[4] <= as_of and current_status in {"VALIDATED", "WAITING_FOR_ENTRY", "ACTIVE"}:
+                    expiry_state = "OVERDUE"
+                else:
+                    expiry_state = "CURRENT"
+                contradicting = payload.get("contradicting_evidence", [])
+                items.append(SignalView(
+                    signal_id=row[0], instrument=str(row[1]), strategy_version=str(row[2]),
+                    direction=str(payload.get("direction", "UNAVAILABLE")), status=current_status,
+                    expiry_state=expiry_state, created_at=row[3], expires_at=row[4],
+                    strength=str(payload.get("strength", "UNAVAILABLE")),
+                    confidence=str(payload.get("confidence", "UNAVAILABLE")),
+                    data_quality_score=str(payload.get("data_quality_score", "UNAVAILABLE")),
+                    explanation=str(payload.get("explanation", "UNAVAILABLE")),
+                    contradicting_evidence=[str(item) for item in contradicting] if isinstance(contradicting, list) else [],
+                    validation_id=row[7], passed_stages=_strings(row[8]), failed_stages=_strings(row[9]),
+                    latest_reason=str(row[10] or "candidate_not_yet_assessed"), lifecycle=lifecycle,
+                    research_or_paper_only=True, automatic_authority=False,
+                ))
+            state: Availability = "BLOCKED" if any(item.expiry_state == "OVERDUE" for item in items) else ("AVAILABLE" if items else "UNAVAILABLE")
+            return SignalPage(state=state, as_of=as_of, items=items, page=page)
+        return self._read(operation)
+
     def strategy_scorecard(self, scorecard_id: UUID) -> StrategyScorecardView:
         def operation(cursor: _Cursor) -> StrategyScorecardView:
             cursor.execute(
@@ -838,6 +935,14 @@ class PostgresOperatorDashboardQueries:
                 "ORDER BY d.published_at DESC,x.extraction_id DESC LIMIT 1"
             )
             news = cursor.fetchone()
+            cursor.execute(
+                "SELECT p.signal_id,p.created_at,(p.expires_at<=now()),COALESCE(e.to_status,v.status,'CANDIDATE') "
+                "FROM runtime_signal_proposals p "
+                "LEFT JOIN LATERAL (SELECT to_status FROM runtime_signal_lifecycle_events WHERE signal_id=p.signal_id ORDER BY event_sequence DESC LIMIT 1) e ON TRUE "
+                "LEFT JOIN LATERAL (SELECT status FROM runtime_signal_validations WHERE signal_id=p.signal_id ORDER BY assessed_at DESC,assessment_id DESC LIMIT 1) v ON TRUE "
+                "ORDER BY p.created_at DESC,p.signal_id DESC LIMIT 1"
+            )
+            signal = cursor.fetchone()
             cursor.execute("SELECT incident_id,declared_at,status FROM sre_incidents ORDER BY declared_at DESC,incident_id DESC LIMIT 1")
             incident = cursor.fetchone()
             return [
@@ -845,6 +950,7 @@ class PostgresOperatorDashboardQueries:
                 AuthoritySummary(id="dataset", status="UNAVAILABLE" if dataset is None else "AVAILABLE", as_of=None if dataset is None else dataset[3], evidence_id=None if dataset is None else str(dataset[0]), detail="Latest sealed dataset unavailable" if dataset is None else f"{dataset[1]}: {dataset[2]}"),
                 AuthoritySummary(id="data-health", status="UNAVAILABLE" if health is None else ("BLOCKED" if bool(health[1]) else "AVAILABLE"), as_of=None if health is None else health[2], evidence_id=None if health is None else str(health[0]), detail="Latest Data Health assessment unavailable" if health is None else f"Latest blocking={bool(health[1])}; max action={health[3]}"),
                 AuthoritySummary(id="features", status="AVAILABLE" if feature_at else "UNAVAILABLE", as_of=feature_at, evidence_id=None, detail="Latest feature materialization"),
+                AuthoritySummary(id="signals", status="UNAVAILABLE" if signal is None else ("BLOCKED" if bool(signal[2]) and str(signal[3]) in {"VALIDATED", "WAITING_FOR_ENTRY", "ACTIVE"} else "AVAILABLE"), as_of=None if signal is None else signal[1], evidence_id=None if signal is None else str(signal[0]), detail="Latest immutable reasoned signal lifecycle; no execution authority"),
                 AuthoritySummary(id="scorecard", status="AVAILABLE" if scorecard_id else "UNAVAILABLE", as_of=None, evidence_id=None if scorecard_id is None else str(scorecard_id), detail="Latest strategy scorecard"),
                 AuthoritySummary(id="regime", status="AVAILABLE" if regime_id else "UNAVAILABLE", as_of=None, evidence_id=None if regime_id is None else str(regime_id), detail="Latest regime run"),
                 AuthoritySummary(id="portfolio-construction", status="AVAILABLE" if portfolio_id else "UNAVAILABLE", as_of=None, evidence_id=None if portfolio_id is None else str(portfolio_id), detail="Latest review-only construction"),
