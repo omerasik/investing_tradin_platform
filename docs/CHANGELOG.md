@@ -55,6 +55,15 @@
 - Verified Cycle 218 on PR head in CI run `32297293629`: all 388 tests without
   skips, unchanged 111-table restore, 39-file typed slice and every configured
   security, supply-chain, build and browser gate.
+- Verified Cycle 218 on exact merged main commit
+  `6db68e7cb23d5051ca1fe75617a62fdc73e0abc3` in CI run `32298149573`.
+- Added Cycle 219's digest-pinned, dependency-locked research API container,
+  explicit build-context allow-list and non-root UID/GID 10001 runtime. Hosted
+  CI runs it read-only with all capabilities dropped, no-new-privileges and a
+  bounded tmpfs, then verifies liveness/readiness and 401/200/403 role behavior.
+- Verified Cycle 219 on PR head in CI run `32298849742`: all 393 tests without
+  skips, unchanged 111-table restore, zero-error 39-file typed slice, the new
+  hardened container runtime gate and every existing configured gate.
 - Verified Cycle 210 social/narrative intelligence on exact merged main commit
   `4606848e8fd1aae19c7dde85be4a067ecd5ea9b9` in CI run `32281500037`.
 - Added Cycle 211 immutable reasoned signal lifecycle events, deterministic
