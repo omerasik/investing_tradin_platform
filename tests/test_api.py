@@ -78,6 +78,48 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.json()["live_trading_enabled"])
 
+    def test_security_headers_cover_success_auth_failure_and_production_docs(self) -> None:
+        expected = {
+            "cache-control": "no-store",
+            "cross-origin-opener-policy": "same-origin",
+            "cross-origin-resource-policy": "same-origin",
+            "permissions-policy": "camera=(), geolocation=(), microphone=(), payment=()",
+            "referrer-policy": "no-referrer",
+            "x-content-type-options": "nosniff",
+            "x-frame-options": "DENY",
+        }
+        for response in (
+            self.client.get("/health/live"),
+            self.client.get("/audit/events"),
+        ):
+            with self.subTest(status=response.status_code):
+                self.assertEqual(
+                    {name: response.headers.get(name) for name in expected}, expected
+                )
+                self.assertIn("default-src 'none'", response.headers["content-security-policy"])
+        unauthorized = self.client.get("/audit/events")
+        self.assertEqual(unauthorized.headers["www-authenticate"], "Bearer")
+        self.assertNotIn("strict-transport-security", unauthorized.headers)
+
+        production = TestClient(
+            build_app(
+                PlatformConfig(
+                    environment="production",
+                    persistence_target=PersistenceTarget.POSTGRES,
+                    persistence_location="postgresql://test.invalid/trade_platform",
+                ),
+                SQLiteAuditStore(),
+                OperatorAuthenticator("test-token"),
+            )
+        )
+        response = production.get("/docs")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(
+            response.headers["strict-transport-security"],
+            "max-age=31536000; includeSubDomains",
+        )
+        self.assertEqual(production.get("/openapi.json").status_code, 404)
+
     def test_command_center_contract_is_protected_read_only_and_never_claims_live_trading(self) -> None:
         self.assertEqual(self.client.get("/operator-dashboard/command-center").status_code, 401)
         response = self.client.get("/operator-dashboard/command-center", headers=self.headers)

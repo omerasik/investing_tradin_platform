@@ -11,6 +11,14 @@ tests; production migrations are forward-only. A failed migration, unavailable
 database, stale reconciliation or incomplete restore must leave risk increase
 and paper submission fail-closed.
 
+Serve the API and dashboard only behind an HTTPS terminator. Paper/production
+API deployments suppress `/docs`, `/redoc` and `/openapi.json`; do not re-enable
+them on an Internet-facing process. Verify CSP, HSTS, frame denial, MIME,
+referrer, permissions, opener/resource and no-store headers after every proxy or
+CDN change, because an intermediary can remove or replace them. The dashboard
+CSP's framework-required inline allowances are not a waiver for arbitrary
+inline application code. Response headers do not provide OIDC, MFA or RBAC.
+
 After any restore, run `scripts/verify_postgres_restore.py --source-dsn ...
 --restored-dsn ...` against a separately created database. Do not release the
 append-only recovery gate unless revision, critical hashes/counts, validation

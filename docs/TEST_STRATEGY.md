@@ -208,3 +208,21 @@ without skips**, applies migration 0028, matches all **111 restored tables**, an
 passes compileall, full Ruff, Bandit, dependency/SBOM/secret gates, the
 **117/117** mypy ratchet, zero-error **38-file** critical slice, frontend checks,
 production build, smoke and the protected browser matrix.
+
+## Cycle 217 — HTTP Hardening and Automated Accessibility
+
+Backend API tests require no-store, CSP, frame, MIME, referrer, permissions and
+cross-origin headers on success and authentication failure, verify a bearer
+challenge, prove local HSTS omission and production HSTS, and prove protected
+deployments return 404 for interactive documentation and OpenAPI routes.
+
+The Next production build applies corresponding dashboard headers. Playwright
+asserts the header boundary and Axe scans the complete fail-closed and configured
+PostgreSQL pages against WCAG 2.0/2.1 A and AA. Local verification discovers
+**383 tests**, passes **343** and skips **40 PostgreSQL-only tests**; the built
+fail-closed dashboard passes both browser checks with zero Axe violations.
+PR-head run `32295559967` runs all **383 tests without skips**, matches all
+**111 restored tables**, passes compileall, full Ruff, Bandit, full frontend and
+Python dependency audits, SBOM/secret gates, the **117/117** mypy ratchet,
+zero-error **39-file** critical slice, production build/smoke and all **12
+configured browser scenarios**, including zero Axe WCAG A/AA violations.

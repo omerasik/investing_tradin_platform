@@ -39,6 +39,17 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
+- Cycle 217 PR-head GitHub Actions
+  [run 32295559967](https://github.com/omerasik/investing_tradin_platform/actions/runs/32295559967)
+  verifies all **383 tests without skips**, centralized API/dashboard response
+  headers, protected-deployment API docs suppression, full frontend dependency
+  audit, the unchanged **111-table** restore, **117/117** mypy ratchet, zero
+  errors across the **39-file** critical slice, production build and the
+  **12-scenario** configured browser suite with zero Axe WCAG A/AA violations.
+- Cycle 216 exact-main GitHub Actions
+  [run 32294785184](https://github.com/omerasik/investing_tradin_platform/actions/runs/32294785184)
+  passed the complete workflow on merge commit
+  `c89a5de261a7dea00bb8372ca66b4658298f32cd`.
 - Cycle 216 PR-head GitHub Actions
   [run 32293960662](https://github.com/omerasik/investing_tradin_platform/actions/runs/32293960662)
   verifies migration 0028, all **382 tests without skips**, immutable retention
@@ -96,10 +107,10 @@ snapshot, not a second roadmap.
   gates, production dashboard build and all eleven protected PostgreSQL browser
   scenarios.
 - The latest completed exact-mainline PostgreSQL evidence is GitHub Actions
-  [run 32293009334](https://github.com/omerasik/investing_tradin_platform/actions/runs/32293009334)
-  on main commit `067cfd4`: migration 0027, all **377 tests without skips**,
-  matched **108-table** restore/reconciliation, Ruff, mypy **117/117** ratchet,
-  the zero-error **37-file** critical slice, security/dependency/SBOM/secret
+  [run 32294785184](https://github.com/omerasik/investing_tradin_platform/actions/runs/32294785184)
+  on main commit `c89a5de`: migration 0028, all **382 tests without skips**,
+  matched **111-table** restore/reconciliation, Ruff, mypy **117/117** ratchet,
+  the zero-error **38-file** critical slice, security/dependency/SBOM/secret
   gates, frontend build/smoke and every configured browser scenario.
 - Cycle 208 final PR CI [run 32276487834](https://github.com/omerasik/investing_tradin_platform/actions/runs/32276487834)
   on `39c3885` applied the unchanged migration head, ran all **351 tests without
@@ -150,9 +161,9 @@ snapshot, not a second roadmap.
    approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
 4. Cycle 209 re-audited all RQ-001–RQ-030 rows and is exact-mainline verified.
-   Cycles 212–215 are exact-mainline verified. Cycle 216 is PR-head verified and
-   awaits exact-merge verification; next is a deployment-owned scheduler and
-   separately authorized external-delivery adapter boundary.
+   Cycles 212–216 are exact-mainline verified. Cycle 217 is PR-head verified and
+   awaits exact-merge verification; next provider-independent work is container/
+   performance hardening and deeper role/session abstractions.
 
 ## PostgreSQL persistence progress
 
@@ -648,3 +659,21 @@ failure proves rollback; replay conflict, restart and direct delete rejection
 are PostgreSQL-tested. PR-head run `32293960662` runs all **382 tests without
 skips**, matches **111 restore-critical tables**, passes the **117/117** mypy
 ratchet, zero-error **38-file** critical slice and every configured gate.
+
+## Cycle 217 VERIFIED — HTTP hardening and automated accessibility
+
+Cycle 217 applies one API policy for no-store caching, restrictive API CSP,
+frame denial, MIME sniffing prevention, no-referrer, permissions isolation and
+same-origin opener/resource behavior to success and controlled-error responses.
+Production additionally emits HSTS; paper/production suppress interactive API
+documentation and the OpenAPI route. Invalid operator credentials now return a
+standards-compliant `WWW-Authenticate: Bearer` challenge.
+
+The Next dashboard applies its corresponding policy at `/` and `/api/*` while
+preserving the separate dashboard-view token. Axe Playwright scans now enforce
+WCAG A/AA on both fail-closed and configured PostgreSQL pages. CI audits all
+frontend dependencies, not only production packages. PR-head run `32295559967`
+runs all **383 tests without skips**, matches **111 restore-critical tables**,
+passes the **117/117** mypy ratchet, zero-error **39-file** critical slice,
+production build, smoke and **12 configured browser scenarios** including zero
+Axe WCAG A/AA violations.

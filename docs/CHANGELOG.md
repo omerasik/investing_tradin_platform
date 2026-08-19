@@ -39,6 +39,14 @@
   authority exists.
 - Verified Cycle 216 on PR head in CI run `32293960662`: migration 0028, all
   382 tests without skips, 111-table restore and every configured workflow gate.
+- Verified Cycle 216 on exact merged main commit
+  `c89a5de261a7dea00bb8372ca66b4658298f32cd` in CI run `32294785184`.
+- Added Cycle 217 centralized API/dashboard security headers, production API
+  documentation suppression, bearer challenges, full frontend dependency audit
+  and automated Axe WCAG A/AA browser gates. Production identity remains open.
+- Verified Cycle 217 on PR head in CI run `32295559967`: all 383 tests without
+  skips, 111-table restore, 39-file typed slice and the twelve-scenario
+  configured PostgreSQL browser matrix including zero Axe A/AA violations.
 - Verified Cycle 210 social/narrative intelligence on exact merged main commit
   `4606848e8fd1aae19c7dde85be4a067ecd5ea9b9` in CI run `32281500037`.
 - Added Cycle 211 immutable reasoned signal lifecycle events, deterministic

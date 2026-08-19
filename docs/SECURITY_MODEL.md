@@ -9,10 +9,19 @@ for local/paper operation. Production architecture requires external OIDC,
 short-lived server-side sessions, MFA, explicit operator/risk-reviewer/auditor
 roles, CSRF protection, auditable authorization and managed secret injection.
 
+Cycle 217 applies deterministic API/dashboard response headers: no-store,
+content policy, frame denial, MIME sniffing prevention, no-referrer, permissions
+isolation and cross-origin isolation; production also receives HSTS. Protected
+API deployments omit schema/documentation routes and invalid credentials return
+a bearer challenge. These are defense-in-depth only. Dashboard framework
+hydration currently requires inline script/style CSP allowances, and no header
+replaces HTTPS termination, OIDC, MFA, role authorization or penetration tests.
+
 The repository is PUBLIC as verified on 2026-08-15; visibility was not changed.
 Credentials and private datasets are prohibited. `detect-secrets` scans tracked
 source/configuration against a hash-only reviewed baseline; pnpm integrity
 hashes are excluded, and four reviewed synthetic CI/test DSNs remain baselined.
-Dependency audits block high findings, and SBOM/license inventories are retained. Upstream repositories stay
+Dependency audits cover production and development/test packages and block high
+findings; SBOM/license inventories are retained. Upstream repositories stay
 reference-only under `docs/upstream`; their licenses do not authorize copying
 runtime code.

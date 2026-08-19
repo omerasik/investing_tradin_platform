@@ -6,9 +6,9 @@ The full requirement-level matrix is in
 - A disposable PostgreSQL DSN is not configured on this workstation. PostgreSQL
   migrations, restart/immutability, restore reconciliation and configured browser
   scenarios are therefore hosted-CI evidence, not local execution evidence.
-  Exact-main run `32293009334` verifies Cycle 215 migration 0027, 377 no-skip
-  tests and 108 restored tables. Cycle 216 PR-head run `32293960662` verifies
-  migration 0028, 382 no-skip tests and 111 restored tables; exact-merge proof
+  Exact-main run `32294785184` verifies Cycle 216 migration 0028, 382 no-skip
+  tests and 111 restored tables. Cycle 217 PR-head run `32295559967` verifies
+  383 no-skip tests and the unchanged 111 restored tables; exact-merge proof
   remains required.
 
 - This is a local, paper-only system. Live trading is intentionally unavailable.
@@ -158,13 +158,18 @@ The full requirement-level matrix is in
   production sessions/RBAC/MFA. The locally executable unconfigured browser
   scenario passed, and all ten configured PostgreSQL browser scenarios passed
   in final PR run `32276487834` and exact-merge mainline run `32276800878`.
-  Interactive charts and comprehensive automated accessibility auditing remain
-  incomplete.
+  Cycle 217 adds automated WCAG A/AA scanning across the full dashboard, but
+  manual screen-reader, zoom/reflow, forced-colors and assistive-technology
+  acceptance remain incomplete. Interactive charts are still absent.
 - Authentication remains development-grade bearer-token auth. Production
   sessions/RBAC/MFA, CSRF/session hardening, managed secrets, encrypted off-site
   backup and incident-operated RPO/RTO remain open. Full-package static/security
   scans, dependency audits, secret detection, SBOM/license evidence and a fresh
-  PostgreSQL restore/reconciliation drill are now CI gates.
+  PostgreSQL restore/reconciliation drill are now CI gates, but they are not a
+  penetration test. Cycle 217 response headers reduce browser exposure; the
+  dashboard CSP still permits framework-required inline script/style, HSTS is
+  effective only over HTTPS, and neither header policy substitutes for a TLS
+  terminator, OIDC or authorization roles.
 - The repository is PUBLIC. It contains no approved credential or private
   dataset; mandatory tracked-file secret scanning reduces but does not remove
   accidental-disclosure risk. Visibility was not changed.
