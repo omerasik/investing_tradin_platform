@@ -7,7 +7,7 @@ The full requirement-level matrix is in
   208 six-authority projection/query-plan integration test and ten configured
   browser scenarios are therefore hosted-CI evidence, not local execution
   evidence; all 351 tests, 91 restored tables and configured browser scenarios
-  passed on exact main `2fd0a38` in run `32277549784`.
+  passed on exact main `51f0aa8` in run `32278879487`.
 
 - This is a local, paper-only system. Live trading is intentionally unavailable.
 - SQLite stores provide durable local evidence but are not the normalized
@@ -100,8 +100,13 @@ The full requirement-level matrix is in
   PR CI run `31923500129` passed all PostgreSQL/restart/immutability and
   91-table restore gates; exact-merge run `31923709319` passed on main commit
   `2e3b701` and closes the Cycle 207 engineering exit gate.
-- Social/narrative intelligence is not started: no lawful connector, bot/spam
-  controls, narrative clustering, crowding or price/sentiment divergence.
+- Cycle 210 adds a provider-neutral social/narrative evidence core with explicit
+  rights/privacy, all six discussion classes, deterministic clusters, PIT
+  metric windows, bot/spam/coordination/pump controls and price/sentiment
+  divergence. It remains synthetic engineering evidence pending hosted
+  PostgreSQL verification. There is no lawful activated connector, labeled
+  real corpus, measured classifier quality, production cadence, feature feed or
+  operator workspace.
 - Regime, ensemble, ML and agent layers are local governance/research contracts;
   they do not have validated production models, retrieval, orchestration,
   empirical evaluation or execution authority.

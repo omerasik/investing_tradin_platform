@@ -105,6 +105,12 @@ CRITICAL_TABLES = (
     "sre_alert_events",
     "sre_incidents",
     "sre_failure_drill_runs",
+    "social_source_policy_versions",
+    "social_content_observations",
+    "social_narrative_clusters",
+    "social_narrative_cluster_members",
+    "social_narrative_metric_windows",
+    "social_narrative_window_data_health",
 )
 
 
