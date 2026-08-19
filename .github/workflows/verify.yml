@@ -92,10 +92,17 @@ jobs:
             sleep 1
           done
           DASHBOARD_URL=http://127.0.0.1:3000 node scripts/verify-dashboard.mjs
+      - name: Cache Playwright browser binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('web/pnpm-lock.yaml') }}
       - name: Install Playwright Chromium
         working-directory: web
-        timeout-minutes: 10
-        run: pnpm exec playwright install --with-deps --only-shell chromium
+        timeout-minutes: 5
+        env:
+          PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: 60000
+        run: pnpm exec playwright install --only-shell chromium
       - name: Browser E2E against protected PostgreSQL authorities
         env:
           CYCLE208_DASHBOARD_CONFIG_PATH: /tmp/cycle208-dashboard.config.json
