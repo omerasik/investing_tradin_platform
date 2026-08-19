@@ -170,3 +170,22 @@ Bandit, dependency/SBOM/secret gates, the **117/117** mypy ratchet, zero-error
 protected browser matrix. Initial run `32290146999` correctly retained a prior
 Cycle 213 alert; only the over-exclusive new integration assertion failed and
 was narrowed to coexist with valid earlier evidence.
+
+## Cycle 215 — Durable Job Monitoring and Local Routing
+
+Cycle 215 unit tests distinguish current, due and overdue schedules, prove a
+successful run resets the deadline, reject future/naive/inverted run times and
+enforce opaque local destination references. PostgreSQL coverage exercises
+policy/run/route idempotency, point-in-time latest-policy selection, immutable
+terminal evidence, overdue alert deduplication, local outbox enqueue, restart,
+time-monotonic recovery and direct mutation rejection.
+
+The failure-injection path rejects an outbox insert and proves the owning alert,
+event and delivery all roll back. Migration 0027 adds four immutable tables and
+expands restore verification to **108 critical tables**. Local verification
+discovers **377 tests**, passes **338**, and explicitly skips **39 PostgreSQL-
+only tests**. PR-head run `32292245989` runs all **377 tests without skips**,
+applies migration 0027, matches all **108 restored tables**, and passes
+compileall, full Ruff, Bandit, dependency/SBOM/secret gates, the **117/117**
+mypy ratchet, zero-error **37-file** critical slice, frontend checks,
+production build, smoke and the protected browser matrix.

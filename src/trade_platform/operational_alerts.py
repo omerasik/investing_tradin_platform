@@ -160,46 +160,72 @@ class PostgresOperationalAlertStore:
         actor: str,
         details: dict[str, str] | None = None,
     ) -> OperationalAlert:
-        if not actor.strip() or status is AlertStatus.OPEN:
-            raise AlertError("invalid_alert_transition")
-        event_details = details or {}
-        _validate_alert_details(event_details)
-        when = utc_now()
         try:
-            with self._database.transaction() as connection, connection.cursor() as cursor:
-                cursor.execute(
-                    "SELECT status FROM operational_alerts WHERE alert_id=%s FOR UPDATE",
-                    (alert_id,),
-                )
-                row = cursor.fetchone()
-                if row is None:
-                    raise KeyError(str(alert_id))
-                if AlertStatus(str(row[0])) is AlertStatus.RESOLVED:
-                    raise AlertError("invalid_alert_transition")
-                cursor.execute(
-                    "UPDATE operational_alerts SET status=%s, "
-                    "acknowledged_at=CASE WHEN %s='ACKNOWLEDGED' THEN %s "
-                    "ELSE acknowledged_at END WHERE alert_id=%s",
-                    (status.value, status.value, when, alert_id),
-                )
-                cursor.execute(
-                    "INSERT INTO operational_alert_events "
-                    "(event_id, alert_id, status, actor, occurred_at, details) "
-                    "VALUES (%s,%s,%s,%s,%s,%s::jsonb)",
-                    (
-                        uuid4(),
-                        alert_id,
-                        status.value,
-                        actor,
-                        when,
-                        json.dumps(event_details, sort_keys=True),
-                    ),
+            with self._database.transaction() as connection:
+                self.transition_in_transaction(
+                    connection,
+                    alert_id,
+                    status,
+                    actor=actor,
+                    details=details,
                 )
             return self.get(alert_id)
         except (AlertError, KeyError, PersistenceError):
             raise
         except Exception as error:
             raise PersistenceError("operational_alert_transition_uncertain") from error
+
+    def transition_in_transaction(
+        self,
+        connection: Any,
+        alert_id: UUID,
+        status: AlertStatus,
+        *,
+        actor: str,
+        details: dict[str, str] | None = None,
+        occurred_at: datetime | None = None,
+    ) -> None:
+        """Append a transition using an owning producer's transaction."""
+        if not actor.strip() or status is AlertStatus.OPEN:
+            raise AlertError("invalid_alert_transition")
+        event_details = details or {}
+        _validate_alert_details(event_details)
+        when = occurred_at or utc_now()
+        if when.tzinfo is None or when.utcoffset() is None:
+            raise AlertError("alert_time_must_be_timezone_aware")
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT status, opened_at, COALESCE((SELECT MAX(occurred_at) FROM "
+                "operational_alert_events WHERE alert_id=operational_alerts.alert_id), "
+                "opened_at) FROM operational_alerts WHERE alert_id=%s FOR UPDATE",
+                (alert_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise KeyError(str(alert_id))
+            if AlertStatus(str(row[0])) is AlertStatus.RESOLVED:
+                raise AlertError("invalid_alert_transition")
+            if when < row[1] or when < row[2]:
+                raise AlertError("alert_transition_time_regression")
+            cursor.execute(
+                "UPDATE operational_alerts SET status=%s, "
+                "acknowledged_at=CASE WHEN %s='ACKNOWLEDGED' THEN %s "
+                "ELSE acknowledged_at END WHERE alert_id=%s",
+                (status.value, status.value, when, alert_id),
+            )
+            cursor.execute(
+                "INSERT INTO operational_alert_events "
+                "(event_id, alert_id, status, actor, occurred_at, details) "
+                "VALUES (%s,%s,%s,%s,%s,%s::jsonb)",
+                (
+                    uuid4(),
+                    alert_id,
+                    status.value,
+                    actor,
+                    when,
+                    json.dumps(event_details, sort_keys=True),
+                ),
+            )
 
     def get(self, alert_id: UUID) -> OperationalAlert:
         rows = self._read(

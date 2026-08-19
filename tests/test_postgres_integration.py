@@ -101,6 +101,10 @@ class PostgresIntegrationTests(unittest.TestCase):
             for table in (
                 "paper_execution_quality_evidence",
                 "paper_shadow_rehearsal_evidence",
+                "operational_job_policy_versions",
+                "operational_job_runs",
+                "operational_alert_route_policy_versions",
+                "operational_alert_delivery_outbox",
             ):
                 cursor.execute("SELECT to_regclass(%s)", (f"public.{table}",))
                 self.assertEqual(cursor.fetchone()[0], table)
@@ -1377,6 +1381,112 @@ class PostgresIntegrationTests(unittest.TestCase):
                 "UPDATE paper_execution_quality_evidence SET passed=true "
                 "WHERE evidence_id=%s",
                 (quality.evidence_id,),
+            )
+        restarted.close()
+
+    def test_operational_job_monitor_routes_locally_and_recovers(self) -> None:
+        from trade_platform.operational_alerts import (
+            AlertSeverity,
+            PostgresOperationalAlertStore,
+        )
+        from trade_platform.operational_jobs import (
+            OperationalJobStatus,
+            PostgresOperationalJobStore,
+            build_alert_route_policy,
+            build_job_policy,
+            build_job_run,
+        )
+        from trade_platform.persistence import PersistenceError, PostgresDatabase
+
+        database = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        alerts = PostgresOperationalAlertStore(database)
+        jobs = PostgresOperationalJobStore(database, alerts=alerts)
+        suffix = str(self.exchange_id)[:8]
+        policy = build_job_policy(
+            job_name=f"cycle215-signal-expiry-{suffix}",
+            version="v1",
+            interval=timedelta(minutes=5),
+            grace=timedelta(minutes=2),
+            owner="paper-operations",
+            runbook_uri="runbook:cycle215-signal-expiry",
+            approved_by="integration-operator",
+            approved_at=self.now,
+        )
+        route = build_alert_route_policy(
+            route_name=f"cycle215-paper-ops-{suffix}",
+            version="v1",
+            alert_code="OPERATIONAL_JOB_OVERDUE",
+            minimum_severity=AlertSeverity.WARNING,
+            destination_reference="paper-operations-primary",
+            owner="paper-operations",
+            approved_by="integration-operator",
+            approved_at=self.now,
+        )
+        self.assertEqual(jobs.append_policy(policy), policy)
+        self.assertEqual(jobs.append_policy(policy), policy)
+        self.assertEqual(jobs.append_route_policy(route), route)
+        overdue_at = self.now + timedelta(minutes=8)
+        self.assertTrue(jobs.due_jobs(overdue_at)[-1].overdue)
+
+        self._install_failure_trigger("operational_alert_delivery_outbox")
+        try:
+            with self.assertRaises(PersistenceError):
+                jobs.monitor_overdue(overdue_at)
+        finally:
+            self._remove_failure_trigger("operational_alert_delivery_outbox")
+        self.assertFalse(
+            any(
+                alert.resource == f"job:{policy.job_name}"
+                for alert in alerts.active()
+            )
+        )
+
+        opened = jobs.monitor_overdue(overdue_at)
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(opened[0].code, "OPERATIONAL_JOB_OVERDUE")
+        self.assertEqual(len(jobs.outbox(opened[0].alert_id)), 1)
+        self.assertEqual(jobs.monitor_overdue(overdue_at), opened)
+        self.assertEqual(len(jobs.outbox(opened[0].alert_id)), 1)
+
+        run = build_job_run(
+            policy_id=policy.policy_id,
+            idempotency_key=f"{policy.job_name}:2026-08-19T00:00:00Z",
+            scheduled_for=self.now + timedelta(minutes=5),
+            started_at=self.now + timedelta(minutes=8),
+            completed_at=self.now + timedelta(minutes=8, seconds=1),
+            status=OperationalJobStatus.SUCCEEDED,
+            summary={"expired": "0", "authority": "evidence-only"},
+        )
+        self.assertEqual(jobs.append_run(run), run)
+        self.assertEqual(jobs.append_run(run), run)
+        self.assertEqual(jobs.monitor_overdue(self.now + timedelta(minutes=9)), ())
+        self.assertFalse(
+            any(
+                alert.resource == f"job:{policy.job_name}"
+                for alert in alerts.active()
+            )
+        )
+        database.close()
+
+        restarted = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        recovered = PostgresOperationalJobStore(
+            restarted, alerts=PostgresOperationalAlertStore(restarted)
+        )
+        recovered_state = next(
+            state
+            for state in recovered.due_jobs(self.now + timedelta(minutes=9))
+            if state.policy.policy_id == policy.policy_id
+        )
+        self.assertEqual(recovered_state.last_successful_at, run.completed_at)
+        self.assertFalse(recovered_state.due)
+        with (
+            self.assertRaises(PersistenceError),
+            restarted.transaction() as connection,
+            connection.cursor() as cursor,
+        ):
+            cursor.execute(
+                "UPDATE operational_job_runs SET status='FAILED' WHERE run_id=%s",
+                (run.run_id,),
             )
         restarted.close()
 
