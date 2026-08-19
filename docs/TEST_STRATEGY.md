@@ -112,3 +112,22 @@ quality/security/supply-chain gate, the production build and all eleven
 protected configured browser scenarios. Earlier runs `32283521769` and
 `32283691569` exposed and closed, respectively, an over-specific expiry-batch
 assertion and stale secret-baseline line metadata.
+
+## Cycle 212 — Per-Trade Stop and Gap-Loss Enforcement
+
+Cycle 212 adds deterministic tests for complete typed risk-policy decoding,
+missing and wrong-side stops, intent/signal direction and entry-range mismatch,
+maximum stop distance, loss at stop and conservative policy-buffered gap loss.
+Coordinator and composed-runtime tests prove the calculations survive keyed
+SQLite reopen, breached gap loss cannot reach paper submission and a runtime
+cannot start with a legacy policy that omits the three-control set.
+
+The configured PostgreSQL runtime test now asserts the same stop/gap figures in
+the immutable assessment payload, and migration 0024 validates that payload's
+shape. Local verification discovers **364 tests**, passes **330** and explicitly
+skips **34 PostgreSQL-only tests**. Compileall, full Ruff, the tightened
+**117/117** complete-package mypy ratchet and a zero-error **34-file** critical
+slice pass. PR-head run `32286392247` then verifies migration 0024, all **364
+tests without skips**, the unchanged **100-table** restore, PostgreSQL restart
+and immutable calculations, every quality/security/supply-chain gate, the
+production build and protected browser matrix.

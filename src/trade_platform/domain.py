@@ -122,6 +122,9 @@ class Signal:
     data_quality_score: Decimal
     direction: OrderSide
     explanation: str
+    entry_low: Decimal | None = None
+    entry_high: Decimal | None = None
+    stop_level: Decimal | None = None
 
     @property
     def is_expired(self) -> bool:
@@ -154,6 +157,20 @@ class RiskPolicy:
     maximum_event_risk: Decimal = Decimal("0.50")
     maximum_expected_slippage_fraction: Decimal = Decimal("0.02")
     max_market_age_seconds: int = 60
+    maximum_per_trade_loss: Decimal | None = None
+    maximum_stop_distance_fraction: Decimal | None = None
+    stop_gap_buffer_fraction: Decimal | None = None
+
+    @property
+    def per_trade_controls_configured(self) -> bool:
+        return all(
+            value is not None
+            for value in (
+                self.maximum_per_trade_loss,
+                self.maximum_stop_distance_fraction,
+                self.stop_gap_buffer_fraction,
+            )
+        )
 
 
 @dataclass(frozen=True, slots=True)

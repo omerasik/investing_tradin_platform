@@ -14,6 +14,7 @@ from .persistence import PostgresDatabase
 from .policy_registry import PolicyDocument, PolicyRegistryError, SQLitePolicyRegistry
 from .portfolio_risk import PortfolioRiskDecision, StressResult
 from .pretrade_assessment import PreTradeAssessment, PreTradeInputEvidence
+from .risk import PerTradeRiskEvidence
 
 
 class PostgresPolicyRegistry:
@@ -145,6 +146,9 @@ def _assessment_payload(assessment: PreTradeAssessment) -> dict[str, object]:
         "input_evidence": None
         if assessment.input_evidence is None
         else assessment.input_evidence.to_payload(),
+        "per_trade_risk": None
+        if assessment.per_trade_risk is None
+        else assessment.per_trade_risk.to_payload(),
     }
 
 
@@ -194,6 +198,7 @@ def _assessment_from_payload(payload: dict[str, object]) -> PreTradeAssessment:
             assessed_at,
         )
         input_payload = payload.get("input_evidence")
+        per_trade_payload = payload.get("per_trade_risk")
         return PreTradeAssessment(
             UUID(str(payload["assessment_id"])),
             risk,
@@ -209,6 +214,9 @@ def _assessment_from_payload(payload: dict[str, object]) -> PreTradeAssessment:
             None
             if not isinstance(input_payload, dict)
             else PreTradeInputEvidence.from_payload(input_payload),
+            None
+            if not isinstance(per_trade_payload, dict)
+            else PerTradeRiskEvidence.from_payload(per_trade_payload),
         )
     except (KeyError, TypeError, ValueError, ArithmeticError) as error:
         raise ValueError("invalid_postgres_pretrade_assessment_payload") from error

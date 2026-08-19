@@ -6,8 +6,10 @@ The full requirement-level matrix is in
 - A disposable PostgreSQL DSN is not configured on this workstation. PostgreSQL
   migrations, restart/immutability, restore reconciliation and configured browser
   scenarios are therefore hosted-CI evidence, not local execution evidence.
-  Cycle 211 PR-head run `32283931250` verifies migration 0023, 358 no-skip tests
-  and 100 restored tables; exact-merge verification is still required.
+  Exact-main run `32284687492` verifies migration 0023, 358 no-skip tests and
+  100 restored tables. Cycle 212 PR-head run `32286392247` verifies migration
+  0024, 364 no-skip tests and the unchanged 100-table restore; exact-merge proof
+  remains required.
 
 - This is a local, paper-only system. Live trading is intentionally unavailable.
 - SQLite stores provide durable local evidence but are not the normalized
@@ -111,11 +113,16 @@ The full requirement-level matrix is in
   real corpus, measured classifier quality, production cadence, feature feed or
   operator workspace.
 - Cycle 211 adds an immutable reasoned signal timeline, bounded idempotent expiry
-  batch and read-only Signal Explorer. PR-head run `32283931250` verifies all
+  batch and read-only Signal Explorer. Exact-main run `32284687492` verifies all
   358 tests without skips, migration 0023, 100-table restore and all eleven
   configured browser scenarios. The scheduler is callable but not deployed
   continuously, and no signal can activate a strategy, create an order or
   contact a broker through this workspace.
+- Cycle 212 enforces policy-bound per-trade loss, stop distance and conservative
+  gap loss in composed paper runtimes and persists the calculations in keyed
+  assessment evidence. The buffer is a reviewed deterministic policy input, not
+  a calibrated empirical gap model; live source calibration remains outstanding.
+  A stop is risk evidence, not proof that any fill or exit can occur at that price.
 - Regime, ensemble, ML and agent layers are local governance/research contracts;
   they do not have validated production models, retrieval, orchestration,
   empirical evaluation or execution authority.
@@ -136,7 +143,7 @@ The full requirement-level matrix is in
 - The repository is PUBLIC. It contains no approved credential or private
   dataset; mandatory tracked-file secret scanning reduces but does not remove
   accidental-disclosure risk. Visibility was not changed.
-- Complete-package mypy has 120 known errors across 18 legacy modules. CI uses
+- Complete-package mypy has 117 known errors across 18 legacy modules. CI uses
   a file-level non-increasing ratchet and requires the critical PostgreSQL slice
   to remain at zero errors.
 - Upstream repositories are reference-only pending complete isolated security,

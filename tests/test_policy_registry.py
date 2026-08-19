@@ -51,6 +51,34 @@ class PolicyRegistryTests(unittest.TestCase):
             registry.resolve_portfolio_policy("incomplete")
         registry.close()
 
+    def test_per_trade_risk_controls_are_atomic_and_typed(self) -> None:
+        registry = SQLitePolicyRegistry()
+        approved_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        registry.append(PolicyDocument("risk", "complete", {
+            "maximum_per_trade_loss": "100", "maximum_stop_distance_fraction": "0.05",
+            "stop_gap_buffer_fraction": "0.02",
+        }, "risk-committee", approved_at))
+        policy = registry.resolve_risk_policy("complete")
+        self.assertTrue(policy.per_trade_controls_configured)
+        registry.append(PolicyDocument("risk", "incomplete", {
+            "maximum_per_trade_loss": "100",
+        }, "risk-committee", approved_at))
+        with self.assertRaisesRegex(PolicyRegistryError, "invalid_risk_policy_payload"):
+            registry.resolve_risk_policy("incomplete")
+        registry.append(PolicyDocument("risk", "invalid", {
+            "maximum_per_trade_loss": "100", "maximum_stop_distance_fraction": "1.1",
+            "stop_gap_buffer_fraction": "0.02",
+        }, "risk-committee", approved_at))
+        with self.assertRaisesRegex(PolicyRegistryError, "invalid_risk_policy_payload"):
+            registry.resolve_risk_policy("invalid")
+        registry.append(PolicyDocument("risk", "invalid-gap", {
+            "maximum_per_trade_loss": "100", "maximum_stop_distance_fraction": "0.05",
+            "stop_gap_buffer_fraction": "1",
+        }, "risk-committee", approved_at))
+        with self.assertRaisesRegex(PolicyRegistryError, "invalid_risk_policy_payload"):
+            registry.resolve_risk_policy("invalid-gap")
+        registry.close()
+
 
 if __name__ == "__main__":
     unittest.main()

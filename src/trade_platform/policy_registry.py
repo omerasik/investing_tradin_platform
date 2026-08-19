@@ -55,12 +55,78 @@ class SQLitePolicyRegistry:
 
     def resolve_risk_policy(self, version: str) -> RiskPolicy:
         document = self.get("risk", version)
-        allowed = {"minimum_data_quality", "maximum_spread_fraction", "maximum_order_notional", "maximum_position_notional", "maximum_daily_order_notional", "maximum_event_risk", "maximum_expected_slippage_fraction", "max_market_age_seconds"}
+        allowed = {
+            "minimum_data_quality", "maximum_spread_fraction", "maximum_order_notional",
+            "maximum_position_notional", "maximum_daily_order_notional", "maximum_event_risk",
+            "maximum_expected_slippage_fraction", "max_market_age_seconds",
+            "maximum_per_trade_loss", "maximum_stop_distance_fraction",
+            "stop_gap_buffer_fraction",
+        }
         if set(document.payload) - allowed:
             raise PolicyRegistryError("invalid_risk_policy_payload")
         try:
-            values = {key: int(value) if key == "max_market_age_seconds" else Decimal(str(value)) for key, value in document.payload.items()}
-            return RiskPolicy(**values)
+            per_trade_fields = {
+                "maximum_per_trade_loss", "maximum_stop_distance_fraction",
+                "stop_gap_buffer_fraction",
+            }
+            configured_fields = per_trade_fields & set(document.payload)
+            if configured_fields and configured_fields != per_trade_fields:
+                raise TypeError("incomplete_per_trade_risk_policy")
+            defaults = RiskPolicy()
+
+            def decimal_value(name: str, default: Decimal) -> Decimal:
+                return Decimal(str(document.payload.get(name, default)))
+
+            policy = RiskPolicy(
+                minimum_data_quality=decimal_value(
+                    "minimum_data_quality", defaults.minimum_data_quality
+                ),
+                maximum_spread_fraction=decimal_value(
+                    "maximum_spread_fraction", defaults.maximum_spread_fraction
+                ),
+                maximum_order_notional=decimal_value(
+                    "maximum_order_notional", defaults.maximum_order_notional
+                ),
+                maximum_position_notional=decimal_value(
+                    "maximum_position_notional", defaults.maximum_position_notional
+                ),
+                maximum_daily_order_notional=decimal_value(
+                    "maximum_daily_order_notional", defaults.maximum_daily_order_notional
+                ),
+                maximum_event_risk=decimal_value(
+                    "maximum_event_risk", defaults.maximum_event_risk
+                ),
+                maximum_expected_slippage_fraction=decimal_value(
+                    "maximum_expected_slippage_fraction",
+                    defaults.maximum_expected_slippage_fraction,
+                ),
+                max_market_age_seconds=int(
+                    str(document.payload.get("max_market_age_seconds", defaults.max_market_age_seconds))
+                ),
+                maximum_per_trade_loss=None
+                if "maximum_per_trade_loss" not in document.payload
+                else Decimal(str(document.payload["maximum_per_trade_loss"])),
+                maximum_stop_distance_fraction=None
+                if "maximum_stop_distance_fraction" not in document.payload
+                else Decimal(str(document.payload["maximum_stop_distance_fraction"])),
+                stop_gap_buffer_fraction=None
+                if "stop_gap_buffer_fraction" not in document.payload
+                else Decimal(str(document.payload["stop_gap_buffer_fraction"])),
+            )
+            if policy.per_trade_controls_configured:
+                maximum_loss = policy.maximum_per_trade_loss
+                maximum_distance = policy.maximum_stop_distance_fraction
+                gap_buffer = policy.stop_gap_buffer_fraction
+                if (
+                    maximum_loss is None or maximum_distance is None or gap_buffer is None
+                    or not maximum_loss.is_finite() or maximum_loss <= 0
+                    or not maximum_distance.is_finite()
+                    or not Decimal("0") < maximum_distance <= Decimal("1")
+                    or not gap_buffer.is_finite()
+                    or not Decimal("0") <= gap_buffer < Decimal("1")
+                ):
+                    raise TypeError("invalid_per_trade_risk_policy")
+            return policy
         except (TypeError, ValueError, ArithmeticError) as error:
             raise PolicyRegistryError("invalid_risk_policy_payload") from error
 
@@ -89,7 +155,7 @@ class SQLitePolicyRegistry:
                 else:
                     values[field] = Decimal(str(value))
             for field in integer_fields & set(document.payload):
-                values[field] = int(document.payload[field])
+                values[field] = int(str(document.payload[field]))
             for field in mapping_fields & set(document.payload):
                 mapping = document.payload[field]
                 if not isinstance(mapping, dict) or any(not isinstance(name, str) or not name.strip() for name in mapping):

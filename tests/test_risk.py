@@ -14,7 +14,12 @@ from trade_platform.domain import (
     SignalStatus,
     utc_now,
 )
-from trade_platform.risk import KillSwitchRegistry, PreTradeExecutionContext, RiskEngine
+from trade_platform.risk import (
+    KillSwitchRegistry,
+    PreTradeExecutionContext,
+    RiskEngine,
+    evaluate_per_trade_risk,
+)
 
 
 def approved_inputs() -> tuple[OrderIntent, Signal, MarketSnapshot, PortfolioState, PreTradeExecutionContext]:
@@ -83,6 +88,90 @@ class RiskEngineTests(unittest.TestCase):
         self.assertEqual(set(result.reasons), {"invalid_trading_session", "instrument_halted", "quote_missing", "expected_slippage_limit", "event_risk_limit", "insufficient_buying_power", "broker_state_uncertain", "strategy_disabled", "model_not_approved"})
         missing = RiskEngine(RiskPolicy()).assess(OrderIntent(uuid4(), signal.signal_id, signal.instrument_id, intent.account_id, intent.side, intent.quantity, intent.limit_price), signal, market, portfolio)
         self.assertIn("missing_execution_context", missing.reasons)
+
+    def test_configured_stop_and_gap_losses_are_calculated_and_enforced(self) -> None:
+        intent, base_signal, market, portfolio, execution = approved_inputs()
+        signal = Signal(
+            base_signal.signal_id, base_signal.instrument_id, base_signal.strategy_version,
+            base_signal.status, base_signal.created_at, base_signal.expires_at,
+            base_signal.data_quality_score, base_signal.direction, base_signal.explanation,
+            Decimal("99"), Decimal("101"), Decimal("98"),
+        )
+        policy = RiskPolicy(
+            maximum_per_trade_loss=Decimal("30"),
+            maximum_stop_distance_fraction=Decimal("0.05"),
+            stop_gap_buffer_fraction=Decimal("0.02"),
+        )
+        evidence, reasons = evaluate_per_trade_risk(intent, signal, policy)
+        self.assertEqual(evidence.loss_at_stop, Decimal("20"))
+        self.assertEqual(evidence.gap_adjusted_stop_price, Decimal("96.04"))
+        self.assertEqual(evidence.gap_adjusted_loss, Decimal("39.60"))
+        self.assertEqual(reasons, ("per_trade_gap_loss_limit",))
+        result = RiskEngine(policy).assess(intent, signal, market, portfolio, execution)
+        self.assertEqual(result.decision, RiskDecisionType.REJECT)
+        self.assertIn("per_trade_gap_loss_limit", result.reasons)
+        raw_limit = RiskPolicy(
+            maximum_per_trade_loss=Decimal("10"),
+            maximum_stop_distance_fraction=Decimal("0.05"),
+            stop_gap_buffer_fraction=Decimal("0.02"),
+        )
+        raw_result = RiskEngine(raw_limit).assess(
+            OrderIntent(uuid4(), signal.signal_id, signal.instrument_id, intent.account_id, intent.side, intent.quantity, intent.limit_price),
+            signal, market, portfolio, execution,
+        )
+        self.assertIn("per_trade_loss_limit", raw_result.reasons)
+        self.assertIn("per_trade_gap_loss_limit", raw_result.reasons)
+
+        short_intent = OrderIntent(
+            uuid4(), signal.signal_id, signal.instrument_id, intent.account_id,
+            OrderSide.SELL, Decimal("10"), Decimal("100"),
+        )
+        short_signal = Signal(
+            signal.signal_id, signal.instrument_id, signal.strategy_version, signal.status,
+            signal.created_at, signal.expires_at, signal.data_quality_score, OrderSide.SELL,
+            signal.explanation, Decimal("99"), Decimal("101"), Decimal("102"),
+        )
+        short_evidence, short_reasons = evaluate_per_trade_risk(
+            short_intent, short_signal,
+            RiskPolicy(maximum_per_trade_loss=Decimal("100"), maximum_stop_distance_fraction=Decimal("0.05"), stop_gap_buffer_fraction=Decimal("0.02")),
+        )
+        self.assertEqual(short_evidence.gap_adjusted_stop_price, Decimal("104.04"))
+        self.assertEqual(short_evidence.gap_adjusted_loss, Decimal("40.40"))
+        self.assertEqual(short_reasons, ())
+
+    def test_configured_per_trade_policy_fails_closed_for_missing_or_invalid_stop(self) -> None:
+        intent, signal, market, portfolio, execution = approved_inputs()
+        policy = RiskPolicy(
+            maximum_per_trade_loss=Decimal("100"),
+            maximum_stop_distance_fraction=Decimal("0.05"),
+            stop_gap_buffer_fraction=Decimal("0.02"),
+        )
+        missing = RiskEngine(policy).assess(intent, signal, market, portfolio, execution)
+        self.assertIn("protective_stop_required", missing.reasons)
+        wrong_side = Signal(
+            signal.signal_id, signal.instrument_id, signal.strategy_version, signal.status,
+            signal.created_at, signal.expires_at, signal.data_quality_score, signal.direction,
+            signal.explanation, Decimal("99"), Decimal("101"), Decimal("101"),
+        )
+        rejected = RiskEngine(policy).assess(intent, wrong_side, market, portfolio, execution)
+        self.assertIn("protective_stop_wrong_side", rejected.reasons)
+
+    def test_stop_distance_and_signal_entry_range_are_independent_limits(self) -> None:
+        intent, base_signal, market, portfolio, execution = approved_inputs()
+        signal = Signal(
+            base_signal.signal_id, base_signal.instrument_id, base_signal.strategy_version,
+            base_signal.status, base_signal.created_at, base_signal.expires_at,
+            base_signal.data_quality_score, base_signal.direction, base_signal.explanation,
+            Decimal("90"), Decimal("95"), Decimal("90"),
+        )
+        policy = RiskPolicy(
+            maximum_per_trade_loss=Decimal("1000"),
+            maximum_stop_distance_fraction=Decimal("0.05"),
+            stop_gap_buffer_fraction=Decimal("0.01"),
+        )
+        result = RiskEngine(policy).assess(intent, signal, market, portfolio, execution)
+        self.assertIn("intent_outside_signal_entry_range", result.reasons)
+        self.assertIn("stop_distance_limit", result.reasons)
 
 
 if __name__ == "__main__":

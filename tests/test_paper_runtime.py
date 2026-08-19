@@ -44,7 +44,10 @@ class PaperRuntimeTests(unittest.TestCase):
     def seed_policies(path: Path):
         registry = SQLitePolicyRegistry(path)
         approved_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        registry.append(PolicyDocument("risk", "risk:paper-v1", {"maximum_order_notional": "10000"}, "risk-committee", approved_at))
+        registry.append(PolicyDocument("risk", "risk:paper-v1", {
+            "maximum_order_notional": "10000", "maximum_per_trade_loss": "100",
+            "maximum_stop_distance_fraction": "0.05", "stop_gap_buffer_fraction": "0.02",
+        }, "risk-committee", approved_at))
         registry.append(PolicyDocument("portfolio", "portfolio:paper-v1", {"maximum_gross_notional": "10000", "maximum_single_weight": "1", "maximum_scenario_loss": "10000", "maximum_var_loss": "1", "minimum_historical_observations": 1, "return_history_window_observations": 1, "maximum_return_history_age_seconds": 86400, "stress_scenarios": {"risk_off": {"ETF": "-0.1"}}}, "risk-committee", approved_at))
         registry.close()
         models = SQLiteModelRegistry(path)
@@ -85,6 +88,18 @@ class PaperRuntimeTests(unittest.TestCase):
             config = PlatformConfig(assessment_integrity_key_reference="env:TRADE_PLATFORM_ASSESSMENT_KEY")
             with patch.dict(os.environ, {"TRADE_PLATFORM_ASSESSMENT_KEY": "test-key"}, clear=True), self.assertRaisesRegex(ValueError, "unknown_policy_version"):
                 build_paper_runtime(config=config, database_path=path, adapter=adapter, policy_selection=PaperPolicySelection("risk:missing", "portfolio:paper-v1", model_id))
+
+    def test_runtime_rejects_policy_without_per_trade_controls(self) -> None:
+        adapter = SandboxPaperBrokerAdapter(BrokerConfiguration("local", BrokerMode.SIMULATED_PAPER, "paper"), cash=CashBalance("USD", Decimal("1000")))
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "paper.sqlite"
+            model_id = self.seed_policies(path)
+            registry = SQLitePolicyRegistry(path)
+            registry.append(PolicyDocument("risk", "risk:legacy", {"maximum_order_notional": "10000"}, "risk-committee", datetime(2026, 1, 1, tzinfo=timezone.utc)))
+            registry.close()
+            config = PlatformConfig(assessment_integrity_key_reference="env:TRADE_PLATFORM_ASSESSMENT_KEY")
+            with patch.dict(os.environ, {"TRADE_PLATFORM_ASSESSMENT_KEY": "test-key"}, clear=True), self.assertRaisesRegex(PaperRuntimeError, "per_trade_risk_policy_required"):
+                build_paper_runtime(config=config, database_path=path, adapter=adapter, policy_selection=PaperPolicySelection("risk:legacy", "portfolio:paper-v1", model_id))
 
     def test_runtime_rejects_portfolio_policy_without_reviewed_stress_suite(self) -> None:
         adapter = SandboxPaperBrokerAdapter(BrokerConfiguration("local", BrokerMode.SIMULATED_PAPER, "paper"), cash=CashBalance("USD", Decimal("1000")))
@@ -151,9 +166,12 @@ class PaperRuntimeTests(unittest.TestCase):
                 result = runtime.assess_and_submit(intent, observed_at=now)
                 self.assertTrue(result.assessment.approved, result.assessment.risk_decision.reasons)
                 self.assertEqual(result.assessment.portfolio_decision.var_loss, Decimal("0.01"))
+                self.assertEqual(result.assessment.per_trade_risk.loss_at_stop, Decimal("20"))
+                self.assertEqual(result.assessment.per_trade_risk.gap_adjusted_loss, Decimal("39.60"))
                 self.assertTrue(result.assessment.input_evidence.return_history_reference)
                 self.assertEqual(result.assessment.input_evidence.return_history_observed_at, now - timedelta(days=1))
                 self.assertEqual(runtime.assessments.get_for_intent(intent.intent_id).input_evidence, result.assessment.input_evidence)
+                self.assertEqual(runtime.assessments.get_for_intent(intent.intent_id).per_trade_risk, result.assessment.per_trade_risk)
                 self.assertEqual(result.paper_order.status.value, "ACKNOWLEDGED")
                 self.assertEqual(len(adapter.order_events()), 1)
                 runtime.promotions.append_activation(StrategyActivation(uuid4(), "trend-v1", False, "operator", now, now))

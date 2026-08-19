@@ -79,6 +79,136 @@ class PreTradeExecutionContext:
             raise ValueError("invalid_pre_trade_execution_context")
 
 
+@dataclass(frozen=True, slots=True)
+class PerTradeRiskEvidence:
+    """Deterministic loss-at-stop and policy-buffered gap-loss evidence."""
+
+    entry_price: Decimal
+    stop_price: Decimal
+    stop_distance_fraction: Decimal
+    loss_at_stop: Decimal
+    gap_buffer_fraction: Decimal
+    gap_adjusted_stop_price: Decimal
+    gap_adjusted_loss: Decimal
+    maximum_per_trade_loss: Decimal
+    maximum_stop_distance_fraction: Decimal
+
+    def __post_init__(self) -> None:
+        values = tuple(getattr(self, name) for name in self.__dataclass_fields__)
+        if (
+            any(not value.is_finite() for value in values)
+            or self.entry_price <= 0
+            or self.stop_price <= 0
+            or self.gap_adjusted_stop_price <= 0
+            or self.loss_at_stop < 0
+            or self.gap_adjusted_loss < 0
+            or self.maximum_per_trade_loss <= 0
+            or not Decimal("0") <= self.stop_distance_fraction
+            or not Decimal("0") <= self.gap_buffer_fraction < Decimal("1")
+            or not Decimal("0") < self.maximum_stop_distance_fraction <= Decimal("1")
+        ):
+            raise ValueError("invalid_per_trade_risk_evidence")
+
+    def to_payload(self) -> dict[str, str]:
+        return {
+            "entry_price": str(self.entry_price),
+            "stop_price": str(self.stop_price),
+            "stop_distance_fraction": str(self.stop_distance_fraction),
+            "loss_at_stop": str(self.loss_at_stop),
+            "gap_buffer_fraction": str(self.gap_buffer_fraction),
+            "gap_adjusted_stop_price": str(self.gap_adjusted_stop_price),
+            "gap_adjusted_loss": str(self.gap_adjusted_loss),
+            "maximum_per_trade_loss": str(self.maximum_per_trade_loss),
+            "maximum_stop_distance_fraction": str(self.maximum_stop_distance_fraction),
+        }
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, object]) -> "PerTradeRiskEvidence":
+        try:
+            return cls(**{name: Decimal(str(payload[name])) for name in cls.__dataclass_fields__})
+        except (KeyError, TypeError, ValueError, ArithmeticError) as error:
+            raise ValueError("invalid_per_trade_risk_evidence") from error
+
+
+def evaluate_per_trade_risk(
+    intent: OrderIntent,
+    signal: Signal,
+    policy: RiskPolicy,
+) -> tuple[PerTradeRiskEvidence | None, tuple[str, ...]]:
+    """Calculate configured stop and gap losses without granting execution authority."""
+
+    configured = (
+        policy.maximum_per_trade_loss,
+        policy.maximum_stop_distance_fraction,
+        policy.stop_gap_buffer_fraction,
+    )
+    if all(value is None for value in configured):
+        return None, ()
+    if not policy.per_trade_controls_configured:
+        return None, ("per_trade_risk_policy_incomplete",)
+    maximum_loss = policy.maximum_per_trade_loss
+    maximum_distance = policy.maximum_stop_distance_fraction
+    gap_buffer = policy.stop_gap_buffer_fraction
+    if maximum_loss is None or maximum_distance is None or gap_buffer is None:
+        return None, ("per_trade_risk_policy_incomplete",)
+    if (
+        not maximum_loss.is_finite()
+        or not maximum_distance.is_finite()
+        or not gap_buffer.is_finite()
+        or maximum_loss <= 0
+        or not Decimal("0") < maximum_distance <= Decimal("1")
+        or not Decimal("0") <= gap_buffer < Decimal("1")
+    ):
+        return None, ("per_trade_risk_policy_invalid",)
+    if signal.stop_level is None or signal.stop_level <= 0:
+        return None, ("protective_stop_required",)
+
+    stop_price = signal.stop_level
+    entry_price = intent.limit_price
+    if entry_price <= 0 or intent.quantity <= 0:
+        return None, ()
+    stop_distance = abs(entry_price - stop_price)
+    stop_distance_fraction = stop_distance / entry_price
+    if intent.side.value == "BUY":
+        gap_adjusted_stop = stop_price * (Decimal("1") - gap_buffer)
+        stop_wrong_side = stop_price >= entry_price
+    else:
+        gap_adjusted_stop = stop_price * (Decimal("1") + gap_buffer)
+        stop_wrong_side = stop_price <= entry_price
+    loss_at_stop = stop_distance * intent.quantity
+    gap_adjusted_loss = abs(entry_price - gap_adjusted_stop) * intent.quantity
+    evidence = PerTradeRiskEvidence(
+        entry_price,
+        stop_price,
+        stop_distance_fraction,
+        loss_at_stop,
+        gap_buffer,
+        gap_adjusted_stop,
+        gap_adjusted_loss,
+        maximum_loss,
+        maximum_distance,
+    )
+    reasons: list[str] = []
+    if signal.direction is not intent.side:
+        reasons.append("signal_order_direction_mismatch")
+    if (signal.entry_low is None) != (signal.entry_high is None):
+        reasons.append("signal_entry_range_incomplete")
+    elif signal.entry_low is not None and signal.entry_high is not None:
+        if signal.entry_low <= 0 or signal.entry_high < signal.entry_low:
+            reasons.append("signal_entry_range_invalid")
+        elif not signal.entry_low <= entry_price <= signal.entry_high:
+            reasons.append("intent_outside_signal_entry_range")
+    if stop_wrong_side:
+        reasons.append("protective_stop_wrong_side")
+    if stop_distance_fraction > maximum_distance:
+        reasons.append("stop_distance_limit")
+    if loss_at_stop > maximum_loss:
+        reasons.append("per_trade_loss_limit")
+    if gap_adjusted_loss > maximum_loss:
+        reasons.append("per_trade_gap_loss_limit")
+    return evidence, tuple(reasons)
+
+
 def _validate_kill_switch_scope(scope: str) -> None:
     if scope == "GLOBAL":
         return
@@ -554,6 +684,10 @@ class RiskEngine:
             reasons.append("invalid_order_quantity_or_price")
         if intent.notional > self._policy.maximum_order_notional:
             reasons.append("order_notional_limit")
+        _per_trade_evidence, per_trade_reasons = evaluate_per_trade_risk(
+            intent, signal, self._policy
+        )
+        reasons.extend(per_trade_reasons)
         signed_notional = intent.notional if intent.side.value == "BUY" else -intent.notional
         projected = portfolio.position_notional(intent.instrument_id) + signed_notional
         if abs(projected) > self._policy.maximum_position_notional:
