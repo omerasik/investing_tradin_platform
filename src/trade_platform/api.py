@@ -1,6 +1,7 @@
 """Local-only API exposing system state and audit events, never execution controls."""
 
 import json
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
@@ -18,7 +19,21 @@ from .investments import (
 )
 from .observability import MetricsRegistry, StructuredEventLogger
 from .operational_alerts import AlertError, AlertStatus, SQLiteOperationalAlertStore
+from .operator_dashboard import (
+    DashboardObjectNotFound,
+    DashboardQueryError,
+    FeatureDefinitionPage,
+    FeatureDefinitionView,
+    FeatureMaterializationPage,
+    NewsEventPage,
+    PortfolioConstructionView,
+    PostgresOperatorDashboardQueries,
+    RegimeRunView,
+    SreOverviewView,
+    StrategyScorecardView,
+)
 from .paper_oms import PaperOmsError, SQLitePaperOms
+from .persistence import PersistenceTarget
 from .portfolio_risk import (
     PortfolioExposure,
     PortfolioRiskPolicy,
@@ -102,6 +117,39 @@ class StrategyCreateRequest(BaseModel):
     expected_regimes: list[str] = Field(min_length=1, max_length=50); parameter_schema: dict[str, str] = Field(min_length=1, max_length=100); failure_conditions: list[str] = Field(min_length=1, max_length=100); limitations: list[str] = Field(min_length=1, max_length=100); idempotency_key: str = Field(min_length=1, max_length=200)
 
 
+class OperatorEvidenceReference(BaseModel):
+    id: str
+    kind: str
+
+
+class OperatorEvidenceState(BaseModel):
+    """Stable, read-only dashboard contract; no client derives operational truth."""
+
+    id: str
+    status: str
+    version: str
+    source: str
+    as_of: str
+    freshness: str
+    limitations: list[str]
+    evidence_references: list[OperatorEvidenceReference]
+    details: dict[str, object]
+
+
+class CommandCenterResponse(BaseModel):
+    id: str
+    status: str
+    version: str
+    source: str
+    as_of: str
+    freshness: str
+    limitations: list[str]
+    evidence_references: list[OperatorEvidenceReference]
+    platform_mode: str
+    live_trading_enabled: bool
+    states: list[OperatorEvidenceState]
+
+
 def _serialize(event: AuditEvent) -> AuditEventResponse:
     return AuditEventResponse(
         event_id=str(event.event_id),
@@ -145,6 +193,7 @@ def build_app(
     strategy_registry: SQLiteStrategyRegistry | None = None,
     experiment_store: SQLiteExperimentStore | None = None,
     promotion_ledger: SQLitePromotionLedger | None = None,
+    operator_dashboard_queries: PostgresOperatorDashboardQueries | None = None,
 ) -> FastAPI:
     platform_config = config or PlatformConfig()
     store = audit_store or SQLiteAuditStore()
@@ -163,11 +212,186 @@ def build_app(
     app.state.strategy_registry = strategy_registry
     app.state.experiment_store = experiment_store
     app.state.promotion_ledger = promotion_ledger
+    app.state.operator_dashboard_queries = operator_dashboard_queries
 
     @app.get("/health/live")
     def liveness() -> dict[str, str]:
         app.state.metrics.increment("health.liveness.requests")
         return {"status": "ok"}
+
+    @app.get("/operator-dashboard/command-center", response_model=CommandCenterResponse)
+    def command_center(_: None = Depends(protected_operator)) -> CommandCenterResponse:
+        """Read-only operating evidence.  Absence is preserved as unavailable evidence."""
+        now = datetime.now(timezone.utc).isoformat()
+        active_alerts = [] if app.state.alert_store is None else app.state.alert_store.active()
+        critical_alerts = [item for item in active_alerts if item.severity.value == "CRITICAL"]
+        persistence_status = (
+            "POSTGRES_CONFIGURED"
+            if platform_config.persistence_target is PersistenceTarget.POSTGRES
+            else "SQLITE_NON_PRODUCTION"
+        )
+        states = [
+            OperatorEvidenceState(
+                id="database-authority", status=persistence_status, version="platform-config-v1",
+                source="platform_config", as_of=now, freshness="CONFIGURATION_AT_REQUEST",
+                limitations=["Configuration is not a database connectivity probe."],
+                evidence_references=[], details={"persistence_target": platform_config.persistence_target.value},
+            ),
+            OperatorEvidenceState(
+                id="live-trading", status="DISABLED", version="platform-config-v1",
+                source="platform_config", as_of=now, freshness="CONFIGURATION_AT_REQUEST",
+                limitations=["This build prohibits live execution."], evidence_references=[],
+                details={"live_trading_enabled": False, "paper_trading_enabled": platform_config.paper_trading_enabled},
+            ),
+            OperatorEvidenceState(
+                id="critical-alerts", status="AVAILABLE" if app.state.alert_store is not None else "UNAVAILABLE",
+                version="operational-alerts-v1", source="operational_alert_store", as_of=now,
+                freshness="QUERY_AT_REQUEST" if app.state.alert_store is not None else "NO_CONFIGURED_SOURCE",
+                limitations=[] if app.state.alert_store is not None else ["Operational alert store is not configured."],
+                evidence_references=[OperatorEvidenceReference(id=str(item.alert_id), kind="operational_alert") for item in critical_alerts],
+                details={"active_critical_alert_count": len(critical_alerts)},
+            ),
+            OperatorEvidenceState(
+                id="recovery-reconciliation", status="UNAVAILABLE", version="recovery-v1",
+                source="not_configured", as_of=now, freshness="NO_CONFIGURED_SOURCE",
+                limitations=["No recovery or reconciliation authority is wired into this API process."],
+                evidence_references=[], details={},
+            ),
+            OperatorEvidenceState(
+                id="kill-switch", status="UNAVAILABLE", version="kill-switch-v1",
+                source="not_configured", as_of=now, freshness="NO_CONFIGURED_SOURCE",
+                limitations=["No kill-switch authority is wired into this API process."],
+                evidence_references=[], details={},
+            ),
+            OperatorEvidenceState(
+                id="backup-restore", status="UNAVAILABLE", version="backup-restore-v1",
+                source="not_configured", as_of=now, freshness="NO_CONFIGURED_SOURCE",
+                limitations=["No backup or restore-drill authority is wired into this API process."],
+                evidence_references=[], details={},
+            ),
+            OperatorEvidenceState(
+                id="ci-build", status="UNAVAILABLE", version="ci-evidence-v1",
+                source="not_configured", as_of=now, freshness="NO_CONFIGURED_SOURCE",
+                limitations=["This runtime has no configured immutable CI evidence source."],
+                evidence_references=[], details={},
+            ),
+        ]
+        if app.state.operator_dashboard_queries is not None:
+            try:
+                for summary in app.state.operator_dashboard_queries.command_summaries():
+                    states.append(OperatorEvidenceState(
+                        id=summary.id, status=summary.status, version="postgres-authority-v1",
+                        source="postgresql", as_of=now if summary.as_of is None else summary.as_of.isoformat(),
+                        freshness="LATEST_PERSISTED_RECORD", limitations=[],
+                        evidence_references=[] if summary.evidence_id is None else [
+                            OperatorEvidenceReference(id=summary.evidence_id, kind=summary.id)
+                        ], details={"detail": summary.detail},
+                    ))
+            except DashboardQueryError:
+                states.append(OperatorEvidenceState(
+                    id="postgres-authorities", status="ERROR", version="postgres-authority-v1",
+                    source="postgresql", as_of=now, freshness="QUERY_FAILED",
+                    limitations=["Authoritative dashboard evidence could not be read."],
+                    evidence_references=[], details={},
+                ))
+        return CommandCenterResponse(
+            id="command-center", status="AVAILABLE", version="operator-dashboard-v1",
+            source="trade_platform.api", as_of=now, freshness="QUERY_AT_REQUEST",
+            limitations=["Evidence reflects only authorities injected into this API process."],
+            evidence_references=[], platform_mode=platform_config.environment,
+            live_trading_enabled=False, states=states,
+        )
+
+    def dashboard_queries() -> PostgresOperatorDashboardQueries:
+        service = app.state.operator_dashboard_queries
+        if service is None:
+            raise HTTPException(status_code=503, detail="PostgreSQL dashboard authority unavailable.")
+        return service
+
+    def read_dashboard(call: Callable[[], object]) -> object:
+        try:
+            return call()
+        except DashboardObjectNotFound as error:
+            raise HTTPException(status_code=404, detail="Dashboard evidence not found.") from error
+        except DashboardQueryError as error:
+            raise HTTPException(status_code=503, detail="Dashboard evidence unavailable.") from error
+
+    @app.get("/operator-dashboard/feature-definitions", response_model=FeatureDefinitionPage)
+    def feature_definitions(
+        family: str | None = Query(default=None, min_length=1, max_length=40),
+        limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10_000),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        return read_dashboard(lambda: queries.feature_definitions(family=family, limit=limit, offset=offset))
+
+    @app.get("/operator-dashboard/feature-definitions/{feature_id}", response_model=FeatureDefinitionView)
+    def feature_definition(
+        feature_id: UUID, _: None = Depends(protected_operator),
+        queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        return read_dashboard(lambda: queries.feature_definition(feature_id))
+
+    @app.get("/operator-dashboard/feature-materializations", response_model=FeatureMaterializationPage)
+    def feature_materializations(
+        feature_id: UUID, instrument: str = Query(min_length=1, max_length=160),
+        dataset_version: str = Query(min_length=1, max_length=160), decision_time: datetime = Query(),
+        limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10_000),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        if decision_time.tzinfo is None or decision_time.utcoffset() is None:
+            raise HTTPException(status_code=422, detail="Decision time must be timezone-aware.")
+        return read_dashboard(lambda: queries.feature_materializations(
+            feature_id=feature_id, instrument=instrument, dataset_version=dataset_version,
+            decision_time=decision_time, limit=limit, offset=offset,
+        ))
+
+    @app.get("/operator-dashboard/strategy-scorecards/{scorecard_id}", response_model=StrategyScorecardView)
+    def strategy_scorecard(
+        scorecard_id: UUID, _: None = Depends(protected_operator),
+        queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        return read_dashboard(lambda: queries.strategy_scorecard(scorecard_id))
+
+    @app.get("/operator-dashboard/regime-runs/{run_id}", response_model=RegimeRunView)
+    def regime_run(
+        run_id: UUID, _: None = Depends(protected_operator),
+        queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        return read_dashboard(lambda: queries.regime_run(run_id))
+
+    @app.get("/operator-dashboard/portfolio-construction-runs/{run_id}", response_model=PortfolioConstructionView)
+    def portfolio_construction(
+        run_id: UUID, _: None = Depends(protected_operator),
+        queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        return read_dashboard(lambda: queries.portfolio_construction(run_id))
+
+    @app.get("/operator-dashboard/news-events", response_model=NewsEventPage)
+    def news_events(
+        instrument: str | None = Query(default=None, min_length=1, max_length=160),
+        entity: str | None = Query(default=None, min_length=1, max_length=160),
+        category: str | None = Query(default=None, min_length=1, max_length=80),
+        start: datetime | None = Query(default=None), end: datetime | None = Query(default=None),
+        correction_state: str | None = Query(default=None, pattern="^(INITIAL|CORRECTION|RETRACTION|FOLLOW_UP)$"),
+        limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10_000),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        for instant in (start, end):
+            if instant is not None and (instant.tzinfo is None or instant.utcoffset() is None):
+                raise HTTPException(status_code=422, detail="News timestamps must be timezone-aware.")
+        if start is not None and end is not None and (end < start or end - start > timedelta(days=366)):
+            raise HTTPException(status_code=422, detail="News time range must be ordered and at most 366 days.")
+        return read_dashboard(lambda: queries.news_events(
+            instrument=instrument, entity=entity, category=category, start=start, end=end,
+            correction_state=correction_state, limit=limit, offset=offset,
+        ))
+
+    @app.get("/operator-dashboard/sre-overview", response_model=SreOverviewView)
+    def sre_overview(
+        service_version_id: UUID | None = None, _: None = Depends(protected_operator),
+        queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        return read_dashboard(lambda: queries.sre_overview(service_version_id))
 
     @app.get("/alerts")
     def active_alerts(_: None = Depends(protected_operator)) -> list[dict[str, object]]:

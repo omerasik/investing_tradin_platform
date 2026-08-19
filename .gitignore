@@ -9,6 +9,9 @@ node_modules/
 
 # Re-creatable local analysis and browser-test artifacts
 tmp/
+graphify-out/
+web/test-results/
+web/playwright-report/
 
 # Deployment secrets and local dashboard configuration
 .env

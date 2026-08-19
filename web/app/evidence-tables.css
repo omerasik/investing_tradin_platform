@@ -1,0 +1,7 @@
+article { overflow: auto; }
+table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 13px; }
+caption { text-align: left; color: #8fb4ff; margin-bottom: 8px; }
+th, td { text-align: left; vertical-align: top; border-bottom: 1px solid #223656; padding: 8px; overflow-wrap: anywhere; }
+th { color: #a9c7ff; }
+.warning { border-left: 3px solid #f5d58b; padding-left: 10px; color: #f5d58b; }
+h3 { margin-top: 22px; color: #c8d9ff; font-size: 15px; }
