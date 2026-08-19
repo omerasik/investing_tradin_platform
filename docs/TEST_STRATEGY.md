@@ -244,3 +244,20 @@ skips**, matches all **111 restored tables**, passes compileall, full Ruff,
 Bandit, dependency/SBOM/secret gates, the **117/117** mypy ratchet, zero-error
 **39-file** critical slice, production build/smoke and the complete configured
 browser matrix.
+
+## Cycle 219 — Hardened Non-Root Research API Container
+
+Static contract tests require a deny-by-default Docker context, exact Python
+base tag/digest, exact runtime dependency resolution, source-only copy,
+credential-free layers, final UID/GID 10001, liveness probe and hardened CI
+flags. Hosted runtime checks build the actual image, inspect its configured user,
+start it read-only with all capabilities dropped, no-new-privileges and a
+bounded no-exec tmpfs, then verify process UID, local-research/paper-only
+readiness and anonymous/viewer read/viewer write HTTP results of 401/200/403.
+
+Local verification discovers **393 tests**, passes **353** and skips **40
+PostgreSQL-only tests**. PR-head run `32298849742` runs all **393 tests without
+skips**, matches all **111 restored tables**, passes the **117/117** mypy
+ratchet, zero-error **39-file** critical slice and every configured quality,
+security, supply-chain, container, frontend and browser gate. This is not an
+image-signing/provenance, container CVE, IaC, production deployment or load test.

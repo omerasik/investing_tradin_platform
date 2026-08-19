@@ -174,6 +174,13 @@ The full requirement-level matrix is in
   dashboard CSP still permits framework-required inline script/style, HSTS is
   effective only over HTTPS, and neither header policy substitutes for a TLS
   terminator, OIDC or identity governance.
+- Cycle 219's container is limited to the default SQLite-backed
+  `local_research` API. Hosted CI proves its digest-pinned build, UID/GID 10001,
+  read-only/capability-free/no-new-privileges runtime, health state and viewer
+  authorization checks. It does not prove a production/PostgreSQL deployment,
+  image signature/provenance, container CVE scan, registry, IaC/orchestration,
+  network/TLS policy, resource sizing, rollback or staging soak. The local
+  Linux Docker daemon is unavailable, so no workstation runtime claim is made.
 - The repository is PUBLIC. It contains no approved credential or private
   dataset; mandatory tracked-file secret scanning reduces but does not remove
   accidental-disclosure risk. Visibility was not changed.

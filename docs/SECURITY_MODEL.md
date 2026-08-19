@@ -32,3 +32,12 @@ Dependency audits cover production and development/test packages and block high
 findings; SBOM/license inventories are retained. Upstream repositories stay
 reference-only under `docs/upstream`; their licenses do not authorize copying
 runtime code.
+
+Cycle 219 reduces research-image privilege and build-context exposure. Its base
+tag is digest-pinned, dependencies are exact-version locked, the context is an
+explicit allow-list, no token is embedded, and the final process is UID/GID
+10001. CI runs it read-only with all capabilities dropped,
+`no-new-privileges`, a bounded no-exec tmpfs and explicit health/authorization
+probes. This is defense-in-depth for the local-research API only: there is no
+image signature/provenance, container CVE scan, registry policy, IaC/network
+policy, production secret manager, PostgreSQL deployment or penetration test.

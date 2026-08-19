@@ -39,6 +39,17 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
+- Cycle 219 PR-head GitHub Actions
+  [run 32298849742](https://github.com/omerasik/investing_tradin_platform/actions/runs/32298849742)
+  verifies all **393 tests without skips**, the digest-pinned/non-root research
+  API image under a read-only, capability-free, no-new-privileges runtime, its
+  health/paper-only state and 401/200/403 authorization boundaries, unchanged
+  **111-table** restore and every existing quality, security, supply-chain,
+  frontend and browser gate.
+- Cycle 218 exact-main GitHub Actions
+  [run 32298149573](https://github.com/omerasik/investing_tradin_platform/actions/runs/32298149573)
+  passed the complete workflow on merge commit
+  `6db68e7cb23d5051ca1fe75617a62fdc73e0abc3`.
 - Cycle 218 PR-head GitHub Actions
   [run 32297293629](https://github.com/omerasik/investing_tradin_platform/actions/runs/32297293629)
   verifies all **388 tests without skips**, the explicit six-role permission
@@ -117,8 +128,8 @@ snapshot, not a second roadmap.
   gates, production dashboard build and all eleven protected PostgreSQL browser
   scenarios.
 - The latest completed exact-mainline PostgreSQL evidence is GitHub Actions
-  [run 32296711621](https://github.com/omerasik/investing_tradin_platform/actions/runs/32296711621)
-  on main commit `1f4352c`: migration 0028, all **383 tests without skips**,
+  [run 32298149573](https://github.com/omerasik/investing_tradin_platform/actions/runs/32298149573)
+  on main commit `6db68e7`: migration 0028, all **388 tests without skips**,
   matched **111-table** restore/reconciliation, Ruff, mypy **117/117** ratchet,
   the zero-error **39-file** critical slice, security/dependency/SBOM/secret
   gates, frontend build/smoke, twelve configured browser scenarios and zero Axe
@@ -172,9 +183,10 @@ snapshot, not a second roadmap.
    approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
 4. Cycle 209 re-audited all RQ-001–RQ-030 rows and is exact-mainline verified.
-   Cycles 212–217 are exact-mainline verified. Cycle 218 is PR-head verified and
-   awaits exact-merge verification; next provider-independent work is container/
-   performance hardening and deeper session/OIDC integration boundaries.
+   Cycles 212–218 are exact-mainline verified. Cycle 219 is PR-head verified;
+   next provider-independent work is container provenance/scanning, performance
+   measurement once Chrome DevTools MCP is available, and deeper session/OIDC
+   integration boundaries.
 
 ## PostgreSQL persistence progress
 
@@ -711,3 +723,29 @@ passes **348** and skips **40 PostgreSQL-only tests**. PR-head run `32297293629`
 runs all **388 tests without skips**, matches **111 restore-critical tables**,
 passes the **117/117** mypy ratchet, zero-error **39-file** critical slice and
 every configured quality, security, supply-chain, build, smoke and browser gate.
+
+Exact merged-main run `32298149573` verifies the unchanged Cycle 218 result on
+commit `6db68e7cb23d5051ca1fe75617a62fdc73e0abc3`.
+
+## Cycle 219 VERIFIED — hardened non-root research API container
+
+Cycle 219 adds a deliberately narrow container for the default
+`local_research` FastAPI composition. The Python base is pinned by exact tag and
+multi-architecture digest, runtime dependencies are exact-version locked, the
+build context is deny-by-default, and only the source tree enters the image.
+The final process is UID/GID 10001 and no credential is baked into a layer.
+
+Hosted CI builds the image and runs it with a read-only root filesystem, all
+Linux capabilities dropped, no-new-privileges and a bounded no-exec tmpfs. It
+proves liveness/readiness report local research, paper enabled and live disabled;
+the process UID is 10001; an anonymous audit read is 401, a viewer read is 200,
+and a viewer write is 403. Local verification discovers **393 tests**, passes
+**353** and skips **40 PostgreSQL-only tests**. PR-head run `32298849742` runs
+all **393 tests without skips**, matches **111 restore-critical tables**, passes
+the **117/117** mypy ratchet, zero-error **39-file** critical slice and every
+configured quality, security, supply-chain, container, frontend and browser gate.
+
+This is not a production/PostgreSQL deployment, signed/provenanced artifact,
+container vulnerability scan, registry publication, IaC plan, orchestrator or
+staging soak. The workstation's Linux Docker daemon is unavailable, so the
+hosted run is the authoritative container build/runtime evidence.

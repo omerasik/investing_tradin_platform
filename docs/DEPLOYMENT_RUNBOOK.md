@@ -2,6 +2,21 @@
 
 Development is local and research-only. Future environments are development, test, paper, then production, with signed/versioned artifacts, migration checks, least-privilege secret injection, staged rollout, rollback and backup/restore evidence. No deployment may include live execution without signed readiness approval.
 
+The repository `Dockerfile` is a narrow research API artifact, not the paper or
+production deployment recipe. It pins Python 3.12.11 by tag and digest, installs
+the exact `requirements-runtime.txt` resolution, copies only `src/`, and runs as
+UID/GID 10001. Build it from the repository root and inject the temporary bearer
+token/role only at runtime. The verified hardened invocation uses a read-only
+root filesystem, `--cap-drop=ALL`, `no-new-privileges` and a bounded no-exec
+`/tmp` tmpfs; `/health/live` and `/health/ready` must pass before use. CI also
+requires readiness to state `local_research`, paper enabled and live disabled.
+Do not relabel this SQLite-backed artifact as a PostgreSQL environment.
+
+Before any staging/production use, add reviewed image signing and provenance,
+container CVE scanning, registry retention/access controls, IaC, network/TLS and
+resource policy, PostgreSQL migration/restore validation, rollback and soak
+evidence. A mutable tag, unsigned image or failed scan is not deployable.
+
 For a PostgreSQL environment, inject the DSN through the deployment secret
 manager, set `persistence_target=postgres`, and run `alembic upgrade head`
 before application startup. `paper` and `production` configuration reject
