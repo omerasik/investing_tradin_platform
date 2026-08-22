@@ -39,6 +39,17 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
+- Cycle 224 PR-head GitHub Actions
+  [run 32549927978](https://github.com/omerasik/investing_tradin_platform/actions/runs/32549927978)
+  applies migration 0030, runs all **417 tests without skips**, reconstructs
+  immutable chronological model-evaluation policies, reports and observations
+  across all **116 restore-critical tables**, passes the **117/117** mypy
+  ratchet and zero-error **41-file** critical slice, then completes every
+  configured security, supply-chain, container, frontend and browser gate.
+- Cycle 223 exact-main GitHub Actions
+  [run 32549205078](https://github.com/omerasik/investing_tradin_platform/actions/runs/32549205078)
+  passed the complete workflow on merge commit
+  `d728db7143934dabfb58488b9d46738deda57111`.
 - Cycle 223 PR-head GitHub Actions
   [run 32548653129](https://github.com/omerasik/investing_tradin_platform/actions/runs/32548653129)
   runs all **411 tests without skips**, matches all **113 restore-critical
@@ -228,10 +239,10 @@ snapshot, not a second roadmap.
    approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
 4. Cycle 209 re-audited all RQ-001–RQ-030 rows and is exact-mainline verified.
-   Cycles 212–222 are exact-mainline verified. Cycle 223 is PR-head verified;
-   next provider-independent work is model/agent evaluation or durable
-   governance operations. Measured browser performance awaits the required
-   Chrome DevTools MCP, and concrete IdP activation remains external.
+   Cycles 212–223 are exact-mainline verified. Cycle 224 model evaluation is
+   PR-head verified; next provider-independent work is retrieval evidence or
+   durable governance operations. Measured browser performance awaits the
+   required Chrome DevTools MCP, and concrete IdP activation remains external.
 
 ## PostgreSQL persistence progress
 

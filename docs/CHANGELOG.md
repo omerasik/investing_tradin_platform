@@ -22,6 +22,18 @@
   skips, 113-table restore, zero-error 40-file typed slice, production smoke,
   protected PostgreSQL Playwright/Axe and every configured security and
   supply-chain gate.
+- Verified Cycle 223 on exact merged main commit
+  `d728db7143934dabfb58488b9d46738deda57111` in CI run `32549205078`.
+- Added Cycle 224's immutable chronological binary-model evaluation authority.
+  A pre-approved policy permits only the immediate next complexity tier and
+  gates leakage-safe holdout metrics, calibration, stability, economic value
+  after cost and local-contribution reconciliation against a predecessor.
+  Reports can reach only `BLOCKED` or `REVIEW_ELIGIBLE`; model execution,
+  serving and automatic approval are absent.
+- Verified Cycle 224 on PR head in CI run `32549927978`: migration 0030, all
+  417 tests without skips, 116-table restore, zero-error 41-file typed slice
+  and every configured security, supply-chain, container, frontend and browser
+  gate.
 
 ## 2026-08-19
 
