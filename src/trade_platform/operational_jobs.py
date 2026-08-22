@@ -613,6 +613,20 @@ def _validate_job_run(run: OperationalJobRun) -> None:
         raise OperationalJobError("invalid_operational_job_run")
 
 
+def validate_operational_job_policy(policy: OperationalJobPolicy) -> None:
+    """Fail closed when a downstream authority receives a tampered job policy."""
+    _validate_job_policy(policy)
+    if policy.content_hash != _job_policy_hash(policy):
+        raise OperationalJobError("operational_job_policy_hash_mismatch")
+
+
+def validate_operational_job_run(run: OperationalJobRun) -> None:
+    """Fail closed when a downstream authority receives a tampered job run."""
+    _validate_job_run(run)
+    if run.content_hash != _job_run_hash(run):
+        raise OperationalJobError("operational_job_run_hash_mismatch")
+
+
 def _validate_route_policy(policy: AlertRoutePolicy) -> None:
     _aware(policy.approved_at, "alert_route_policy_time_must_be_timezone_aware")
     if (

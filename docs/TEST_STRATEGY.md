@@ -389,3 +389,22 @@ report/child mutation rejection. PR-head run `32553281343` runs all **435 tests
 without skips**, restores/reconciles all **127 tables**, passes the **117/117**
 mypy ratchet and zero-error **44-file** slice, and completes every configured
 downstream gate.
+
+## Cycle 228 — Scheduled Reporting and Cost Governance Evidence
+
+Unit tests enumerate all 13 required report types, five cadences, five budget
+modes and 12 cost categories. They reject cadence/job-interval mismatch,
+tampered or failed job evidence, early report generation, missing fact/category
+evidence and undisclosed gaps. They prove deterministic ordering, category and
+total budget breaches, review-only live-named modes, value-to-cost thresholds
+and deterministic-code preference over proposed AI inference.
+
+Migration 0034 adds immutable schedule policy, cost policy, cost observation,
+value assessment, report, section and report-cost link tables. Composite foreign
+keys bind exact operational-job policy/run and budget-policy hashes. PostgreSQL
+coverage proves idempotent replay, exact restart reconstruction, store-side
+re-derivation and direct report/section/value mutation rejection. Initial run
+`32554874033` exposed a connection-read defect and shared job-fixture ordering
+collision; both were corrected. Run `32554992009` runs all **444 tests without
+skips**, restores/reconciles all **134 tables**, passes the **117/117** mypy
+ratchet and zero-error **45-file** slice, and completes every downstream gate.
