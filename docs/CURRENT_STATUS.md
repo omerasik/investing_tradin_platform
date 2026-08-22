@@ -39,6 +39,16 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
+- Cycle 228 corrected PR-head GitHub Actions
+  [run 32554992009](https://github.com/omerasik/investing_tradin_platform/actions/runs/32554992009)
+  applies migration 0034, runs all **444 tests without skips**, reconstructs
+  immutable scheduled-report, cost and value-for-cost evidence across all **134
+  restore-critical tables**, and passes the **117/117** mypy ratchet, zero-error
+  **45-file** critical slice and every downstream gate.
+- Cycle 227 exact-main GitHub Actions
+  [run 32553765217](https://github.com/omerasik/investing_tradin_platform/actions/runs/32553765217)
+  passed every configured gate on merge commit
+  `8585e9c915274b79eeada1edd3879e982e30b729`.
 - Cycle 227 PR-head GitHub Actions
   [run 32553281343](https://github.com/omerasik/investing_tradin_platform/actions/runs/32553281343)
   applies migration 0033, runs all **435 tests without skips**, reconstructs
@@ -272,9 +282,10 @@ snapshot, not a second roadmap.
    approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
 4. Cycle 209 re-audited all RQ-001–RQ-030 rows and is exact-mainline verified.
-   Cycles 212–226 are exact-mainline verified. Cycle 227 model sensitivity and
-   degradation evidence is PR-head verified; next provider-independent work is
-   durable governance operations or further non-executing explanation evidence. Measured
+   Cycles 212–227 are exact-mainline verified. Cycle 228 scheduled reporting and
+   cost-governance evidence is corrected PR-head verified; next provider-
+   independent work is bounded agent-workflow governance or further non-
+   executing explanation evidence. Measured
    browser performance awaits the required Chrome DevTools MCP, and concrete
    IdP activation remains external.
 

@@ -64,6 +64,16 @@
 - Verified Cycle 227 on PR head in CI run `32553281343`: migration 0033, all
   435 tests without skips, 127-table restore, zero-error 44-file typed slice and
   every configured security, supply-chain, container, frontend and browser gate.
+- Verified Cycle 227 unchanged on exact merged main commit
+  `8585e9c915274b79eeada1edd3879e982e30b729` in CI run `32553765217`.
+- Added Cycle 228's immutable scheduled governance-report and operational-cost
+  evidence. All 13 required report types are cadence-bound to exact successful
+  operational-job evidence; cost governance covers all five budget modes, all
+  12 required categories and review-only dataset/model value-for-cost evidence.
+- Corrected hosted restart-read and shared-fixture ordering defects exposed by
+  initial Cycle 228 run `32554874033`. Run `32554992009` then applied migration
+  0034, passed all 444 no-skip tests, reconciled 134 restored tables, passed the
+  zero-error 45-file typed slice and completed every downstream gate.
 
 ## 2026-08-19
 
