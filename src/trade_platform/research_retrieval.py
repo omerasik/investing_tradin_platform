@@ -277,6 +277,18 @@ def retrieve_internal_evidence(
     return replace(draft, content_hash=_report_hash(draft))
 
 
+def validate_research_retrieval_report(report: ResearchRetrievalReport) -> None:
+    """Fail closed when downstream governance receives tampered retrieval evidence."""
+    if (
+        report.content_hash != _report_hash(report)
+        or report.query_terms != tuple(sorted(set(report.query_terms)))
+        or not _aware(report.request.requested_at)
+        or any(item.rank != index for index, item in enumerate(report.results, 1))
+        or any(item.available_at > report.request.requested_at for item in report.results)
+    ):
+        raise ResearchRetrievalError("invalid_or_tampered_research_retrieval_report")
+
+
 class PostgresResearchRetrievalStore:
     def __init__(self, database: PostgresDatabase) -> None:
         self._database = database
