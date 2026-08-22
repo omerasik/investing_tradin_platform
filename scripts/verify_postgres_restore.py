@@ -35,6 +35,8 @@ CRITICAL_TABLES = (
     "retention_policy_versions",
     "object_evidence_manifests",
     "retention_evaluations",
+    "external_identity_mapping_policies",
+    "authorization_decisions",
     "kill_switch_events",
     "reconciliations",
     "reconciled_account_evidence",

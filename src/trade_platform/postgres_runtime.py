@@ -14,6 +14,7 @@ from .broker_adapter import PaperBrokerAdapter
 from .broker_sync import PaperBrokerSyncService
 from .config import PlatformConfig
 from .execution_quality import PostgresPaperOperationsEvidenceStore
+from .external_identity import PostgresIdentitySecurityStore
 from .operational_alerts import PostgresOperationalAlertStore
 from .operational_jobs import PostgresOperationalJobStore
 from .paper_runtime import PaperPolicySelection, PaperRuntime, PaperRuntimeError
@@ -89,6 +90,7 @@ class PostgresPaperCoreAuthorities:
     paper_operations_evidence: PostgresPaperOperationsEvidenceStore
     operational_jobs: PostgresOperationalJobStore
     retention_evidence: PostgresRetentionEvidenceStore
+    identity_security: PostgresIdentitySecurityStore
 
     @property
     def submission_ready(self) -> bool:
@@ -191,6 +193,7 @@ def build_postgres_paper_core(
             paper_operations_evidence=paper_operations_evidence,
             operational_jobs=operational_jobs,
             retention_evidence=retention_evidence,
+            identity_security=PostgresIdentitySecurityStore(database),
         )
     except Exception:
         database.close()
