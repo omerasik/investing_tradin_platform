@@ -324,3 +324,21 @@ Command Center matrix and reruns Axe WCAG A/AA. PR-head run `32548653129` runs
 all **411 tests without skips**, restores/reconciles all **113 tables**, passes
 the **117/117** mypy ratchet and zero-error **40-file** slice, and completes
 every configured security, supply-chain, build, smoke and browser gate.
+
+## Cycle 224 — Immutable Chronological Model Evaluation
+
+Unit tests verify immediate-successor complexity progression, policy approval
+before training, chronological non-overlapping holdouts, minimum sample and
+two-class requirements, stable explanation feature sets, local-contribution
+reconciliation and observation/policy content hashes. They independently check
+the complete metric report and both fail-closed outcomes, including regression,
+calibration and holdout-half stability failures.
+
+PostgreSQL tests apply migration 0030, retain policy/report/observation rows,
+prove idempotent replay and exact reconstruction after restart, append a
+review-eligible validation to the separate model registry, and reject direct
+database mutation. The restore drill reconciles all three new authorities.
+PR-head run `32549927978` runs all **417 tests without skips**, restores and
+reconciles all **116 tables**, passes the **117/117** mypy ratchet and zero-error
+**41-file** critical slice, and completes every configured security,
+supply-chain, container, production-build, smoke and protected-browser gate.
