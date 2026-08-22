@@ -6,9 +6,9 @@ The full requirement-level matrix is in
 - A disposable PostgreSQL DSN is not configured on this workstation. PostgreSQL
   migrations, restart/immutability, restore reconciliation and configured browser
   scenarios are therefore hosted-CI evidence, not local execution evidence.
-  Cycle 224 PR-head run `32549927978` verifies 417 no-skip tests, migration
-  0030 and all 116 restored tables. Cycle 223 exact-main run `32549205078`
-  verifies the preceding nonce-CSP boundary unchanged after merge.
+  Cycle 225 PR-head run `32551034230` verifies 423 no-skip tests, migration
+  0031 and all 120 restored tables. Cycle 224 exact-main run `32550384273`
+  verifies the preceding model-evaluation boundary unchanged after merge.
 
 - This is a local, paper-only system. Live trading is intentionally unavailable.
 - SQLite stores provide durable local evidence but are not the normalized
@@ -157,6 +157,11 @@ The full requirement-level matrix is in
   degradation in production or serve predictions. Its deterministic fixture
   can establish only engineering correctness, and `REVIEW_ELIGIBLE` still
   requires separate manual registry approval.
+- Cycle 225 retrieval is deterministic lexical matching over attributed internal
+  fixture chunks. It is not semantic/vector retrieval, source truth or causal
+  verification, external document ingestion, production access control, a rich
+  natural-language interface or an answer-quality evaluation. No model,
+  connector, credential, tool or sensitive-action approval is activated.
 - Cycle 208 adds a separate deployment-owned dashboard-view bearer boundary,
   protected typed read models for Feature Authority, Strategy Scorecard V2,
   Regime V2, Portfolio Construction V2, News/Event V2 and SRE V2, plus a

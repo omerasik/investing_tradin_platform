@@ -342,3 +342,15 @@ PR-head run `32549927978` runs all **417 tests without skips**, restores and
 reconciles all **116 tables**, passes the **117/117** mypy ratchet and zero-error
 **41-file** critical slice, and completes every configured security,
 supply-chain, container, production-build, smoke and protected-browser gate.
+
+## Cycle 225 — Point-in-Time Internal Research Retrieval
+
+Unit tests prove policy-time, source-kind, instrument, role, availability and
+invalidation filtering; deterministic ranking; minimum result/source-diversity/
+coverage insufficiency; hash tamper rejection; and one-way binding of complete
+citations into the existing non-executing structured-agent request. PostgreSQL
+tests prove idempotent policy/chunk/report writes, exact restart reconstruction
+and database-level immutability. PR-head run `32551034230` runs all **423 tests
+without skips**, restores/reconciles all **120 tables**, passes the **117/117**
+mypy ratchet and zero-error **42-file** slice, and completes every configured
+gate.

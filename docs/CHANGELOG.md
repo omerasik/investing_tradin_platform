@@ -34,6 +34,14 @@
   417 tests without skips, 116-table restore, zero-error 41-file typed slice
   and every configured security, supply-chain, container, frontend and browser
   gate.
+- Verified Cycle 224 on exact merged main commit
+  `7186d01a88d20b006c6903ee4f354feaef536423` in CI run `32550384273`.
+- Added Cycle 225's immutable point-in-time internal research retrieval. Approved
+  policies scope source kinds, roles, timestamps, minimum source diversity and
+  query coverage; complete reports bind ranked citations into the existing
+  structured agent request, while insufficient evidence cannot be bound.
+- Verified Cycle 225 on PR head in CI run `32551034230`: migration 0031, all
+  423 tests without skips, 120-table restore and zero-error 42-file typed slice.
 
 ## 2026-08-19
 
