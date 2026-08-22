@@ -3,6 +3,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 
 
+@unittest.skipUnless(os.environ.get("POSTGRES_TEST_DSN"), "POSTGRES_TEST_DSN not configured")
 class ExternalIdentityPostgresTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -10,7 +11,12 @@ class ExternalIdentityPostgresTests(unittest.TestCase):
         from alembic.config import Config
 
         config = Config("alembic.ini")
-        config.set_main_option("sqlalchemy.url", os.environ["POSTGRES_TEST_DSN"])
+        config.set_main_option(
+            "sqlalchemy.url",
+            os.environ["POSTGRES_TEST_DSN"].replace(
+                "postgresql://", "postgresql+psycopg://", 1
+            ),
+        )
         command.upgrade(config, "head")
 
     def test_policy_and_decision_survive_restart_and_are_immutable(self) -> None:
