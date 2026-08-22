@@ -36,6 +36,22 @@ tamper rejection and database-level immutability are CI-verified. Current tests
 use an attributed deterministic fixture; this is engineering evidence, not a
 trained-model, causal-explanation, empirical-alpha or production-monitoring
 claim.
+
+## Research-agent retrieval controls
+
+Cycle 225 adds deterministic point-in-time retrieval over retained internal
+evidence chunks. A policy approved before the request allowlists source kinds,
+sets role access, bounds result count and requires minimum query-term coverage
+and distinct-source diversity. Future, invalidated, wrong-instrument,
+wrong-role and disallowed-kind evidence is excluded.
+
+Only a `COMPLETE` report can create the exact `retrieval:<report>:<chunk>` source
+references accepted by the existing structured agent contract.
+`INSUFFICIENT_EVIDENCE` cannot be converted into an agent request. Policies,
+chunks, reports and ranked citations are immutable, content-addressed and
+restart/restore verified. This lexical fixture does not verify source truth,
+perform semantic/vector retrieval, invoke a model or connector, approve a
+sensitive action, or expose any signal/order/risk authority.
 ## Regime and ensemble controls
 
 Regime inference is a transparent, historical-prefix-only probability model, not a claim of market certainty. Every estimate records probabilities for bullish, bearish and sideways states plus derived uncertainty. Ensemble weights are based on documented regime-weighted expected scores and are rejected when they breach the configured maximum; they are never silently capped. Any replacement with a learned classifier requires versioning, chronological validation, calibration evidence, drift monitoring and independent approval.
