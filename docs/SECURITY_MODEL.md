@@ -30,10 +30,14 @@ Cycle 217 applies deterministic API/dashboard response headers: no-store,
 content policy, frame denial, MIME sniffing prevention, no-referrer, permissions
 isolation and cross-origin isolation; production also receives HSTS. Protected
 API deployments omit schema/documentation routes and invalid credentials return
-a bearer challenge. These are defense-in-depth only. Dashboard framework
-hydration currently requires inline script/style CSP allowances, and no header
-replaces HTTPS termination, OIDC, MFA, external identity governance or
-penetration tests.
+a bearer challenge. Cycle 223 replaces the dashboard's static inline allowances
+with a fresh cryptographically random nonce on every request. The proxy binds
+the same nonce to the request CSP, `x-nonce`, framework rendering context and
+response CSP, enables `strict-dynamic`, and applies the policy to authenticated
+and rejected responses. Browser tests prove nonce binding and rotation and
+reject `unsafe-inline`. These are defense-in-depth only; no header replaces
+HTTPS termination, OIDC, MFA, external identity governance or penetration
+tests. A proxy/CDN must preserve the generated per-response policy exactly.
 
 The repository is PUBLIC as verified on 2026-08-15; visibility was not changed.
 Credentials and private datasets are prohibited. `detect-secrets` scans tracked

@@ -310,3 +310,17 @@ runs all **408 tests without skips**, restores/reconciles all **113 tables** at
 revision `20260822_0029`, passes the **117/117** mypy ratchet, zero-error
 **40-file** critical slice and every existing container, scan, attestation,
 frontend and protected-browser gate. It does not test a real IdP or JWT library.
+
+## Cycle 223 — Request-Nonce Dashboard CSP
+
+Source contracts prevent the static Next.js configuration from restoring a
+dashboard CSP or `unsafe-inline`, require proxy generation/propagation of one
+request nonce, and require browser assertions for rendered-script binding and
+nonce rotation. Production smoke verifies authenticated and unauthenticated
+responses both receive strict nonce policies. The protected PostgreSQL
+Playwright suite checks every rendered script through the reflected nonce
+property, proves a second response rotates the nonce, retains the complete
+Command Center matrix and reruns Axe WCAG A/AA. PR-head run `32548653129` runs
+all **411 tests without skips**, restores/reconciles all **113 tables**, passes
+the **117/117** mypy ratchet and zero-error **40-file** slice, and completes
+every configured security, supply-chain, build, smoke and browser gate.

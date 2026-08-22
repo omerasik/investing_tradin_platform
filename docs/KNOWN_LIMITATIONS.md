@@ -6,8 +6,9 @@ The full requirement-level matrix is in
 - A disposable PostgreSQL DSN is not configured on this workstation. PostgreSQL
   migrations, restart/immutability, restore reconciliation and configured browser
   scenarios are therefore hosted-CI evidence, not local execution evidence.
-  Cycle 222 PR-head run `32547343608` verifies 408 no-skip tests, migration
-  0029 and all 113 restored tables. Exact-merge Cycle 222 proof remains required.
+  Cycle 223 PR-head run `32548653129` verifies 411 no-skip tests, migration
+  0029 and all 113 restored tables. Cycle 222 exact-main run `32547868925`
+  verifies the preceding identity boundary unchanged after merge.
 
 - This is a local, paper-only system. Live trading is intentionally unavailable.
 - SQLite stores provide durable local evidence but are not the normalized
@@ -168,10 +169,11 @@ The full requirement-level matrix is in
   RPO/RTO remain open. Full-package static/security
   scans, dependency audits, secret detection, SBOM/license evidence and a fresh
   PostgreSQL restore/reconciliation drill are now CI gates, but they are not a
-  penetration test. Cycle 217 response headers reduce browser exposure; the
-  dashboard CSP still permits framework-required inline script/style, HSTS is
-  effective only over HTTPS, and neither header policy substitutes for a TLS
-  terminator, OIDC or identity governance.
+  penetration test. Cycle 223 removes `unsafe-inline` from the dashboard policy
+  and verifies per-request nonce binding/rotation in the protected browser
+  suite. A deployment proxy can still break or weaken this dynamic policy;
+  HSTS is effective only over HTTPS, and neither header policy substitutes for
+  a TLS terminator, OIDC or identity governance.
 - Cycle 219's container is limited to the default SQLite-backed
   `local_research` API. Hosted CI proves its digest-pinned build, UID/GID 10001,
   read-only/capability-free/no-new-privileges runtime, health state and viewer

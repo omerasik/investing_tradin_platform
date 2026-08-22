@@ -45,8 +45,12 @@ API deployments suppress `/docs`, `/redoc` and `/openapi.json`; do not re-enable
 them on an Internet-facing process. Verify CSP, HSTS, frame denial, MIME,
 referrer, permissions, opener/resource and no-store headers after every proxy or
 CDN change, because an intermediary can remove or replace them. The dashboard
-CSP's framework-required inline allowances are not a waiver for arbitrary
-inline application code. Response headers do not provide OIDC, MFA or RBAC.
+CSP must contain request-unique `script-src` and `style-src` nonces, must retain
+`strict-dynamic`, and must not contain `unsafe-inline`. Confirm every rendered
+script nonce matches that response's policy and that a second request receives
+a different nonce. Never cache, normalize, combine or statically replace this
+request-bound policy at a proxy/CDN. Response headers do not provide OIDC, MFA
+or RBAC.
 
 For the temporary bearer boundary, inject `TRADE_PLATFORM_OPERATOR_TOKEN` only
 through the deployment secret manager, set a non-blank
