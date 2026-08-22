@@ -278,3 +278,17 @@ and every configured gate. The retained CycloneDX 1.7 SBOM contains **124
 components**; the complete report has **212 findings**, **26 vendor-unfixed
 HIGH/CRITICAL findings** and **zero fixable HIGH/CRITICAL findings**. Unfixed
 findings remain explicit risk, not waived or relabelled as clean.
+
+## Cycle 221 — Signed Image-Archive Attestations
+
+Contract tests require OIDC/attestation permissions, two commit-pinned official
+`actions/attest` invocations, a portable archive/checksum, separate SLSA and
+CycloneDX signed bundles, independent GitHub CLI verification, no registry push
+and no attestation authority for untrusted fork PRs.
+
+PR-head run `32302388728` passes all **401 tests without skips**, all **111
+restore checks** and every configured gate. The retained **56,877,312-byte**
+archive matches its SHA-256 checksum after download; independent verification
+returns one valid SLSA provenance result and one valid CycloneDX result. This is
+file-artifact provenance, not registry-native OCI signing, release approval,
+reproducible-build proof or deployment authority.

@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: read
+  id-token: write
+  attestations: write
 
 jobs:
   verify:
@@ -103,7 +105,8 @@ jobs:
           scan_input="$RUNNER_TEMP/trivy-input"
           scan_cache="$RUNNER_TEMP/trivy-cache"
           scan_output="$GITHUB_WORKSPACE/container-security-evidence"
-          mkdir -p "$scan_input" "$scan_cache" "$scan_output"
+          artifact_output="$GITHUB_WORKSPACE/container-artifact"
+          mkdir -p "$scan_input" "$scan_cache" "$scan_output" "$artifact_output"
           docker save --output "$scan_input/research-api.tar" "$image_ref"
           scanner() {
             docker run --rm \
@@ -141,6 +144,40 @@ jobs:
             --exit-code 1 \
             --exit-on-eol 1 \
             --no-progress
+          gzip --best --stdout "$scan_input/research-api.tar" > "$artifact_output/research-api.tar.gz"
+          (
+            cd "$artifact_output"
+            sha256sum research-api.tar.gz > research-api.tar.gz.sha256
+          )
+          test -s "$artifact_output/research-api.tar.gz"
+          test -s "$artifact_output/research-api.tar.gz.sha256"
+      - name: Attest research image archive provenance
+        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+        id: image-provenance
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: container-artifact/research-api.tar.gz
+      - name: Attest research image archive SBOM
+        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+        id: image-sbom
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: container-artifact/research-api.tar.gz
+          sbom-path: container-security-evidence/sbom.cdx.json
+      - name: Retain and verify research image attestations
+        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp "${{ steps.image-provenance.outputs.bundle-path }}" container-security-evidence/provenance-attestation.sigstore.json
+          cp "${{ steps.image-sbom.outputs.bundle-path }}" container-security-evidence/sbom-attestation.sigstore.json
+          test -s container-security-evidence/provenance-attestation.sigstore.json
+          test -s container-security-evidence/sbom-attestation.sigstore.json
+          gh attestation verify container-artifact/research-api.tar.gz \
+            --repo "$GITHUB_REPOSITORY"
+          gh attestation verify container-artifact/research-api.tar.gz \
+            --repo "$GITHUB_REPOSITORY" \
+            --predicate-type https://cyclonedx.org/bom
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
@@ -219,3 +256,7 @@ jobs:
             web/frontend-licenses.json
             container-security-evidence/vulnerability-report.json
             container-security-evidence/sbom.cdx.json
+            container-security-evidence/provenance-attestation.sigstore.json
+            container-security-evidence/sbom-attestation.sigstore.json
+            container-artifact/research-api.tar.gz
+            container-artifact/research-api.tar.gz.sha256

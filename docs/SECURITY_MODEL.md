@@ -49,3 +49,11 @@ CycloneDX 1.7 SBOM even when the later fixable HIGH/CRITICAL or EOL gate fails.
 The verified report still contains 26 vendor-unfixed HIGH/CRITICAL findings;
 zero are currently fixable. This explicit risk inventory is not a waiver or a
 claim of vulnerability absence and must be revisited as fixes become available.
+
+Cycle 221 grants the workflow OIDC and attestation write permissions solely to
+produce Sigstore-signed SLSA provenance and CycloneDX SBOM attestations for the
+retained image archive. The official action is commit-pinned, signed bundles
+are retained and GitHub CLI verifies both predicates. Untrusted fork PRs skip
+the authority. This does not grant cloud/provider/broker access and does not
+publish or sign an OCI manifest; registry-native signing, release approvals and
+deployment identity remain separate future controls.

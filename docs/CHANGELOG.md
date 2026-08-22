@@ -74,6 +74,15 @@
   skips, unchanged 111-table restore and every existing gate. Retained evidence
   has 124 SBOM components, 212 total findings, 26 vendor-unfixed HIGH/CRITICAL
   findings and zero fixable HIGH/CRITICAL findings.
+- Verified Cycle 220 on exact merged main commit
+  `a9ca933245512b7f207f84201691719025b79ff6` in CI run `32301746841`.
+- Added Cycle 221's retained compressed research-image archive/checksum,
+  Sigstore-signed SLSA provenance and CycloneDX SBOM attestations, signed bundle
+  retention and independent GitHub CLI verification. Untrusted fork PRs receive
+  no attestation authority and no registry publication occurs.
+- Verified Cycle 221 on PR head in CI run `32302388728`: all 401 tests without
+  skips, unchanged 111-table restore and every existing gate. The downloaded
+  56,877,312-byte archive matches its checksum and both attestations re-verify.
 - Verified Cycle 210 social/narrative intelligence on exact merged main commit
   `4606848e8fd1aae19c7dde85be4a067ecd5ea9b9` in CI run `32281500037`.
 - Added Cycle 211 immutable reasoned signal lifecycle events, deterministic

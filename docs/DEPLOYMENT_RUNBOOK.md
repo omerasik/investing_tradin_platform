@@ -18,8 +18,16 @@ an EOL distribution and fails on fixable HIGH/CRITICAL findings. Do not describe
 a passing gate as vulnerability-free: vendor-unfixed findings remain in the
 retained report and require review on every base/scanner/database update.
 
-Before any staging/production use, add reviewed image signing and provenance,
-registry retention/access controls, IaC, network/TLS and resource policy,
+CI also compresses the exact scanned image, records a portable SHA-256 checksum,
+and uses commit-pinned GitHub `actions/attest` with short-lived OIDC/Sigstore
+credentials to create SLSA provenance and CycloneDX SBOM attestations. It
+retains both signed bundles and verifies both predicates with `gh attestation
+verify`. Untrusted fork PRs receive no attestation authority. A consumer must
+download the archive and checksum together, verify the checksum, then verify
+both attestations against `omerasik/investing_tradin_platform` before use.
+
+Before any staging/production use, add registry-native OCI signing/publication,
+release approval and registry retention/access controls, IaC, network/TLS and resource policy,
 PostgreSQL migration/restore validation, rollback and soak evidence. A mutable
 tag, unsigned image, missing evidence or failed scan is not deployable.
 

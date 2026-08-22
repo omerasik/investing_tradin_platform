@@ -140,6 +140,45 @@ class ContainerContractTests(unittest.TestCase):
         ):
             self.assertIn(evidence, self.workflow)
 
+    def test_attestation_permissions_and_action_are_pinned(self) -> None:
+        self.assertIn("id-token: write", self.workflow)
+        self.assertIn("attestations: write", self.workflow)
+        attest_refs = [
+            line.strip().split("@", 1)[1].split()[0]
+            for line in self.workflow.splitlines()
+            if "uses: actions/attest@" in line
+        ]
+        self.assertEqual(len(attest_refs), 2)
+        for ref in attest_refs:
+            self.assertRegex(ref, r"^[0-9a-f]{40}$")
+
+    def test_image_archive_has_provenance_and_sbom_attestations(self) -> None:
+        for required in (
+            "container-artifact/research-api.tar.gz",
+            "container-artifact/research-api.tar.gz.sha256",
+            "id: image-provenance",
+            "id: image-sbom",
+            "sbom-path: container-security-evidence/sbom.cdx.json",
+            "provenance-attestation.sigstore.json",
+            "sbom-attestation.sigstore.json",
+        ):
+            self.assertIn(required, self.workflow)
+
+    def test_attestations_are_verified_without_registry_publication(self) -> None:
+        self.assertIn(
+            "gh attestation verify container-artifact/research-api.tar.gz",
+            self.workflow,
+        )
+        self.assertIn("--predicate-type https://cyclonedx.org/bom", self.workflow)
+        self.assertNotIn("push-to-registry: true", self.workflow)
+
+    def test_untrusted_fork_pull_requests_do_not_receive_attestation_authority(self) -> None:
+        condition = (
+            "github.event_name == 'push' || "
+            "github.event.pull_request.head.repo.full_name == github.repository"
+        )
+        self.assertEqual(self.workflow.count(condition), 3)
+
 
 if __name__ == "__main__":
     unittest.main()
