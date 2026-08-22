@@ -292,3 +292,21 @@ archive matches its SHA-256 checksum after download; independent verification
 returns one valid SLSA provenance result and one valid CycloneDX result. This is
 file-artifact provenance, not registry-native OCI signing, release approval,
 reproducible-build proof or deployment authority.
+
+## Cycle 222 — Verified External Sessions and Authorization Evidence
+
+Unit tests inject a verifier fixture and require exact HTTPS issuer/audience,
+timezone-aware age/expiry, required authentication methods and exactly one
+mapped server-owned role. Unmapped/ambiguous groups, stale/future sessions,
+insecure issuers and tampered/future-approved policies fail closed. API tests
+require a durable decision sink for external-session composition, distinguish
+401/403 allow/deny evidence, prove an audit-write failure returns 503 and prove
+raw tokens/session IDs never enter decision evidence.
+
+PostgreSQL tests apply migration 0029, idempotently retain the immutable mapping
+policy, append a policy-UUID-bound decision, reconstruct it after restart and
+reject database mutation plus content-hash tampering. PR-head run `32547343608`
+runs all **408 tests without skips**, restores/reconciles all **113 tables** at
+revision `20260822_0029`, passes the **117/117** mypy ratchet, zero-error
+**40-file** critical slice and every existing container, scan, attestation,
+frontend and protected-browser gate. It does not test a real IdP or JWT library.

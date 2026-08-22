@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-08-22
+
+- Verified Cycle 221 on exact merged main commit
+  `d91e7950d446093462e92dd172b039ff4fe14d5d` in CI run `32546680765`.
+- Added Cycle 222's provider-independent verified external-session contract,
+  fail-closed issuer/audience/time/MFA/group-to-role mapping, immutable mapping
+  policies and durable allow/deny authorization-decision evidence. No token
+  decoder, identity-provider connection, credential or production activation
+  is included.
+- Verified Cycle 222 on PR head in CI run `32547343608`: migration 0029, all
+  408 tests without skips, 113-table restore, zero-error 40-file typed slice,
+  hardened image/scan/attestations and every existing configured gate.
+
 ## 2026-08-19
 
 - Verified Cycle 211 on exact merged main commit

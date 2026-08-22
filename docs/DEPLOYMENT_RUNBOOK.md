@@ -3,7 +3,7 @@
 Development is local and research-only. Future environments are development, test, paper, then production, with signed/versioned artifacts, migration checks, least-privilege secret injection, staged rollout, rollback and backup/restore evidence. No deployment may include live execution without signed readiness approval.
 
 The repository `Dockerfile` is a narrow research API artifact, not the paper or
-production deployment recipe. It pins Python 3.12.11 by tag and digest, installs
+production deployment recipe. It pins Python 3.12.14 by tag and digest, installs
 the exact `requirements-runtime.txt` resolution, copies only `src/`, and runs as
 UID/GID 10001. Build it from the repository root and inject the temporary bearer
 token/role only at runtime. The verified hardened invocation uses a read-only
@@ -64,6 +64,19 @@ role fails closed with service unavailable. Use the narrowest role:
 Roles are deployment-owned and never supplied by a browser/API request. Do not
 represent this static one-token mapping as OIDC, MFA, production sessions or a
 managed identity directory; replace it at that boundary before production.
+
+For an external identity deployment, supply a verifier that performs signature,
+trusted-key, algorithm and issuer validation before constructing a
+`VerifiedExternalSession`. Register an approved immutable mapping policy with
+an exact HTTPS issuer, audience, required authentication methods, maximum age
+and allowlisted group-to-role mapping. Compose `ExternalSessionAuthenticator`
+only with the PostgreSQL `PostgresIdentitySecurityStore` as the authorization
+decision sink; startup rejects a missing/non-durable sink, and an audit write
+failure blocks the request. Validate IdP key rotation, token revocation/session
+termination, clock skew, group lifecycle and break-glass procedures in staging.
+Never pass an unverified decoded JWT payload, client-selected role, raw token or
+raw provider session ID into these contracts. This runbook does not select or
+activate an IdP.
 
 After any restore, run `scripts/verify_postgres_restore.py --source-dsn ...
 --restored-dsn ...` against a separately created database. Do not release the

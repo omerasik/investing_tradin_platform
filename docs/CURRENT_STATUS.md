@@ -1,6 +1,6 @@
 # Current Status
 
-Last synchronized: 2026-08-19. The requirement-level source of truth is
+Last synchronized: 2026-08-22. The requirement-level source of truth is
 [`MASTER_ROADMAP.md`](MASTER_ROADMAP.md); this document is a concise operational
 snapshot, not a second roadmap.
 
@@ -39,6 +39,17 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
+- Cycle 222 PR-head GitHub Actions
+  [run 32547343608](https://github.com/omerasik/investing_tradin_platform/actions/runs/32547343608)
+  applies migration 0029, runs all **408 tests without skips**, persists and
+  restores immutable external identity-mapping policies plus authorization
+  decisions across all **113 restore-critical tables**, passes the **117/117**
+  mypy ratchet and a zero-error **40-file** critical slice, and completes every
+  existing security, supply-chain, container, frontend and browser gate.
+- Cycle 221 exact-main GitHub Actions
+  [run 32546680765](https://github.com/omerasik/investing_tradin_platform/actions/runs/32546680765)
+  passed the complete workflow on merge commit
+  `d91e7950d446093462e92dd172b039ff4fe14d5d`.
 - Cycle 221 PR-head GitHub Actions
   [run 32302388728](https://github.com/omerasik/investing_tradin_platform/actions/runs/32302388728)
   verifies all **401 tests without skips**, retains the exact scanned image as a
