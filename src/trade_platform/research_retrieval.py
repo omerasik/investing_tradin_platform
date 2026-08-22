@@ -283,21 +283,28 @@ class PostgresResearchRetrievalStore:
 
     def append_policy(self, policy: ResearchRetrievalPolicy) -> None:
         with self._database.transaction() as connection:
-            connection.execute(
+            row = connection.execute(
                 "INSERT INTO research_retrieval_policy_versions VALUES "
-                "(%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                "(%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "ON CONFLICT (policy_id) DO NOTHING RETURNING content_hash",
                 (policy.policy_id, policy.version, json.dumps([item.value for item in policy.allowed_source_kinds]),
                  policy.minimum_results, policy.minimum_distinct_sources, policy.maximum_results,
                  policy.minimum_query_term_coverage, policy.approved_by, policy.approved_at,
                  policy.enabled, policy.content_hash),
-            )
-        if self.policy(policy.policy_id) != policy:
-            raise ResearchRetrievalError("conflicting_retrieval_policy")
+            ).fetchone()
+            if row is None:
+                row = connection.execute(
+                    "SELECT content_hash FROM research_retrieval_policy_versions WHERE policy_id=%s",
+                    (policy.policy_id,),
+                ).fetchone()
+                if row is None or str(row[0]) != policy.content_hash:
+                    raise ResearchRetrievalError("conflicting_retrieval_policy")
 
     def policy(self, policy_id: UUID) -> ResearchRetrievalPolicy:
-        row = self._database.connection.execute(
-            "SELECT * FROM research_retrieval_policy_versions WHERE policy_id=%s", (policy_id,),
-        ).fetchone()
+        with self._database.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM research_retrieval_policy_versions WHERE policy_id=%s", (policy_id,),
+            ).fetchone()
         if row is None:
             raise KeyError(str(policy_id))
         return ResearchRetrievalPolicy(
@@ -307,21 +314,28 @@ class PostgresResearchRetrievalStore:
 
     def append_chunk(self, chunk: InternalEvidenceChunk) -> None:
         with self._database.transaction() as connection:
-            connection.execute(
+            row = connection.execute(
                 "INSERT INTO internal_research_evidence_chunks VALUES "
-                "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s) ON CONFLICT DO NOTHING",
+                "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s) "
+                "ON CONFLICT (chunk_id) DO NOTHING RETURNING content_hash",
                 (chunk.chunk_id, chunk.source_document_id, chunk.source_version,
                  chunk.source_kind.value, chunk.instrument_id, chunk.title, chunk.text,
                  chunk.observed_at, chunk.available_at, chunk.invalidated_at,
                  json.dumps([item.value for item in chunk.allowed_roles]), chunk.content_hash),
-            )
-        if self.chunk(chunk.chunk_id) != chunk:
-            raise ResearchRetrievalError("conflicting_retrieval_chunk")
+            ).fetchone()
+            if row is None:
+                row = connection.execute(
+                    "SELECT content_hash FROM internal_research_evidence_chunks WHERE chunk_id=%s",
+                    (chunk.chunk_id,),
+                ).fetchone()
+                if row is None or str(row[0]) != chunk.content_hash:
+                    raise ResearchRetrievalError("conflicting_retrieval_chunk")
 
     def chunk(self, chunk_id: UUID) -> InternalEvidenceChunk:
-        row = self._database.connection.execute(
-            "SELECT * FROM internal_research_evidence_chunks WHERE chunk_id=%s", (chunk_id,),
-        ).fetchone()
+        with self._database.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM internal_research_evidence_chunks WHERE chunk_id=%s", (chunk_id,),
+            ).fetchone()
         if row is None:
             raise KeyError(str(chunk_id))
         return InternalEvidenceChunk(
@@ -347,16 +361,24 @@ class PostgresResearchRetrievalStore:
             ):
                 raise ResearchRetrievalError("retrieval_report_chunk_mismatch")
         with self._database.transaction() as connection:
-            connection.execute(
+            row = connection.execute(
                 "INSERT INTO research_retrieval_reports VALUES "
                 "(%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s::jsonb,%s::jsonb,%s) "
-                "ON CONFLICT DO NOTHING",
+                "ON CONFLICT (report_id) DO NOTHING RETURNING content_hash",
                 (report.report_id, report.request.request_id, report.request.workflow_id,
                  report.request.policy_id, report.request.instrument_id, report.request.role.value,
                  report.request.query_text, report.request.requested_at, json.dumps(report.query_terms),
                  report.query_term_coverage, report.outcome.value, json.dumps(report.reasons),
                  json.dumps(report.limitations), report.content_hash),
-            )
+            ).fetchone()
+            if row is None:
+                row = connection.execute(
+                    "SELECT content_hash FROM research_retrieval_reports WHERE report_id=%s",
+                    (report.report_id,),
+                ).fetchone()
+                if row is None or str(row[0]) != report.content_hash:
+                    raise ResearchRetrievalError("conflicting_retrieval_report")
+                return
             for item in report.results:
                 connection.execute(
                     "INSERT INTO research_retrieval_results VALUES "
@@ -368,18 +390,21 @@ class PostgresResearchRetrievalStore:
             raise ResearchRetrievalError("conflicting_retrieval_report")
 
     def report(self, report_id: UUID) -> ResearchRetrievalReport:
-        row = self._database.connection.execute(
-            "SELECT * FROM research_retrieval_reports WHERE report_id=%s", (report_id,),
-        ).fetchone()
+        with self._database.transaction() as connection:
+            row = connection.execute(
+                "SELECT r.*,p.content_hash FROM research_retrieval_reports r JOIN "
+                "research_retrieval_policy_versions p ON p.policy_id=r.policy_id "
+                "WHERE r.report_id=%s", (report_id,),
+            ).fetchone()
+            result_rows = connection.execute(
+                "SELECT r.rank,c.chunk_id,c.source_document_id,c.source_version,c.source_kind,c.title,"
+                "c.observed_at,c.available_at,r.lexical_score,r.matched_terms,r.excerpt,"
+                "r.chunk_content_hash,c.text,c.content_hash FROM research_retrieval_results r "
+                "JOIN internal_research_evidence_chunks c ON c.chunk_id=r.chunk_id "
+                "WHERE r.report_id=%s ORDER BY r.rank", (report_id,),
+            ).fetchall()
         if row is None:
             raise KeyError(str(report_id))
-        result_rows = self._database.connection.execute(
-            "SELECT r.rank,c.chunk_id,c.source_document_id,c.source_version,c.source_kind,c.title,"
-            "c.observed_at,c.available_at,r.lexical_score,r.matched_terms,r.excerpt,r.chunk_content_hash "
-            ",c.text,c.content_hash "
-            "FROM research_retrieval_results r JOIN internal_research_evidence_chunks c "
-            "ON c.chunk_id=r.chunk_id WHERE r.report_id=%s ORDER BY r.rank", (report_id,),
-        ).fetchall()
         if any(item[10] != item[12] or item[11] != item[13] for item in result_rows):
             raise ResearchRetrievalError("retrieval_result_chunk_mismatch")
         results = tuple(RetrievedEvidence(
@@ -388,7 +413,7 @@ class PostgresResearchRetrievalStore:
         ) for item in result_rows)
         request = ResearchRetrievalRequest(row[1], row[2], row[3], row[4], ResearchAgentRole(row[5]), row[6], row[7])
         report = ResearchRetrievalReport(
-            row[0], request, self.policy(row[3]).content_hash, tuple(row[8]), row[9], results,
+            row[0], request, row[14], tuple(row[8]), row[9], results,
             RetrievalOutcome(row[10]), tuple(row[11]), tuple(row[12]), row[13],
         )
         if report.content_hash != _report_hash(report):
