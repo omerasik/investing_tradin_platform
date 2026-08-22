@@ -37,7 +37,9 @@ test("configured dashboard headers and WCAG A/AA scan pass", async ({ page }) =>
   const nonce = policy.match(/'nonce-([a-f0-9]{32})'/)?.[1];
   expect(nonce).toBeTruthy();
   const scriptNonces = await page.locator("script").evaluateAll((scripts) =>
-    scripts.map((script) => script.getAttribute("nonce")),
+    // Browsers deliberately hide nonce values from getAttribute("nonce"); the
+    // reflected nonce property is the standards-defined inspection surface.
+    scripts.map((script) => script.nonce),
   );
   expect(scriptNonces.length).toBeGreaterThan(0);
   expect(scriptNonces.every((value) => value === nonce)).toBe(true);
