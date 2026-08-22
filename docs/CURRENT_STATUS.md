@@ -36,9 +36,23 @@ snapshot, not a second roadmap.
 - Structured, non-executing AI research roles with source-bound facts,
   inferences, confidence, model/prompt versioning, safety review and human
   final-synthesis review.
+- Immutable scheduled-agent governance over already-produced retrieval and
+  answer-evaluation evidence, with exact job/report hashes, bounded workflows,
+  tokens and estimated cost, no model/tool/action authority, and explicit human
+  review as the maximum outcome.
 
 ## Verified evidence
 
+- Cycle 229 PR-head GitHub Actions
+  [run 32556281237](https://github.com/omerasik/investing_tradin_platform/actions/runs/32556281237)
+  applies migration 0035, runs all **451 tests without skips**, reconstructs
+  exact job/retrieval/answer-bound scheduled-agent governance across all **138
+  restore-critical tables**, and passes the **117/117** mypy ratchet, zero-error
+  **46-file** critical slice and every downstream gate.
+- Cycle 228 exact-main GitHub Actions
+  [run 32555630655](https://github.com/omerasik/investing_tradin_platform/actions/runs/32555630655)
+  passed every configured gate on merge commit
+  `72617cb16bf9a371fea5b49ac5c1dfaf112c2e0e`.
 - Cycle 228 corrected PR-head GitHub Actions
   [run 32554992009](https://github.com/omerasik/investing_tradin_platform/actions/runs/32554992009)
   applies migration 0034, runs all **444 tests without skips**, reconstructs
@@ -282,10 +296,9 @@ snapshot, not a second roadmap.
    approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
 4. Cycle 209 re-audited all RQ-001–RQ-030 rows and is exact-mainline verified.
-   Cycles 212–227 are exact-mainline verified. Cycle 228 scheduled reporting and
-   cost-governance evidence is corrected PR-head verified; next provider-
-   independent work is bounded agent-workflow governance or further non-
-   executing explanation evidence. Measured
+   Cycles 212–228 are exact-mainline verified. Cycle 229 scheduled-agent
+   governance is PR-head verified; next provider-independent work is further
+   non-executing explanation evidence. Measured
    browser performance awaits the required Chrome DevTools MCP, and concrete
    IdP activation remains external.
 

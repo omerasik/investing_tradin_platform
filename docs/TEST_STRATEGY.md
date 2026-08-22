@@ -408,3 +408,19 @@ re-derivation and direct report/section/value mutation rejection. Initial run
 collision; both were corrected. Run `32554992009` runs all **444 tests without
 skips**, restores/reconciles all **134 tables**, passes the **117/117** mypy
 ratchet and zero-error **45-file** slice, and completes every downstream gate.
+
+## Cycle 229 — Scheduled Agent Workflow Governance Evidence
+
+Unit tests require exact untampered governance, schedule, operational-job,
+retrieval and answer-evaluation evidence. They cover disabled policies, failed
+jobs, empty evidence, cross-report binding mismatches, over-frequent schedules,
+per-workflow and aggregate token limits, estimated-cost limits, deterministic
+ordering and the explicit human-review-only outcome.
+
+Migration 0035 adds four immutable governance/schedule/assessment/candidate
+tables and exact composite job, retrieval and answer-report hash foreign keys.
+PostgreSQL coverage proves idempotent writes, store-side re-derivation from
+registered evidence, restart reconstruction and direct mutation/deletion
+rejection. PR-head run `32556281237` runs all **451 tests without skips**,
+restores/reconciles all **138 tables**, passes the **117/117** mypy ratchet and
+zero-error **46-file** slice, and completes every configured downstream gate.

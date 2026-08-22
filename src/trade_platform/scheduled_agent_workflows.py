@@ -67,6 +67,7 @@ class ScheduledAgentWorkflowOutcome(StrEnum):
 _NS = UUID("fdf09f33-a293-45dd-8fc0-f0c41d0845cc")
 _NONE = "NONE"
 _HUMAN_REVIEW = "EXPLICIT_HUMAN_REVIEW"
+_PG_INTEGER_MAX = 2_147_483_647
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,11 +240,19 @@ def evaluate_scheduled_agent_workflows(
     if len(set(identities)) != len(identities):
         raise ScheduledAgentWorkflowError("duplicate_scheduled_agent_workflow_role")
     for item in ordered:
-        _validate_candidate(item, schedule_policy, governance_policy, evaluated_at)
+        _validate_candidate(
+            item, schedule_policy, governance_policy,
+            evidence_cutoff=job_run.completed_at,
+        )
 
     total_input = sum(item.estimated_input_tokens for item in ordered)
     total_output = sum(item.estimated_output_tokens for item in ordered)
     total_cost = _quantize(sum((item.estimated_cost for item in ordered), Decimal("0")), 12)
+    if (
+        len(ordered) > _PG_INTEGER_MAX or total_input > _PG_INTEGER_MAX
+        or total_output > _PG_INTEGER_MAX or not _fits_numeric_30_12(total_cost)
+    ):
+        raise ScheduledAgentWorkflowError("scheduled_agent_totals_out_of_storage_bounds")
     reasons: list[str] = []
     if not governance_policy.enabled or not schedule_policy.enabled or not job_policy.enabled:
         reasons.append("scheduled_agent_policy_disabled")
@@ -305,7 +314,7 @@ def validate_agent_workflow_governance_policy(policy: AgentWorkflowGovernancePol
         not policy.version.strip() or not policy.allowed_purposes or not policy.allowed_roles
         or policy.allowed_purposes != _sorted_unique(policy.allowed_purposes)
         or policy.allowed_roles != _sorted_unique(policy.allowed_roles)
-        or any(value <= 0 for value in numeric)
+        or any(value <= 0 or value > _PG_INTEGER_MAX for value in numeric)
         or policy.maximum_total_tokens_per_run
         < policy.maximum_input_tokens_per_workflow + policy.maximum_output_tokens_per_workflow
         or not _fits_numeric_30_12(policy.maximum_estimated_cost_per_run)
@@ -573,7 +582,7 @@ def _validate_candidate(
     candidate: ScheduledAgentWorkflowCandidate,
     schedule: AgentWorkflowSchedulePolicy,
     governance: AgentWorkflowGovernancePolicy,
-    evaluated_at: datetime,
+    evidence_cutoff: datetime,
 ) -> None:
     validate_research_retrieval_report(candidate.retrieval_report)
     validate_agent_answer_evaluation_report(candidate.answer_evaluation_report)
@@ -583,9 +592,12 @@ def _validate_candidate(
         candidate.purpose not in schedule.allowed_purposes
         or candidate.role not in schedule.allowed_roles
         or answer.retrieval_report_id != retrieval.report_id
-        or answer.evaluated_at > evaluated_at
+        or retrieval.request.requested_at > evidence_cutoff
+        or answer.evaluated_at > evidence_cutoff
         or candidate.estimated_input_tokens <= 0
         or candidate.estimated_output_tokens <= 0
+        or candidate.estimated_input_tokens > _PG_INTEGER_MAX
+        or candidate.estimated_output_tokens > _PG_INTEGER_MAX
         or candidate.estimated_input_tokens > governance.maximum_input_tokens_per_workflow
         or candidate.estimated_output_tokens > governance.maximum_output_tokens_per_workflow
         or not _fits_numeric_30_12(candidate.estimated_cost)

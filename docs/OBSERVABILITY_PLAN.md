@@ -16,3 +16,15 @@ cost/value evidence are content-addressed and restart-verifiable. See
 This is observability evidence for supplied job runs, not a deployed scheduler,
 workflow engine, dead-letter queue, external delivery route or report-generation
 service.
+
+## Scheduled-agent governance evidence
+
+Cycle 229 binds each assessment to an exact immutable operational-job run and
+to exact point-in-time retrieval and answer-evaluation reports. It records
+workflow count, estimated input/output tokens and estimated cost under a
+pre-approved envelope. Failed jobs, incomplete/blocked evidence, disabled
+policies and aggregate budget breaches fail closed.
+
+No scheduler or agent is operated by this evidence layer. Scheduler, tool,
+model-invocation and action authority are all `NONE`, and external telemetry,
+provider billing and production orchestration remain absent.

@@ -32,6 +32,7 @@ from trade_platform.scheduled_agent_workflows import (
 
 def fresh_candidate(
     *, input_tokens: int = 400, output_tokens: int = 100,
+    answer_evaluated_at=NOW + timedelta(minutes=2),
 ) -> ScheduledAgentWorkflowCandidate:
     original_retrieval, output, original_bindings = answer_fixture()
     request = replace(
@@ -56,7 +57,7 @@ def fresh_candidate(
     )
     answer = evaluate_agent_answer(
         answer_policy(), retrieval, output, bindings,
-        evaluated_at=NOW + timedelta(minutes=2),
+        evaluated_at=answer_evaluated_at,
     )
     return ScheduledAgentWorkflowCandidate(
         AgentWorkflowPurpose.RESEARCH_ASSISTANCE, retrieval, answer,
@@ -206,6 +207,12 @@ class ScheduledAgentWorkflowTests(unittest.TestCase):
                 (replace(candidate, retrieval_report=replace(
                     candidate.retrieval_report, content_hash="0" * 64,
                 )),),
+                evaluated_at=NOW + timedelta(hours=2),
+            )
+        with self.assertRaisesRegex(ScheduledAgentWorkflowError, "unbound"):
+            evaluate_scheduled_agent_workflows(
+                governance, schedule, job_policy, job_run,
+                (fresh_candidate(answer_evaluated_at=NOW + timedelta(hours=1, minutes=1)),),
                 evaluated_at=NOW + timedelta(hours=2),
             )
 
