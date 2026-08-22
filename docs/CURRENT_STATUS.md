@@ -39,6 +39,17 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
+- Cycle 223 PR-head GitHub Actions
+  [run 32548653129](https://github.com/omerasik/investing_tradin_platform/actions/runs/32548653129)
+  runs all **411 tests without skips**, matches all **113 restore-critical
+  tables**, passes the **117/117** mypy ratchet and zero-error **40-file**
+  critical slice, then verifies the production dashboard and protected
+  PostgreSQL browser matrix under rotating request-bound CSP nonces with no
+  `unsafe-inline` and zero automated Axe WCAG A/AA violations.
+- Cycle 222 exact-main GitHub Actions
+  [run 32547868925](https://github.com/omerasik/investing_tradin_platform/actions/runs/32547868925)
+  passed the complete workflow on merge commit
+  `76eb731f5abdd183b116d3d808b78e290511fd0d`.
 - Cycle 222 PR-head GitHub Actions
   [run 32547343608](https://github.com/omerasik/investing_tradin_platform/actions/runs/32547343608)
   applies migration 0029, runs all **408 tests without skips**, persists and
@@ -162,12 +173,12 @@ snapshot, not a second roadmap.
   gates, production dashboard build and all eleven protected PostgreSQL browser
   scenarios.
 - The latest completed exact-mainline PostgreSQL evidence is GitHub Actions
-  [run 32298149573](https://github.com/omerasik/investing_tradin_platform/actions/runs/32298149573)
-  on main commit `6db68e7`: migration 0028, all **388 tests without skips**,
-  matched **111-table** restore/reconciliation, Ruff, mypy **117/117** ratchet,
-  the zero-error **39-file** critical slice, security/dependency/SBOM/secret
-  gates, frontend build/smoke, twelve configured browser scenarios and zero Axe
-  WCAG A/AA violations.
+  [run 32547868925](https://github.com/omerasik/investing_tradin_platform/actions/runs/32547868925)
+  on main commit `76eb731f5abdd183b116d3d808b78e290511fd0d`: migration
+  0029, all **408 tests without skips**, matched **113-table** restore and
+  reconciliation, Ruff, mypy **117/117** ratchet, the zero-error **40-file**
+  critical slice, security/dependency/SBOM/secret gates, frontend build/smoke,
+  protected browser scenarios and zero Axe WCAG A/AA violations.
 - Cycle 208 final PR CI [run 32276487834](https://github.com/omerasik/investing_tradin_platform/actions/runs/32276487834)
   on `39c3885` applied the unchanged migration head, ran all **351 tests without
   skips**, matched the **91-table** restore/reconciliation manifest, and passed
@@ -217,10 +228,10 @@ snapshot, not a second roadmap.
    approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
 4. Cycle 209 re-audited all RQ-001–RQ-030 rows and is exact-mainline verified.
-   Cycles 212–220 are exact-mainline verified. Cycle 221 is PR-head verified;
-   next provider-independent work is registry-native OCI signing, performance
-   measurement once Chrome DevTools MCP is available, and deeper session/OIDC
-   integration boundaries.
+   Cycles 212–222 are exact-mainline verified. Cycle 223 is PR-head verified;
+   next provider-independent work is model/agent evaluation or durable
+   governance operations. Measured browser performance awaits the required
+   Chrome DevTools MCP, and concrete IdP activation remains external.
 
 ## PostgreSQL persistence progress
 

@@ -12,6 +12,16 @@
 - Verified Cycle 222 on PR head in CI run `32547343608`: migration 0029, all
   408 tests without skips, 113-table restore, zero-error 40-file typed slice,
   hardened image/scan/attestations and every existing configured gate.
+- Verified Cycle 222 on exact merged main commit
+  `76eb731f5abdd183b116d3d808b78e290511fd0d` in CI run `32547868925`.
+- Added Cycle 223's per-request dashboard CSP nonces. The proxy now binds one
+  cryptographically random nonce to the request, framework rendering context and
+  response policy, removes `unsafe-inline`, enables `strict-dynamic`, rotates
+  the nonce on every response and protects authentication failures too.
+- Verified Cycle 223 on PR head in CI run `32548653129`: all 411 tests without
+  skips, 113-table restore, zero-error 40-file typed slice, production smoke,
+  protected PostgreSQL Playwright/Axe and every configured security and
+  supply-chain gate.
 
 ## 2026-08-19
 
