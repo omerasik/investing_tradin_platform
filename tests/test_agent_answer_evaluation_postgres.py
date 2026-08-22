@@ -20,13 +20,22 @@ class PostgresAgentAnswerEvaluationTests(unittest.TestCase):
         from trade_platform.persistence import PersistenceError, PostgresDatabase
         from trade_platform.research_retrieval import (
             PostgresResearchRetrievalStore,
+            ResearchRetrievalPolicy,
             ResearchSourceKind,
             retrieve_internal_evidence,
         )
 
         database = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
         retrieval_store = PostgresResearchRetrievalStore(database)
-        retrieval_policy = policy()
+        base_policy = policy()
+        unique_policy_id = uuid4()
+        retrieval_policy = ResearchRetrievalPolicy.create(
+            unique_policy_id, f"retrieval-{unique_policy_id}",
+            base_policy.allowed_source_kinds, base_policy.minimum_results,
+            base_policy.minimum_distinct_sources, base_policy.maximum_results,
+            base_policy.minimum_query_term_coverage, base_policy.approved_by,
+            base_policy.approved_at,
+        )
         retrieval_request = replace(
             request(retrieval_policy), query_text="revenue margin outlook guidance",
         )
