@@ -37,7 +37,8 @@ class PostgresAgentAnswerEvaluationTests(unittest.TestCase):
             base_policy.approved_at,
         )
         retrieval_request = replace(
-            request(retrieval_policy), query_text="revenue margin outlook guidance",
+            request(retrieval_policy), request_id=uuid4(),
+            query_text="revenue margin outlook guidance",
         )
         evidence = (
             chunk(
