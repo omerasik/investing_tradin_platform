@@ -6,10 +6,8 @@ The full requirement-level matrix is in
 - A disposable PostgreSQL DSN is not configured on this workstation. PostgreSQL
   migrations, restart/immutability, restore reconciliation and configured browser
   scenarios are therefore hosted-CI evidence, not local execution evidence.
-  Exact-main run `32296711621` verifies Cycle 217 on merge `1f4352c`, with 383
-  no-skip tests and 111 restored tables. Cycle 218 PR-head run `32297293629`
-  verifies 388 no-skip tests and the unchanged 111 restored tables; exact-merge
-  proof remains required.
+  Cycle 222 PR-head run `32547343608` verifies 408 no-skip tests, migration
+  0029 and all 113 restored tables. Exact-merge Cycle 222 proof remains required.
 
 - This is a local, paper-only system. Live trading is intentionally unavailable.
 - SQLite stores provide durable local evidence but are not the normalized
@@ -161,11 +159,11 @@ The full requirement-level matrix is in
   Cycle 217 adds automated WCAG A/AA scanning across the full dashboard, but
   manual screen-reader, zoom/reflow, forced-colors and assistive-technology
   acceptance remain incomplete. Interactive charts are still absent.
-- Authentication remains development-grade bearer-token auth. Cycle 218
-  separates six static roles across read, research, data, risk, alert and audit
-  permissions, but one deployment token still maps to one subject/role and
-  authorization denials are not a production identity-provider audit trail.
-  OIDC, managed claim/group mapping, short-lived sessions, MFA, CSRF/session
+- Default authentication remains development-grade bearer-token auth. Cycle
+  222 adds a provider-independent verified-session/group mapping contract plus
+  immutable PostgreSQL mapping policies and allow/deny decision evidence, but
+  no concrete OIDC/JWT verifier, IdP, key rotation, revocation, managed groups,
+  short-lived server session or provider-enforced MFA is configured. CSRF/session
   hardening, managed secrets, encrypted off-site backup and incident-operated
   RPO/RTO remain open. Full-package static/security
   scans, dependency audits, secret detection, SBOM/license evidence and a fresh

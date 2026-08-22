@@ -1,16 +1,23 @@
 """Local deployment security boundaries; secrets are supplied only through the environment."""
 
+import hashlib
 import hmac
+import json
 import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
+from typing import Protocol
+from uuid import UUID, uuid4
 
 from fastapi import Header, HTTPException, Request, status
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
 from starlette.types import ASGIApp
+
+from .domain import utc_now
 
 API_SECURITY_HEADERS = {
     "Cache-Control": "no-store",
@@ -95,6 +102,90 @@ ROLE_PERMISSIONS: dict[OperatorRole, frozenset[OperatorPermission]] = {
 class OperatorPrincipal:
     subject: str
     role: OperatorRole
+    authentication_method: str = "local_bearer"
+    session_id_hash: str | None = None
+    mapping_policy_id: UUID | None = None
+    mapping_policy_version: str | None = None
+
+
+class OperatorAuthentication(Protocol):
+    """Server-owned credential verifier; request bodies never select a role."""
+
+    requires_durable_authorization_audit: bool
+
+    def verify(self, authorization: str | None) -> OperatorPrincipal: ...
+
+
+class AuthorizationOutcome(StrEnum):
+    ALLOW = "ALLOW"
+    DENY = "DENY"
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorizationDecision:
+    decision_id: UUID
+    occurred_at: datetime
+    subject: str
+    role: OperatorRole | None
+    requested_permission: OperatorPermission
+    outcome: AuthorizationOutcome
+    reason: str
+    authentication_method: str
+    session_id_hash: str | None
+    mapping_policy_id: UUID | None
+    mapping_policy_version: str | None
+    content_hash: str
+
+
+class AuthorizationDecisionSink(Protocol):
+    durable: bool
+
+    def append_decision(self, decision: AuthorizationDecision) -> AuthorizationDecision: ...
+
+
+def build_authorization_decision(
+    *,
+    subject: str,
+    role: OperatorRole | None,
+    requested_permission: OperatorPermission,
+    outcome: AuthorizationOutcome,
+    reason: str,
+    authentication_method: str,
+    session_id_hash: str | None,
+    mapping_policy_id: UUID | None,
+    mapping_policy_version: str | None,
+    occurred_at: datetime | None = None,
+) -> AuthorizationDecision:
+    timestamp = occurred_at or utc_now()
+    payload = {
+        "occurred_at": timestamp.isoformat(),
+        "subject": subject,
+        "role": role.value if role is not None else None,
+        "requested_permission": requested_permission.value,
+        "outcome": outcome.value,
+        "reason": reason,
+        "authentication_method": authentication_method,
+        "session_id_hash": session_id_hash,
+        "mapping_policy_id": str(mapping_policy_id) if mapping_policy_id else None,
+        "mapping_policy_version": mapping_policy_version,
+    }
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return AuthorizationDecision(
+        uuid4(),
+        timestamp,
+        subject,
+        role,
+        requested_permission,
+        outcome,
+        reason,
+        authentication_method,
+        session_id_hash,
+        mapping_policy_id,
+        mapping_policy_version,
+        digest,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +193,7 @@ class OperatorAuthenticator:
     token: str | None
     subject: str = "local-operator"
     role: OperatorRole | None = OperatorRole.OPERATOR
+    requires_durable_authorization_audit: bool = False
 
     @classmethod
     def from_environment(cls) -> "OperatorAuthenticator":
@@ -149,7 +241,7 @@ def _authenticated_principal(
     request: Request,
     authorization: str | None,
 ) -> OperatorPrincipal:
-    authenticator: OperatorAuthenticator = request.app.state.authenticator
+    authenticator: OperatorAuthentication = request.app.state.authenticator
     limiter: InMemoryRateLimiter = request.app.state.rate_limiter
     try:
         principal = authenticator.verify(authorization)
@@ -177,13 +269,75 @@ class RequireOperatorPermission:
         request: Request,
         authorization: str | None = Header(default=None),
     ) -> str:
-        principal = _authenticated_principal(request, authorization)
+        try:
+            principal = _authenticated_principal(request, authorization)
+        except HTTPException as error:
+            _record_authorization_decision(
+                request,
+                build_authorization_decision(
+                    subject="UNRESOLVED",
+                    role=None,
+                    requested_permission=self.permission,
+                    outcome=AuthorizationOutcome.DENY,
+                    reason=f"AUTHENTICATION_HTTP_{error.status_code}",
+                    authentication_method="unresolved",
+                    session_id_hash=None,
+                    mapping_policy_id=None,
+                    mapping_policy_version=None,
+                ),
+            )
+            raise
         if self.permission not in ROLE_PERMISSIONS[principal.role]:
+            _record_authorization_decision(
+                request,
+                build_authorization_decision(
+                    subject=principal.subject,
+                    role=principal.role,
+                    requested_permission=self.permission,
+                    outcome=AuthorizationOutcome.DENY,
+                    reason="ROLE_PERMISSION_DENIED",
+                    authentication_method=principal.authentication_method,
+                    session_id_hash=principal.session_id_hash,
+                    mapping_policy_id=principal.mapping_policy_id,
+                    mapping_policy_version=principal.mapping_policy_version,
+                ),
+            )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Forbidden.",
             )
+        _record_authorization_decision(
+            request,
+            build_authorization_decision(
+                subject=principal.subject,
+                role=principal.role,
+                requested_permission=self.permission,
+                outcome=AuthorizationOutcome.ALLOW,
+                reason="ROLE_PERMISSION_ALLOWED",
+                authentication_method=principal.authentication_method,
+                session_id_hash=principal.session_id_hash,
+                mapping_policy_id=principal.mapping_policy_id,
+                mapping_policy_version=principal.mapping_policy_version,
+            ),
+        )
         return principal.subject
+
+
+def _record_authorization_decision(
+    request: Request, decision: AuthorizationDecision
+) -> None:
+    sink: AuthorizationDecisionSink | None = getattr(
+        request.app.state, "authorization_decision_sink", None
+    )
+    if sink is None:
+        return
+    try:
+        sink.append_decision(decision)
+    except Exception as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authorization audit is unavailable.",
+        ) from error
 
 
 protected_operator = RequireOperatorPermission(OperatorPermission.READ_EVIDENCE)

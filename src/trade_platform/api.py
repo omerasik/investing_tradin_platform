@@ -45,7 +45,9 @@ from .research import CostModel, ResearchValidationError, SQLiteExperimentStore,
 from .return_history import ReturnIngestionCadence, SQLitePortfolioReturnStore
 from .risk import SQLiteRiskDecisionStore
 from .security import (
+    AuthorizationDecisionSink,
     InMemoryRateLimiter,
+    OperatorAuthentication,
     OperatorAuthenticator,
     SecurityHeadersMiddleware,
     alert_reviewer_operator,
@@ -192,7 +194,7 @@ def _research_output_response(item: AgentResearchOutput) -> dict[str, object]:
 def build_app(
     config: PlatformConfig | None = None,
     audit_store: SQLiteAuditStore | None = None,
-    authenticator: OperatorAuthenticator | None = None,
+    authenticator: OperatorAuthentication | None = None,
     rate_limiter: InMemoryRateLimiter | None = None,
     metrics: MetricsRegistry | None = None,
     return_history: SQLitePortfolioReturnStore | None = None,
@@ -206,6 +208,7 @@ def build_app(
     experiment_store: SQLiteExperimentStore | None = None,
     promotion_ledger: SQLitePromotionLedger | None = None,
     operator_dashboard_queries: PostgresOperatorDashboardQueries | None = None,
+    authorization_decision_sink: AuthorizationDecisionSink | None = None,
 ) -> FastAPI:
     platform_config = config or PlatformConfig()
     store = audit_store or SQLiteAuditStore()
@@ -221,7 +224,14 @@ def build_app(
         SecurityHeadersMiddleware,
         production=platform_config.environment == "production",
     )
-    app.state.authenticator = authenticator or OperatorAuthenticator.from_environment()
+    selected_authenticator = authenticator or OperatorAuthenticator.from_environment()
+    if (
+        selected_authenticator.requires_durable_authorization_audit
+        and not getattr(authorization_decision_sink, "durable", False)
+    ):
+        raise ValueError("external_session_requires_durable_authorization_audit")
+    app.state.authenticator = selected_authenticator
+    app.state.authorization_decision_sink = authorization_decision_sink
     app.state.rate_limiter = rate_limiter or InMemoryRateLimiter()
     app.state.metrics = metrics or MetricsRegistry()
     app.state.event_logger = StructuredEventLogger()

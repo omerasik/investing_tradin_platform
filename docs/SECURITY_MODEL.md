@@ -11,9 +11,20 @@ auditor and operator roles receive explicit read/research/data/risk/alert/audit
 permissions. Environment composition defaults to viewer, rejects an unknown
 role as unavailable, and never accepts a role from the client request. This is
 not production identity or RBAC: one deployment token still maps to one static
-subject and role. Production architecture requires external OIDC, short-lived
-server-side sessions, MFA, managed group/claim mapping, CSRF protection,
-durable authorization-decision audit and managed secret injection.
+subject and role.
+
+Cycle 222 adds the provider-independent external-session composition boundary.
+It accepts claims only from an injected verifier responsible for cryptographic
+token/key validation, rechecks exact HTTPS issuer, audience, timezone-aware
+session age/expiry and required authentication methods, then maps allowlisted
+groups to exactly one server-owned role. Missing, conflicting, stale, future or
+tampered evidence fails closed. External-session composition requires a durable
+decision sink; immutable PostgreSQL policies and allow/deny decisions bind the
+policy UUID/version and retain only a session-ID hash, never the raw token or
+session ID. This is an integration contract, not an OIDC implementation:
+production still requires a selected IdP/verifier, key rotation, short-lived
+server-side sessions, MFA enforcement at the provider, CSRF protection,
+identity lifecycle governance, managed secrets and independent acceptance.
 
 Cycle 217 applies deterministic API/dashboard response headers: no-store,
 content policy, frame denial, MIME sniffing prevention, no-referrer, permissions
