@@ -226,6 +226,21 @@ def evaluate_agent_answer(
     return replace(draft, content_hash=_report_hash(draft))
 
 
+def validate_agent_answer_evaluation_report(report: AgentAnswerEvaluationReport) -> None:
+    """Fail closed when downstream governance receives tampered answer evidence."""
+    if (
+        report.content_hash != _report_hash(report)
+        or not _aware(report.evaluated_at)
+        or not report.claim_evaluations
+        or any(
+            item.claim_index < 0 or not item.claim_text.strip() or not item.source_references
+            or item.token_overlap < 0 or item.token_overlap > 1
+            for item in report.claim_evaluations
+        )
+    ):
+        raise AgentAnswerEvaluationError("invalid_or_tampered_agent_answer_evaluation_report")
+
+
 class PostgresAgentAnswerEvaluationStore:
     def __init__(self, database: PostgresDatabase) -> None:
         self._database = database

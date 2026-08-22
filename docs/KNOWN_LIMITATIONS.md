@@ -6,9 +6,9 @@ The full requirement-level matrix is in
 - A disposable PostgreSQL DSN is not configured on this workstation. PostgreSQL
   migrations, restart/immutability, restore reconciliation and configured browser
   scenarios are therefore hosted-CI evidence, not local execution evidence.
-  Cycle 228 corrected PR-head run `32554992009` verifies 444 no-skip tests,
-  migration 0034 and all 134 restored tables. Cycle 227 exact-main run
-  `32553765217` verifies the preceding model-monitoring boundary unchanged.
+  Cycle 229 PR-head run `32556281237` verifies 451 no-skip tests, migration 0035
+  and all 138 restored tables. Cycle 228 exact-main run `32555630655` verifies
+  the reporting/cost boundary unchanged.
 
 - This is a local, paper-only system. Live trading is intentionally unavailable.
 - SQLite stores provide durable local evidence but are not the normalized
@@ -169,6 +169,12 @@ The full requirement-level matrix is in
   prove that estimated value will materialize. Budget modes named `LIMITED_LIVE`
   and `SCALED_LIVE` are catalogue values only. Database-enforced execution and
   procurement authority remains `NONE`, and live trading remains disabled.
+- Cycle 229 governs supplied, already-produced retrieval and answer-evaluation
+  records; it does not schedule a process, construct a prompt, invoke a model,
+  expose a tool, ingest external data, deliver an answer or take an action.
+  Token and estimated-cost values are attributed fixture inputs, not provider
+  invoices or measured inference usage. `READY_FOR_HUMAN_REVIEW` is not agent,
+  model, signal, order, risk, approval or live-trading authority.
 - Cycle 225 retrieval is deterministic lexical matching over attributed internal
   fixture chunks. Cycle 226 evaluates retrieval-bound structured answers using
   exact claim citations, token overlap, utilization/diversity, confidence and

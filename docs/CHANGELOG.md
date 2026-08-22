@@ -74,6 +74,16 @@
   initial Cycle 228 run `32554874033`. Run `32554992009` then applied migration
   0034, passed all 444 no-skip tests, reconciled 134 restored tables, passed the
   zero-error 45-file typed slice and completed every downstream gate.
+- Verified Cycle 228 unchanged on exact merged main commit
+  `72617cb16bf9a371fea5b49ac5c1dfaf112c2e0e` in CI run `32555630655`.
+- Added Cycle 229's immutable scheduled-agent-workflow governance. Exact job,
+  retrieval and answer-evaluation hashes are assessed under purpose/role,
+  cadence, workflow-count, token and estimated-cost limits. Scheduler, tool,
+  model-invocation and action authority are all `NONE`; the strongest outcome
+  is `READY_FOR_HUMAN_REVIEW`.
+- Verified Cycle 229 on PR head in CI run `32556281237`: migration 0035, all
+  451 tests without skips, 138-table restore, zero-error 46-file typed slice and
+  every configured security, supply-chain, container, frontend and browser gate.
 
 ## 2026-08-19
 
