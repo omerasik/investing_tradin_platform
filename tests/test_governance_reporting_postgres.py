@@ -37,7 +37,7 @@ class PostgresGovernanceReportingTests(unittest.TestCase):
         start = datetime(2026, 8, 1, tzinfo=UTC)
         end = datetime(2026, 9, 1, tzinfo=UTC)
         job_policy = build_job_policy(
-            job_name=f"cycle228-monthly-cost-{suffix}",
+            job_name=f"000-cycle228-monthly-cost-{suffix}",
             version="v1",
             interval=timedelta(days=31),
             grace=timedelta(hours=1),

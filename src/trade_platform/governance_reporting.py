@@ -814,7 +814,7 @@ class PostgresGovernanceReportingStore:
                 )
 
     def schedule_policy(self, policy_id: UUID) -> ReportSchedulePolicy:
-        with self._database.connection() as connection, connection.cursor() as cursor:
+        with self._database.transaction() as connection, connection.cursor() as cursor:
             cursor.execute("SELECT * FROM report_schedule_policy_versions WHERE policy_id=%s", (policy_id,))
             row = cursor.fetchone()
         if row is None:
@@ -824,7 +824,7 @@ class PostgresGovernanceReportingStore:
         return policy
 
     def cost_policy(self, policy_id: UUID) -> CostBudgetPolicy:
-        with self._database.connection() as connection, connection.cursor() as cursor:
+        with self._database.transaction() as connection, connection.cursor() as cursor:
             cursor.execute("SELECT * FROM cost_budget_policy_versions WHERE policy_id=%s", (policy_id,))
             row = cursor.fetchone()
         if row is None:
@@ -834,7 +834,7 @@ class PostgresGovernanceReportingStore:
         return policy
 
     def cost_value_assessment(self, assessment_id: UUID) -> CostValueAssessment:
-        with self._database.connection() as connection, connection.cursor() as cursor:
+        with self._database.transaction() as connection, connection.cursor() as cursor:
             cursor.execute(
                 "SELECT * FROM cost_value_assessments WHERE assessment_id=%s",
                 (assessment_id,),
@@ -855,7 +855,7 @@ class PostgresGovernanceReportingStore:
         return assessment
 
     def report(self, report_id: UUID) -> GovernanceReport:
-        with self._database.connection() as connection, connection.cursor() as cursor:
+        with self._database.transaction() as connection, connection.cursor() as cursor:
             cursor.execute("SELECT * FROM governance_reports WHERE report_id=%s", (report_id,))
             row = cursor.fetchone()
         if row is None:
@@ -883,7 +883,7 @@ class PostgresGovernanceReportingStore:
         return report
 
     def report_sections(self, report_id: UUID) -> tuple[GovernanceReportSection, ...]:
-        with self._database.connection() as connection, connection.cursor() as cursor:
+        with self._database.transaction() as connection, connection.cursor() as cursor:
             cursor.execute(
                 "SELECT evidence_class,entries,content_hash FROM governance_report_sections "
                 "WHERE report_id=%s ORDER BY evidence_class", (report_id,),
@@ -900,7 +900,7 @@ class PostgresGovernanceReportingStore:
         return sections
 
     def report_cost_observations(self, report_id: UUID) -> tuple[OperationalCostObservation, ...]:
-        with self._database.connection() as connection, connection.cursor() as cursor:
+        with self._database.transaction() as connection, connection.cursor() as cursor:
             cursor.execute(
                 "SELECT o.* FROM operational_cost_observations o "
                 "JOIN governance_report_cost_observations l ON l.observation_id=o.observation_id "
