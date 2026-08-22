@@ -372,3 +372,20 @@ closed those isolation defects. Corrected PR-head run `32552094284` runs all
 **429 tests without skips**, restores/reconciles all **123 tables**, passes the
 **117/117** mypy ratchet and zero-error **43-file** slice, and completes every
 configured downstream gate.
+
+## Cycle 227 — Model Sensitivity and Degradation Evidence
+
+Unit tests require the exact untampered Cycle 224 report, complete feature
+sensitivity coverage, all eight specified drift dimensions, policy approval
+before evaluation, matching model identity and bounded observation time. They
+verify deterministic evidence ordering, probability/confidence breaches,
+dimension-specific degradation and the non-authoritative no-breach outcome.
+
+Migration 0033 adds immutable policy, report, sensitivity-scenario and
+degradation-observation tables. Composite foreign keys bind exact policy and
+Cycle 224 evaluation content hashes. PostgreSQL coverage proves idempotent
+replay, exact policy/report/child reconstruction after restart and direct
+report/child mutation rejection. PR-head run `32553281343` runs all **435 tests
+without skips**, restores/reconciles all **127 tables**, passes the **117/117**
+mypy ratchet and zero-error **44-file** slice, and completes every configured
+downstream gate.

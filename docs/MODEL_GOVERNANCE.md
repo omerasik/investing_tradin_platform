@@ -37,6 +37,29 @@ use an attributed deterministic fixture; this is engineering evidence, not a
 trained-model, causal-explanation, empirical-alpha or production-monitoring
 claim.
 
+## Explanation-sensitivity and degradation controls
+
+Cycle 227 consumes an exact immutable Cycle 224 `REVIEW_ELIGIBLE` evaluation;
+the upstream report hash is revalidated before use. A monitoring policy approved
+before that evaluation sets minimum scenario coverage, maximum probability
+shift, maximum confidence degradation and separate normalized thresholds for
+data, feature, prediction, calibration, performance, regime, execution and cost
+drift.
+
+Every supplied sensitivity scenario binds a model, evaluated feature,
+perturbation, baseline/perturbed probability and confidence, observation time
+and source reference. All Cycle 224 explanation features and all eight drift
+dimensions are mandatory. Evidence identities and reports are deterministic
+under input reordering; missing, cross-model, future or tampered evidence fails
+closed.
+
+Outcomes are limited to `NO_THRESHOLD_BREACH_OBSERVED` and
+`DEGRADED_REVIEW_REQUIRED`. Migration 0033 retains immutable policy, report,
+scenario and degradation rows bound to the exact policy and Cycle 224 report
+hashes. Restart reconstruction re-hashes every child row. This layer does not
+run/perturb a model, create predictions, calculate production drift, prove
+causation or grant approval, risk-increase, signal, order or live authority.
+
 ## Research-agent retrieval controls
 
 Cycle 225 adds deterministic point-in-time retrieval over retained internal

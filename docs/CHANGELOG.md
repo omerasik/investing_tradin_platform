@@ -55,6 +55,15 @@
   between independently persisted retrieval fixtures; unique policy and request
   identities closed both test-isolation defects without changing production
   evaluation logic.
+- Verified Cycle 226 on exact merged main commit
+  `92dfb04e685e5cb5c5e8e2e0a0f543e9ca193792` in CI run `32552654160`.
+- Added Cycle 227's immutable model explanation-sensitivity and degradation
+  evidence. Exact Cycle 224 evaluation reports are evaluated under pre-approved
+  probability-shift, confidence-degradation and eight-dimension drift thresholds;
+  outcomes grant no execution, prediction, approval or risk authority.
+- Verified Cycle 227 on PR head in CI run `32553281343`: migration 0033, all
+  435 tests without skips, 127-table restore, zero-error 44-file typed slice and
+  every configured security, supply-chain, container, frontend and browser gate.
 
 ## 2026-08-19
 
