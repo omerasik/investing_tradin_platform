@@ -42,6 +42,19 @@
   structured agent request, while insufficient evidence cannot be bound.
 - Verified Cycle 225 on PR head in CI run `32551034230`: migration 0031, all
   423 tests without skips, 120-table restore and zero-error 42-file typed slice.
+- Verified Cycle 225 on exact merged main commit
+  `f831791ccd6de18311aa5dc8bd6a494296d5acab` in CI run `32551428312`.
+- Added Cycle 226's immutable retrieval-bound answer evaluation. Pre-approved
+  policy thresholds require exact per-claim retrieved citations, lexical
+  support, citation utilization, distinct sources, evidence-bounded confidence
+  and missing-data disclosure; unsupported causal language fails closed.
+- Verified corrected Cycle 226 PR head in CI run `32552094284`: migration 0032,
+  all 429 tests without skips, 123-table restore, zero-error 43-file typed slice
+  and every configured security, supply-chain, container, frontend and browser
+  gate. Runs `32551944909` and `32552022891` exposed fixed-identity collisions
+  between independently persisted retrieval fixtures; unique policy and request
+  identities closed both test-isolation defects without changing production
+  evaluation logic.
 
 ## 2026-08-19
 

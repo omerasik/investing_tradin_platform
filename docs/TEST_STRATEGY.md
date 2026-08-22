@@ -354,3 +354,21 @@ and database-level immutability. PR-head run `32551034230` runs all **423 tests
 without skips**, restores/reconciles all **120 tables**, passes the **117/117**
 mypy ratchet and zero-error **42-file** slice, and completes every configured
 gate.
+
+## Cycle 226 — Retrieval-Bound Agent Answer Evaluation
+
+Unit tests require exact claim-to-retrieval bindings, context and approval-time
+alignment, per-claim lexical support, citation utilization/diversity,
+retrieval-bounded confidence and missing-data disclosure for partial query
+coverage. Unsupported causal language and overconfidence produce `BLOCKED`;
+supported fixture answers can reach only `REVIEW_ELIGIBLE`.
+
+Migration 0032 adds immutable policy, report and claim-evaluation tables with a
+composite policy-ID/content-hash foreign key and retrieval-report binding. The
+PostgreSQL test proves idempotent writes, exact reconstruction after restart and
+database-level mutation rejection. Two initial hosted runs exposed shared fixed
+policy/request IDs across independently persisted fixtures; unique identities
+closed those isolation defects. Corrected PR-head run `32552094284` runs all
+**429 tests without skips**, restores/reconciles all **123 tables**, passes the
+**117/117** mypy ratchet and zero-error **43-file** slice, and completes every
+configured downstream gate.

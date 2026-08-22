@@ -39,6 +39,19 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
+- Cycle 226 corrected PR-head GitHub Actions
+  [run 32552094284](https://github.com/omerasik/investing_tradin_platform/actions/runs/32552094284)
+  applies migration 0032, runs all **429 tests without skips**, reconstructs
+  exact policy/retrieval-bound answer evaluations across all **123
+  restore-critical tables**, and passes the **117/117** mypy ratchet plus a
+  zero-error **43-file** critical slice and every configured downstream gate.
+  Initial runs `32551944909` and `32552022891` exposed and then narrowed a
+  shared fixed-identity collision in PostgreSQL fixtures; the corrected fixture
+  uses unique policy and request identities.
+- Cycle 225 exact-main GitHub Actions
+  [run 32551428312](https://github.com/omerasik/investing_tradin_platform/actions/runs/32551428312)
+  passed every configured gate on merge commit
+  `f831791ccd6de18311aa5dc8bd6a494296d5acab`.
 - Cycle 225 PR-head GitHub Actions
   [run 32551034230](https://github.com/omerasik/investing_tradin_platform/actions/runs/32551034230)
   applies migration 0031, runs all **423 tests without skips**, reconstructs
@@ -249,10 +262,11 @@ snapshot, not a second roadmap.
    approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
 4. Cycle 209 re-audited all RQ-001–RQ-030 rows and is exact-mainline verified.
-   Cycles 212–224 are exact-mainline verified. Cycle 225 retrieval evidence is
-   PR-head verified; next provider-independent work is explanation/degradation
-   evidence or durable governance operations. Measured browser performance awaits the
-   required Chrome DevTools MCP, and concrete IdP activation remains external.
+   Cycles 212–225 are exact-mainline verified. Cycle 226 retrieval-bound answer
+   evaluation is corrected PR-head verified; next provider-independent work is
+   explanation/degradation evidence or durable governance operations. Measured
+   browser performance awaits the required Chrome DevTools MCP, and concrete
+   IdP activation remains external.
 
 ## PostgreSQL persistence progress
 
