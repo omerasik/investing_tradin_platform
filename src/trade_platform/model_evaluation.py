@@ -424,6 +424,12 @@ def evaluate_binary_classifier(
     )
 
 
+def validate_binary_model_evaluation_report(report: BinaryModelEvaluationReport) -> None:
+    """Fail closed when a downstream authority receives a tampered report."""
+    if _report_hash(report) != report.content_hash:
+        raise ModelEvaluationError("model_evaluation_report_hash_mismatch")
+
+
 class PostgresModelEvaluationStore:
     """Append-only policy, observation and report evidence."""
 
