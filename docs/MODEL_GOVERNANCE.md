@@ -52,6 +52,30 @@ chunks, reports and ranked citations are immutable, content-addressed and
 restart/restore verified. This lexical fixture does not verify source truth,
 perform semantic/vector retrieval, invoke a model or connector, approve a
 sensitive action, or expose any signal/order/risk authority.
+
+## Research-agent answer evaluation controls
+
+Cycle 226 adds a separate pre-approved evaluation policy for structured agent
+answers bound to a `COMPLETE` Cycle 225 retrieval report. Workflow, instrument,
+role and timestamps must align. Every fact and inference requires an exact
+binding to one or more retrieved citations; unretrieved references or missing,
+extra or duplicate claim bindings fail closed.
+
+The deterministic evaluator records per-claim lexical overlap, aggregate claim
+support, citation utilization, distinct sources, declared confidence and query
+coverage. Confidence cannot exceed either the policy ceiling or retrieval
+coverage. Partial query coverage requires an explicit missing-data disclosure,
+and causal phrases are conservatively blocked because lexical evidence cannot
+verify causation. Outcomes are limited to `BLOCKED` and `REVIEW_ELIGIBLE`.
+
+Migration 0032 retains immutable policies, reports and per-claim evaluations.
+Each report is relationally bound to the exact policy content hash and retrieval
+report; restart reconstruction, idempotency, direct-mutation rejection and
+fresh-restore comparison are hosted-CI verified. The fixture proves engineering
+behavior only. It does not establish semantic factuality, source truth,
+external-model quality, causal validity or production acceptance and grants no
+model, tool, signal, order, risk, approval or live-trading authority.
+
 ## Regime and ensemble controls
 
 Regime inference is a transparent, historical-prefix-only probability model, not a claim of market certainty. Every estimate records probabilities for bullish, bearish and sideways states plus derived uncertainty. Ensemble weights are based on documented regime-weighted expected scores and are rejected when they breach the configured maximum; they are never silently capped. Any replacement with a learned classifier requires versioning, chronological validation, calibration evidence, drift monitoring and independent approval.

@@ -6,9 +6,9 @@ The full requirement-level matrix is in
 - A disposable PostgreSQL DSN is not configured on this workstation. PostgreSQL
   migrations, restart/immutability, restore reconciliation and configured browser
   scenarios are therefore hosted-CI evidence, not local execution evidence.
-  Cycle 225 PR-head run `32551034230` verifies 423 no-skip tests, migration
-  0031 and all 120 restored tables. Cycle 224 exact-main run `32550384273`
-  verifies the preceding model-evaluation boundary unchanged after merge.
+  Cycle 226 corrected PR-head run `32552094284` verifies 429 no-skip tests,
+  migration 0032 and all 123 restored tables. Cycle 225 exact-main run
+  `32551428312` verifies the preceding retrieval boundary unchanged after merge.
 
 - This is a local, paper-only system. Live trading is intentionally unavailable.
 - SQLite stores provide durable local evidence but are not the normalized
@@ -148,7 +148,7 @@ The full requirement-level matrix is in
   policy-wide rather than case-specific, and no policy owner has approved
   production durations.
 - Regime, ensemble, ML and agent layers are local governance/research contracts;
-  they do not have validated production models, retrieval, orchestration,
+  they do not have validated production models, semantic retrieval, orchestration,
   empirical evaluation or execution authority. Cycle 224 evaluates supplied
   chronological binary holdout predictions and local additive explanations
   against a predecessor under pre-approved thresholds. It does not train or
@@ -158,10 +158,14 @@ The full requirement-level matrix is in
   can establish only engineering correctness, and `REVIEW_ELIGIBLE` still
   requires separate manual registry approval.
 - Cycle 225 retrieval is deterministic lexical matching over attributed internal
-  fixture chunks. It is not semantic/vector retrieval, source truth or causal
-  verification, external document ingestion, production access control, a rich
-  natural-language interface or an answer-quality evaluation. No model,
-  connector, credential, tool or sensitive-action approval is activated.
+  fixture chunks. Cycle 226 evaluates retrieval-bound structured answers using
+  exact claim citations, token overlap, utilization/diversity, confidence and
+  disclosure thresholds. Neither cycle provides semantic/vector retrieval,
+  source truth, semantic factuality or causal verification, external document
+  ingestion, production access control, a rich natural-language interface or
+  external-model quality acceptance. No model, connector, credential, tool or
+  sensitive-action approval is activated; `REVIEW_ELIGIBLE` still requires the
+  existing independent safety and human-review workflow.
 - Cycle 208 adds a separate deployment-owned dashboard-view bearer boundary,
   protected typed read models for Feature Authority, Strategy Scorecard V2,
   Regime V2, Portfolio Construction V2, News/Event V2 and SRE V2, plus a
