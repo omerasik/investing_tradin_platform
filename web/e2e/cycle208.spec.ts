@@ -30,7 +30,22 @@ test("configured dashboard headers and WCAG A/AA scan pass", async ({ page }) =>
   const response = await page.goto("/");
   expect(response?.headers()["x-content-type-options"]).toBe("nosniff");
   expect(response?.headers()["x-frame-options"]).toBe("DENY");
-  expect(response?.headers()["content-security-policy"]).toContain("frame-ancestors 'none'");
+  const policy = response?.headers()["content-security-policy"] ?? "";
+  expect(policy).toContain("frame-ancestors 'none'");
+  expect(policy).not.toContain("'unsafe-inline'");
+  expect(policy).toContain("'strict-dynamic'");
+  const nonce = policy.match(/'nonce-([a-f0-9]{32})'/)?.[1];
+  expect(nonce).toBeTruthy();
+  const scriptNonces = await page.locator("script").evaluateAll((scripts) =>
+    scripts.map((script) => script.getAttribute("nonce")),
+  );
+  expect(scriptNonces.length).toBeGreaterThan(0);
+  expect(scriptNonces.every((value) => value === nonce)).toBe(true);
+  const second = await page.request.get("/");
+  const secondNonce = second.headers()["content-security-policy"]
+    ?.match(/'nonce-([a-f0-9]{32})'/)?.[1];
+  expect(secondNonce).toBeTruthy();
+  expect(secondNonce).not.toBe(nonce);
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
   expect(results.violations).toEqual([]);
 });

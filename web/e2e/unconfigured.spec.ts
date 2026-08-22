@@ -6,7 +6,10 @@ test.skip(Boolean(process.env.TRADE_PLATFORM_DASHBOARD_CONFIG_PATH), "Configured
 test("unconfigured dashboard fails closed without losing safety boundaries", async ({ page, request }) => {
   const response = await page.goto("/");
   expect(response?.headers()["x-frame-options"]).toBe("DENY");
-  expect(response?.headers()["content-security-policy"]).toContain("frame-ancestors 'none'");
+  const policy = response?.headers()["content-security-policy"] ?? "";
+  expect(policy).toContain("frame-ancestors 'none'");
+  expect(policy).not.toContain("'unsafe-inline'");
+  expect(policy).toMatch(/script-src 'self' 'nonce-[a-f0-9]{32}' 'strict-dynamic'/);
   await expect(page.getByRole("heading", { name: "Command Center", level: 1 })).toBeVisible();
   await expect(page.getByText("LIVE TRADING: DISABLED", { exact: true })).toBeVisible();
   await expect(page.locator("#features")).toContainText("EXTERNAL_BLOCKED");
