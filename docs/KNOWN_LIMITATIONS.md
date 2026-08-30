@@ -4,10 +4,9 @@ The full requirement-level matrix is in
 [`MASTER_ROADMAP.md`](MASTER_ROADMAP.md). These are the material current limits.
 
 - Cycle 230's focused migration/replay/restart/immutability path passed against a
-  disposable local PostgreSQL 16 container. Full restore reconciliation and
-  configured browser scenarios remain hosted-CI evidence. Cycle 229 exact-main
-  run `32556866846` verifies 451 no-skip tests, migration 0035 and all 138
-  restored tables.
+  disposable local PostgreSQL 16 container. PR-head run `33337482205` verifies
+  the full 458-test matrix, migration 0036, all 143 restored tables and browser
+  scenarios. Cycle 229 exact-main run `32556866846` remains its mainline proof.
 
 - This is a local, paper-only system. Live trading is intentionally unavailable.
 - SQLite stores provide durable local evidence but are not the normalized

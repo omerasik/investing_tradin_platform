@@ -434,4 +434,7 @@ disabled/insufficient outcomes, non-finite/tampered evidence and input-order
 invariance. One PostgreSQL test covers migration 0036, idempotent replay,
 store-side re-derivation, restart reconstruction and immutable report/candidate
 enforcement. The five new evidence tables are part of the restore allow-list and
-the module is part of the zero-error strict mypy slice. Hosted proof is pending.
+the module is part of the zero-error strict mypy slice. PR-head run
+`33337482205` passes all **458 tests without skips**, restores/reconciles all
+**143 tables**, passes the **117/117** ratchet and zero-error **47-file** slice,
+and completes every downstream gate.

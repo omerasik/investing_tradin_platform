@@ -35,6 +35,10 @@ keys bind exact policy, evaluation, target and candidate content hashes. The
 PostgreSQL store reloads registered evidence and re-derives the report before
 insertion; restart reads verify both report and member-graph hashes.
 
+PR-head CI run `33337482205` verifies migration 0036, all 458 tests without
+skips, all 143 restore-critical tables, the 117/117 mypy ratchet, a zero-error
+47-file strict slice and every configured downstream gate.
+
 Unit coverage includes deterministic ranking, below-threshold retention,
 divergence escalation, disabled/insufficient fail-closed outcomes, version and
 lookahead rejection, non-finite/tampered evidence rejection and input-order

@@ -90,6 +90,9 @@
   evidence. Exact review-eligible model-evaluation, target and candidate hashes
   feed deterministic importance-weighted ranking, diversity and divergence
   gates. Model invocation, prediction and action authority remain `NONE`.
+- Verified Cycle 230 on PR head in CI run `33337482205`: migration 0036, all
+  458 tests without skips, 143-table restore, 117/117 mypy ratchet, zero-error
+  47-file typed slice and every configured downstream gate.
 
 ## 2026-08-19
 

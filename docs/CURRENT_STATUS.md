@@ -47,6 +47,12 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
+- Cycle 230 PR-head GitHub Actions
+  [run 33337482205](https://github.com/omerasik/investing_tradin_platform/actions/runs/33337482205)
+  applies migration 0036, runs all **458 tests without skips**, reconstructs
+  exact evaluation/target/candidate-bound historical-analogue evidence across
+  all **143 restore-critical tables**, and passes the **117/117** mypy ratchet,
+  zero-error **47-file** critical slice and every downstream gate.
 - Cycle 229 exact-main GitHub Actions
   [run 32556866846](https://github.com/omerasik/investing_tradin_platform/actions/runs/32556866846)
   passed every configured gate on merge commit
@@ -299,9 +305,8 @@ snapshot, not a second roadmap.
 3. Keep live trading and external provider connectivity disabled.
 4. Cycle 209 re-audited all RQ-001–RQ-030 rows and is exact-mainline verified.
    Cycles 212–229 are exact-mainline verified. Cycle 230 historical-analogue
-   explanation evidence is locally implemented and awaits hosted verification.
-   Next provider-independent work is the isolated upstream identity and static-
-   scan lane. Measured
+   explanation evidence is PR-head verified; next provider-independent work is
+   the isolated upstream identity and static-scan lane. Measured
    browser performance awaits the required Chrome DevTools MCP, and concrete
    IdP activation remains external.
 
@@ -314,9 +319,9 @@ snapshot, not a second roadmap.
   and paper/production configuration requires PostgreSQL.
 - A backfill utility provides dry-run counts/checksums and fails closed pending
   explicit legacy identity mappings. PostgreSQL integration coverage is present
-  and CI provisions the database. Cycle 230 also passed its focused migration,
+  and CI provisions the database. Cycle 230 passed its focused migration,
   replay, restart and immutability test against a disposable local PostgreSQL 16
-  container; CI remains authoritative for the complete integration matrix.
+  container; run `33337482205` verifies the complete integration matrix.
 - PostgreSQL critical repositories now atomically persist daily risk
   reservation/decision idempotency, paper OMS creation/event evidence, external
   fill deduplication and validation-package creation. They retain no broker or
