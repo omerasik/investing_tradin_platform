@@ -4,11 +4,16 @@ The full requirement-level matrix is in
 [`MASTER_ROADMAP.md`](MASTER_ROADMAP.md). These are the material current limits.
 
 - Cycle 230's focused migration/replay/restart/immutability path passed against a
-  disposable local PostgreSQL 16 container. PR-head run `33337482205` verifies
-  the full 458-test matrix, migration 0036, all 143 restored tables and browser
-  scenarios. Cycle 229 exact-main run `32556866846` remains its mainline proof.
+  disposable local PostgreSQL 16 container. Exact-main run `33337948319`
+  verifies the full 458-test matrix, migration 0036, all 143 restored tables and
+  browser scenarios on commit `a4d835fd3832b7a9a6f2ae37970091d4bee49902`.
 
 - This is a local, paper-only system. Live trading is intentionally unavailable.
+- Cycle 231 refreshed only upstream repository identity/activity metadata. Twelve
+  of the 16 recorded remote branches have advanced, but their immutable local
+  pins remain the only reviewed identities. No updated pin has received a full
+  license, secret, SCA, SAST, SBOM, container or malicious-package review, and
+  no candidate code was fetched or executed.
 - SQLite stores provide durable local evidence but are not the normalized
   PostgreSQL/analytics/object-storage/queue deployment architecture required by
   the specification.
