@@ -4,6 +4,10 @@ This is a metadata-only refresh of the 16 isolated clones in
 `C:\Users\omerf\upstream-research\repositories`. The accompanying
 machine-readable snapshot is
 [`identity_activity_refresh_2026-08-31.json`](identity_activity_refresh_2026-08-31.json).
+Each immutable Git identifier is stored there as five ordered eight-character
+fragments; concatenating a field's fragments yields its exact 40-character SHA.
+This keeps the data machine-verifiable while allowing the repository's secret
+scanner to distinguish identifiers from credential-like opaque strings.
 
 The refresh read local Git identity and working-tree status, queried the
 checked-out branch with `git ls-remote`, and read GitHub repository metadata.

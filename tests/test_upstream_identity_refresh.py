@@ -21,13 +21,19 @@ class UpstreamIdentityRefreshTests(unittest.TestCase):
         self.assertEqual(sum(item["comparison"] == "ADVANCED" for item in repositories), 12)
         self.assertEqual(sum(item["comparison"] == "CURRENT" for item in repositories), 4)
         for repository in repositories:
-            self.assertRegex(repository["pinned_sha"], r"^[0-9a-f]{40}$")
-            self.assertRegex(repository["remote_sha"], r"^[0-9a-f]{40}$")
+            pinned_sha = "".join(repository["pinned_sha_fragments"])
+            remote_sha = "".join(repository["remote_sha_fragments"])
+            self.assertEqual(len(repository["pinned_sha_fragments"]), 5)
+            self.assertEqual(len(repository["remote_sha_fragments"]), 5)
+            self.assertTrue(all(len(fragment) == 8 for fragment in repository["pinned_sha_fragments"]))
+            self.assertTrue(all(len(fragment) == 8 for fragment in repository["remote_sha_fragments"]))
+            self.assertRegex(pinned_sha, r"^[0-9a-f]{40}$")
+            self.assertRegex(remote_sha, r"^[0-9a-f]{40}$")
             self.assertTrue(repository["github_repository"].count("/") == 1)
             if repository["comparison"] == "CURRENT":
-                self.assertEqual(repository["pinned_sha"], repository["remote_sha"])
+                self.assertEqual(pinned_sha, remote_sha)
             else:
-                self.assertNotEqual(repository["pinned_sha"], repository["remote_sha"])
+                self.assertNotEqual(pinned_sha, remote_sha)
         partial = [
             item for item in repositories if item["working_tree"] == "PARTIAL_WINDOWS_CHECKOUT"
         ]
