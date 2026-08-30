@@ -424,3 +424,17 @@ registered evidence, restart reconstruction and direct mutation/deletion
 rejection. PR-head run `32556281237` runs all **451 tests without skips**,
 restores/reconciles all **138 tables**, passes the **117/117** mypy ratchet and
 zero-error **46-file** slice, and completes every configured downstream gate.
+
+## Cycle 230 — Historical Analogue Explanation Evidence
+
+Six unit tests cover exact evaluation/version/feature binding, point-in-time
+candidate and outcome cutoffs, deterministic weighted distance and ranking,
+below-threshold member retention, source/regime diversity, divergence,
+disabled/insufficient outcomes, non-finite/tampered evidence and input-order
+invariance. One PostgreSQL test covers migration 0036, idempotent replay,
+store-side re-derivation, restart reconstruction and immutable report/candidate
+enforcement. The five new evidence tables are part of the restore allow-list and
+the module is part of the zero-error strict mypy slice. PR-head run
+`33337482205` passes all **458 tests without skips**, restores/reconciles all
+**143 tables**, passes the **117/117** ratchet and zero-error **47-file** slice,
+and completes every downstream gate.

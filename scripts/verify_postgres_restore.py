@@ -62,6 +62,11 @@ CRITICAL_TABLES = (
     "agent_workflow_schedule_policy_versions",
     "scheduled_agent_workflow_assessments",
     "scheduled_agent_workflow_candidates",
+    "historical_analogue_policy_versions",
+    "model_explanation_targets",
+    "historical_analogue_candidates",
+    "historical_analogue_reports",
+    "historical_analogue_report_members",
     "kill_switch_events",
     "reconciliations",
     "reconciled_account_evidence",
@@ -207,7 +212,10 @@ def verify_restore(source_dsn: str, restored_dsn: str) -> dict[str, Any]:
         )
         for package_id, content_hash, manifest, status in cursor.fetchall():
             if status == "VERIFIED":
-                if manifest is None or hashlib.sha256(str(manifest).encode()).hexdigest() != content_hash:
+                if (
+                    manifest is None
+                    or hashlib.sha256(str(manifest).encode()).hexdigest() != content_hash
+                ):
                     raise RuntimeError(f"restore_validation_manifest_mismatch:{package_id}")
             elif status != "LEGACY_UNVERIFIABLE" or manifest is not None:
                 raise RuntimeError(f"restore_validation_integrity_state_invalid:{package_id}")
@@ -225,9 +233,7 @@ def verify_restore(source_dsn: str, restored_dsn: str) -> dict[str, Any]:
         cursor.execute("SELECT COUNT(*) FROM kill_switch_events")
         if int(cursor.fetchone()[0]) < 1:
             raise RuntimeError("restore_has_no_kill_switch_state")
-        cursor.execute(
-            "SELECT COUNT(*) FROM reconciliations WHERE complete = true"
-        )
+        cursor.execute("SELECT COUNT(*) FROM reconciliations WHERE complete = true")
         if int(cursor.fetchone()[0]) < 1:
             raise RuntimeError("restore_reconciliation_incomplete")
         cursor.execute("SELECT COUNT(*) FROM strategy_promotion_decisions")

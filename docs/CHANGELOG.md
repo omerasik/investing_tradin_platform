@@ -84,6 +84,15 @@
 - Verified Cycle 229 on PR head in CI run `32556281237`: migration 0035, all
   451 tests without skips, 138-table restore, zero-error 46-file typed slice and
   every configured security, supply-chain, container, frontend and browser gate.
+- Verified Cycle 229 unchanged on exact merged main commit
+  `712720916d47fdede8d369ab9be4a5b53d06e34f` in CI run `32556866846`.
+- Added Cycle 230's immutable point-in-time historical-analogue explanation
+  evidence. Exact review-eligible model-evaluation, target and candidate hashes
+  feed deterministic importance-weighted ranking, diversity and divergence
+  gates. Model invocation, prediction and action authority remain `NONE`.
+- Verified Cycle 230 on PR head in CI run `33337482205`: migration 0036, all
+  458 tests without skips, 143-table restore, 117/117 mypy ratchet, zero-error
+  47-file typed slice and every configured downstream gate.
 
 ## 2026-08-19
 
