@@ -44,7 +44,7 @@ class PostgresGovernanceReportingTests(unittest.TestCase):
             owner="operations",
             runbook_uri="runbooks/monthly-cost-report",
             approved_by="operations-reviewer",
-            approved_at=start - timedelta(days=2),
+            approved_at=start,
         )
         job_run = build_job_run(
             policy_id=job_policy.policy_id,
@@ -67,7 +67,7 @@ class PostgresGovernanceReportingTests(unittest.TestCase):
             report_type=GovernanceReportType.MONTHLY_COST,
             job_policy=job_policy,
             approved_by="governance-reviewer",
-            approved_at=start - timedelta(days=1),
+            approved_at=start,
         )
         budget = CostBudgetPolicy.create(
             policy_name=f"cycle228-cost-budget-{suffix}",

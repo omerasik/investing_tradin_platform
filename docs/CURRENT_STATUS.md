@@ -1,6 +1,6 @@
 # Current Status
 
-Last synchronized: 2026-08-22. The requirement-level source of truth is
+Last synchronized: 2026-08-30. The requirement-level source of truth is
 [`MASTER_ROADMAP.md`](MASTER_ROADMAP.md); this document is a concise operational
 snapshot, not a second roadmap.
 
@@ -40,15 +40,17 @@ snapshot, not a second roadmap.
   answer-evaluation evidence, with exact job/report hashes, bounded workflows,
   tokens and estimated cost, no model/tool/action authority, and explicit human
   review as the maximum outcome.
+- Immutable point-in-time historical-analogue explanation evidence bound to an
+  exact review-eligible evaluation. Deterministic importance-weighted ranking,
+  source/regime diversity and divergence gates remain fixture-only and grant no
+  model-invocation, prediction or action authority.
 
 ## Verified evidence
 
-- Cycle 229 PR-head GitHub Actions
-  [run 32556281237](https://github.com/omerasik/investing_tradin_platform/actions/runs/32556281237)
-  applies migration 0035, runs all **451 tests without skips**, reconstructs
-  exact job/retrieval/answer-bound scheduled-agent governance across all **138
-  restore-critical tables**, and passes the **117/117** mypy ratchet, zero-error
-  **46-file** critical slice and every downstream gate.
+- Cycle 229 exact-main GitHub Actions
+  [run 32556866846](https://github.com/omerasik/investing_tradin_platform/actions/runs/32556866846)
+  passed every configured gate on merge commit
+  `712720916d47fdede8d369ab9be4a5b53d06e34f`.
 - Cycle 228 exact-main GitHub Actions
   [run 32555630655](https://github.com/omerasik/investing_tradin_platform/actions/runs/32555630655)
   passed every configured gate on merge commit
@@ -296,9 +298,10 @@ snapshot, not a second roadmap.
    approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
 4. Cycle 209 re-audited all RQ-001–RQ-030 rows and is exact-mainline verified.
-   Cycles 212–228 are exact-mainline verified. Cycle 229 scheduled-agent
-   governance is PR-head verified; next provider-independent work is further
-   non-executing explanation evidence. Measured
+   Cycles 212–229 are exact-mainline verified. Cycle 230 historical-analogue
+   explanation evidence is locally implemented and awaits hosted verification.
+   Next provider-independent work is the isolated upstream identity and static-
+   scan lane. Measured
    browser performance awaits the required Chrome DevTools MCP, and concrete
    IdP activation remains external.
 
@@ -311,10 +314,9 @@ snapshot, not a second roadmap.
   and paper/production configuration requires PostgreSQL.
 - A backfill utility provides dry-run counts/checksums and fails closed pending
   explicit legacy identity mappings. PostgreSQL integration coverage is present
-  and CI provisions the database, but this workstation's Docker engine was not
-  available for a local live PostgreSQL run. A safe disposable local PostgreSQL
-  DSN was not configured for the current manifest cycle; CI remains the
-  authoritative integration environment.
+  and CI provisions the database. Cycle 230 also passed its focused migration,
+  replay, restart and immutability test against a disposable local PostgreSQL 16
+  container; CI remains authoritative for the complete integration matrix.
 - PostgreSQL critical repositories now atomically persist daily risk
   reservation/decision idempotency, paper OMS creation/event evidence, external
   fill deduplication and validation-package creation. They retain no broker or
