@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Canonical one-command local development orchestrator for Trade Investing Panel.
 
 Prerequisites:
