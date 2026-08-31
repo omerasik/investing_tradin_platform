@@ -31,6 +31,8 @@
 - Added Cycle 235's restricted static VectorBT review. The Commons Clause
   licensing condition, untriaged SAST findings and absent SCA/legal review keep
   it `DEFER_REFERENCE_ONLY`; no candidate code was executed.
+- Verified Cycle 235 on exact merged main commit
+  `1bb046eea524a21baf71e940aec51edb4019e0a4` in CI run `33435806249`.
 
 ## 2026-08-22
 
