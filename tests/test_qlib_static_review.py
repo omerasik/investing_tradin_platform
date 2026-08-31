@@ -32,9 +32,10 @@ class QlibStaticReviewTests(unittest.TestCase):
         self.assertEqual(review["sca"]["status"], "NOT_RUN_UNPINNED_DECLARATIONS")
         self.assertEqual(review["decision"]["status"], "DEFER_REFERENCE_ONLY")
         self.assertEqual(
-            hashlib.sha256(sbom_path.read_bytes()).hexdigest(),
+            hashlib.sha256(sbom_path.read_bytes().replace(b"\r\n", b"\n")).hexdigest(),
             "".join(review["sbom"]["artifact_sha256_fragments"]),
         )
+        self.assertEqual(review["sbom"]["artifact_hash_canonicalization"], "LF line endings")
         self.assertEqual(sbom["specVersion"], "1.5")
         self.assertEqual(sbom["metadata"]["component"]["name"], "pyqlib")
         self.assertEqual(len(sbom["components"]), 23)

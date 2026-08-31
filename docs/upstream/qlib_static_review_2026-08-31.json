@@ -56,7 +56,8 @@
     "tool_version": "5.5.0",
     "format": "CycloneDX 1.5 JSON",
     "artifact": "qlib_declared_dependencies_2026-08-31.cdx.json",
-    "artifact_sha256_fragments": ["22896bac", "f032a416", "680ca4e3", "e2ec2f0d", "961203a1", "c50a1834", "abe6e9e9", "e69c471e"],
+    "artifact_sha256_fragments": ["2290fcb3", "7e7a574e", "bd0fa4d4", "0c7b4f52", "e49f743b", "84be3357", "7bb6310d", "2d6a5d9f"],
+    "artifact_hash_canonicalization": "LF line endings",
     "direct_declared_components": 23,
     "exact_pinned_components": 0,
     "resolved_transitive_components": 0
