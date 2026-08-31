@@ -33,6 +33,7 @@ it can be considered.
 | US-08 | Qlib declares 23 direct production dependencies but none is exact-pinned; no lockfile/resolved transitive graph was supplied. | A deterministic vulnerability/SCA claim cannot be made from the static manifest. | Record the direct-declaration CycloneDX inventory only; do not resolve/install dependencies in this review. |
 | US-09 | An all-files no-baseline detect-secrets scan found zero findings. | This narrows one automated signal but cannot establish historical credential absence. | Retain the evidence hash; do not treat it as an adoption clearance. |
 | US-10 | The pinned FinRL-Trading clone's Bandit scan cannot decode `src/trading/alpaca_manager.py` as UTF-8; its partial result has 16 medium and 25 low findings. | Full-source SAST coverage is not established, and the repository also declares a live-trading command. | `DEFER_REFERENCE_ONLY`; do not transcode, execute, import or install the candidate to work around the static-review gap. |
+| US-11 | The pinned NautilusTrader clone has 83 medium and 25,670 low Bandit findings across 370,358 scanned lines; its all-files secret scan is zero-finding. | Source-level SAST triage remains incomplete and a zero secret result is not a security clearance. | `DEFER_REFERENCE_ONLY`; require legal/SCA review before any use. |
 
 See [`QLIB_STATIC_REVIEW_2026-08-31.md`](QLIB_STATIC_REVIEW_2026-08-31.md) for
 the immutable input hashes, exact tool versions and restriction boundary.
