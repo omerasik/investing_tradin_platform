@@ -21,7 +21,10 @@ The full requirement-level matrix is in
   production dependencies have no exact pins or resolved transitive graph, so
   there is no vulnerability-clean claim. The 18 high Bandit signals require
   review in an explicitly approved isolated environment; qlib remains
-  reference-only and no source or package is imported here.
+  reference-only and no source or package is imported here. Exact-main run
+  `33400243819` verifies the platform's full 460-test/143-table hosted matrix
+  on commit `0a22bf2110f5dcd0f542ebac1cb132333ecaa9b4`; it does not change that
+  upstream security or adoption limit.
 - SQLite stores provide durable local evidence but are not the normalized
   PostgreSQL/analytics/object-storage/queue deployment architecture required by
   the specification.

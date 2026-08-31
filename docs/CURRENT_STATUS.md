@@ -83,6 +83,13 @@ snapshot, not a second roadmap.
   23-component direct-declaration SBOM. The candidate remains
   `DEFER_REFERENCE_ONLY`: every declaration is non-exact, no transitive graph
   or vulnerability audit is claimed, and no candidate code or dependency ran.
+  Corrected PR-head run
+  [33399806845](https://github.com/omerasik/investing_tradin_platform/actions/runs/33399806845)
+  and exact-main run
+  [33400243819](https://github.com/omerasik/investing_tradin_platform/actions/runs/33400243819)
+  both passed the full 460-test hosted matrix without skips, the 143-table
+  PostgreSQL restore/reconciliation drill, 117/117 type ratchet, security and
+  supply-chain gates, production dashboard build and protected browser tests.
 - Cycle 228 exact-main GitHub Actions
   [run 32555630655](https://github.com/omerasik/investing_tradin_platform/actions/runs/32555630655)
   passed every configured gate on merge commit
@@ -330,9 +337,9 @@ snapshot, not a second roadmap.
    approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
 4. Cycle 209 re-audited all RQ-001–RQ-030 rows and is exact-mainline verified.
-   Cycles 212–231 are exact-mainline verified. Cycle 232 has begun a restricted
-   static review of the frozen qlib pin; it remains non-executing and cannot
-   create adoption authority. Measured
+   Cycles 212–232 are exact-mainline verified. Cycle 232's restricted static
+   review of the frozen qlib pin remains non-executing and cannot create
+   adoption authority. Measured
    browser performance awaits the required Chrome DevTools MCP, and concrete
    IdP activation remains external.
 

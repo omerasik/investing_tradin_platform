@@ -16,6 +16,8 @@
   dependency CycloneDX SBOM. Eighteen high-severity SAST signals and 23
   non-exact dependency declarations keep it `DEFER_REFERENCE_ONLY`; no
   dependency resolution, installer, candidate execution or adoption occurred.
+- Verified Cycle 232 on exact merged main commit
+  `0a22bf2110f5dcd0f542ebac1cb132333ecaa9b4` in CI run `33400243819`.
 
 ## 2026-08-22
 

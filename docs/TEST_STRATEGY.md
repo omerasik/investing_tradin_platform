@@ -460,3 +460,8 @@ zero-finding no-baseline secret scan, incomplete unpinned dependency state and
 `DEFER_REFERENCE_ONLY` decision. It deliberately rejects an interpretation of
 the generated direct-dependency SBOM as a resolved SCA result, legal approval,
 benchmark result, runtime approval or trading authority.
+
+Corrected PR-head run `33399806845` and exact-main run `33400243819` both pass
+all **460** hosted tests without skips, the **143-table** PostgreSQL
+restore/reconciliation drill, **117/117** type ratchet, security/supply-chain
+gates, production dashboard build and protected browser scenarios.
