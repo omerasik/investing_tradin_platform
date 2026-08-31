@@ -479,3 +479,17 @@ Exact-main run `33435806249` passes all **463** hosted tests without skips, the
 **143-table** PostgreSQL restore/reconciliation drill, **117/117** type ratchet,
 security/supply-chain gates, production dashboard build and protected browser
 scenarios.
+
+## Cycle 236 — backtesting.py Restricted Static Review
+
+An offline unit test validates Cycle 236's immutable backtesting.py identity,
+static-only restrictions, exact source/report hashes, unpinned production
+declarations, the no-baseline secret scan, Bandit severity and rule counts,
+manifest-only SCA status, and the `DEFER_REFERENCE_ONLY` decision. It rejects
+treating static review as legal approval, resolved SCA, a benchmark result,
+runtime approval or trading authority.
+
+Exact-main run `33437725262` passes all **464** hosted tests without skips, the
+**143-table** PostgreSQL restore/reconciliation drill, **117/117** type ratchet,
+security/supply-chain gates, production dashboard build and protected browser
+scenarios.

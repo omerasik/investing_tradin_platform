@@ -38,6 +38,14 @@ The full requirement-level matrix is in
   463-test/143-table hosted matrix on commit
   `1bb046eea524a21baf71e940aec51edb4019e0a4`; it does not change these
   upstream security or adoption limits.
+- Cycle 236's backtesting.py review is static-only and remains reference-only.
+  AGPL-3.0-or-later requires legal review; its 113 low Bandit findings are
+  untriaged, its production declarations are not exact-pinned, and no resolved
+  SCA was run. No candidate code, dependency, notebook, container or installer
+  was executed. Exact-main run `33437725262` verifies the platform's full
+  464-test/143-table hosted matrix on commit
+  `69931bca9ac6cb66fd0e1af6503240d0b062ddcd`; it does not change these
+  upstream security or adoption limits.
 - SQLite stores provide durable local evidence but are not the normalized
   PostgreSQL/analytics/object-storage/queue deployment architecture required by
   the specification.
