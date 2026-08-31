@@ -51,6 +51,13 @@ export type SignalPage = { state: EvidenceStatus; as_of: string; page: PageInfo;
   lifecycle: { event_id: string; from_status: string; to_status: string; actor: string; reason: string;
     evidence_references: string[]; occurred_at: string }[];
 }[] };
+export type RiskDecisionPage = { state: EvidenceStatus; page: PageInfo; items: {
+  risk_decision_id: string; intent_id: string; policy_version_id: string; policy_name: string; policy_version: string;
+  policy_content_hash: string; policy_limits: Record<string, unknown>; approved: boolean; reasons: string[];
+  decided_at: string; reservation_id: string | null; account_id: string | null; business_date: string | null;
+  reserved_notional: string | null; reservation_created_at: string | null; research_or_paper_only: true;
+  automatic_authority: false;
+}[] };
 export type ScorecardMetric = { metric_id: string; family: string; name: string; value: string | null; unit: string; evidence_state: MetricEvidenceState; dimensions: string[]; evidence_reference: string };
 export type StrategyScorecard = {
   scorecard_id: string; schema_version: string; strategy_id: string; strategy_version: string; research_run_id: string;

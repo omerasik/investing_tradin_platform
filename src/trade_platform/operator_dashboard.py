@@ -126,6 +126,32 @@ class SignalPage(BaseModel):
     page: PageInfo
 
 
+class RiskDecisionView(BaseModel):
+    risk_decision_id: UUID
+    intent_id: UUID
+    policy_version_id: UUID
+    policy_name: str
+    policy_version: str
+    policy_content_hash: str
+    policy_limits: dict[str, Any]
+    approved: bool
+    reasons: list[str]
+    decided_at: datetime
+    reservation_id: UUID | None
+    account_id: str | None
+    business_date: str | None
+    reserved_notional: str | None
+    reservation_created_at: datetime | None
+    research_or_paper_only: Literal[True]
+    automatic_authority: Literal[False]
+
+
+class RiskDecisionPage(BaseModel):
+    state: Availability
+    items: list[RiskDecisionView]
+    page: PageInfo
+
+
 class ScorecardMetricView(BaseModel):
     metric_id: UUID
     family: str
@@ -580,6 +606,31 @@ class PostgresOperatorDashboardQueries:
                 ))
             state: Availability = "BLOCKED" if any(item.expiry_state == "OVERDUE" for item in items) else ("AVAILABLE" if items else "UNAVAILABLE")
             return SignalPage(state=state, as_of=as_of, items=items, page=page)
+        return self._read(operation)
+
+    def risk_decisions(self, *, limit: int, offset: int) -> RiskDecisionPage:
+        """Immutable risk-decision evidence only; reading cannot evaluate or override risk."""
+        def operation(cursor: _Cursor) -> RiskDecisionPage:
+            cursor.execute(
+                "SELECT d.risk_decision_id,d.intent_id,d.risk_policy_version_id,p.name,pv.version,"
+                "pv.content_hash,pv.limits,d.approved,d.reasons,d.decided_at,r.reservation_id,"
+                "r.account_id,r.business_date,r.notional,r.created_at "
+                "FROM risk_decisions d JOIN risk_policy_versions pv ON pv.risk_policy_version_id=d.risk_policy_version_id "
+                "JOIN risk_policies p ON p.risk_policy_id=pv.risk_policy_id "
+                "LEFT JOIN risk_reservations r ON r.intent_id=d.intent_id "
+                "ORDER BY d.decided_at DESC,d.risk_decision_id DESC LIMIT %s OFFSET %s",
+                (limit + 1, offset),
+            )
+            rows, page = _page(cursor.fetchall(), limit, offset)
+            items = [RiskDecisionView(
+                risk_decision_id=row[0], intent_id=row[1], policy_version_id=row[2], policy_name=str(row[3]),
+                policy_version=str(row[4]), policy_content_hash=str(row[5]), policy_limits=_mapping(row[6]),
+                approved=bool(row[7]), reasons=_strings(row[8]), decided_at=row[9], reservation_id=row[10],
+                account_id=None if row[11] is None else str(row[11]),
+                business_date=None if row[12] is None else row[12].isoformat(), reserved_notional=_decimal(row[13]),
+                reservation_created_at=row[14], research_or_paper_only=True, automatic_authority=False,
+            ) for row in rows]
+            return RiskDecisionPage(state="AVAILABLE" if items else "UNAVAILABLE", items=items, page=page)
         return self._read(operation)
 
     def strategy_scorecard(self, scorecard_id: UUID) -> StrategyScorecardView:

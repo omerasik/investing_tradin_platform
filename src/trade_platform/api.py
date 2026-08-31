@@ -29,6 +29,7 @@ from .operator_dashboard import (
     PortfolioConstructionView,
     PostgresOperatorDashboardQueries,
     RegimeRunView,
+    RiskDecisionPage,
     SignalPage,
     SreOverviewView,
     StrategyScorecardView,
@@ -395,6 +396,14 @@ def build_app(
             as_of=as_of, status=status, instrument=instrument,
             strategy_version=strategy_version, limit=limit, offset=offset,
         ))
+
+    @app.get("/operator-dashboard/risk-decisions", response_model=RiskDecisionPage)
+    def risk_decisions(
+        limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10_000),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """Read immutable risk-policy, decision and reservation evidence only."""
+        return read_dashboard(lambda: queries.risk_decisions(limit=limit, offset=offset))
 
     @app.get("/operator-dashboard/strategy-scorecards/{scorecard_id}", response_model=StrategyScorecardView)
     def strategy_scorecard(

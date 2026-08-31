@@ -41,6 +41,7 @@ class OperatorDashboardPostgresTests(unittest.TestCase):
             "constraint", "news_source", "news_policy", "news_initial", "news_retraction", "news_link", "news_extraction",
             "news_assessment", "service", "service_version", "slo", "sli", "probe", "alert_policy", "alert", "alert_open",
             "alert_ack", "incident", "drill", "signal", "signal_validation", "signal_event",
+            "risk_policy", "risk_policy_version", "risk_decision_approved", "risk_decision_rejected", "risk_reservation",
         )}
         manifest = json.dumps({"cycle": 208, "synthetic": True}, sort_keys=True, separators=(",", ":"))
         package_hash = hashlib.sha256(manifest.encode()).hexdigest()
@@ -81,6 +82,25 @@ class OperatorDashboardPostgresTests(unittest.TestCase):
             cursor.execute(
                 "INSERT INTO runtime_signal_lifecycle_events (event_id,signal_id,from_status,to_status,actor,reason,evidence_references,occurred_at) VALUES (%s,%s,'CANDIDATE','VALIDATED','signal_validation','all_validation_stages_passed',%s::jsonb,%s)",
                 (ids["signal_event"], ids["signal"], json.dumps([f"signal-validation:{ids['signal_validation']}"]), now - timedelta(hours=1)),
+            )
+            approved_intent, rejected_intent = uuid4(), uuid4()
+            cursor.execute("INSERT INTO risk_policies VALUES (%s,%s,%s)", (ids["risk_policy"], f"cycle208-risk-{suffix}", now - timedelta(days=2)))
+            cursor.execute(
+                "INSERT INTO risk_policy_versions VALUES (%s,%s,'risk-v1',%s::jsonb,%s,%s)",
+                (ids["risk_policy_version"], ids["risk_policy"], json.dumps({"max_notional": "1000"}), digest("risk-policy"), now - timedelta(days=2)),
+            )
+            cursor.execute("INSERT INTO accounts VALUES (%s,'PAPER','USD',%s)", (f"cycle208-risk-{suffix}", now - timedelta(days=2)))
+            cursor.execute(
+                "INSERT INTO risk_decisions VALUES (%s,%s,%s,TRUE,%s::jsonb,%s)",
+                (ids["risk_decision_approved"], approved_intent, ids["risk_policy_version"], json.dumps(["within_limits"]), now - timedelta(minutes=20)),
+            )
+            cursor.execute(
+                "INSERT INTO risk_reservations VALUES (%s,%s,%s,%s,250,%s)",
+                (ids["risk_reservation"], f"cycle208-risk-{suffix}", approved_intent, now.date(), now - timedelta(minutes=20)),
+            )
+            cursor.execute(
+                "INSERT INTO risk_decisions VALUES (%s,%s,%s,FALSE,%s::jsonb,%s)",
+                (ids["risk_decision_rejected"], rejected_intent, ids["risk_policy_version"], json.dumps(["daily_notional_limit"]), now - timedelta(minutes=10)),
             )
             cursor.execute(
                 "INSERT INTO feature_definition_versions VALUES (%s,'cycle208_simple_return','PRICE_RETURNS','1.0.0','quant','Cycle 208 fixture','[\"OHLCV\"]'::jsonb,'[\"close\",\"knowledge_at\"]'::jsonb,'1d','PIT event/effective/knowledge',1,'{\"horizon\":1}'::jsonb,'reject','reject','reject_future_knowledge',NULL,NULL,'decimal','transparent-v1',%s,NULL)",
@@ -212,6 +232,7 @@ class OperatorDashboardPostgresTests(unittest.TestCase):
         )
         scorecard = queries.strategy_scorecard(ids["scorecard"])
         signals = queries.signals(as_of=now, status="VALIDATED", instrument=instrument.instrument_id, strategy_version=None, limit=10, offset=0)
+        risks = queries.risk_decisions(limit=10, offset=0)
         regime = queries.regime_run(ids["regime_run"])
         portfolio = queries.portfolio_construction(ids["portfolio_run"])
         news = queries.news_events(
@@ -227,12 +248,14 @@ class OperatorDashboardPostgresTests(unittest.TestCase):
         self.assertEqual(evidence_states, {"MEASURED", "ASSUMED", "UNAVAILABLE"})
         self.assertEqual(scorecard.evidence_classification, "SYNTHETIC_ENGINEERING_EVIDENCE_ONLY")
         self.assertEqual((signals.state, signals.items[0].latest_reason, signals.items[0].automatic_authority), ("AVAILABLE", "all_validation_stages_passed", False))
+        self.assertEqual((risks.state, len(risks.items), risks.items[0].approved, risks.items[0].reservation_id), ("AVAILABLE", 2, False, None))
+        self.assertEqual((risks.items[1].approved, risks.items[1].reserved_notional, risks.items[1].research_or_paper_only, risks.items[1].automatic_authority), (True, "250", True, False))
         self.assertEqual((regime.dimensions[0].dimension, regime.risk_effects[0].action), ("TREND", "REDUCE"))
         self.assertFalse(regime.risk_effects[0].automatic_authority)
         self.assertEqual((portfolio.review_only, portfolio.sleeves[0].adjustment_reasons, portfolio.covariance.provider_backed), (True, ["capacity_reduction", "regime_reduction"], False))
         self.assertEqual((news.provider_state, news.items[0].revision_kind, news.items[0].correction_chain[0].relation), ("EXTERNAL_BLOCKED", "RETRACTION", "RETRACTS"))
         self.assertEqual((sre.slos[0].target_state, sre.slos[0].measured_state, sre.incidents[0].status, sre.reconciliation_status), ("TARGET", "MEASURED", "DECLARED", "UNAVAILABLE"))
-        serialized = f"{scorecard.model_dump_json()} {regime.model_dump_json()} {portfolio.model_dump_json()} {news.model_dump_json()} {sre.model_dump_json()}".casefold()
+        serialized = f"{scorecard.model_dump_json()} {risks.model_dump_json()} {regime.model_dump_json()} {portfolio.model_dump_json()} {news.model_dump_json()} {sre.model_dump_json()}".casefold()
         self.assertNotIn("secret-reference", serialized)
         self.assertNotIn(dsn.casefold(), serialized)
         with database.transaction() as connection, connection.cursor() as cursor:
