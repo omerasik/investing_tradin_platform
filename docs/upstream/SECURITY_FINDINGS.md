@@ -16,3 +16,11 @@ Static, non-executing review only: root license files, manifest/Docker/Compose/a
 | US-06 | Static manifest inventory found 202 execution-sensitive source-file indicators and 1,705 secret-named-file indicators across the isolated clones. | Broad third-party attack surface; hits are triage signals, not confirmed flaws. | `STATIC_MANIFEST_INVENTORY.md`; no direct adoption. |
 
 Required before any candidate changes state: secret scan, SCA vulnerability scan, SBOM generation, SAST, container scan if applicable, typosquat review, credential/file/subprocess/dynamic-evaluation review, data-leakage review, and restricted sandbox benchmark.
+
+## 2026-08-31 identity refresh
+
+`IDENTITY_ACTIVITY_REFRESH_2026-08-31.md` shows that 12 recorded remote branches
+now differ from their local audited pins. This is a supply-chain change signal,
+not an approval or a vulnerability finding. The pins were not changed, fetched
+or executed; each advanced commit requires a complete new RQ-029 review before
+it can be considered.

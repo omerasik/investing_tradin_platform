@@ -438,3 +438,13 @@ the module is part of the zero-error strict mypy slice. PR-head run
 `33337482205` passes all **458 tests without skips**, restores/reconciles all
 **143 tables**, passes the **117/117** ratchet and zero-error **47-file** slice,
 and completes every downstream gate.
+
+## Cycle 231 — Upstream Identity/Activity Refresh
+
+An offline unit test validates the complete 16-repository snapshot: unique
+repository identities, immutable 40-character pin and remote heads, current
+versus advanced comparison consistency, and the single pre-existing partial
+Windows checkout. It also asserts the snapshot's explicit no-execution method
+statement. This checks provenance-record integrity only; it is not a security
+scan, SBOM, license acceptance, benchmark or adoption approval. Hosted proof is
+pending.

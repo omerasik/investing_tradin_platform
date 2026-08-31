@@ -22,3 +22,13 @@ All clones are isolated in `C:\Users\omerf\upstream-research\repositories`, outs
 | FinRobot | `01ed408326f1d4ec2460596dee10858faf0f69af` | report-generation reference | inspected |
 
 Exact commits are shallow-clone heads at audit time. Re-audit a pinned commit before every future use.
+
+## 2026-08-31 metadata refresh
+
+[`IDENTITY_ACTIVITY_REFRESH_2026-08-31.md`](IDENTITY_ACTIVITY_REFRESH_2026-08-31.md)
+records a non-executing local-Git/remote-head/GitHub-metadata refresh for every
+catalogue entry. It retains the original pins: 12 recorded branches have
+advanced remotely, four remain current, 15 isolated worktrees are clean, and
+the previously documented partial Windows checkout remains reference-only.
+Neither remote advancement nor GitHub license metadata changes the preliminary
+root-license classifications or any adoption decision.

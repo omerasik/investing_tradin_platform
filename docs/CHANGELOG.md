@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-08-31
+
+- Verified Cycle 230 unchanged on exact merged main commit
+  `a4d835fd3832b7a9a6f2ae37970091d4bee49902` in CI run `33337948319`.
+- Added Cycle 231's metadata-only upstream identity/activity refresh. It records
+  all 16 local pins, checked-out branches, remote branch heads, activity times,
+  discovery-only GitHub license metadata and working-tree state without fetching
+  or executing a candidate. Twelve remote branches advanced; all remain pinned,
+  unadopted and subject to the complete RQ-029 gate.
+
 ## 2026-08-22
 
 - Verified Cycle 221 on exact merged main commit

@@ -21,3 +21,15 @@
 - Source: Lean and NautilusTrader
 - Decision: DEFER isolated proof of concept
 - Reason: potentially useful fidelity, but operational complexity and license/compliance require an identical-data benchmark, SBOM, security review and legal review.
+
+## ADR-UP-004
+
+- Source: all 16 isolated repositories at the local pins in
+  `identity_activity_refresh_2026-08-31.json`
+- Decision: RETAIN_EXISTING_PIN / DO_NOT_FETCH_OR_EXECUTE_REMOTE_ADVANCEMENTS
+- Reason: 12 recorded remote branches have advanced since the last static
+  inventory; advancement alone supplies no legal, security, reproducibility or
+  benchmark evidence.
+- Integration: none; no package, source, asset or runtime linkage is permitted.
+- Review: after the complete RQ-029 scan/SBOM/license gate for an explicitly
+  selected immutable candidate commit.

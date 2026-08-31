@@ -1,6 +1,6 @@
 # Current Status
 
-Last synchronized: 2026-08-30. The requirement-level source of truth is
+Last synchronized: 2026-08-31. The requirement-level source of truth is
 [`MASTER_ROADMAP.md`](MASTER_ROADMAP.md); this document is a concise operational
 snapshot, not a second roadmap.
 
@@ -47,6 +47,10 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
+- Cycle 230 exact-main GitHub Actions
+  [run 33337948319](https://github.com/omerasik/investing_tradin_platform/actions/runs/33337948319)
+  passed every configured gate on merge commit
+  `a4d835fd3832b7a9a6f2ae37970091d4bee49902`.
 - Cycle 230 PR-head GitHub Actions
   [run 33337482205](https://github.com/omerasik/investing_tradin_platform/actions/runs/33337482205)
   applies migration 0036, runs all **458 tests without skips**, reconstructs
@@ -57,6 +61,14 @@ snapshot, not a second roadmap.
   [run 32556866846](https://github.com/omerasik/investing_tradin_platform/actions/runs/32556866846)
   passed every configured gate on merge commit
   `712720916d47fdede8d369ab9be4a5b53d06e34f`.
+
+## Current upstream-research state
+
+- Cycle 231's metadata-only refresh records all 16 isolated pins, checked-out
+  branches, remote branch heads and activity timestamps in
+  [`docs/upstream/IDENTITY_ACTIVITY_REFRESH_2026-08-31.md`](upstream/IDENTITY_ACTIVITY_REFRESH_2026-08-31.md).
+  Twelve remote branches have advanced; no clone was fetched or modified and no
+  candidate was executed, adopted or approved.
 - Cycle 228 exact-main GitHub Actions
   [run 32555630655](https://github.com/omerasik/investing_tradin_platform/actions/runs/32555630655)
   passed every configured gate on merge commit
@@ -304,9 +316,10 @@ snapshot, not a second roadmap.
    approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
 4. Cycle 209 re-audited all RQ-001–RQ-030 rows and is exact-mainline verified.
-   Cycles 212–229 are exact-mainline verified. Cycle 230 historical-analogue
-   explanation evidence is PR-head verified; next provider-independent work is
-   the isolated upstream identity and static-scan lane. Measured
+   Cycles 212–230 are exact-mainline verified. Cycle 231's metadata-only
+   upstream refresh is locally implemented; the next provider-independent work
+   is restricted static scanning/SBOM evidence for one unadopted candidate.
+   Measured
    browser performance awaits the required Chrome DevTools MCP, and concrete
    IdP activation remains external.
 
