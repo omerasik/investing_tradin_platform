@@ -47,6 +47,15 @@ snapshot, not a second roadmap.
 
 ## Verified evidence
 
+- Cycle 231 exact-main GitHub Actions
+  [run 33397619313](https://github.com/omerasik/investing_tradin_platform/actions/runs/33397619313)
+  passed every configured gate on merge commit
+  `a2efd002a7cc7d4c4c40808bfd6def57fce84eda`.
+- Cycle 231 PR-head GitHub Actions
+  [run 33339249818](https://github.com/omerasik/investing_tradin_platform/actions/runs/33339249818)
+  runs all **459 tests without skips**, restores/reconciles **143 tables**, and
+  passes the **117/117** mypy ratchet, zero-error **47-file** critical slice,
+  secret scan and every downstream gate on the metadata-only evidence change.
 - Cycle 230 exact-main GitHub Actions
   [run 33337948319](https://github.com/omerasik/investing_tradin_platform/actions/runs/33337948319)
   passed every configured gate on merge commit
@@ -261,12 +270,12 @@ snapshot, not a second roadmap.
   gates, production dashboard build and all eleven protected PostgreSQL browser
   scenarios.
 - The latest completed exact-mainline PostgreSQL evidence is GitHub Actions
-  [run 32547868925](https://github.com/omerasik/investing_tradin_platform/actions/runs/32547868925)
-  on main commit `76eb731f5abdd183b116d3d808b78e290511fd0d`: migration
-  0029, all **408 tests without skips**, matched **113-table** restore and
-  reconciliation, Ruff, mypy **117/117** ratchet, the zero-error **40-file**
-  critical slice, security/dependency/SBOM/secret gates, frontend build/smoke,
-  protected browser scenarios and zero Axe WCAG A/AA violations.
+  [run 33397619313](https://github.com/omerasik/investing_tradin_platform/actions/runs/33397619313)
+  on main commit `a2efd002a7cc7d4c4c40808bfd6def57fce84eda`: all **459
+  tests without skips**, matched **143-table** restore and reconciliation,
+  Ruff, mypy **117/117** ratchet, the zero-error **47-file** critical slice,
+  security/dependency/SBOM/secret gates, frontend build/smoke and protected
+  browser scenarios.
 - Cycle 208 final PR CI [run 32276487834](https://github.com/omerasik/investing_tradin_platform/actions/runs/32276487834)
   on `39c3885` applied the unchanged migration head, ran all **351 tests without
   skips**, matched the **91-table** restore/reconciliation manifest, and passed
@@ -316,9 +325,8 @@ snapshot, not a second roadmap.
    approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
 4. Cycle 209 re-audited all RQ-001–RQ-030 rows and is exact-mainline verified.
-   Cycles 212–230 are exact-mainline verified. Cycle 231's metadata-only
-   upstream refresh is locally implemented; the next provider-independent work
-   is restricted static scanning/SBOM evidence for one unadopted candidate.
+   Cycles 212–231 are exact-mainline verified. The next provider-independent
+   work is restricted static scanning/SBOM evidence for one unadopted candidate.
    Measured
    browser performance awaits the required Chrome DevTools MCP, and concrete
    IdP activation remains external.
