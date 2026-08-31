@@ -13,7 +13,10 @@ The full requirement-level matrix is in
   of the 16 recorded remote branches have advanced, but their immutable local
   pins remain the only reviewed identities. No updated pin has received a full
   license, secret, SCA, SAST, SBOM, container or malicious-package review, and
-  no candidate code was fetched or executed.
+  no candidate code was fetched or executed. Exact-main run `33397619313`
+  verifies the platform's full 459-test/143-table hosted matrix on commit
+  `a2efd002a7cc7d4c4c40808bfd6def57fce84eda`; it does not supply an upstream
+  security or adoption approval.
 - SQLite stores provide durable local evidence but are not the normalized
   PostgreSQL/analytics/object-storage/queue deployment architecture required by
   the specification.

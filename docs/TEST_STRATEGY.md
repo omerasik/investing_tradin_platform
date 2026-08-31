@@ -446,5 +446,8 @@ repository identities, immutable 40-character pin and remote heads, current
 versus advanced comparison consistency, and the single pre-existing partial
 Windows checkout. It also asserts the snapshot's explicit no-execution method
 statement. This checks provenance-record integrity only; it is not a security
-scan, SBOM, license acceptance, benchmark or adoption approval. Hosted proof is
-pending.
+scan, SBOM, license acceptance, benchmark or adoption approval. PR-head run
+`33339249818` and exact-main run `33397619313` both passed all **459** hosted
+tests without skips, the **143-table** PostgreSQL restore/reconciliation drill,
+the **117/117** type ratchet, security/supply-chain gates, production dashboard
+build and protected browser scenarios.

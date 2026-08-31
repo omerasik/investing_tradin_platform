@@ -9,6 +9,8 @@
   discovery-only GitHub license metadata and working-tree state without fetching
   or executing a candidate. Twelve remote branches advanced; all remain pinned,
   unadopted and subject to the complete RQ-029 gate.
+- Verified Cycle 231 on exact merged main commit
+  `a2efd002a7cc7d4c4c40808bfd6def57fce84eda` in CI run `33397619313`.
 
 ## 2026-08-22
 
