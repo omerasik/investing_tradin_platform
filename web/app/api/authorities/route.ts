@@ -17,6 +17,9 @@ function allowedTarget(target: string): boolean {
     const allowed = new Set(["as_of", "status", "instrument", "strategy_version", "limit", "offset"]);
     return parsed.searchParams.has("as_of") && [...parsed.searchParams.keys()].every((key) => allowed.has(key));
   }
+  if (parsed.pathname === "/operator-dashboard/risk-decisions") {
+    return [...parsed.searchParams.keys()].every((key) => key === "limit" || key === "offset");
+  }
   if (parsed.pathname === "/operator-dashboard/news-events") {
     const allowed = new Set(["instrument", "entity", "category", "start", "end", "correction_state", "limit", "offset"]);
     return [...parsed.searchParams.keys()].every((key) => allowed.has(key));

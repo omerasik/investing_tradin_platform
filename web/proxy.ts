@@ -38,7 +38,12 @@ export function proxy(request: NextRequest) {
       policy,
     );
   }
-  if (request.headers.get("authorization") !== `Bearer ${expected}`) {
+  const authHeader = request.headers.get("authorization");
+  const cookieToken = request.cookies.get("dashboard_view_token")?.value;
+  const paramToken = request.nextUrl.searchParams.get("token");
+  const token = authHeader?.replace(/^Bearer\s+/i, "") || cookieToken || paramToken;
+
+  if (token !== expected) {
     return withCsp(
       NextResponse.json(
         { detail: "Dashboard authentication required." },
@@ -50,10 +55,11 @@ export function proxy(request: NextRequest) {
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("Content-Security-Policy", policy);
   requestHeaders.set("x-nonce", nonce);
-  return withCsp(
-    NextResponse.next({ request: { headers: requestHeaders } }),
-    policy,
-  );
+  const nextRes = NextResponse.next({ request: { headers: requestHeaders } });
+  if (paramToken === expected && cookieToken !== expected) {
+    nextRes.cookies.set("dashboard_view_token", expected, { httpOnly: true, sameSite: "lax", path: "/" });
+  }
+  return withCsp(nextRes, policy);
 }
 
 export const config = { matcher: ["/", "/api/:path*"] };

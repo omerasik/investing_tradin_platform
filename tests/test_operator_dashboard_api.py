@@ -23,6 +23,8 @@ from trade_platform.operator_dashboard import (
     RegimeDimensionView,
     RegimeProbabilityView,
     RegimeRunView,
+    RiskDecisionPage,
+    RiskDecisionView,
     SignalLifecycleEventView,
     SignalPage,
     SignalView,
@@ -74,6 +76,17 @@ class OperatorDashboardApiTests(unittest.TestCase):
                     actor="signal_validation", reason="all_validation_stages_passed",
                     evidence_references=["signal-validation:fixture"], occurred_at=now,
                 )], research_or_paper_only=True, automatic_authority=False,
+            )], page=PageInfo(limit=50, offset=0, returned=1, has_more=False),
+        )
+        self.queries.risk_decisions.return_value = RiskDecisionPage(
+            state="AVAILABLE",
+            items=[RiskDecisionView(
+                risk_decision_id=identity, intent_id=uuid4(), policy_version_id=uuid4(),
+                policy_name="paper-risk", policy_version="v1", policy_content_hash="r" * 64,
+                policy_limits={"max_notional": "1000"}, approved=False,
+                reasons=["daily_notional_limit"], decided_at=now, reservation_id=None,
+                account_id=None, business_date=None, reserved_notional=None,
+                reservation_created_at=None, research_or_paper_only=True, automatic_authority=False,
             )], page=PageInfo(limit=50, offset=0, returned=1, has_more=False),
         )
         self.queries.strategy_scorecard.return_value = StrategyScorecardView(
@@ -152,6 +165,7 @@ class OperatorDashboardApiTests(unittest.TestCase):
             f"/operator-dashboard/feature-definitions/{identity}",
             f"/operator-dashboard/feature-materializations?feature_id={identity}&instrument=fixture%3ASPY&dataset_version=fixture-v1&decision_time={now}",
             f"/operator-dashboard/signals?as_of={now}&limit=20",
+            "/operator-dashboard/risk-decisions?limit=20&offset=0",
             f"/operator-dashboard/strategy-scorecards/{identity}",
             f"/operator-dashboard/regime-runs/{identity}",
             f"/operator-dashboard/portfolio-construction-runs/{identity}",

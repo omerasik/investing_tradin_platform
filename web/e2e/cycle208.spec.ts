@@ -72,6 +72,16 @@ test("Signal Explorer exposes reasons and expiry without execution controls", as
   await expect(workspace).not.toContainText("Activate strategy");
 });
 
+test("Risk Workspace remains evidence-only without override or execution controls", async ({ page }) => {
+  const workspace = page.locator("#risk");
+  await expect(workspace.getByRole("heading", { name: "Risk Workspace" })).toBeVisible();
+  await expect(workspace).toContainText("NO RISK OVERRIDE");
+  await expect(workspace.getByRole("button")).toHaveCount(0);
+  await expect(workspace).not.toContainText("Override risk");
+  await expect(workspace).not.toContainText("Execute trade");
+  await expect(workspace).not.toContainText("Release reservation");
+});
+
 test("scorecard groups preserve synthetic and metric evidence distinctions", async ({ page }) => {
   const workspace = page.locator("#scorecard");
   for (const group of ["PERFORMANCE", "ROBUSTNESS", "EXECUTION", "RISK", "DATA_QUALITY", "COMPLEXITY"]) {
