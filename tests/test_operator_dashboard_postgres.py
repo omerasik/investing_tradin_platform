@@ -242,8 +242,8 @@ class OperatorDashboardPostgresTests(unittest.TestCase):
         sre = queries.sre_overview(ids["service_version"])
         self.assertEqual(definitions.items[0].feature_definition_id, ids["feature"])
         self.assertEqual(pit_old.items, [])
-        self.assertEqual((pit_before_revision.items[0].value, pit_before_revision.items[0].source_manifest), ("0.010000000000", ["raw:old"]))
-        self.assertEqual((pit_current.items[0].value, pit_current.items[0].source_manifest), ("0.020000000000", ["raw:revision"]))
+        self.assertEqual((pit_before_revision.items[0].value, pit_before_revision.items[0].source_manifest), ("0.01", ["raw:old"]))
+        self.assertEqual((pit_current.items[0].value, pit_current.items[0].source_manifest), ("0.02", ["raw:revision"]))
         evidence_states = {metric.evidence_state for group in scorecard.groups for metric in group.metrics}
         self.assertEqual(evidence_states, {"MEASURED", "ASSUMED", "UNAVAILABLE"})
         self.assertEqual(scorecard.evidence_classification, "SYNTHETIC_ENGINEERING_EVIDENCE_ONLY")
