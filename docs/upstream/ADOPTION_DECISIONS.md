@@ -33,3 +33,16 @@
 - Integration: none; no package, source, asset or runtime linkage is permitted.
 - Review: after the complete RQ-029 scan/SBOM/license gate for an explicitly
   selected immutable candidate commit.
+
+## ADR-UP-005
+
+- Source: `microsoft/qlib` at the immutable pin recorded in
+  `qlib_static_review_2026-08-31.json`
+- Decision: DEFER_REFERENCE_ONLY
+- Reason: the restricted static review found 18 high and 50 medium SAST signals
+  and no exact direct dependency pins. The generated SBOM is declaration-only;
+  it does not resolve the transitive supply chain or make an SCA claim.
+- Integration: none; no package, source, asset, benchmark, container or runtime
+  linkage is permitted.
+- Review: only after an explicitly approved isolated resolution/triage and legal
+  review; this decision does not authorize a qlib POC.

@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-08-31T13:50:29Z",
+  "candidate": {
+    "name": "qlib",
+    "github_repository": "microsoft/qlib",
+    "branch": "main",
+    "pinned_sha_fragments": ["79633dd9", "506ea689", "e5400dea", "0197717b", "5b3d74b7"],
+    "license": "MIT",
+    "working_tree": "CLEAN"
+  },
+  "restrictions": [
+    "local immutable clone read only",
+    "no fetch or checkout",
+    "no candidate import, script, notebook, test, build, container, installer, or package execution",
+    "no credentials or candidate network activity"
+  ],
+  "input_sha256_fragments": {
+    "LICENSE": ["9906940f", "61b1f0b5", "33fa7d99", "baf55178", "b2808fbe", "113ea51d", "fbfad857", "2ccd5f2b"],
+    "pyproject.toml": ["ee2b2465", "01cbdb5f", "596e1190", "1e303954", "99be9946", "c7d2ad1b", "94593bf3", "0cbe138b"],
+    "setup.py": ["6a8fd0d3", "7c651b5e", "7ff890de", "3586d256", "9b1935b7", "76a37494", "e6f85d71", "48795c70"],
+    "Dockerfile": ["94687864", "d6d33133", "e29fa4ff", "2c37d1ed", "d34fea95", "29bd5829", "4b33372d", "782de7fd"]
+  },
+  "sast": {
+    "tool": "bandit",
+    "tool_version": "1.9.4",
+    "scope": "full immutable clone, default exclusions including .git",
+    "source_files_scanned": 333,
+    "lines_of_code_scanned": 57553,
+    "findings": {
+      "total": 477,
+      "high": 18,
+      "medium": 50,
+      "low": 409,
+      "high_by_rule": {"B324": 1, "B602": 5, "B605": 12},
+      "high_by_path": {
+        "examples/data_demo/data_cache_demo.py": 2,
+        "examples/orderbook_data/create_dataset.py": 11,
+        "examples/run_all_model.py": 2,
+        "qlib/contrib/tuner/tuner.py": 1,
+        "qlib/utils/__init__.py": 1,
+        "qlib/workflow/recorder.py": 1
+      }
+    },
+    "raw_report_sha256_fragments": ["2d05585c", "fb22d519", "c43580b5", "23e30d84", "2b0e5ab4", "b1b1bf61", "5d8673d1", "dee7c110"]
+  },
+  "secret_scan": {
+    "tool": "detect-secrets",
+    "tool_version": "1.5.0",
+    "scope": "all files in immutable clone, no baseline",
+    "findings": 0,
+    "raw_report_sha256_fragments": ["7d4c5a5a", "585523a1", "052bed5f", "19f0052b", "eda54128", "ce50f125", "7fdd470e", "d3ffd424"]
+  },
+  "sbom": {
+    "tool": "cyclonedx-py",
+    "tool_version": "5.5.0",
+    "format": "CycloneDX 1.5 JSON",
+    "artifact": "qlib_declared_dependencies_2026-08-31.cdx.json",
+    "artifact_sha256_fragments": ["2290fcb3", "7e7a574e", "bd0fa4d4", "0c7b4f52", "e49f743b", "84be3357", "7bb6310d", "2d6a5d9f"],
+    "artifact_hash_canonicalization": "LF line endings",
+    "direct_declared_components": 23,
+    "exact_pinned_components": 0,
+    "resolved_transitive_components": 0
+  },
+  "sca": {
+    "status": "NOT_RUN_UNPINNED_DECLARATIONS",
+    "reason": "The project has no lockfile and no exact direct pins. Resolving packages would require an installer or dependency execution, which is outside this restricted static review."
+  },
+  "decision": {
+    "status": "DEFER_REFERENCE_ONLY",
+    "reason": "The static review found unresolved high-severity process/shell and weak-hash patterns, while dependency identity remains unpinned and unresolved. No direct dependency, source import, execution, benchmark, or adoption is approved."
+  }
+}

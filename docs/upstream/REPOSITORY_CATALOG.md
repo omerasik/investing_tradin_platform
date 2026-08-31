@@ -14,7 +14,7 @@ All clones are isolated in `C:\Users\omerf\upstream-research\repositories`, outs
 | ai-berkshire | `66e556262d6486a9819286252e5c9f90a4cfa386` | investment thesis reference | inspected |
 | Lean | `96030d331718af7b7eeb0e4f9ddd5e49bf87e7ce` | event model reference | inspected |
 | nautilus_trader | `a930c8afe380025fc0a10c6b2cd6907d6b983e86` | high-fidelity simulator reference | inspected |
-| qlib | `79633dd9506ea689e5400dea0197717b5b3d74b7` | ML research reference | inspected |
+| qlib | `79633dd9506ea689e5400dea0197717b5b3d74b7` | ML research reference | restricted static review complete; `DEFER_REFERENCE_ONLY` |
 | FinRL-Trading | `e65d6f0483ead7d2ef4a5fc940cdf960392a25c1` | weight-contract research reference | inspected |
 | OpenBB | `3e071fcc2cd9f891cac6040ae60296dba76dab46` | data-adapter reference | inspected |
 | freqtrade | `b084fb206cf4bbe2d6e4eae49f79f2fa09e658ae` | crypto paper-operation reference | inspected |
