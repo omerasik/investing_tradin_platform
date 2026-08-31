@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-08-31T14:31:20Z",
+  "candidate": {
+    "name": "nautilus_trader",
+    "github_repository": "nautechsystems/nautilus_trader",
+    "branch": "develop",
+    "pinned_sha_fragments": ["a930c8af", "e380025f", "c0a10c6b", "2cd6907d", "6b983e86"],
+    "license": "LGPL-3.0-or-later",
+    "working_tree": "CLEAN"
+  },
+  "restrictions": [
+    "local immutable clone read only",
+    "no fetch or checkout",
+    "no candidate import, script, notebook, test, build, container, installer, or package execution",
+    "no credentials or candidate network activity"
+  ],
+  "input_sha256_fragments": {
+    "LICENSE": ["ee907919", "ec88c9c0", "17b1f8b6", "08db2096", "0b6598ae", "fcc4fe58", "820bde95", "5d65ed3c"],
+    "pyproject.toml": ["5dbc4591", "408bd65f", "7b35c227", "4348a7a0", "2ff7b034", "a15f46d5", "f8628d3c", "8fbafa36"],
+    "Cargo.toml": ["034da612", "6380ced3", "bb994656", "2160cd9f", "259fb9be", "25b694cd", "94f149ee", "7d6d2b5f"],
+    "uv.lock": ["ee5c8fab", "7b2d6dcb", "f3013386", "da5e2ecc", "fc66b58e", "92d8980f", "c127a516", "01b34521"],
+    "Cargo.lock": ["d839d961", "d0d8298b", "3215c5d6", "1240101d", "20b6adfa", "c4e6e7c7", "6f624e6b", "48e10b7f"]
+  },
+  "sast": {
+    "tool": "bandit",
+    "tool_version": "1.9.4",
+    "scope": "full immutable clone, default exclusions including .git",
+    "status": "COMPLETE",
+    "lines_of_code_scanned": 370358,
+    "findings": {"total": 25753, "high": 0, "medium": 83, "low": 25670},
+    "raw_report_sha256_fragments": ["08b6f7ed", "df58c496", "9e0ea7ce", "f7d43598", "e056558a", "3a88b532", "33684fb2", "ba6072da"]
+  },
+  "secret_scan": {
+    "tool": "detect-secrets",
+    "tool_version": "1.5.0",
+    "scope": "all files in immutable clone, no baseline",
+    "findings": 0,
+    "raw_report_sha256_fragments": ["36c47d3a", "ad1756bc", "5ea901f9", "6b488bf6", "c8dbf769", "2c22f7a7", "413fa53d", "842a9712"]
+  },
+  "lock_inventory": {"python_packages": 143, "rust_packages": 908},
+  "sca": {"status": "NOT_RUN_LOCKFILE_ONLY", "reason": "Lockfiles were read statically, but no vulnerability resolver or package execution was permitted in this restricted review."},
+  "decision": {"status": "DEFER_REFERENCE_ONLY", "reason": "LGPL licensing requires legal review, 83 medium SAST findings remain untriaged, and static lockfile inventory is not an SCA verdict. No source import, execution, benchmark or adoption is approved."}
+}

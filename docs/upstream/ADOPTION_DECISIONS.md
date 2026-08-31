@@ -59,3 +59,15 @@
   linkage is permitted.
 - Review: only after explicit isolated security/dependency/legal approval. This
   decision never authorizes live trading or a FinRL POC.
+
+## ADR-UP-007
+
+- Source: `nautechsystems/nautilus_trader` at the immutable pin recorded in
+  `nautilus_static_review_2026-08-31.json`
+- Decision: DEFER_REFERENCE_ONLY
+- Reason: LGPL-3.0-or-later requires legal review, 83 medium SAST findings are
+  untriaged, and static lockfile inventory is not a vulnerability result.
+- Integration: none; no package, source, asset, benchmark, container or runtime
+  linkage is permitted.
+- Review: only after explicit isolated SCA/security/legal approval. This
+  decision does not authorize an engine POC or trading execution.

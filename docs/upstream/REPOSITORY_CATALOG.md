@@ -13,7 +13,7 @@ All clones are isolated in `C:\Users\omerf\upstream-research\repositories`, outs
 | machine-learning-for-trading | `bb53e24b45a95de6e9106124d0909144bb7fcc46` | research methodology reference | partial Windows checkout; MIT license recovered from pinned Git object; reference only |
 | ai-berkshire | `66e556262d6486a9819286252e5c9f90a4cfa386` | investment thesis reference | inspected |
 | Lean | `96030d331718af7b7eeb0e4f9ddd5e49bf87e7ce` | event model reference | inspected |
-| nautilus_trader | `a930c8afe380025fc0a10c6b2cd6907d6b983e86` | high-fidelity simulator reference | inspected |
+| nautilus_trader | `a930c8afe380025fc0a10c6b2cd6907d6b983e86` | high-fidelity simulator reference | restricted static review complete; `DEFER_REFERENCE_ONLY` |
 | qlib | `79633dd9506ea689e5400dea0197717b5b3d74b7` | ML research reference | restricted static review complete; `DEFER_REFERENCE_ONLY` |
 | FinRL-Trading | `e65d6f0483ead7d2ef4a5fc940cdf960392a25c1` | weight-contract research reference | restricted static review complete; `DEFER_REFERENCE_ONLY` |
 | OpenBB | `3e071fcc2cd9f891cac6040ae60296dba76dab46` | data-adapter reference | inspected |
