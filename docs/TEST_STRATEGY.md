@@ -465,3 +465,17 @@ Corrected PR-head run `33399806845` and exact-main run `33400243819` both pass
 all **460** hosted tests without skips, the **143-table** PostgreSQL
 restore/reconciliation drill, **117/117** type ratchet, security/supply-chain
 gates, production dashboard build and protected browser scenarios.
+
+## Cycle 235 — VectorBT Restricted Static Review
+
+An offline unit test validates Cycle 235's immutable VectorBT identity,
+static-only restrictions, exact source/report hashes, the no-baseline secret
+scan, Bandit severity and rule counts, manifest-only SCA status, and the
+`DEFER_REFERENCE_ONLY` decision. It rejects treating static review as legal
+approval, resolved SCA, a benchmark result, runtime approval or trading
+authority.
+
+Exact-main run `33435806249` passes all **463** hosted tests without skips, the
+**143-table** PostgreSQL restore/reconciliation drill, **117/117** type ratchet,
+security/supply-chain gates, production dashboard build and protected browser
+scenarios.

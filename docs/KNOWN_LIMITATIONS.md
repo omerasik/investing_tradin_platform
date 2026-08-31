@@ -30,6 +30,14 @@ The full requirement-level matrix is in
   declarations are non-exact and unresolved. Its declared `finrl-trade` entry
   point is not authority to execute anything; the candidate remains
   reference-only.
+- Cycle 235's VectorBT review is static-only and remains reference-only. Its
+  Apache-2.0-with-Commons-Clause license requires legal review, its 12 medium
+  Bandit findings are untriaged, and manifest-only evidence is not resolved
+  SCA. No VectorBT code, dependency, notebook, container or installer was
+  executed. Exact-main run `33435806249` verifies the platform's full
+  463-test/143-table hosted matrix on commit
+  `1bb046eea524a21baf71e940aec51edb4019e0a4`; it does not change these
+  upstream security or adoption limits.
 - SQLite stores provide durable local evidence but are not the normalized
   PostgreSQL/analytics/object-storage/queue deployment architecture required by
   the specification.
