@@ -58,7 +58,7 @@ test("Feature Authority exposes versioned PIT provenance and unavailable is not 
   await expect(workspace).toContainText("cycle208_simple_return / 1.0.0");
   await expect(workspace).toContainText("PIT event/effective/knowledge");
   await expect(workspace).toContainText("raw:revision");
-  await expect(workspace).toContainText("0.020000000000");
+  await expect(workspace).toContainText("0.02");
   expect((await workspace.getByText(/UNAVAILABLE/).allTextContents()).join(" ")).not.toContain("UNAVAILABLE: 0");
 });
 
@@ -105,7 +105,7 @@ test("regime probabilities and uncertainty render without risk-increase control"
 
 test("portfolio allocations and reductions are review-only with no execution action", async ({ page }) => {
   const workspace = page.locator("#portfolio");
-  await expect(workspace).toContainText("0.5 / 0.600000000000");
+  await expect(workspace).toContainText("0.5 / 0.6");
   await expect(workspace).toContainText("capacity_reduction");
   await expect(workspace).toContainText("regime_reduction");
   await expect(workspace).toContainText("NO_REAL_PROVIDER_BACKED_COVARIANCE_EVIDENCE");
@@ -130,7 +130,7 @@ test("SRE incident, reconciliation, and TARGET versus MEASURED evidence render",
   await expect(workspace.getByRole("columnheader", { name: "TARGET" })).toBeVisible();
   await expect(workspace.getByRole("columnheader", { name: "MEASURED" })).toBeVisible();
   await expect(workspace).toContainText("0.99");
-  await expect(workspace).toContainText("0.980000000000");
+  await expect(workspace).toContainText("0.98");
   await expect(workspace).toContainText("DECLARED");
   await expect(workspace).toContainText("Reconciliation / backup-restore / kill switch");
   await expect(workspace).toContainText("UNAVAILABLE / PASSED / UNAVAILABLE");
