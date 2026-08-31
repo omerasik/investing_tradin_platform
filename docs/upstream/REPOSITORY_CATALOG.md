@@ -18,7 +18,7 @@ All clones are isolated in `C:\Users\omerf\upstream-research\repositories`, outs
 | FinRL-Trading | `e65d6f0483ead7d2ef4a5fc940cdf960392a25c1` | weight-contract research reference | restricted static review complete; `DEFER_REFERENCE_ONLY` |
 | OpenBB | `3e071fcc2cd9f891cac6040ae60296dba76dab46` | data-adapter reference | inspected |
 | freqtrade | `b084fb206cf4bbe2d6e4eae49f79f2fa09e658ae` | crypto paper-operation reference | inspected |
-| vectorbt | `f9897528f675114e6b34790178dbb2ca137acb51` | vectorized research reference | inspected |
+| vectorbt | `f9897528f675114e6b34790178dbb2ca137acb51` | vectorized research reference | restricted static review complete; `DEFER_REFERENCE_ONLY` |
 | FinRobot | `01ed408326f1d4ec2460596dee10858faf0f69af` | report-generation reference | inspected |
 
 Exact commits are shallow-clone heads at audit time. Re-audit a pinned commit before every future use.
