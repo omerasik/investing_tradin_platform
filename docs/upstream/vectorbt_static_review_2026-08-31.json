@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-08-31T20:24:00Z",
+  "candidate": {
+    "name": "vectorbt",
+    "github_repository": "polakowo/vectorbt",
+    "branch": "master",
+    "pinned_sha_fragments": ["f9897528", "f675114e", "6b347901", "78dbb2ca", "137acb51"],
+    "license": "Apache-2.0 WITH Commons-Clause-1.0",
+    "working_tree": "CLEAN"
+  },
+  "restrictions": [
+    "local immutable clone read only",
+    "no fetch or checkout",
+    "no candidate import, script, notebook, test, build, container, installer, or package execution",
+    "no credentials or candidate network activity"
+  ],
+  "input_sha256_fragments": {
+    "LICENSE.md": ["8543a601", "8b754731", "325d61ed", "366763d5", "b6800bba", "1d5ddf56", "fb464e5a", "c7a8246e"],
+    "pyproject.toml": ["ae063cf9", "36877092", "857eb7d2", "b86397fe", "b08c5357", "43df6d76", "1900917d", "09b0a425"],
+    "setup.py": ["69d04505", "2cc4a2f2", "9fc390f6", "9431bc92", "2d61902c", "425396c0", "8736c18c", "a462612b"],
+    "Dockerfile": ["acb2f37b", "97dfe977", "955c3449", "cb4ba901", "5b38a45d", "6999f78b", "8b58a7d3", "482c3aa4"]
+  },
+  "sast": {
+    "tool": "bandit",
+    "tool_version": "1.9.4",
+    "scope": "full immutable clone, default exclusions including .git",
+    "status": "COMPLETE",
+    "lines_of_code_scanned": 91606,
+    "findings": {"total": 1888, "high": 0, "medium": 12, "low": 1876},
+    "raw_report_sha256_fragments": ["ad50e06f", "50038e63", "0e0431ce", "97e6c818", "c9159d8b", "b6d66aa0", "c7a84d10", "fc598e30"]
+  },
+  "secret_scan": {
+    "tool": "detect-secrets",
+    "tool_version": "1.5.0",
+    "scope": "all files in immutable clone, no baseline",
+    "findings": 0,
+    "raw_report_sha256_fragments": ["c9a8400d", "284f09f2", "55fa7943", "a6a94ce9", "5cf1784d", "8a870c2d", "f40703e7", "92f01bc6"]
+  },
+  "sca": {"status": "NOT_RUN_MANIFEST_ONLY", "reason": "Dependency resolution or package execution is outside this restricted static review."},
+  "decision": {"status": "DEFER_REFERENCE_ONLY", "reason": "Apache 2.0 with Commons Clause requires legal review, SAST findings remain untriaged, and no resolved SCA was run. No source import, execution, benchmark or adoption is approved."}
+}

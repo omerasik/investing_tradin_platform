@@ -28,6 +28,9 @@
   `DEFER_REFERENCE_ONLY`; no candidate code was executed.
 - Verified Cycle 234 on exact merged main commit
   `e0897839c2296664914e3d6dd078c2be88860a14` in CI run `33403812161`.
+- Added Cycle 235's restricted static VectorBT review. The Commons Clause
+  licensing condition, untriaged SAST findings and absent SCA/legal review keep
+  it `DEFER_REFERENCE_ONLY`; no candidate code was executed.
 
 ## 2026-08-22
 

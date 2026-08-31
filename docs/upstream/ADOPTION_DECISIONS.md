@@ -71,3 +71,15 @@
   linkage is permitted.
 - Review: only after explicit isolated SCA/security/legal approval. This
   decision does not authorize an engine POC or trading execution.
+
+## ADR-UP-008
+
+- Source: `polakowo/vectorbt` at the immutable pin recorded in
+  `vectorbt_static_review_2026-08-31.json`
+- Decision: DEFER_REFERENCE_ONLY
+- Reason: Apache 2.0 with Commons Clause requires legal review, 12 medium SAST
+  findings are untriaged, and no resolved SCA was run.
+- Integration: none; no package, source, asset, benchmark, container or runtime
+  linkage is permitted.
+- Review: only after explicit isolated SCA/security/legal approval. This does
+  not authorize a VectorBT POC or trading execution.
