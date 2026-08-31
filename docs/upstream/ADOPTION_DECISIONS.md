@@ -83,3 +83,16 @@
   linkage is permitted.
 - Review: only after explicit isolated SCA/security/legal approval. This does
   not authorize a VectorBT POC or trading execution.
+
+## ADR-UP-009
+
+- Source: `kernc/backtesting.py` at the immutable pin recorded in
+  `backtesting_static_review_2026-08-31.json`
+- Decision: DEFER_REFERENCE_ONLY
+- Reason: AGPL-3.0-or-later requires legal review, 113 low-severity SAST
+  findings remain untriaged, and three direct production declarations are not
+  exact-pinned or resolved by SCA.
+- Integration: none; no package, source, asset, benchmark or runtime linkage is
+  permitted.
+- Review: only after explicit isolated SCA/security/legal approval. This does
+  not authorize a backtesting.py POC or trading execution.

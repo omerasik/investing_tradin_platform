@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-08-31T20:39:39Z",
+  "candidate": {
+    "name": "backtesting.py",
+    "github_repository": "kernc/backtesting.py",
+    "branch": "master",
+    "pinned_sha_fragments": ["9c2b8e1c", "99f3a860", "883222ba", "8d6d5b5c", "ac3a932d"],
+    "license": "AGPL-3.0-or-later",
+    "working_tree": "CLEAN"
+  },
+  "restrictions": [
+    "local immutable clone read only",
+    "no fetch or checkout",
+    "no candidate import, script, notebook, test, build, container, installer, or package execution",
+    "no credentials or candidate network activity"
+  ],
+  "input_sha256_fragments": {
+    "LICENSE.md": ["f4a648b4", "2eaeac76", "33821057", "af1a0f1f", "6e610849", "0069fbae", "86600745", "b5440879"],
+    "pyproject.toml": ["f2705d9f", "b5c49afd", "4206e326", "52673a20", "7e6031ea", "3683e004", "c10b84a9", "a349021b"],
+    "setup.py": ["4866b3e4", "43167e47", "25ff34ca", "e46b0fdb", "0711d089", "da6c2634", "aba00fd0", "232f1dbd"],
+    "requirements.txt": ["a19745a3", "d5066f6f", "2ac137dd", "67a4f4b6", "ead8d430", "39e5fc67", "ca869f62", "c33affe8"]
+  },
+  "dependencies": {
+    "production_direct_declarations": 3,
+    "exact_pinned_production_declarations": 0,
+    "resolution": "NOT_RUN"
+  },
+  "sast": {
+    "tool": "bandit",
+    "tool_version": "1.9.4",
+    "scope": "full immutable clone, default exclusions including .git",
+    "status": "COMPLETE",
+    "lines_of_code_scanned": 4585,
+    "findings": {"total": 113, "high": 0, "medium": 0, "low": 113},
+    "rules": {"B101": 113},
+    "raw_report_sha256_fragments": ["eb5fd287", "161a6d57", "354f50f3", "8866eb9b", "e7093481", "211d0f1a", "f2e0ae30", "13fc4a2d"]
+  },
+  "secret_scan": {
+    "tool": "detect-secrets",
+    "tool_version": "1.5.0",
+    "scope": "all files in immutable clone, no baseline",
+    "findings": 0,
+    "raw_report_sha256_fragments": ["f1192c47", "c51952c9", "47603a8d", "9fc25a0c", "8e7e6ec4", "cf637dd8", "c7023879", "9da126d6"]
+  },
+  "sca": {"status": "NOT_RUN_MANIFEST_ONLY", "reason": "Dependency resolution or package execution is outside this restricted static review."},
+  "decision": {"status": "DEFER_REFERENCE_ONLY", "reason": "AGPL-3.0-or-later requires legal review, static SAST findings remain untriaged, and no resolved SCA was run. No source import, execution, benchmark or adoption is approved."}
+}

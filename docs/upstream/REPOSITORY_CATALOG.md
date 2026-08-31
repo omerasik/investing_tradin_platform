@@ -5,7 +5,7 @@ All clones are isolated in `C:\Users\omerf\upstream-research\repositories`, outs
 | Repository | Commit observed | Static role | Audit state |
 |---|---|---|---|
 | investing-algorithm-framework | `63483bdaa2a0defb644b6851407529d8ee6c63d5` | research workflow and reports | inspected |
-| backtesting.py | `9c2b8e1c99f3a860883222ba8d6d5b5cac3a932d` | baseline backtest reference | inspected |
+| backtesting.py | `9c2b8e1c99f3a860883222ba8d6d5b5cac3a932d` | baseline backtest reference | restricted static review complete; `DEFER_REFERENCE_ONLY` |
 | claude-trading-skills | `62a16359964b80de118716b0b8cf27520d4e6dfe` | workflow/skill registry reference | inspected |
 | TradingAgents | `a33fd4c0f134485a43553a2c23a63cb14adbd88f` | agent orchestration reference | inspected |
 | Vibe-Trading | `261f007c410f7a6ff015a17f6830c8f809cd7413` | research workspace reference | inspected |
