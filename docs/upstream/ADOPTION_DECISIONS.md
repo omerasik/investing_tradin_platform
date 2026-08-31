@@ -46,3 +46,16 @@
   linkage is permitted.
 - Review: only after an explicitly approved isolated resolution/triage and legal
   review; this decision does not authorize a qlib POC.
+
+## ADR-UP-006
+
+- Source: `AI4Finance-Foundation/FinRL-Trading` at the immutable pin recorded
+  in `finrl_static_review_2026-08-31.json`
+- Decision: DEFER_REFERENCE_ONLY
+- Reason: static SAST coverage is incomplete because one tracked Python file is
+  not UTF-8 decodable by Bandit; 25 direct production declarations are
+  unpinned, unresolved and include a declared live-trading entry point.
+- Integration: none; no package, source, asset, benchmark, container or runtime
+  linkage is permitted.
+- Review: only after explicit isolated security/dependency/legal approval. This
+  decision never authorizes live trading or a FinRL POC.

@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-08-31T14:17:35Z",
+  "candidate": {
+    "name": "FinRL-Trading",
+    "github_repository": "AI4Finance-Foundation/FinRL-Trading",
+    "branch": "master",
+    "pinned_sha_fragments": ["e65d6f04", "83ead7d2", "ef4a5fc9", "40cdf960", "392a25c1"],
+    "license": "Apache-2.0",
+    "working_tree": "CLEAN"
+  },
+  "restrictions": [
+    "local immutable clone read only",
+    "no fetch or checkout",
+    "no candidate import, script, notebook, test, build, container, installer, or package execution",
+    "no credentials or candidate network activity"
+  ],
+  "input_sha256_fragments": {
+    "LICENSE": ["afae3377", "fdbd0537", "635360e9", "1585f3c5", "b478ffe8", "eb5308f1", "ddcb37b7", "6a7325d2"],
+    "requirements.txt": ["bff27547", "9510a2fc", "7f702715", "f8e876e4", "d213e7ba", "2a6a3f22", "d99f275b", "6f2d7d71"],
+    "setup.py": ["1626e212", "f1272045", "bfd50f99", "b550d2dc", "967669c2", "ffaacd3d", "d2c23e87", "200457bc"],
+    "Dockerfile": ["880bfd28", "8dfad430", "57e37d79", "f8ca5efb", "efbfb8cc", "b3d81cd8", "b92177fd", "aca7d4dc"]
+  },
+  "sast": {
+    "tool": "bandit",
+    "tool_version": "1.9.4",
+    "scope": "full immutable clone, default exclusions including .git",
+    "status": "INCOMPLETE_FILE_DECODE_ERROR",
+    "reason": "Bandit's trojansource plugin could not decode tracked src/trading/alpaca_manager.py as UTF-8. The candidate was not modified or transcoded to mask that condition.",
+    "source_files_attempted": 52,
+    "lines_of_code_reported": 17168,
+    "findings": {"total": 41, "high": 0, "medium": 16, "low": 25, "by_rule": {"B101": 5, "B104": 1, "B110": 15, "B112": 2, "B113": 7, "B301": 2, "B311": 1, "B403": 2, "B608": 6}},
+    "raw_report_sha256_fragments": ["8684b52b", "fffcb92f", "3e64f720", "054e4273", "03812530", "74c3d079", "957d0572", "a3b7bde3"]
+  },
+  "secret_scan": {
+    "tool": "detect-secrets",
+    "tool_version": "1.5.0",
+    "scope": "all files in immutable clone, no baseline",
+    "findings": 0,
+    "raw_report_sha256_fragments": ["b86c3043", "919222b5", "0c3da27b", "8efc0a92", "605f9dbc", "0fc768eb", "750dcc98", "a5cb54b2"]
+  },
+  "sbom": {
+    "status": "DECLARATION_INVENTORY_ONLY",
+    "source": "requirements.txt plus setup.py static read",
+    "direct_declared_components": 25,
+    "exact_pinned_components": 0,
+    "resolved_transitive_components": 0,
+    "declared_live_trading_entry_point": "finrl-trade=src.main:main_trade"
+  },
+  "sca": {
+    "status": "NOT_RUN_UNPINNED_DECLARATIONS",
+    "reason": "The project has no lockfile and no exact direct pins. Resolving packages would require an installer or dependency execution, which is outside this restricted static review."
+  },
+  "decision": {
+    "status": "DEFER_REFERENCE_ONLY",
+    "reason": "The SAST scan is incomplete due to a tracked source-file decoding error, dependencies are unpinned and unresolved, and the repository declares a live-trading command. No source import, execution, benchmark, package or adoption is approved."
+  }
+}
