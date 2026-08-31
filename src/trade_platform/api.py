@@ -398,7 +398,7 @@ def build_app(
         ))
 
     @app.get("/operator-dashboard/risk-decisions", response_model=RiskDecisionPage)
-    def risk_decisions(
+    def operator_risk_decisions(
         limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10_000),
         _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
     ) -> object:

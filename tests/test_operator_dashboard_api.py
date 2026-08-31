@@ -1,5 +1,6 @@
 import unittest
 from datetime import UTC, datetime
+from decimal import Decimal
 from unittest.mock import Mock
 from uuid import uuid4
 
@@ -10,6 +11,7 @@ from trade_platform.audit import SQLiteAuditStore
 from trade_platform.config import PlatformConfig
 from trade_platform.operator_dashboard import (
     CovarianceEvidenceView,
+    DashboardQueryError,
     DependencyHealthView,
     FeatureDefinitionPage,
     FeatureDefinitionView,
@@ -31,6 +33,7 @@ from trade_platform.operator_dashboard import (
     SloEvidenceView,
     SreOverviewView,
     StrategyScorecardView,
+    _decimal,
 )
 from trade_platform.security import InMemoryRateLimiter, OperatorAuthenticator
 
@@ -199,6 +202,22 @@ class OperatorDashboardApiTests(unittest.TestCase):
         invalid_signal = self.client.get("/operator-dashboard/signals?as_of=2026-01-01T00%3A00%3A00&status=UNKNOWN", headers=self.headers)
         self.assertEqual((naive.status_code, oversized.status_code, inverted.status_code, invalid_id.status_code, invalid_signal.status_code), (422, 422, 422, 422, 422))
 
+
+
+    def test_decimal_canonical_normalization_preserves_precision_and_removes_database_scale(self) -> None:
+        self.assertIsNone(_decimal(None))
+        self.assertEqual(_decimal(Decimal("250.000000000000")), "250")
+        self.assertEqual(_decimal(Decimal("0.010000000000")), "0.01")
+        self.assertEqual(_decimal(Decimal("0.000000000000")), "0")
+        self.assertEqual(_decimal(Decimal("1000000.000000")), "1000000")
+        self.assertEqual(_decimal(Decimal("0.000000123000")), "0.000000123")
+        self.assertEqual(_decimal(250), "250")
+        self.assertEqual(_decimal("250.0000"), "250")
+        self.assertEqual(_decimal("0.00"), "0")
+        with self.assertRaises(DashboardQueryError):
+            _decimal(Decimal("NaN"))
+        with self.assertRaises(DashboardQueryError):
+            _decimal(Decimal("Infinity"))
 
 if __name__ == "__main__":
     unittest.main()

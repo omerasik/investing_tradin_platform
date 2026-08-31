@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from decimal import Decimal
 from threading import RLock
 from typing import Any, Literal, Protocol
 from uuid import UUID
@@ -462,7 +463,29 @@ def _mapping(value: object) -> dict[str, Any]:
 
 
 def _decimal(value: object | None) -> str | None:
-    return None if value is None else str(value)
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise DashboardQueryError("non_finite_dashboard_decimal")
+        normalized = value.normalize()
+        return "0" if normalized == 0 else format(normalized, "f")
+    if isinstance(value, (int, float)):
+        dec = Decimal(str(value))
+        if not dec.is_finite():
+            raise DashboardQueryError("non_finite_dashboard_decimal")
+        normalized = dec.normalize()
+        return "0" if normalized == 0 else format(normalized, "f")
+    if isinstance(value, str):
+        try:
+            dec = Decimal(value)
+            if not dec.is_finite():
+                raise DashboardQueryError("non_finite_dashboard_decimal")
+            normalized = dec.normalize()
+            return "0" if normalized == 0 else format(normalized, "f")
+        except (ArithmeticError, ValueError):
+            return value
+    return str(value)
 
 
 def _page(rows: list[tuple[Any, ...]], limit: int, offset: int) -> tuple[list[tuple[Any, ...]], PageInfo]:
