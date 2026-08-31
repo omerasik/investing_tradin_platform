@@ -11,6 +11,11 @@
   unadopted and subject to the complete RQ-029 gate.
 - Verified Cycle 231 on exact merged main commit
   `a2efd002a7cc7d4c4c40808bfd6def57fce84eda` in CI run `33397619313`.
+- Added Cycle 232's restricted static review of the current immutable `qlib`
+  pin: a no-baseline secret scan, Bandit SAST and a generated declared-
+  dependency CycloneDX SBOM. Eighteen high-severity SAST signals and 23
+  non-exact dependency declarations keep it `DEFER_REFERENCE_ONLY`; no
+  dependency resolution, installer, candidate execution or adoption occurred.
 
 ## 2026-08-22
 

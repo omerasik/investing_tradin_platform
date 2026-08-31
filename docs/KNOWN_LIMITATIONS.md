@@ -17,6 +17,11 @@ The full requirement-level matrix is in
   verifies the platform's full 459-test/143-table hosted matrix on commit
   `a2efd002a7cc7d4c4c40808bfd6def57fce84eda`; it does not supply an upstream
   security or adoption approval.
+- Cycle 232's qlib review has only completed static triage. Its 23 declared
+  production dependencies have no exact pins or resolved transitive graph, so
+  there is no vulnerability-clean claim. The 18 high Bandit signals require
+  review in an explicitly approved isolated environment; qlib remains
+  reference-only and no source or package is imported here.
 - SQLite stores provide durable local evidence but are not the normalized
   PostgreSQL/analytics/object-storage/queue deployment architecture required by
   the specification.

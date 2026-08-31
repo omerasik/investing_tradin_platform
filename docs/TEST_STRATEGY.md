@@ -451,3 +451,12 @@ scan, SBOM, license acceptance, benchmark or adoption approval. PR-head run
 tests without skips, the **143-table** PostgreSQL restore/reconciliation drill,
 the **117/117** type ratchet, security/supply-chain gates, production dashboard
 build and protected browser scenarios.
+
+## Cycle 232 — Qlib Restricted Static Review
+
+An offline unit test validates Cycle 232's immutable qlib identity, static-only
+restrictions, exact input/report/SBOM hashes, Bandit severity/rule counts,
+zero-finding no-baseline secret scan, incomplete unpinned dependency state and
+`DEFER_REFERENCE_ONLY` decision. It deliberately rejects an interpretation of
+the generated direct-dependency SBOM as a resolved SCA result, legal approval,
+benchmark result, runtime approval or trading authority.

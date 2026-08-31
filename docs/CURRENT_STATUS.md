@@ -78,6 +78,11 @@ snapshot, not a second roadmap.
   [`docs/upstream/IDENTITY_ACTIVITY_REFRESH_2026-08-31.md`](upstream/IDENTITY_ACTIVITY_REFRESH_2026-08-31.md).
   Twelve remote branches have advanced; no clone was fetched or modified and no
   candidate was executed, adopted or approved.
+- Cycle 232's restricted `qlib` review preserves that boundary while recording
+  a zero-finding all-files secret scan, 477 Bandit signals (18 high) and a
+  23-component direct-declaration SBOM. The candidate remains
+  `DEFER_REFERENCE_ONLY`: every declaration is non-exact, no transitive graph
+  or vulnerability audit is claimed, and no candidate code or dependency ran.
 - Cycle 228 exact-main GitHub Actions
   [run 32555630655](https://github.com/omerasik/investing_tradin_platform/actions/runs/32555630655)
   passed every configured gate on merge commit
@@ -325,9 +330,9 @@ snapshot, not a second roadmap.
    approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
 4. Cycle 209 re-audited all RQ-001–RQ-030 rows and is exact-mainline verified.
-   Cycles 212–231 are exact-mainline verified. The next provider-independent
-   work is restricted static scanning/SBOM evidence for one unadopted candidate.
-   Measured
+   Cycles 212–231 are exact-mainline verified. Cycle 232 has begun a restricted
+   static review of the frozen qlib pin; it remains non-executing and cannot
+   create adoption authority. Measured
    browser performance awaits the required Chrome DevTools MCP, and concrete
    IdP activation remains external.
 
