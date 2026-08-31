@@ -337,8 +337,9 @@ snapshot, not a second roadmap.
    approves a provider and its terms; continue provider-independent work.
 3. Keep live trading and external provider connectivity disabled.
 4. Cycle 209 re-audited all RQ-001–RQ-030 rows and is exact-mainline verified.
-   Cycles 212–232 are exact-mainline verified. Cycle 232's restricted static
-   review of the frozen qlib pin remains non-executing and cannot create
+   Cycles 212–234 are exact-mainline verified. The restricted static reviews
+   of the frozen qlib, FinRL-Trading and NautilusTrader pins remain
+   non-executing and cannot create
    adoption authority. Measured
    browser performance awaits the required Chrome DevTools MCP, and concrete
    IdP activation remains external.

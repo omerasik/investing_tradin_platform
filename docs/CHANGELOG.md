@@ -21,9 +21,13 @@
 - Added Cycle 233's restricted static FinRL-Trading review. An undecodable
   tracked source file leaves SAST coverage incomplete, while all 25 production
   declarations remain unpinned; the candidate is `DEFER_REFERENCE_ONLY`.
+- Verified Cycle 233 on exact merged main commit
+  `5b8f020b425659e62ba9523e88551b3b1835f81e` in CI run `33402473623`.
 - Added Cycle 234's restricted static NautilusTrader review. LGPL-3.0-or-later,
   untriaged medium SAST findings and no SCA/legal review keep it
   `DEFER_REFERENCE_ONLY`; no candidate code was executed.
+- Verified Cycle 234 on exact merged main commit
+  `e0897839c2296664914e3d6dd078c2be88860a14` in CI run `33403812161`.
 
 ## 2026-08-22
 
