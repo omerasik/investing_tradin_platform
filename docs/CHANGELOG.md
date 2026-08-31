@@ -37,6 +37,8 @@
   untriaged SAST findings, non-exact production declarations and absent
   resolved SCA/legal review keep it `DEFER_REFERENCE_ONLY`; no candidate code
   was executed.
+- Verified Cycle 236 on exact merged main commit
+  `69931bca9ac6cb66fd0e1af6503240d0b062ddcd` in CI run `33437725262`.
 
 ## 2026-08-22
 
