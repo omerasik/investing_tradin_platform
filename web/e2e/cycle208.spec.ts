@@ -19,7 +19,8 @@ test("authenticated command center and disabled execution boundary render", asyn
   const unauthenticated = await request.get(`${apiUrl}/operator-dashboard/command-center`);
   expect(unauthenticated.status()).toBe(401);
   const unauthenticatedPage = await fetch(dashboardUrl, { redirect: "manual" });
-  expect(unauthenticatedPage.status).toBe(401);
+  expect([302, 307, 308]).toContain(unauthenticatedPage.status);
+  expect(unauthenticatedPage.headers.get("location")).toContain("/login");
   const body = await page.locator("body").innerText();
   expect(body).not.toContain("fixture-token");
   expect(body).not.toContain("fixture-view-token");

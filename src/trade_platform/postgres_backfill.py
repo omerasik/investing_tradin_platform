@@ -280,12 +280,13 @@ def backfill_sqlite_to_postgres(
     except ImportError as error:
         raise BackfillError("postgres_driver_unavailable") from error
     source = sqlite3.connect(str(source_path))
-    _validate_required_mappings(source, report, identity_mapping)
-    connection = psycopg.connect(postgres_dsn)
-    run_id = uuid4()
-    destination_hashes: dict[str, list[str]] = {table: [] for table in SUPPORTED_TABLES}
-    migrated = 0
+    connection = None
     try:
+        _validate_required_mappings(source, report, identity_mapping)
+        connection = psycopg.connect(postgres_dsn)
+        run_id = uuid4()
+        destination_hashes: dict[str, list[str]] = {table: [] for table in SUPPORTED_TABLES}
+        migrated = 0
         with connection.transaction(), connection.cursor() as cursor:
             cursor.execute(
                 "SELECT run_id, status, report FROM postgres_backfill_runs WHERE source_fingerprint = %s AND mapping_fingerprint = %s AND mode = 'APPLY'",
@@ -1425,4 +1426,5 @@ def backfill_sqlite_to_postgres(
         raise BackfillError("backfill_transaction_failed") from error
     finally:
         source.close()
-        connection.close()
+        if connection is not None:
+            connection.close()

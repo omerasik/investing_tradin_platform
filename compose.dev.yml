@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: trade-platform-postgres-dev
+    environment:
+      POSTGRES_DB: trade_platform
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres # pragma: allowlist secret
+    ports:
+      - "${POSTGRES_PORT:-5439}:5432"
+    volumes:
+      - trade_platform_dev_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d trade_platform"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 2s
+    restart: unless-stopped
+
+volumes:
+  trade_platform_dev_pgdata:

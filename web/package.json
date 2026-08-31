@@ -5,6 +5,7 @@
     "dev": "next dev",
     "build": "next build",
     "lint": "eslint .",
+    "test:session": "node --experimental-strip-types scripts/test-session.mjs",
     "verify:dashboard": "node scripts/verify-dashboard.mjs",
     "test:e2e": "playwright test"
   },
