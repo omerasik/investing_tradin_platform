@@ -18,6 +18,9 @@
   dependency resolution, installer, candidate execution or adoption occurred.
 - Verified Cycle 232 on exact merged main commit
   `0a22bf2110f5dcd0f542ebac1cb132333ecaa9b4` in CI run `33400243819`.
+- Added Cycle 233's restricted static FinRL-Trading review. An undecodable
+  tracked source file leaves SAST coverage incomplete, while all 25 production
+  declarations remain unpinned; the candidate is `DEFER_REFERENCE_ONLY`.
 
 ## 2026-08-22
 

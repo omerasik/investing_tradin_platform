@@ -25,6 +25,11 @@ The full requirement-level matrix is in
   `33400243819` verifies the platform's full 460-test/143-table hosted matrix
   on commit `0a22bf2110f5dcd0f542ebac1cb132333ecaa9b4`; it does not change that
   upstream security or adoption limit.
+- The FinRL-Trading review is likewise static-only and fails closed: Bandit
+  could not decode one tracked Python file, and 25 direct production
+  declarations are non-exact and unresolved. Its declared `finrl-trade` entry
+  point is not authority to execute anything; the candidate remains
+  reference-only.
 - SQLite stores provide durable local evidence but are not the normalized
   PostgreSQL/analytics/object-storage/queue deployment architecture required by
   the specification.
