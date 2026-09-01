@@ -111,7 +111,8 @@ class OperatorPrincipal:
 class OperatorAuthentication(Protocol):
     """Server-owned credential verifier; request bodies never select a role."""
 
-    requires_durable_authorization_audit: bool
+    @property
+    def requires_durable_authorization_audit(self) -> bool: ...
 
     def verify(self, authorization: str | None) -> OperatorPrincipal: ...
 

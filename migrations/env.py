@@ -1,9 +1,23 @@
 """Alembic environment for the production PostgreSQL schema."""
 
+import os
+
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 config = context.config
+
+env_url = (
+    os.environ.get("POSTGRES_TEST_DSN")
+    or os.environ.get("POSTGRES_DSN")
+    or os.environ.get("DATABASE_URL")
+)
+if env_url:
+    if env_url.startswith("postgresql://"):
+        env_url = "postgresql+psycopg://" + env_url[len("postgresql://") :]
+    elif env_url.startswith("postgres://"):
+        env_url = "postgresql+psycopg://" + env_url[len("postgres://") :]
+    config.set_main_option("sqlalchemy.url", env_url)
 
 
 def run_migrations_offline() -> None:

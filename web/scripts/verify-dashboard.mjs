@@ -8,10 +8,15 @@ const policy = page.headers.get("content-security-policy") ?? "";
 if (policy.includes("'unsafe-inline'")) throw new Error("Dashboard CSP permits unsafe inline content");
 if (!/script-src 'self' 'nonce-[a-f0-9]{32}' 'strict-dynamic'/.test(policy)) throw new Error("Dashboard CSP is missing a per-request script nonce");
 if (!/style-src 'self' 'nonce-[a-f0-9]{32}'/.test(policy)) throw new Error("Dashboard CSP is missing a per-request style nonce");
-const unauthenticated = await fetch(`${baseUrl}/`);
+const unauthenticated = await fetch(`${baseUrl}/`, { redirect: "manual" });
+const isRedirectToLogin = [302, 307, 308].includes(unauthenticated.status) && (unauthenticated.headers.get("location")?.includes("/login") ?? false);
 const deniedPolicy = unauthenticated.headers.get("content-security-policy") ?? "";
-if (unauthenticated.status !== 401 || deniedPolicy.includes("'unsafe-inline'") || !deniedPolicy.includes("'nonce-")) {
-  throw new Error("Dashboard authentication denial is missing the strict CSP");
+if (!isRedirectToLogin || deniedPolicy.includes("'unsafe-inline'") || !deniedPolicy.includes("'nonce-")) {
+  throw new Error(`Dashboard unauthenticated navigation did not redirect to /login with strict CSP (status: ${unauthenticated.status})`);
+}
+const unauthenticatedApi = await fetch(`${baseUrl}/api/operator`);
+if (unauthenticatedApi.status !== 401) {
+  throw new Error(`Expected unauthenticated API request to return 401, received ${unauthenticatedApi.status}`);
 }
 const html = await page.text();
 for (const required of [

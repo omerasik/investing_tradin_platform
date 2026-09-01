@@ -188,6 +188,8 @@ jobs:
         working-directory: web
       - run: pnpm lint
         working-directory: web
+      - run: pnpm test:session
+        working-directory: web
       - run: pnpm audit --audit-level high
         working-directory: web
       - name: Record frontend production dependency licenses
@@ -204,7 +206,7 @@ jobs:
           dashboard_pid=$!
           trap 'kill $dashboard_pid' EXIT
           for attempt in {1..30}; do
-            curl --fail --silent http://127.0.0.1:3000/ && break
+            curl -L --fail --silent http://127.0.0.1:3000/ && break
             sleep 1
           done
           DASHBOARD_URL=http://127.0.0.1:3000 node scripts/verify-dashboard.mjs

@@ -4,8 +4,9 @@ export default defineConfig({
   testDir: "./e2e",
   timeout: 30_000,
   fullyParallel: false,
+  workers: 1,
   retries: process.env.CI ? 1 : 0,
-  reporter: process.env.CI ? "line" : "list",
+  reporter: "list",
   use: {
     baseURL: process.env.DASHBOARD_URL ?? "http://127.0.0.1:3000",
     extraHTTPHeaders: process.env.TRADE_PLATFORM_DASHBOARD_VIEW_TOKEN
