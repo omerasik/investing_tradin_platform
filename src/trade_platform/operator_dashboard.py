@@ -671,7 +671,7 @@ class PostgresOperatorDashboardQueries:
                 "WHERE e.instrument_id=p.instrument_id ORDER BY e.effective_at DESC,e.event_id DESC LIMIT 1),'ACTIVE'),"
                 "p.registered_at,(SELECT MIN(m.valid_until) FROM professional_symbol_mappings m "
                 "WHERE m.instrument_id=p.instrument_id AND m.valid_until IS NOT NULL),"
-                "(p.instrument_id LIKE 'DEMO:%' OR p.canonical_symbol LIKE 'DEMO_%'),"
+                "(STARTS_WITH(p.instrument_id, 'DEMO:') OR STARTS_WITH(p.canonical_symbol, 'DEMO_')),"
                 "(SELECT h.version FROM historical_dataset_versions h "
                 "JOIN historical_dataset_members hm ON hm.dataset_version_id=h.dataset_version_id "
                 "JOIN historical_normalized_observations n ON n.normalized_observation_id=hm.normalized_observation_id "
