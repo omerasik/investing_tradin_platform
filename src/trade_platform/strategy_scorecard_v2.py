@@ -13,7 +13,7 @@ from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 from statistics import median
-from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from .persistence import PostgresDatabase
 from .quant_validation import REQUIRED_EVIDENCE
@@ -307,9 +307,17 @@ class PostgresStrategyScorecardStore:
                         raise ScorecardV2Error("scorecard_replay_conflict")
                     return scorecard.scorecard_id
                 for metric in scorecard.metrics:
-                    cursor.execute("INSERT INTO scorecard_metric_observations VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb)", (uuid4(), scorecard.scorecard_id, metric.family.value, metric.name, metric.state.value, metric.value, metric.unit, json.dumps(metric.dimensions)))
+                    metric_id = uuid5(
+                        NAMESPACE_URL,
+                        f"strategy-scorecard-metric:{scorecard.scorecard_id}:{metric.family.value}:{metric.name}:{metric.dimensions}",
+                    )
+                    cursor.execute("INSERT INTO scorecard_metric_observations VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb)", (metric_id, scorecard.scorecard_id, metric.family.value, metric.name, metric.state.value, metric.value, metric.unit, json.dumps(metric.dimensions)))
                 for component in scorecard.components:
-                    cursor.execute("INSERT INTO scorecard_components VALUES (%s,%s,%s,%s,%s,%s)", (uuid4(), scorecard.scorecard_id, component.name, component.formula_version, component.value, component.rationale))
+                    component_id = uuid5(
+                        NAMESPACE_URL,
+                        f"strategy-scorecard-component:{scorecard.scorecard_id}:{component.name}:{component.formula_version}",
+                    )
+                    cursor.execute("INSERT INTO scorecard_components VALUES (%s,%s,%s,%s,%s,%s)", (component_id, scorecard.scorecard_id, component.name, component.formula_version, component.value, component.rationale))
                 for assessment_id in scorecard.data_health_assessment_ids:
                     cursor.execute(
                         "INSERT INTO scorecard_data_health_assessments VALUES (%s,%s)",

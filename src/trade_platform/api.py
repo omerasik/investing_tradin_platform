@@ -22,16 +22,23 @@ from .operational_alerts import AlertError, AlertStatus, SQLiteOperationalAlertS
 from .operator_dashboard import (
     DashboardObjectNotFound,
     DashboardQueryError,
+    DashboardWorkspaceReferences,
+    ExperimentDiscoveryPage,
     FeatureDefinitionPage,
     FeatureDefinitionView,
     FeatureMaterializationPage,
+    InstrumentDiscoveryPage,
+    InvestmentPortfolioDiscoveryPage,
+    InvestmentThesisDiscoveryPage,
     NewsEventPage,
+    PaperOrderDiscoveryPage,
     PortfolioConstructionView,
     PostgresOperatorDashboardQueries,
     RegimeRunView,
     RiskDecisionPage,
     SignalPage,
     SreOverviewView,
+    StrategyDiscoveryPage,
     StrategyScorecardView,
 )
 from .paper_oms import PaperOmsError, SQLitePaperOms
@@ -349,6 +356,57 @@ def build_app(
             raise HTTPException(status_code=404, detail="Dashboard evidence not found.") from error
         except DashboardQueryError as error:
             raise HTTPException(status_code=503, detail="Dashboard evidence unavailable.") from error
+
+    @app.get("/operator-dashboard/workspace-references", response_model=DashboardWorkspaceReferences)
+    def dashboard_workspace_references(
+        _: None = Depends(protected_operator),
+        queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """Read only deterministic defaults; no arbitrary database search."""
+        return read_dashboard(queries.workspace_references)
+
+    @app.get("/operator-dashboard/instruments", response_model=InstrumentDiscoveryPage)
+    def dashboard_instruments(
+        limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10_000),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        return read_dashboard(lambda: queries.instruments(limit=limit, offset=offset))
+
+    @app.get("/operator-dashboard/strategies", response_model=StrategyDiscoveryPage)
+    def dashboard_strategies(
+        limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10_000),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        return read_dashboard(lambda: queries.strategies(limit=limit, offset=offset))
+
+    @app.get("/operator-dashboard/experiments", response_model=ExperimentDiscoveryPage)
+    def dashboard_experiments(
+        strategy_id: UUID | None = None, limit: int = Query(default=50, ge=1, le=100),
+        offset: int = Query(default=0, ge=0, le=10_000), _: None = Depends(protected_operator),
+        queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        return read_dashboard(lambda: queries.experiments(strategy_id=strategy_id, limit=limit, offset=offset))
+
+    @app.get("/operator-dashboard/investment-theses", response_model=InvestmentThesisDiscoveryPage)
+    def dashboard_investment_theses(
+        limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10_000),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        return read_dashboard(lambda: queries.investment_theses(limit=limit, offset=offset))
+
+    @app.get("/operator-dashboard/investment-portfolios", response_model=InvestmentPortfolioDiscoveryPage)
+    def dashboard_investment_portfolios(
+        limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10_000),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        return read_dashboard(lambda: queries.investment_portfolios(limit=limit, offset=offset))
+
+    @app.get("/operator-dashboard/paper-orders", response_model=PaperOrderDiscoveryPage)
+    def dashboard_paper_orders(
+        limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10_000),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        return read_dashboard(lambda: queries.paper_orders(limit=limit, offset=offset))
 
     @app.get("/operator-dashboard/feature-definitions", response_model=FeatureDefinitionPage)
     def feature_definitions(

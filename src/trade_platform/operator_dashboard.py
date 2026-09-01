@@ -36,6 +36,145 @@ class PageInfo(BaseModel):
     has_more: bool
 
 
+class DashboardWorkspaceReferences(BaseModel):
+    """Small, safe default-selection projection for the dashboard server.
+
+    This is deliberately not a database search API: every field is a typed
+    authority reference selected by an explicit timestamp/identity ordering.
+    """
+
+    state: Availability
+    as_of: datetime | None
+    feature_definition_id: UUID | None
+    feature_instrument: str | None
+    feature_dataset_version: str | None
+    feature_decision_time: datetime | None
+    scorecard_id: UUID | None
+    regime_run_id: UUID | None
+    portfolio_construction_run_id: UUID | None
+    sre_service_version_id: UUID | None
+    news_instrument: str | None
+    instrument_id: str | None
+    strategy_id: UUID | None
+    experiment_id: UUID | None
+    investment_thesis_id: UUID | None
+    investment_portfolio_id: str | None
+    paper_intent_id: UUID | None
+    paper_account_id: str | None
+    source: str = "postgresql_authoritative_discovery"
+    limitations: list[str]
+
+
+class InstrumentDiscoveryView(BaseModel):
+    instrument_id: str
+    canonical_symbol: str
+    asset_class: str
+    venue: str
+    lifecycle_status: str
+    valid_from: datetime
+    valid_until: datetime | None
+    synthetic_demo: bool
+    latest_dataset_version: str | None
+    identifier_mapping_count: int
+    ambiguous_mapping: bool
+
+
+class InstrumentDiscoveryPage(BaseModel):
+    state: Availability
+    items: list[InstrumentDiscoveryView]
+    page: PageInfo
+
+
+class StrategyDiscoveryView(BaseModel):
+    strategy_id: UUID
+    strategy_version_id: UUID
+    version: str
+    family: str
+    hypothesis: str
+    status: str
+    dataset_requirements: list[str]
+    feature_versions: list[str]
+    cost_model_version: str
+    created_at: datetime
+    evidence_classification: str
+
+
+class StrategyDiscoveryPage(BaseModel):
+    state: Availability
+    items: list[StrategyDiscoveryView]
+    page: PageInfo
+
+
+class ExperimentDiscoveryView(BaseModel):
+    experiment_id: UUID
+    strategy_id: UUID
+    strategy_version_id: UUID
+    strategy_version: str
+    dataset_version: str
+    feature_versions: list[str]
+    cost_model_version: str
+    created_at: datetime
+    evaluated_at: datetime | None
+    status: str
+    evidence_classification: str
+
+
+class ExperimentDiscoveryPage(BaseModel):
+    state: Availability
+    items: list[ExperimentDiscoveryView]
+    page: PageInfo
+
+
+class InvestmentThesisDiscoveryView(BaseModel):
+    thesis_id: UUID
+    instrument_id: str
+    canonical_symbol: str | None
+    thesis_version: str
+    status: str
+    as_of: datetime
+    review_state: str | None
+    synthetic_demo: bool
+
+
+class InvestmentThesisDiscoveryPage(BaseModel):
+    state: Availability
+    items: list[InvestmentThesisDiscoveryView]
+    page: PageInfo
+
+
+class InvestmentPortfolioDiscoveryView(BaseModel):
+    portfolio_id: str
+    as_of: datetime
+    review_status: str
+    holdings_count: int
+    evidence_classification: str
+
+
+class InvestmentPortfolioDiscoveryPage(BaseModel):
+    state: Availability
+    items: list[InvestmentPortfolioDiscoveryView]
+    page: PageInfo
+
+
+class PaperOrderDiscoveryView(BaseModel):
+    account_id: str
+    intent_id: UUID
+    instrument_id: str
+    canonical_symbol: str | None
+    side: str
+    paper_only: bool = True
+    lifecycle_status: str
+    created_at: datetime
+    fill_state: str
+    reconciliation_state: str
+
+
+class PaperOrderDiscoveryPage(BaseModel):
+    state: Availability
+    items: list[PaperOrderDiscoveryView]
+    page: PageInfo
+
+
 class FeatureDefinitionView(BaseModel):
     feature_definition_id: UUID
     feature_name: str
@@ -523,6 +662,147 @@ class PostgresOperatorDashboardQueries:
             calculation_version=str(row[18]), created_at=row[19], retired_at=row[20],
         )
 
+    def instruments(self, *, limit: int, offset: int) -> InstrumentDiscoveryPage:
+        """List canonical instruments without resolving an ambiguous symbol."""
+        def operation(cursor: _Cursor) -> InstrumentDiscoveryPage:
+            cursor.execute(
+                "SELECT p.instrument_id,p.canonical_symbol,p.asset_class,p.venue,"
+                "COALESCE((SELECT e.status FROM professional_instrument_lifecycle_events e "
+                "WHERE e.instrument_id=p.instrument_id ORDER BY e.effective_at DESC,e.event_id DESC LIMIT 1),'ACTIVE'),"
+                "p.registered_at,(SELECT MIN(m.valid_until) FROM professional_symbol_mappings m "
+                "WHERE m.instrument_id=p.instrument_id AND m.valid_until IS NOT NULL),"
+                "(STARTS_WITH(p.instrument_id, 'DEMO:') OR STARTS_WITH(p.canonical_symbol, 'DEMO_')),"
+                "(SELECT h.version FROM historical_dataset_versions h "
+                "JOIN historical_dataset_members hm ON hm.dataset_version_id=h.dataset_version_id "
+                "JOIN historical_normalized_observations n ON n.normalized_observation_id=hm.normalized_observation_id "
+                "WHERE n.instrument_id=p.instrument_id ORDER BY h.created_at DESC,h.dataset_version_id DESC LIMIT 1),"
+                "(SELECT COUNT(*) FROM professional_identifier_mappings i WHERE i.instrument_id=p.instrument_id),"
+                "(SELECT COUNT(*) FROM professional_symbol_mappings s WHERE s.instrument_id=p.instrument_id "
+                "AND s.valid_until IS NULL) "
+                "FROM professional_instruments p ORDER BY p.canonical_symbol,p.instrument_id LIMIT %s OFFSET %s",
+                (limit + 1, offset),
+            )
+            rows, page = _page(cursor.fetchall(), limit, offset)
+            return InstrumentDiscoveryPage(
+                state="AVAILABLE" if rows else "UNAVAILABLE",
+                items=[InstrumentDiscoveryView(
+                    instrument_id=str(row[0]), canonical_symbol=str(row[1]), asset_class=str(row[2]),
+                    venue=str(row[3]), lifecycle_status=str(row[4]), valid_from=row[5], valid_until=row[6],
+                    synthetic_demo=bool(row[7]), latest_dataset_version=None if row[8] is None else str(row[8]),
+                    identifier_mapping_count=int(row[9]), ambiguous_mapping=int(row[10]) > 1,
+                ) for row in rows], page=page,
+            )
+        return self._read(operation)
+
+    def strategies(self, *, limit: int, offset: int) -> StrategyDiscoveryPage:
+        def operation(cursor: _Cursor) -> StrategyDiscoveryPage:
+            cursor.execute(
+                "SELECT d.strategy_id,v.strategy_version_id,v.version,d.family,d.hypothesis,"
+                "v.feature_manifest,v.cost_model_version,v.contract,v.created_at "
+                "FROM strategy_versions v JOIN strategy_definitions d USING(strategy_id) "
+                "ORDER BY v.created_at DESC,v.strategy_version_id DESC LIMIT %s OFFSET %s",
+                (limit + 1, offset),
+            )
+            rows, page = _page(cursor.fetchall(), limit, offset)
+            return StrategyDiscoveryPage(
+                state="AVAILABLE" if rows else "UNAVAILABLE",
+                items=[StrategyDiscoveryView(
+                    strategy_id=row[0], strategy_version_id=row[1], version=str(row[2]), family=str(row[3]),
+                    hypothesis=str(row[4]), status="RESEARCH_ONLY", dataset_requirements=_strings(_mapping(row[7]).get("required_datasets")),
+                    feature_versions=_strings(row[5]), cost_model_version=str(row[6]), created_at=row[8],
+                    evidence_classification="RESEARCH_ONLY; NO_LIVE_OR_EXECUTION_AUTHORITY",
+                ) for row in rows], page=page,
+            )
+        return self._read(operation)
+
+    def experiments(self, *, strategy_id: UUID | None, limit: int, offset: int) -> ExperimentDiscoveryPage:
+        def operation(cursor: _Cursor) -> ExperimentDiscoveryPage:
+            cursor.execute(
+                "SELECT e.experiment_id,d.strategy_id,v.strategy_version_id,v.version,dv.version,"
+                "v.feature_manifest,v.cost_model_version,e.created_at,"
+                "(SELECT MAX(w.test_end) FROM walk_forward_evidence w WHERE w.experiment_id=e.experiment_id) "
+                "FROM research_experiments e JOIN strategy_versions v USING(strategy_version_id) "
+                "JOIN strategy_definitions d USING(strategy_id) JOIN dataset_versions dv USING(dataset_version_id) "
+                "WHERE (CAST(%s AS uuid) IS NULL OR d.strategy_id=%s) "
+                "ORDER BY e.created_at DESC,e.experiment_id DESC LIMIT %s OFFSET %s",
+                (strategy_id, strategy_id, limit + 1, offset),
+            )
+            rows, page = _page(cursor.fetchall(), limit, offset)
+            return ExperimentDiscoveryPage(
+                state="AVAILABLE" if rows else "UNAVAILABLE",
+                items=[ExperimentDiscoveryView(
+                    experiment_id=row[0], strategy_id=row[1], strategy_version_id=row[2], strategy_version=str(row[3]),
+                    dataset_version=str(row[4]), feature_versions=_strings(row[5]), cost_model_version=str(row[6]),
+                    created_at=row[7], evaluated_at=row[8], status="RESEARCH_ONLY",
+                    evidence_classification="RESEARCH_ONLY; NO_PROMOTION_OR_EXECUTION_AUTHORITY",
+                ) for row in rows], page=page,
+            )
+        return self._read(operation)
+
+    def investment_theses(self, *, limit: int, offset: int) -> InvestmentThesisDiscoveryPage:
+        def operation(cursor: _Cursor) -> InvestmentThesisDiscoveryPage:
+            cursor.execute(
+                "SELECT t.thesis_id,COALESCE(t.pit_instrument_id,t.instrument_id::text),p.canonical_symbol,t.version,"
+                "t.status,t.created_at,(SELECT r.status FROM investment_reviews r WHERE r.thesis_id=t.thesis_id "
+                "ORDER BY r.reviewed_at DESC,r.review_id DESC LIMIT 1) "
+                "FROM investment_theses t LEFT JOIN professional_instruments p ON p.instrument_id=t.pit_instrument_id "
+                "ORDER BY t.created_at DESC,t.thesis_id DESC LIMIT %s OFFSET %s",
+                (limit + 1, offset),
+            )
+            rows, page = _page(cursor.fetchall(), limit, offset)
+            return InvestmentThesisDiscoveryPage(
+                state="AVAILABLE" if rows else "UNAVAILABLE",
+                items=[InvestmentThesisDiscoveryView(
+                    thesis_id=row[0], instrument_id=str(row[1]), canonical_symbol=None if row[2] is None else str(row[2]),
+                    thesis_version=str(row[3]), status=str(row[4]), as_of=row[5],
+                    review_state=None if row[6] is None else str(row[6]),
+                    synthetic_demo=str(row[1]).startswith("DEMO:"),
+                ) for row in rows], page=page,
+            )
+        return self._read(operation)
+
+    def investment_portfolios(self, *, limit: int, offset: int) -> InvestmentPortfolioDiscoveryPage:
+        def operation(cursor: _Cursor) -> InvestmentPortfolioDiscoveryPage:
+            cursor.execute(
+                "SELECT c.account_id,c.as_of,c.status,(SELECT COUNT(*) FROM jsonb_object_keys(c.candidate_weights)) "
+                "FROM investment_rebalance_candidates c ORDER BY c.as_of DESC,c.candidate_id DESC LIMIT %s OFFSET %s",
+                (limit + 1, offset),
+            )
+            rows, page = _page(cursor.fetchall(), limit, offset)
+            return InvestmentPortfolioDiscoveryPage(
+                state="AVAILABLE" if rows else "UNAVAILABLE",
+                items=[InvestmentPortfolioDiscoveryView(
+                    portfolio_id=str(row[0]), as_of=row[1], review_status=str(row[2]), holdings_count=int(row[3]),
+                    evidence_classification="REVIEW_ONLY; LONG_TERM_INVESTMENT; NO_EXECUTION_AUTHORITY",
+                ) for row in rows], page=page,
+            )
+        return self._read(operation)
+
+    def paper_orders(self, *, limit: int, offset: int) -> PaperOrderDiscoveryPage:
+        def operation(cursor: _Cursor) -> PaperOrderDiscoveryPage:
+            cursor.execute(
+                "SELECT o.account_id,o.intent_id,o.instrument_id,i.canonical_symbol,o.side,o.created_at,"
+                "COALESCE((SELECT e.payload->>'to' FROM oms_events e WHERE e.intent_id=o.intent_id "
+                "AND e.event_type='ORDER_STATUS_CHANGED' ORDER BY e.event_sequence DESC LIMIT 1),o.status),"
+                "(SELECT COUNT(*) FROM fills f WHERE f.intent_id=o.intent_id),"
+                "COALESCE((SELECT CASE WHEN r.complete THEN 'HEALTHY' ELSE 'RECONCILIATION_REQUIRED' END "
+                "FROM reconciliations r WHERE r.account_id=o.account_id ORDER BY r.occurred_at DESC,r.reconciliation_id DESC LIMIT 1),'UNAVAILABLE') "
+                "FROM paper_order_intents o JOIN instruments i ON i.instrument_id=o.instrument_id "
+                "ORDER BY o.created_at DESC,o.intent_id DESC LIMIT %s OFFSET %s",
+                (limit + 1, offset),
+            )
+            rows, page = _page(cursor.fetchall(), limit, offset)
+            return PaperOrderDiscoveryPage(
+                state="AVAILABLE" if rows else "UNAVAILABLE",
+                items=[PaperOrderDiscoveryView(
+                    account_id=str(row[0]), intent_id=row[1], instrument_id=str(row[2]),
+                    canonical_symbol=None if row[3] is None else str(row[3]), side=str(row[4]), created_at=row[5],
+                    lifecycle_status=str(row[6]), fill_state="UNFILLED" if int(row[7]) == 0 else ("PARTIAL_OR_FINAL_FILL"),
+                    reconciliation_state=str(row[8]),
+                ) for row in rows], page=page,
+            )
+        return self._read(operation)
+
     def feature_definitions(self, *, family: str | None, limit: int, offset: int) -> FeatureDefinitionPage:
         def operation(cursor: _Cursor) -> FeatureDefinitionPage:
             cursor.execute(
@@ -700,6 +980,114 @@ class PostgresOperatorDashboardQueries:
 
     def latest_scorecard_id(self) -> UUID | None:
         return self._read(lambda cursor: self._latest_id(cursor, "strategy_scorecards", "scorecard_id", "evaluated_at"))
+
+    def workspace_references(self) -> DashboardWorkspaceReferences:
+        """Resolve coherent optional dashboard defaults in one read-only query.
+
+        Empty databases intentionally return explicit null references.  The
+        caller must never substitute an arbitrary row or fabricate evidence.
+        """
+        def operation(cursor: _Cursor) -> DashboardWorkspaceReferences:
+            # Scorecard -> experiment -> strategy is the strongest complete
+            # research chain.  Fallbacks remain deterministic for an empty or
+            # partially migrated deployment, but never choose a database row
+            # merely because it happened to be returned first.
+            cursor.execute(
+                "SELECT scorecard_id,strategy_id,research_run_id,dataset_version FROM strategy_scorecards "
+                "ORDER BY evaluated_at DESC,scorecard_id DESC LIMIT 1"
+            )
+            scorecard_row = cursor.fetchone()
+            scorecard = None if scorecard_row is None else UUID(str(scorecard_row[0]))
+            scorecard_strategy = None if scorecard_row is None else UUID(str(scorecard_row[1]))
+            scorecard_experiment = None if scorecard_row is None else UUID(str(scorecard_row[2]))
+            scorecard_dataset = None if scorecard_row is None else str(scorecard_row[3])
+            if scorecard_experiment is not None:
+                cursor.execute(
+                    "SELECT e.experiment_id,d.strategy_id FROM research_experiments e "
+                    "JOIN strategy_versions v USING(strategy_version_id) "
+                    "JOIN strategy_definitions d USING(strategy_id) WHERE e.experiment_id=%s",
+                    (scorecard_experiment,),
+                )
+                experiment_row = cursor.fetchone()
+            else:
+                experiment_row = None
+            if experiment_row is None:
+                cursor.execute(
+                    "SELECT e.experiment_id,d.strategy_id FROM research_experiments e "
+                    "JOIN strategy_versions v USING(strategy_version_id) "
+                    "JOIN strategy_definitions d USING(strategy_id) "
+                    "WHERE (CAST(%s AS uuid) IS NULL OR d.strategy_id=%s) "
+                    "ORDER BY e.created_at DESC,e.experiment_id DESC LIMIT 1",
+                    (scorecard_strategy, scorecard_strategy),
+                )
+                experiment_row = cursor.fetchone()
+            experiment = None if experiment_row is None else UUID(str(experiment_row[0]))
+            strategy = scorecard_strategy if scorecard_strategy is not None else (
+                None if experiment_row is None else UUID(str(experiment_row[1]))
+            )
+            if strategy is None:
+                cursor.execute(
+                    "SELECT strategy_id FROM strategy_versions ORDER BY created_at DESC,strategy_version_id DESC LIMIT 1"
+                )
+                row = cursor.fetchone()
+                strategy = None if row is None else UUID(str(row[0]))
+            cursor.execute(
+                "SELECT feature_id,instrument_id,dataset_version,computed_at FROM feature_materializations "
+                "WHERE (CAST(%s AS text) IS NULL OR dataset_version=%s) "
+                "ORDER BY computed_at DESC,materialization_id DESC LIMIT 1"
+                , (scorecard_dataset, scorecard_dataset)
+            )
+            feature = cursor.fetchone()
+            cursor.execute(
+                "SELECT run_id,regime_run_id FROM portfolio_construction_runs "
+                "ORDER BY constructed_at DESC,run_id DESC LIMIT 1"
+            )
+            portfolio_row = cursor.fetchone()
+            portfolio = None if portfolio_row is None else UUID(str(portfolio_row[0]))
+            regime = None if portfolio_row is None else UUID(str(portfolio_row[1]))
+            if regime is None:
+                regime = self._latest_id(cursor, "regime_runs", "run_id", "evaluated_at")
+            service = self._latest_id(cursor, "sre_service_versions", "service_version_id", "created_at")
+            cursor.execute(
+                "SELECT l.instrument_id FROM news_document_entity_links l "
+                "JOIN news_document_revisions d USING(document_revision_id) "
+                "ORDER BY d.published_at DESC,l.entity_link_id DESC LIMIT 1"
+            )
+            news = cursor.fetchone()
+            cursor.execute("SELECT instrument_id FROM professional_instruments ORDER BY registered_at DESC,instrument_id DESC LIMIT 1")
+            instrument = cursor.fetchone()
+            cursor.execute("SELECT thesis_id FROM investment_theses ORDER BY created_at DESC,thesis_id DESC LIMIT 1")
+            thesis = cursor.fetchone()
+            cursor.execute(
+                "SELECT account_id FROM investment_rebalance_candidates "
+                "ORDER BY as_of DESC,candidate_id DESC LIMIT 1"
+            )
+            investment_portfolio = cursor.fetchone()
+            cursor.execute("SELECT intent_id,account_id FROM paper_order_intents ORDER BY created_at DESC,intent_id DESC LIMIT 1")
+            paper = cursor.fetchone()
+            available = any(value is not None for value in (
+                feature, scorecard, regime, portfolio, service, news, instrument, strategy, experiment,
+                thesis, investment_portfolio, paper,
+            ))
+            return DashboardWorkspaceReferences(
+                state="AVAILABLE" if available else "UNAVAILABLE",
+                as_of=None if feature is None else feature[3],
+                feature_definition_id=None if feature is None else feature[0],
+                feature_instrument=None if feature is None else str(feature[1]),
+                feature_dataset_version=None if feature is None else str(feature[2]),
+                feature_decision_time=None if feature is None else feature[3],
+                scorecard_id=scorecard, regime_run_id=regime,
+                portfolio_construction_run_id=portfolio, sre_service_version_id=service,
+                news_instrument=None if news is None else str(news[0]),
+                instrument_id=None if instrument is None else str(instrument[0]),
+                strategy_id=strategy, experiment_id=experiment,
+                investment_thesis_id=None if thesis is None else thesis[0],
+                investment_portfolio_id=None if investment_portfolio is None else str(investment_portfolio[0]),
+                paper_intent_id=None if paper is None else paper[0],
+                paper_account_id=None if paper is None else str(paper[1]),
+                limitations=["Defaults are bounded latest authoritative records; explicit deployment configuration overrides them."]
+            )
+        return self._read(operation)
 
     @staticmethod
     def _latest_id(cursor: _Cursor, table: str, identity: str, timestamp: str) -> UUID | None:

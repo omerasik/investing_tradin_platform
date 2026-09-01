@@ -23,6 +23,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlparse
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 WEB_DIR = ROOT_DIR / "web"
@@ -159,6 +160,12 @@ def start_postgres(postgres_port: int, reset_db: bool = False) -> None:
     env["POSTGRES_PORT"] = str(postgres_port)
 
     if reset_db:
+        configured_dsn = os.environ.get("POSTGRES_DSN")
+        if configured_dsn:
+            parsed = urlparse(configured_dsn)
+            if parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+                log_error("--reset-db is restricted to the local Docker PostgreSQL development DSN.")
+                sys.exit(1)
         log_warn("Resetting development database volume (--reset-db)...")
         subprocess.run(
             ["docker", "compose", "-f", compose_file, "down", "-v"],
@@ -226,6 +233,23 @@ def run_migrations(postgres_port: int) -> None:
         sys.exit(1)
 
     log_success("Alembic migrations applied up to head.")
+
+
+def seed_demo(postgres_port: int) -> None:
+    """Explicit deterministic engineering-evidence seed; never a provider action."""
+    log("Seeding deterministic Module 1B synthetic demo evidence...")
+    dsn = f"postgresql://postgres:postgres@127.0.0.1:{postgres_port}/trade_platform"  # pragma: allowlist secret
+    env = os.environ.copy()
+    env["POSTGRES_DSN"] = dsn
+    env["PYTHONPATH"] = str(ROOT_DIR / "src")
+    result = subprocess.run(
+        [sys.executable, str(ROOT_DIR / "scripts" / "seed_demo_evidence.py"), "--postgres-dsn", dsn],
+        cwd=str(ROOT_DIR), env=env, capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        log_error(f"Demo evidence seed failed:\n{result.stderr}\n{result.stdout}")
+        sys.exit(1)
+    log_success(f"Demo evidence seed completed: {result.stdout.strip()}")
 
 
 def start_backend(postgres_port: int, api_port: int, operator_token: str) -> subprocess.Popen[str]:
@@ -375,6 +399,11 @@ def main() -> None:
         help="Destructively reset the development PostgreSQL data volume before starting.",
     )
     parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="Seed deterministic local synthetic engineering evidence after migrations.",
+    )
+    parser.add_argument(
         "--postgres-port",
         type=int,
         default=int(os.environ.get("POSTGRES_PORT", "5439")),
@@ -403,6 +432,8 @@ def main() -> None:
     pnpm_cmd = check_prerequisites(args.postgres_port, args.api_port, args.port)
     start_postgres(args.postgres_port, reset_db=args.reset_db)
     run_migrations(args.postgres_port)
+    if args.demo:
+        seed_demo(args.postgres_port)
 
     backend_proc = start_backend(args.postgres_port, args.api_port, operator_token)
     frontend_proc = start_frontend(
