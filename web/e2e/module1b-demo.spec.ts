@@ -3,7 +3,10 @@ import { expect, test } from "@playwright/test";
 const viewToken = process.env.TRADE_PLATFORM_DASHBOARD_VIEW_TOKEN ?? "module1b-view-token";
 
 test("Module 1B synthetic demo auto-discovers every read-only workspace", async ({ browser }) => {
-  const context = await browser.newContext({ baseURL: process.env.DASHBOARD_URL ?? "http://127.0.0.1:3001" });
+  const context = await browser.newContext({
+    baseURL: process.env.DASHBOARD_URL ?? "http://127.0.0.1:3001",
+    extraHTTPHeaders: {},
+  });
   const page = await context.newPage();
 
   await page.goto("/");
