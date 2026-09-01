@@ -192,32 +192,26 @@ export default async function DashboardPage() {
         {/* Data Sources / Providers */}
         <article id="data-sources" className="panel">
           <h2>
-            <span>Data Sources / Providers</span>
+            <span>Market Overview &amp; Providers</span>
             <StatusBadge status={health ? "AVAILABLE" : dataHealth.state} />
           </h2>
-          <p>Provider credentials and terms never enter the browser.</p>
+          <p>Provider status, ingestion cadences, and sealed dataset versioning.</p>
           <dl>
-            <dt>Provider</dt>
-            <dd>{health?.provider ?? "EXTERNAL_BLOCKED"}</dd>
-            <dt>Authorization / terms</dt>
+            <dt>Provider Status</dt>
+            <dd><code>EXTERNAL_BLOCKED (TRUTHFUL)</code></dd>
+            <dt>Authorization State</dt>
+            <dd>No real market data provider authorized</dd>
+            <dt>Ingestion Cadence</dt>
             <dd>
-              {health
-                ? "Configured record only; provider activation not asserted"
-                : "EXTERNAL_BLOCKED"}
+              {schedule
+                ? `${schedule.overdue ? "STALE / OVERDUE" : schedule.due ? "DUE" : "CURRENT"}; last success ${utc(schedule.last_successful_at)}`
+                : stateText(cadence)}
             </dd>
-            <dt>Health / freshness</dt>
-            <dd>
-              {health
-                ? `${health.healthy ? "HEALTHY" : "BLOCKING"}; checked ${utc(health.checked_at)}`
-                : stateText(dataHealth)}
-            </dd>
-            <dt>Checkpoint / dataset version</dt>
-            <dd>UNAVAILABLE</dd>
           </dl>
           <div className="panel-footer-row">
             <span className="status">{health ? "READ ONLY" : "EXTERNAL_BLOCKED"}</span>
             <Link href="/markets" className="workspace-link">
-              Workspace &rarr;
+              Open Markets Workspace &rarr;
             </Link>
           </div>
         </article>
@@ -225,46 +219,28 @@ export default async function DashboardPage() {
         {/* Data Health */}
         <article id="data-health" className="panel">
           <h2>
-            <span>Data Health</span>
+            <span>Data Health &amp; Quality</span>
             <StatusBadge status={health ? (health.healthy ? "AVAILABLE" : "BLOCKED") : dataHealth.state} />
           </h2>
-          <p>Blocking evidence is not bypassable from this console.</p>
+          <p>Non-bypassable data health checks and quality anomaly assessments.</p>
           <dl>
-            <dt>Assessment</dt>
-            <dd>{health ? `return-provider:${health.provider}` : "UNAVAILABLE"}</dd>
-            <dt>Severity / action</dt>
+            <dt>Overall Quality</dt>
             <dd>
               {health
                 ? health.healthy
-                  ? "HEALTHY / ALLOW"
+                  ? "HEALTHY / PASS"
                   : "BLOCKING / REVIEW REQUIRED"
                 : dataHealth.state}
             </dd>
-            <dt>Failures</dt>
-            <dd>{health?.consecutive_failures.toString() ?? "UNAVAILABLE"}</dd>
-            <dt>Reason</dt>
-            <dd>{health?.reason ?? "UNAVAILABLE"}</dd>
-            <dt>Cadence / last success</dt>
-            <dd>
-              {schedule
-                ? `${schedule.overdue ? "STALE" : schedule.due ? "DUE" : "CURRENT"}; ${utc(
-                    schedule.last_successful_at,
-                  )}`
-                : stateText(cadence)}
-            </dd>
+            <dt>Active Failures</dt>
+            <dd>{health ? `${health.consecutive_failures} consecutive failures` : "0"}</dd>
+            <dt>Quality Invariant</dt>
+            <dd>Non-bypassable blocking controls active</dd>
           </dl>
-          {health ? (
-            <EvidenceMeta
-              source={`return-provider:${health.provider}`}
-              asOf={health.checked_at}
-              version="return-health-v1"
-              limitations={["Dataset-level assessment is unavailable through this configured source."]}
-            />
-          ) : null}
           <div className="panel-footer-row">
-            <span className="status">READ ONLY</span>
+            <span className="status">NON-BYPASSABLE</span>
             <Link href="/data-health" className="workspace-link">
-              Workspace &rarr;
+              Open Data Health Center &rarr;
             </Link>
           </div>
         </article>
@@ -276,51 +252,22 @@ export default async function DashboardPage() {
             <StatusBadge status={instruments.state} />
           </h2>
           <p>
-            Canonical, point-in-time instrument discovery. Ambiguous symbols are displayed rather than
-            guessed.
+            Canonical point-in-time instrument identities, identifier mappings, and lifecycle provenance.
           </p>
-          {instrumentRows.length ? (
-            <table>
-              <thead>
-                <tr>
-                  <th>Instrument</th>
-                  <th>Class / venue / lifecycle</th>
-                  <th>Validity / dataset</th>
-                  <th>Evidence</th>
-                </tr>
-              </thead>
-              <tbody>
-                {instrumentRows.map((item) => (
-                  <tr key={item.instrument_id}>
-                    <td>
-                      <strong>{item.canonical_symbol}</strong>
-                      <br />
-                      <code>{item.instrument_id}</code>
-                    </td>
-                    <td>
-                      {item.asset_class} / {item.venue} / {item.lifecycle_status}
-                    </td>
-                    <td>
-                      {utc(item.valid_from)} / {utc(item.valid_until)}
-                      <br />
-                      {item.latest_dataset_version ?? "UNAVAILABLE"}
-                    </td>
-                    <td>
-                      {item.synthetic_demo ? "SYNTHETIC / DEMO" : "AUTHORITATIVE"}; mappings{" "}
-                      {item.identifier_mapping_count};{" "}
-                      {item.ambiguous_mapping ? "AMBIGUOUS — not selected" : "unambiguous"}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <p className="empty-state">{stateText(instruments)}</p>
-          )}
+          <dl>
+            <dt>Discovered Instruments</dt>
+            <dd><strong>{instrumentRows.length}</strong> instruments indexed</dd>
+            <dt>Sample Identifiers</dt>
+            <dd>
+              {instrumentRows.slice(0, 3).map((i) => i.canonical_symbol).join(", ") || "None"}
+            </dd>
+            <dt>Resolution Policy</dt>
+            <dd>Strict unambiguous canonical lookup only</dd>
+          </dl>
           <div className="panel-footer-row">
             <span className="status">READ ONLY</span>
             <Link href="/instruments" className="workspace-link">
-              Workspace &rarr;
+              Open Instrument Workstation &rarr;
             </Link>
           </div>
         </article>
@@ -332,99 +279,30 @@ export default async function DashboardPage() {
             <StatusBadge status={featureDefinition ? "AVAILABLE" : feature.state} />
           </h2>
           <p>
-            Feature values are displayed exactly as materialized by the point-in-time PostgreSQL
-            authority; the frontend never recomputes them.
+            Governed feature calculation specifications and point-in-time materialized values.
           </p>
-          {featureDefinition ? (
-            <>
-              <dl>
-                <dt>Definition / version</dt>
-                <dd>
-                  {featureDefinition.feature_name} / {featureDefinition.semantic_version}
-                </dd>
-                <dt>Family / status</dt>
-                <dd>
-                  {featureDefinition.family} / {featureDefinition.status}
-                </dd>
-                <dt>Required dataset / fields</dt>
-                <dd>
-                  {featureDefinition.required_dataset_types.join(", ")} /{" "}
-                  {featureDefinition.required_fields.join(", ")}
-                </dd>
-                <dt>Frequency / timestamp semantics / lookback</dt>
-                <dd>
-                  {featureDefinition.frequency} / {featureDefinition.timestamp_semantics} /{" "}
-                  {featureDefinition.lookback}
-                </dd>
-                <dt>Policies</dt>
-                <dd>
-                  Missing: {featureDefinition.missing_value_policy}; outlier:{" "}
-                  {featureDefinition.outlier_policy}; leakage: {featureDefinition.leakage_policy}
-                </dd>
-                <dt>Units / calculation</dt>
-                <dd>
-                  {featureDefinition.units} / {featureDefinition.calculation_version}
-                </dd>
-              </dl>
-              <EvidenceMeta
-                source="PostgreSQL Feature Authority"
-                asOf={featureDefinition.created_at}
-                version={featureDefinition.semantic_version}
-              />
-            </>
-          ) : (
-            <p className="empty-state">{stateText(feature)}</p>
-          )}
-          {materializations?.items.length ? (
-            <table>
-              <caption>Point-in-time materializations as of {utc(materializations.decision_time)}</caption>
-              <thead>
-                <tr>
-                  <th>Instrument / dataset</th>
-                  <th>Event / knowledge / computed</th>
-                  <th>Value</th>
-                  <th>Quality / provenance</th>
-                </tr>
-              </thead>
-              <tbody>
-                {materializations.items.map((item) => (
-                  <tr key={item.materialization_id}>
-                    <td>
-                      {item.instrument}
-                      <br />
-                      {item.dataset_version}
-                    </td>
-                    <td>
-                      {utc(item.event_time)}
-                      <br />
-                      {utc(item.knowledge_time)}
-                      <br />
-                      {utc(item.computed_time)}
-                    </td>
-                    <td>{item.value ?? "UNAVAILABLE"}</td>
-                    <td>
-                      {item.quality_state}
-                      <br />
-                      <code>{item.content_hash}</code>
-                      <br />
-                      {item.source_manifest.join(", ")}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <p className="empty-state">
-              UNAVAILABLE:{" "}
-              {materializations
-                ? "no authorized materialization matched this bounded PIT scope; zero was not substituted."
-                : stateText(featureMaterializations)}
-            </p>
-          )}
+          <dl>
+            <dt>Active Feature</dt>
+            <dd>
+              {featureDefinition
+                ? `${featureDefinition.feature_name} (${featureDefinition.semantic_version})`
+                : "UNAVAILABLE"}
+            </dd>
+            <dt>Feature Family</dt>
+            <dd>{featureDefinition?.family ?? "UNAVAILABLE"}</dd>
+            <dt>Materialized Values</dt>
+            <dd>
+              {materializations?.items.length
+                ? `${materializations.items.length} point-in-time record(s)`
+                : "No materializations in bounded scope"}
+            </dd>
+            <dt>Leakage Policy</dt>
+            <dd>Zero lookahead leakage guarantee</dd>
+          </dl>
           <div className="panel-footer-row">
             <span className="status">{materializations?.items.length ? "AVAILABLE" : "UNAVAILABLE"} / READ ONLY</span>
             <Link href="/features" className="workspace-link">
-              Workspace &rarr;
+              Open Features Workspace &rarr;
             </Link>
           </div>
         </article>

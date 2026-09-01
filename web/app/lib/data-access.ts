@@ -2,9 +2,14 @@ import { loadDashboardConfig, resolveDashboardOperatorToken, type DashboardConfi
 import { resolveDashboardWorkspaceReferences, type DiscoveredWorkspaceReferences, type ResolvedDashboardWorkspace } from "../dashboard-workspace";
 import {
   type CommandCenterEvidence,
+  type DataHealthAssessment,
+  type DataHealthAssessmentPage,
   type EvidenceResult,
   type FeatureDefinition,
+  type FeatureDefinitionPage,
   type FeatureMaterializationPage,
+  type HistoricalDatasetPage,
+  type InstrumentDetail,
   type NewsEventPage,
   type PortfolioConstruction,
   type RegimeRun,
@@ -275,35 +280,132 @@ export async function getCadenceEvidence(ctx: WorkspaceContext): Promise<Evidenc
   );
 }
 
-export async function getInstrumentDiscovery(ctx: WorkspaceContext): Promise<EvidenceResult<DiscoveryPage<InstrumentDiscovery>>> {
+export async function getInstrumentDiscovery(
+  ctx: WorkspaceContext,
+  params?: { query?: string; asset_class?: string; lifecycle_status?: string; limit?: number; offset?: number },
+): Promise<EvidenceResult<DiscoveryPage<InstrumentDiscovery>>> {
+  const query = new URLSearchParams({
+    limit: String(params?.limit ?? 20),
+    offset: String(params?.offset ?? 0),
+  });
+  if (params?.query) query.set("query", params.query);
+  if (params?.asset_class && params.asset_class !== "ALL") query.set("asset_class", params.asset_class);
+  if (params?.lifecycle_status && params.lifecycle_status !== "ALL") query.set("lifecycle_status", params.lifecycle_status);
   return readEvidence<DiscoveryPage<InstrumentDiscovery>>(
-    authorityUrl(ctx.origin, "/operator-dashboard/instruments?limit=20&offset=0"),
+    authorityUrl(ctx.origin, `/operator-dashboard/instruments?${query.toString()}`),
     ctx.protectedApi,
     "Instrument discovery is unavailable.",
   );
 }
 
-export async function getFeatureDefinition(ctx: WorkspaceContext): Promise<EvidenceResult<FeatureDefinition>> {
+export async function getInstrumentDetail(
+  ctx: WorkspaceContext,
+  instrumentId: string,
+): Promise<EvidenceResult<InstrumentDetail>> {
+  return readEvidence<InstrumentDetail>(
+    authorityUrl(ctx.origin, `/operator-dashboard/instruments/${encodeURIComponent(instrumentId)}`),
+    Boolean(instrumentId && ctx.protectedApi),
+    "Instrument detail reference is unavailable.",
+  );
+}
+
+export async function getHistoricalDatasets(
+  ctx: WorkspaceContext,
+  params?: { limit?: number; offset?: number },
+): Promise<EvidenceResult<HistoricalDatasetPage>> {
+  const query = new URLSearchParams({
+    limit: String(params?.limit ?? 50),
+    offset: String(params?.offset ?? 0),
+  });
+  return readEvidence<HistoricalDatasetPage>(
+    authorityUrl(ctx.origin, `/operator-dashboard/historical-datasets?${query.toString()}`),
+    ctx.protectedApi,
+    "Historical dataset discovery is unavailable.",
+  );
+}
+
+export async function getDataHealthAssessments(
+  ctx: WorkspaceContext,
+  params?: { scope_type?: string; scope_value?: string; blocking?: boolean; max_action?: string; limit?: number; offset?: number },
+): Promise<EvidenceResult<DataHealthAssessmentPage>> {
+  const query = new URLSearchParams({
+    limit: String(params?.limit ?? 50),
+    offset: String(params?.offset ?? 0),
+  });
+  if (params?.scope_type && params.scope_type !== "ALL") query.set("scope_type", params.scope_type);
+  if (params?.scope_value) query.set("scope_value", params.scope_value);
+  if (params?.blocking !== undefined) query.set("blocking", String(params.blocking));
+  if (params?.max_action && params.max_action !== "ALL") query.set("max_action", params.max_action);
+
+  return readEvidence<DataHealthAssessmentPage>(
+    authorityUrl(ctx.origin, `/operator-dashboard/data-health/assessments?${query.toString()}`),
+    ctx.protectedApi,
+    "Data health assessments are unavailable.",
+  );
+}
+
+export async function getDataHealthAssessmentDetail(
+  ctx: WorkspaceContext,
+  assessmentId: string,
+): Promise<EvidenceResult<DataHealthAssessment>> {
+  return readEvidence<DataHealthAssessment>(
+    authorityUrl(ctx.origin, `/operator-dashboard/data-health/assessments/${encodeURIComponent(assessmentId)}`),
+    Boolean(assessmentId && ctx.protectedApi),
+    "Data health assessment detail is unavailable.",
+  );
+}
+
+export async function getFeatureDefinitions(
+  ctx: WorkspaceContext,
+  params?: { family?: string; limit?: number; offset?: number },
+): Promise<EvidenceResult<FeatureDefinitionPage>> {
+  const query = new URLSearchParams({
+    limit: String(params?.limit ?? 50),
+    offset: String(params?.offset ?? 0),
+  });
+  if (params?.family && params.family !== "ALL") query.set("family", params.family);
+  return readEvidence<FeatureDefinitionPage>(
+    authorityUrl(ctx.origin, `/operator-dashboard/feature-definitions?${query.toString()}`),
+    ctx.protectedApi,
+    "Feature definitions discovery is unavailable.",
+  );
+}
+
+export async function getFeatureDefinition(
+  ctx: WorkspaceContext,
+  featureId?: string,
+): Promise<EvidenceResult<FeatureDefinition>> {
+  const id = featureId ?? ctx.workspace.featureDefinitionId ?? "";
   return readEvidence<FeatureDefinition>(
-    authorityUrl(ctx.origin, `/operator-dashboard/feature-definitions/${encodeURIComponent(ctx.workspace.featureDefinitionId ?? "")}`),
-    Boolean(ctx.workspace.featureDefinitionId && ctx.protectedApi),
+    authorityUrl(ctx.origin, `/operator-dashboard/feature-definitions/${encodeURIComponent(id)}`),
+    Boolean(id && ctx.protectedApi),
     "Feature definition reference is unavailable.",
   );
 }
 
-export async function getFeatureMaterializations(ctx: WorkspaceContext): Promise<EvidenceResult<FeatureMaterializationPage>> {
+export async function getFeatureMaterializations(
+  ctx: WorkspaceContext,
+  params?: { feature_id?: string; instrument?: string; dataset_version?: string; decision_time?: string; limit?: number; offset?: number },
+): Promise<EvidenceResult<FeatureMaterializationPage>> {
+  const featureId = params?.feature_id ?? ctx.workspace.featureDefinitionId ?? "";
+  const instrument = params?.instrument ?? ctx.workspace.featureInstrument ?? "";
+  const datasetVersion = params?.dataset_version ?? ctx.workspace.featureDatasetVersion ?? "";
+  const decisionTime = params?.decision_time ?? ctx.workspace.featureDecisionTime ?? ctx.evidenceTime;
+  const limit = params?.limit ?? 20;
+  const offset = params?.offset ?? 0;
+
+  const query = new URLSearchParams({
+    feature_id: featureId,
+    instrument,
+    dataset_version: datasetVersion,
+    decision_time: decisionTime,
+    limit: String(limit),
+    offset: String(offset),
+  });
+
   return readEvidence<FeatureMaterializationPage>(
-    authorityUrl(
-      ctx.origin,
-      `/operator-dashboard/feature-materializations?feature_id=${encodeURIComponent(ctx.workspace.featureDefinitionId ?? "")}&instrument=${encodeURIComponent(ctx.workspace.featureInstrument ?? "")}&dataset_version=${encodeURIComponent(ctx.workspace.featureDatasetVersion ?? "")}&decision_time=${encodeURIComponent(ctx.workspace.featureDecisionTime ?? "")}&limit=20&offset=0`,
-    ),
-    Boolean(
-      ctx.workspace.featureDefinitionId &&
-        ctx.workspace.featureInstrument &&
-        ctx.workspace.featureDatasetVersion &&
-        ctx.workspace.featureDecisionTime &&
-        ctx.protectedApi,
-    ),
+    authorityUrl(ctx.origin, `/operator-dashboard/feature-materializations?${query.toString()}`),
+    Boolean(featureId && instrument && datasetVersion && decisionTime && ctx.protectedApi),
     "Feature materialization scope is unavailable.",
   );
 }

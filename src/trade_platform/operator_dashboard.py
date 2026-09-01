@@ -85,6 +85,131 @@ class InstrumentDiscoveryPage(BaseModel):
     page: PageInfo
 
 
+class IdentifierMappingView(BaseModel):
+    mapping_id: UUID
+    source_kind: str
+    namespace: str
+    value: str
+    valid_from: datetime
+    valid_until: datetime | None
+    source_reference: str
+    ingested_at: datetime
+
+
+class SymbolMappingView(BaseModel):
+    mapping_id: UUID
+    venue: str
+    symbol: str
+    valid_from: datetime
+    valid_until: datetime | None
+    source_reference: str
+    ingested_at: datetime
+
+
+class LifecycleEventView(BaseModel):
+    event_id: UUID
+    status: str
+    effective_at: datetime
+    ingested_at: datetime
+    reason: str
+
+
+class InstrumentDetailView(BaseModel):
+    instrument_id: str
+    canonical_symbol: str
+    asset_class: str
+    instrument_type: str
+    exchange_name: str
+    venue: str
+    mic: str | None
+    base_currency: str
+    quote_currency: str
+    settlement_currency: str
+    contract_multiplier: str
+    contract_size: str
+    tick_size: str
+    lot_size: str
+    price_precision: int
+    quantity_precision: int
+    trading_timezone: str
+    market_session_type: str
+    representation_kind: str
+    isin: str | None
+    cusip: str | None
+    registered_at: datetime
+    lifecycle_status: str
+    synthetic_demo: bool
+    ambiguous_mapping: bool
+    identifier_mappings: list[IdentifierMappingView]
+    symbol_mappings: list[SymbolMappingView]
+    lifecycle_events: list[LifecycleEventView]
+    dataset_versions: list[str]
+
+
+class HistoricalDatasetView(BaseModel):
+    dataset_version_id: UUID
+    source_id: UUID
+    version: str
+    normalization_version: str
+    content_hash: str
+    valid_from: datetime
+    valid_until: datetime | None
+    created_at: datetime
+    status: str
+    provider: str
+    dataset_name: str
+    asset_scope: str
+    provider_terms_version: str
+    authorization_reference: str
+    authorized_at: datetime
+    observation_count: int
+    checkpoint_state: str | None
+    synthetic_demo: bool
+
+
+class HistoricalDatasetPage(BaseModel):
+    state: Availability
+    items: list[HistoricalDatasetView]
+    page: PageInfo
+
+
+class DataHealthFindingView(BaseModel):
+    finding_id: UUID
+    sequence: int
+    check_type: str
+    action: str
+    observed_at: datetime | None
+    detail: dict[str, Any]
+    content_hash: str
+
+
+class DataHealthAssessmentView(BaseModel):
+    assessment_id: UUID
+    dataset_version_id: UUID | None
+    dataset_version: str | None
+    scope_type: str
+    scope_value: str
+    policy_version: str
+    evaluated_at: datetime
+    expected_start: datetime
+    expected_end: datetime
+    max_action: str
+    blocking: bool
+    content_hash: str
+    summary: dict[str, Any]
+    findings: list[DataHealthFindingView]
+    synthetic_demo: bool
+
+
+class DataHealthAssessmentPage(BaseModel):
+    state: Availability
+    overall_state: str
+    total_assessments: int
+    blocking_count: int
+    items: list[DataHealthAssessmentView]
+    page: PageInfo
+
+
 class StrategyDiscoveryView(BaseModel):
     strategy_id: UUID
     strategy_version_id: UUID
@@ -662,9 +787,13 @@ class PostgresOperatorDashboardQueries:
             calculation_version=str(row[18]), created_at=row[19], retired_at=row[20],
         )
 
-    def instruments(self, *, limit: int, offset: int) -> InstrumentDiscoveryPage:
-        """List canonical instruments without resolving an ambiguous symbol."""
+    def instruments(
+        self, *, query: str | None = None, asset_class: str | None = None,
+        lifecycle_status: str | None = None, limit: int = 50, offset: int = 0,
+    ) -> InstrumentDiscoveryPage:
+        """List canonical instruments with optional bounded filtering."""
         def operation(cursor: _Cursor) -> InstrumentDiscoveryPage:
+            search_param = f"%{query.strip()}%" if query and query.strip() else None
             cursor.execute(
                 "SELECT p.instrument_id,p.canonical_symbol,p.asset_class,p.venue,"
                 "COALESCE((SELECT e.status FROM professional_instrument_lifecycle_events e "
@@ -679,8 +808,12 @@ class PostgresOperatorDashboardQueries:
                 "(SELECT COUNT(*) FROM professional_identifier_mappings i WHERE i.instrument_id=p.instrument_id),"
                 "(SELECT COUNT(*) FROM professional_symbol_mappings s WHERE s.instrument_id=p.instrument_id "
                 "AND s.valid_until IS NULL) "
-                "FROM professional_instruments p ORDER BY p.canonical_symbol,p.instrument_id LIMIT %s OFFSET %s",
-                (limit + 1, offset),
+                "FROM professional_instruments p "
+                "WHERE (CAST(%s AS text) IS NULL OR p.canonical_symbol ILIKE %s OR p.instrument_id ILIKE %s) "
+                "AND (CAST(%s AS text) IS NULL OR p.asset_class=%s) "
+                "AND (CAST(%s AS text) IS NULL OR COALESCE((SELECT e.status FROM professional_instrument_lifecycle_events e WHERE e.instrument_id=p.instrument_id ORDER BY e.effective_at DESC,e.event_id DESC LIMIT 1),'ACTIVE')=%s) "
+                "ORDER BY p.canonical_symbol,p.instrument_id LIMIT %s OFFSET %s",
+                (search_param, search_param, search_param, asset_class, asset_class, lifecycle_status, lifecycle_status, limit + 1, offset),
             )
             rows, page = _page(cursor.fetchall(), limit, offset)
             return InstrumentDiscoveryPage(
@@ -691,6 +824,212 @@ class PostgresOperatorDashboardQueries:
                     synthetic_demo=bool(row[7]), latest_dataset_version=None if row[8] is None else str(row[8]),
                     identifier_mapping_count=int(row[9]), ambiguous_mapping=int(row[10]) > 1,
                 ) for row in rows], page=page,
+            )
+        return self._read(operation)
+
+    def instrument(self, instrument_id: str) -> InstrumentDetailView:
+        """Read deep authoritative instrument identity, mappings, and lifecycle events."""
+        def operation(cursor: _Cursor) -> InstrumentDetailView:
+            cursor.execute(
+                "SELECT p.instrument_id, p.asset_class, p.instrument_type, p.exchange_name, p.venue, p.mic, "
+                "p.canonical_symbol, p.listing_date, p.base_currency, p.quote_currency, p.settlement_currency, "
+                "p.contract_multiplier, p.contract_size, p.tick_size, p.lot_size, p.price_precision, "
+                "p.quantity_precision, p.trading_timezone, p.market_session_type, p.representation_kind, "
+                "p.underlying_reference, p.corporate_action_reference, p.isin, p.cusip, p.contract_code, "
+                "p.expiration_date, p.first_notice_date, p.last_trade_date, p.continuous_parent_id, p.roll_rule, "
+                "p.registered_at, "
+                "COALESCE((SELECT e.status FROM professional_instrument_lifecycle_events e "
+                "WHERE e.instrument_id=p.instrument_id ORDER BY e.effective_at DESC,e.event_id DESC LIMIT 1),'ACTIVE'), "
+                "(STARTS_WITH(p.instrument_id, 'DEMO:') OR STARTS_WITH(p.canonical_symbol, 'DEMO_')), "
+                "(SELECT COUNT(*) FROM professional_symbol_mappings s WHERE s.instrument_id=p.instrument_id AND s.valid_until IS NULL) "
+                "FROM professional_instruments p WHERE p.instrument_id=%s",
+                (instrument_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise DashboardObjectNotFound("instrument_not_found")
+
+            cursor.execute(
+                "SELECT mapping_id, source_kind, namespace, identifier_value, valid_from, valid_until, source_reference, ingested_at "
+                "FROM professional_identifier_mappings WHERE instrument_id=%s ORDER BY valid_from DESC, mapping_id",
+                (instrument_id,),
+            )
+            identifier_rows = cursor.fetchall()
+            identifier_mappings = [
+                IdentifierMappingView(
+                    mapping_id=r[0], source_kind=str(r[1]), namespace=str(r[2]), value=str(r[3]),
+                    valid_from=r[4], valid_until=r[5], source_reference=str(r[6]), ingested_at=r[7],
+                ) for r in identifier_rows
+            ]
+
+            cursor.execute(
+                "SELECT mapping_id, venue, symbol, valid_from, valid_until, source_reference, ingested_at "
+                "FROM professional_symbol_mappings WHERE instrument_id=%s ORDER BY valid_from DESC, mapping_id",
+                (instrument_id,),
+            )
+            symbol_rows = cursor.fetchall()
+            symbol_mappings = [
+                SymbolMappingView(
+                    mapping_id=r[0], venue=str(r[1]), symbol=str(r[2]), valid_from=r[3],
+                    valid_until=r[4], source_reference=str(r[5]), ingested_at=r[6],
+                ) for r in symbol_rows
+            ]
+
+            cursor.execute(
+                "SELECT event_id, status, effective_at, ingested_at, reason "
+                "FROM professional_instrument_lifecycle_events WHERE instrument_id=%s ORDER BY effective_at DESC, event_id DESC",
+                (instrument_id,),
+            )
+            lifecycle_rows = cursor.fetchall()
+            lifecycle_events = [
+                LifecycleEventView(
+                    event_id=r[0], status=str(r[1]), effective_at=r[2], ingested_at=r[3], reason=str(r[4]),
+                ) for r in lifecycle_rows
+            ]
+
+            cursor.execute(
+                "SELECT DISTINCT h.version FROM historical_dataset_versions h "
+                "JOIN historical_dataset_members hm ON hm.dataset_version_id=h.dataset_version_id "
+                "JOIN historical_normalized_observations n ON n.normalized_observation_id=hm.normalized_observation_id "
+                "WHERE n.instrument_id=%s ORDER BY h.version",
+                (instrument_id,),
+            )
+            dataset_rows = cursor.fetchall()
+            dataset_versions = [str(r[0]) for r in dataset_rows]
+
+            return InstrumentDetailView(
+                instrument_id=str(row[0]), asset_class=str(row[1]), instrument_type=str(row[2]),
+                exchange_name=str(row[3]), venue=str(row[4]), mic=None if row[5] is None else str(row[5]),
+                canonical_symbol=str(row[6]), base_currency=str(row[8]), quote_currency=str(row[9]),
+                settlement_currency=str(row[10]), contract_multiplier=str(row[11]), contract_size=str(row[12]),
+                tick_size=str(row[13]), lot_size=str(row[14]), price_precision=int(row[15]),
+                quantity_precision=int(row[16]), trading_timezone=str(row[17]), market_session_type=str(row[18]),
+                representation_kind=str(row[19]), isin=None if row[22] is None else str(row[22]),
+                cusip=None if row[23] is None else str(row[23]), registered_at=row[30],
+                lifecycle_status=str(row[31]), synthetic_demo=bool(row[32]), ambiguous_mapping=int(row[33]) > 1,
+                identifier_mappings=identifier_mappings, symbol_mappings=symbol_mappings,
+                lifecycle_events=lifecycle_events, dataset_versions=dataset_versions,
+            )
+        return self._read(operation)
+
+    def historical_datasets(self, *, limit: int = 50, offset: int = 0) -> HistoricalDatasetPage:
+        """Read sealed historical dataset versions with provider and checkpoint details."""
+        def operation(cursor: _Cursor) -> HistoricalDatasetPage:
+            cursor.execute(
+                "SELECT h.dataset_version_id, h.source_id, h.version, h.normalization_version, h.content_hash, "
+                "h.valid_from, h.valid_until, h.created_at, h.status, "
+                "s.provider, s.dataset_name, s.asset_scope, s.provider_terms_version, s.authorization_reference, s.authorized_at, "
+                "(SELECT COUNT(*) FROM historical_dataset_members m WHERE m.dataset_version_id=h.dataset_version_id), "
+                "(SELECT c.state FROM historical_ingestion_checkpoints c WHERE c.source_id=s.source_id ORDER BY c.recorded_at DESC LIMIT 1), "
+                "(s.provider = 'SYNTHETIC_DEMO_ENGINEERING_EVIDENCE' OR STARTS_WITH(h.version, 'demo') OR STARTS_WITH(h.version, 'module1b')) "
+                "FROM historical_dataset_versions h "
+                "JOIN historical_data_sources s USING(source_id) "
+                "ORDER BY h.created_at DESC, h.dataset_version_id DESC LIMIT %s OFFSET %s",
+                (limit + 1, offset),
+            )
+            rows, page = _page(cursor.fetchall(), limit, offset)
+            items = [HistoricalDatasetView(
+                dataset_version_id=row[0], source_id=row[1], version=str(row[2]),
+                normalization_version=str(row[3]), content_hash=str(row[4]), valid_from=row[5],
+                valid_until=row[6], created_at=row[7], status=str(row[8]), provider=str(row[9]),
+                dataset_name=str(row[10]), asset_scope=str(row[11]), provider_terms_version=str(row[12]),
+                authorization_reference=str(row[13]), authorized_at=row[14], observation_count=int(row[15]),
+                checkpoint_state=None if row[16] is None else str(row[16]), synthetic_demo=bool(row[17]),
+            ) for row in rows]
+            return HistoricalDatasetPage(state="AVAILABLE" if items else "UNAVAILABLE", items=items, page=page)
+        return self._read(operation)
+
+    def data_health_assessments(
+        self, *, scope_type: str | None = None, scope_value: str | None = None,
+        blocking: bool | None = None, max_action: str | None = None,
+        limit: int = 50, offset: int = 0,
+    ) -> DataHealthAssessmentPage:
+        """Read persisted Data Health quality assessments and findings."""
+        def operation(cursor: _Cursor) -> DataHealthAssessmentPage:
+            cursor.execute(
+                "SELECT COUNT(*), COUNT(*) FILTER (WHERE blocking) FROM data_health_assessments"
+            )
+            count_row = cursor.fetchone()
+            total_count = int(count_row[0]) if count_row else 0
+            blocking_count = int(count_row[1]) if count_row else 0
+
+            cursor.execute(
+                "SELECT a.assessment_id, a.dataset_version_id, h.version, a.scope_type, a.scope_value, "
+                "a.policy_version, a.evaluated_at, a.expected_start, a.expected_end, a.max_action, "
+                "a.blocking, a.content_hash, a.summary, "
+                "(a.policy_version LIKE '%%demo%%' OR a.policy_version LIKE '%%module1b%%') "
+                "FROM data_health_assessments a "
+                "LEFT JOIN historical_dataset_versions h USING(dataset_version_id) "
+                "WHERE (CAST(%s AS text) IS NULL OR a.scope_type=%s) "
+                "AND (CAST(%s AS text) IS NULL OR a.scope_value=%s) "
+                "AND (CAST(%s AS boolean) IS NULL OR a.blocking=%s) "
+                "AND (CAST(%s AS text) IS NULL OR a.max_action=%s) "
+                "ORDER BY a.evaluated_at DESC, a.assessment_id DESC LIMIT %s OFFSET %s",
+                (scope_type, scope_type, scope_value, scope_value, blocking, blocking, max_action, max_action, limit + 1, offset),
+            )
+            rows, page = _page(cursor.fetchall(), limit, offset)
+            items: list[DataHealthAssessmentView] = []
+            for row in rows:
+                assessment_id = row[0]
+                cursor.execute(
+                    "SELECT finding_id, finding_sequence, check_type, action, observed_at, detail, content_hash "
+                    "FROM data_health_findings WHERE assessment_id=%s ORDER BY finding_sequence",
+                    (assessment_id,),
+                )
+                finding_rows = cursor.fetchall()
+                findings = [DataHealthFindingView(
+                    finding_id=fr[0], sequence=int(fr[1]), check_type=str(fr[2]), action=str(fr[3]),
+                    observed_at=fr[4], detail=_mapping(fr[5]), content_hash=str(fr[6]),
+                ) for fr in finding_rows]
+                items.append(DataHealthAssessmentView(
+                    assessment_id=row[0], dataset_version_id=row[1],
+                    dataset_version=None if row[2] is None else str(row[2]),
+                    scope_type=str(row[3]), scope_value=str(row[4]), policy_version=str(row[5]),
+                    evaluated_at=row[6], expected_start=row[7], expected_end=row[8], max_action=str(row[9]),
+                    blocking=bool(row[10]), content_hash=str(row[11]), summary=_mapping(row[12]),
+                    findings=findings, synthetic_demo=bool(row[13]),
+                ))
+            overall = "BLOCKING" if blocking_count > 0 else ("HEALTHY" if total_count > 0 else "AVAILABLE")
+            return DataHealthAssessmentPage(
+                state="AVAILABLE" if items or total_count == 0 else "UNAVAILABLE",
+                overall_state=overall, total_assessments=total_count,
+                blocking_count=blocking_count, items=items, page=page,
+            )
+        return self._read(operation)
+
+    def data_health_assessment(self, assessment_id: UUID) -> DataHealthAssessmentView:
+        """Read single Data Health assessment by ID."""
+        def operation(cursor: _Cursor) -> DataHealthAssessmentView:
+            cursor.execute(
+                "SELECT a.assessment_id, a.dataset_version_id, h.version, a.scope_type, a.scope_value, "
+                "a.policy_version, a.evaluated_at, a.expected_start, a.expected_end, a.max_action, "
+                "a.blocking, a.content_hash, a.summary, "
+                "(a.policy_version LIKE '%%demo%%' OR a.policy_version LIKE '%%module1b%%') "
+                "FROM data_health_assessments a "
+                "LEFT JOIN historical_dataset_versions h USING(dataset_version_id) "
+                "WHERE a.assessment_id=%s",
+                (assessment_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise DashboardObjectNotFound("data_health_assessment_not_found")
+            cursor.execute(
+                "SELECT finding_id, finding_sequence, check_type, action, observed_at, detail, content_hash "
+                "FROM data_health_findings WHERE assessment_id=%s ORDER BY finding_sequence",
+                (assessment_id,),
+            )
+            finding_rows = cursor.fetchall()
+            findings = [DataHealthFindingView(
+                finding_id=fr[0], sequence=int(fr[1]), check_type=str(fr[2]), action=str(fr[3]),
+                observed_at=fr[4], detail=_mapping(fr[5]), content_hash=str(fr[6]),
+            ) for fr in finding_rows]
+            return DataHealthAssessmentView(
+                assessment_id=row[0], dataset_version_id=row[1],
+                dataset_version=None if row[2] is None else str(row[2]),
+                scope_type=str(row[3]), scope_value=str(row[4]), policy_version=str(row[5]),
+                evaluated_at=row[6], expected_start=row[7], expected_end=row[8], max_action=str(row[9]),
+                blocking=bool(row[10]), content_hash=str(row[11]), summary=_mapping(row[12]),
+                findings=findings, synthetic_demo=bool(row[13]),
             )
         return self._read(operation)
 

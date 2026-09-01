@@ -10,7 +10,8 @@
     "verify:dashboard": "node scripts/verify-dashboard.mjs",
     "test:e2e": "playwright test e2e/cycle208.spec.ts e2e/auth-flow.spec.ts e2e/unconfigured.spec.ts",
     "test:e2e:module1b": "playwright test e2e/module1b-demo.spec.ts",
-    "test:e2e:module2a": "playwright test e2e/module2a-app-shell.spec.ts"
+    "test:e2e:module2a": "playwright test e2e/module2a-app-shell.spec.ts",
+    "test:e2e:module2b1": "playwright test e2e/module2b1-market-data.spec.ts"
   },
   "dependencies": {
     "next": "16.3.1",

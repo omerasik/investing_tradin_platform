@@ -12,7 +12,11 @@ function formatWorkspaceName(pathname: string): string {
     .join(" ");
 }
 
-export function TopBar() {
+export function TopBar({
+  environment = "LOCAL",
+}: {
+  environment?: "LOCAL" | "CI" | "PAPER" | "STAGING";
+}) {
   const pathname = usePathname();
   const workspaceName = formatWorkspaceName(pathname);
 
@@ -27,7 +31,7 @@ export function TopBar() {
       </div>
 
       <div className="topbar-right">
-        <span className="env-tag">ENVIRONMENT: LOCAL / DEV</span>
+        <span className="env-tag">ENVIRONMENT: {environment}</span>
         <span className="badge">LIVE TRADING: DISABLED</span>
         <form action="/api/auth/logout" method="POST" className="logout-form">
           <button type="submit" className="btn-logout">

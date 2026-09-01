@@ -23,10 +23,14 @@ from .operator_dashboard import (
     DashboardObjectNotFound,
     DashboardQueryError,
     DashboardWorkspaceReferences,
+    DataHealthAssessmentPage,
+    DataHealthAssessmentView,
     ExperimentDiscoveryPage,
     FeatureDefinitionPage,
     FeatureDefinitionView,
     FeatureMaterializationPage,
+    HistoricalDatasetPage,
+    InstrumentDetailView,
     InstrumentDiscoveryPage,
     InvestmentPortfolioDiscoveryPage,
     InvestmentThesisDiscoveryPage,
@@ -367,10 +371,50 @@ def build_app(
 
     @app.get("/operator-dashboard/instruments", response_model=InstrumentDiscoveryPage)
     def dashboard_instruments(
+        query: str | None = Query(default=None, min_length=1, max_length=160),
+        asset_class: str | None = Query(default=None, min_length=1, max_length=40),
+        lifecycle_status: str | None = Query(default=None, min_length=1, max_length=40),
         limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10_000),
         _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
     ) -> object:
-        return read_dashboard(lambda: queries.instruments(limit=limit, offset=offset))
+        return read_dashboard(lambda: queries.instruments(
+            query=query, asset_class=asset_class, lifecycle_status=lifecycle_status, limit=limit, offset=offset,
+        ))
+
+    @app.get("/operator-dashboard/instruments/{instrument_id:path}", response_model=InstrumentDetailView)
+    def dashboard_instrument(
+        instrument_id: str, _: None = Depends(protected_operator),
+        queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        return read_dashboard(lambda: queries.instrument(instrument_id))
+
+    @app.get("/operator-dashboard/historical-datasets", response_model=HistoricalDatasetPage)
+    def dashboard_historical_datasets(
+        limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10_000),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        return read_dashboard(lambda: queries.historical_datasets(limit=limit, offset=offset))
+
+    @app.get("/operator-dashboard/data-health/assessments", response_model=DataHealthAssessmentPage)
+    def dashboard_data_health_assessments(
+        scope_type: str | None = Query(default=None, min_length=1, max_length=40),
+        scope_value: str | None = Query(default=None, min_length=1, max_length=160),
+        blocking: bool | None = Query(default=None),
+        max_action: str | None = Query(default=None, min_length=1, max_length=40),
+        limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10_000),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        return read_dashboard(lambda: queries.data_health_assessments(
+            scope_type=scope_type, scope_value=scope_value, blocking=blocking,
+            max_action=max_action, limit=limit, offset=offset,
+        ))
+
+    @app.get("/operator-dashboard/data-health/assessments/{assessment_id}", response_model=DataHealthAssessmentView)
+    def dashboard_data_health_assessment(
+        assessment_id: UUID, _: None = Depends(protected_operator),
+        queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        return read_dashboard(lambda: queries.data_health_assessment(assessment_id))
 
     @app.get("/operator-dashboard/strategies", response_model=StrategyDiscoveryPage)
     def dashboard_strategies(

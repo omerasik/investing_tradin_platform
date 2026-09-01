@@ -18,7 +18,7 @@ Module 2A transitions the Trade Investing Panel from a monolithic single-page da
 |---|---|---|
 | **Root Route (`/`)** | 47.8 KB monolithic `page.tsx` rendering all 17 domains in one unstructured scroll | Lightweight redirect to `/dashboard` (or `/login` if unauthenticated) |
 | **Routing Architecture** | Single page with internal `#anchor` tags | Next.js App Router with `(protected)` group layout and 17 dedicated routes |
-| **Shell & Navigation** | No persistent shell, flat list of anchors | Full `AppShell` with collapsible sidebar, dynamic breadcrumb top bar, safety badges, active route indicator, and accessible skip link |
+| **Shell & Navigation** | No persistent shell, flat list of anchors | Full `AppShell` with fixed domain navigation sidebar, dynamic breadcrumb top bar, safety badges, active route indicator, and accessible skip link |
 | **Design System & Tokens** | Inline styles and ad-hoc CSS properties | Unified CSS Custom Property design tokens (`--bg-canvas`, `--bg-surface`, `--text-primary`, `--status-*`, tabular numerals) |
 | **Accessibility (a11y)** | Baseline checks on single page | Automated axe-core WCAG 2.1 AA validation across full shell, top bar, sidebar, and dashboard |
 | **Data Layer** | Ad-hoc fetch calls inside single component | Typed Data Access Layer (`lib/data-access.ts`) with typed helper functions for all 17 domains |
