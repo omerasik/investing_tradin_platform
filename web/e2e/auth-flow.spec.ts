@@ -73,8 +73,7 @@ test.describe("Human Browser Authentication Flow", () => {
       {
         name: "dashboard_session",
         value: "tampered.payload.signature",
-        domain: "127.0.0.1",
-        path: "/",
+        url: dashboardUrl,
       },
     ]);
     await page.goto("/");
