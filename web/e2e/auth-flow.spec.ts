@@ -30,14 +30,20 @@ test.describe("Human Browser Authentication Flow", () => {
 
     // 3. Attempting invalid credential fails cleanly
     await page.getByLabel("Operator Access Credential").fill("incorrect-secret-password");
-    await page.getByRole("button", { name: "Sign In" }).click();
+    await Promise.all([
+      page.waitForURL(/\/login\?error=/),
+      page.getByRole("button", { name: "Sign In" }).click(),
+    ]);
     await expect(page.locator(".error-banner")).toBeVisible();
     await expect(page.locator(".error-banner")).toContainText("Invalid");
-    await expect(page).toHaveURL(/\/login/);
+    await expect(page).toHaveURL(/\/login\?error=/);
 
     // 4. Submitting valid credential logs in successfully and issues HttpOnly session cookie
     await page.getByLabel("Operator Access Credential").fill(viewToken);
-    await page.getByRole("button", { name: "Sign In" }).click();
+    await Promise.all([
+      page.waitForURL("**/"),
+      page.getByRole("button", { name: "Sign In" }).click(),
+    ]);
 
     // Arrives at dashboard
     await expect(page.getByRole("heading", { name: "Command Center", level: 1 })).toBeVisible();
@@ -80,11 +86,17 @@ test.describe("Human Browser Authentication Flow", () => {
 
     // Re-authenticate to test logout button
     await page.getByLabel("Operator Access Credential").fill(viewToken);
-    await page.getByRole("button", { name: "Sign In" }).click();
+    await Promise.all([
+      page.waitForURL("**/"),
+      page.getByRole("button", { name: "Sign In" }).click(),
+    ]);
     await expect(page.getByRole("heading", { name: "Command Center", level: 1 })).toBeVisible();
 
     // 8. Sign Out action clears session and redirects to /login
-    await page.getByRole("button", { name: "Sign Out" }).click();
+    await Promise.all([
+      page.waitForURL(/\/login/),
+      page.getByRole("button", { name: "Sign Out" }).click(),
+    ]);
     await expect(page).toHaveURL(/\/login/);
 
     // After logout, navigating to / must redirect to /login
