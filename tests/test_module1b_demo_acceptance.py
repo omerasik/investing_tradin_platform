@@ -55,7 +55,13 @@ class Module1BDemoAcceptanceTests(unittest.TestCase):
 
         config = Config(str(ROOT / "alembic.ini"))
         config.set_main_option("sqlalchemy.url", cls.dsn.replace("postgresql://", "postgresql+psycopg://", 1))
-        command.upgrade(config, "head")
+        old_dsn = os.environ.get("POSTGRES_TEST_DSN")
+        try:
+            os.environ["POSTGRES_TEST_DSN"] = cls.dsn
+            command.upgrade(config, "head")
+        finally:
+            if old_dsn is not None:
+                os.environ["POSTGRES_TEST_DSN"] = old_dsn
         cls.database = PostgresDatabase(cls.dsn)
         cls.queries = PostgresOperatorDashboardQueries(cls.database)
         spec = importlib.util.spec_from_file_location("module1b_demo_seed", ROOT / "scripts" / "seed_demo_evidence.py")
