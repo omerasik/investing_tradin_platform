@@ -124,7 +124,8 @@ def _seed_instruments(database: PostgresDatabase) -> dict[str, UUID]:
         _insert(cursor, "INSERT INTO exchanges(exchange_id,mic,name,timezone,created_at) VALUES (%s,%s,%s,%s,%s) ON CONFLICT (exchange_id) DO NOTHING", (exchange_id, "XDEM", "Demo Exchange", "UTC", DEMO_AT))
         for instrument_id, symbol, _name in variants:
             asset_class = "ETF" if symbol.endswith("ETF") else "EQUITY"
-            _insert(cursor, "INSERT INTO runtime_instruments(instrument_id,asset_class,created_at) VALUES (%s,%s,%s) ON CONFLICT (instrument_id) DO NOTHING", (instrument_id, asset_class, DEMO_AT))
+            venue = "ARCX" if symbol == "DEMO_ETF" else "XNAS"
+            _insert(cursor, "INSERT INTO runtime_instruments(instrument_id,symbol,venue,asset_class,quote_currency,tick_size,lot_size) VALUES (%s,%s,%s,%s,'USD',0.01,1) ON CONFLICT (instrument_id) DO NOTHING", (instrument_id, symbol, venue, asset_class))
             _insert(cursor, "INSERT INTO instruments(instrument_id,exchange_id,canonical_symbol,asset_class,currency,tick_size,lot_size,active_from,created_at) VALUES (%s,%s,%s,%s,'USD',0.01,1,%s,%s) ON CONFLICT (instrument_id) DO NOTHING", (core[symbol], exchange_id, symbol, asset_class, DEMO_AT, DEMO_AT))
     return core
 
