@@ -1,55 +1,12 @@
-"use client";
+export const dynamic = "force-dynamic";
 
-import { useEffect, useState } from "react";
+interface LoginPageProps {
+  searchParams?: Promise<{ error?: string }> | { error?: string };
+}
 
-export default function LoginPage() {
-  const [hydrated, setHydrated] = useState(false);
-  const [credential, setCredential] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setHydrated(true);
-  }, []);
-
-  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    const form = e.currentTarget;
-    const formData = new FormData(form);
-    const formCredential = ((formData.get("credential") as string) || credential || "").trim(); // pragma: allowlist secret
-
-    if (!formCredential) {
-      setError("Please enter your operator access credential.");
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      const res = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ credential: formCredential }),
-      });
-
-      if (res.ok) {
-        window.location.replace("/");
-      } else {
-        const data = await res.json().catch(() => ({}));
-        setError(
-          typeof data.detail === "string"
-            ? data.detail
-            : "Invalid credentials. Please verify your configured token.",
-        );
-      }
-    } catch {
-      setError("Unable to connect to authentication service.");
-    } finally {
-      setLoading(false);
-    }
-  }
+export default async function LoginPage({ searchParams }: LoginPageProps) {
+  const params = await searchParams;
+  const error = params?.error;
 
   return (
     <main id="main-content">
@@ -71,7 +28,7 @@ export default function LoginPage() {
           </div>
         ) : null}
 
-        <form onSubmit={handleSubmit}>
+        <form action="/api/auth/login" method="POST">
           <div className="form-group">
             <label htmlFor="credential-input">Operator Access Credential</label>
             <input
@@ -79,21 +36,17 @@ export default function LoginPage() {
               name="credential"
               type="password" // pragma: allowlist secret
               className="form-input"
-              value={credential}
-              onChange={(e) => setCredential(e.target.value)}
               placeholder="Enter view credential"
               autoComplete="current-password" // pragma: allowlist secret
               required
-              disabled={loading}
             />
           </div>
 
           <button
             type="submit"
             className="btn-submit"
-            disabled={!hydrated || loading}
           >
-            {loading ? "Authenticating..." : "Sign In"}
+            Sign In
           </button>
         </form>
 

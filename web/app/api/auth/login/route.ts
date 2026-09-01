@@ -19,15 +19,33 @@ export async function POST(request: Request) {
       );
     }
 
-    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-    const credential = // pragma: allowlist secret
-      typeof body.credential === "string"
-        ? body.credential.trim()
-        : typeof body.password === "string" // pragma: allowlist secret
-          ? (body.password as string).trim() // pragma: allowlist secret
-          : "";
+    const contentType = request.headers.get("content-type") || "";
+    let credential = ""; // pragma: allowlist secret
+    const isFormSubmit =
+      contentType.includes("application/x-www-form-urlencoded") ||
+      contentType.includes("multipart/form-data");
+
+    if (isFormSubmit) {
+      const formData = await request.formData();
+      const formCred = formData.get("credential") || formData.get("password"); // pragma: allowlist secret
+      if (typeof formCred === "string") {
+        credential = formCred.trim(); // pragma: allowlist secret
+      }
+    } else {
+      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+      credential = // pragma: allowlist secret
+        typeof body.credential === "string"
+          ? body.credential.trim()
+          : typeof body.password === "string" // pragma: allowlist secret
+            ? (body.password as string).trim() // pragma: allowlist secret
+            : "";
+    }
 
     if (!credential || !constantTimeCompare(credential, expected)) {
+      if (isFormSubmit) {
+        const loginUrl = new URL("/login?error=Invalid+dashboard+credentials.", request.url);
+        return NextResponse.redirect(loginUrl, { status: 303 });
+      }
       return NextResponse.json(
         { detail: "Invalid dashboard credentials." },
         { status: 401 },
@@ -47,6 +65,13 @@ export async function POST(request: Request) {
       request.url.startsWith("https://") ||
       request.headers.get("x-forwarded-proto") === "https";
     const cookieOptions = getSessionCookieOptions(isHttps);
+
+    if (isFormSubmit) {
+      const redirectUrl = new URL("/", request.url);
+      const response = NextResponse.redirect(redirectUrl, { status: 303 });
+      response.cookies.set(SESSION_COOKIE_NAME, token, cookieOptions);
+      return response;
+    }
 
     const response = NextResponse.json({ ok: true, message: "Authenticated." }, { status: 200 });
     response.cookies.set(SESSION_COOKIE_NAME, token, cookieOptions);
