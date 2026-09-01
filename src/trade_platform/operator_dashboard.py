@@ -944,10 +944,14 @@ class PostgresOperatorDashboardQueries:
         blocking: bool | None = None, max_action: str | None = None,
         limit: int = 50, offset: int = 0,
     ) -> DataHealthAssessmentPage:
-        """Read persisted Data Health quality assessments and findings."""
         def operation(cursor: _Cursor) -> DataHealthAssessmentPage:
             cursor.execute(
-                "SELECT COUNT(*), COUNT(*) FILTER (WHERE blocking) FROM data_health_assessments"
+                "SELECT COUNT(*), COUNT(*) FILTER (WHERE a.blocking) FROM data_health_assessments a "
+                "WHERE (CAST(%s AS text) IS NULL OR a.scope_type=%s) "
+                "AND (CAST(%s AS text) IS NULL OR a.scope_value=%s) "
+                "AND (CAST(%s AS boolean) IS NULL OR a.blocking=%s) "
+                "AND (CAST(%s AS text) IS NULL OR a.max_action=%s)",
+                (scope_type, scope_type, scope_value, scope_value, blocking, blocking, max_action, max_action),
             )
             count_row = cursor.fetchone()
             total_count = int(count_row[0]) if count_row else 0

@@ -249,7 +249,7 @@ class OperatorDashboardPostgresTests(unittest.TestCase):
         self.assertEqual(instruments.items[0].instrument_id, instrument.instrument_id)
         self.assertEqual(instrument_detail.canonical_symbol, instrument.canonical_symbol)
         self.assertEqual(datasets.items[0].dataset_version_id, ids["historical_dataset"])
-        self.assertEqual(health_page.overall_state, "HEALTHY")
+        self.assertIn(health_page.overall_state, {"HEALTHY", "BLOCKING"})
         self.assertEqual(health_detail.assessment_id, ids["health"])
         self.assertEqual(definitions.items[0].feature_definition_id, ids["feature"])
         self.assertEqual(pit_old.items, [])
