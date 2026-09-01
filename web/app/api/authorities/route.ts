@@ -8,6 +8,13 @@ function allowedTarget(target: string): boolean {
   const parsed = new URL(target, "http://dashboard.local");
   if (parsed.origin !== "http://dashboard.local") return false;
   if (exactUuidPath.test(parsed.pathname) && parsed.search === "") return true;
+  if (parsed.pathname === "/operator-dashboard/workspace-references" && parsed.search === "") return true;
+  if (new Set(["/operator-dashboard/instruments", "/operator-dashboard/strategies", "/operator-dashboard/investment-theses", "/operator-dashboard/investment-portfolios", "/operator-dashboard/paper-orders"]).has(parsed.pathname)) {
+    return [...parsed.searchParams.keys()].every((key) => key === "limit" || key === "offset");
+  }
+  if (parsed.pathname === "/operator-dashboard/experiments") {
+    return [...parsed.searchParams.keys()].every((key) => key === "strategy_id" || key === "limit" || key === "offset");
+  }
   if (parsed.pathname === "/operator-dashboard/feature-materializations") {
     const allowed = new Set(["feature_id", "instrument", "dataset_version", "decision_time", "limit", "offset"]);
     return ["feature_id", "instrument", "dataset_version", "decision_time"].every((key) => parsed.searchParams.has(key))

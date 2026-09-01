@@ -6,8 +6,10 @@
     "build": "next build",
     "lint": "eslint .",
     "test:session": "node --experimental-strip-types scripts/test-session.mjs",
+    "test:workspace": "node --experimental-strip-types scripts/test-dashboard-workspace.mjs",
     "verify:dashboard": "node scripts/verify-dashboard.mjs",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:module1b": "playwright test e2e/module1b-demo.spec.ts"
   },
   "dependencies": {
     "next": "16.3.1",
