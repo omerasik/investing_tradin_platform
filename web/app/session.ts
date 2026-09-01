@@ -150,23 +150,23 @@ export async function verifySessionToken(
   }
 }
 
-export function getSessionCookieOptions(isProduction: boolean, maxAge = DEFAULT_SESSION_MAX_AGE_SECONDS) {
+export function getSessionCookieOptions(secure = false, maxAge = DEFAULT_SESSION_MAX_AGE_SECONDS) {
   return {
     httpOnly: true,
     sameSite: "lax" as const,
     path: "/",
     maxAge,
-    secure: isProduction,
+    secure,
   };
 }
 
-export function getClearSessionCookieOptions(isProduction: boolean) {
+export function getClearSessionCookieOptions(secure = false) {
   return {
     httpOnly: true,
     sameSite: "lax" as const,
     path: "/",
     maxAge: 0,
     expires: new Date(0),
-    secure: isProduction,
+    secure,
   };
 }

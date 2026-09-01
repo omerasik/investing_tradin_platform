@@ -7,8 +7,10 @@ import {
 export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
-  const isProduction = process.env.NODE_ENV === "production";
-  const clearOptions = getClearSessionCookieOptions(isProduction);
+  const isHttps =
+    request.url.startsWith("https://") ||
+    request.headers.get("x-forwarded-proto") === "https";
+  const clearOptions = getClearSessionCookieOptions(isHttps);
 
   // If request came from a form submit that expects a redirect:
   const acceptHeader = request.headers.get("accept") ?? "";
@@ -27,8 +29,10 @@ export async function POST(request: NextRequest) {
 
 export async function GET(request: NextRequest) {
   // Support standard GET redirect to login while clearing session
-  const isProduction = process.env.NODE_ENV === "production";
-  const clearOptions = getClearSessionCookieOptions(isProduction);
+  const isHttps =
+    request.url.startsWith("https://") ||
+    request.headers.get("x-forwarded-proto") === "https";
+  const clearOptions = getClearSessionCookieOptions(isHttps);
 
   const response = NextResponse.redirect(new URL("/login", request.url), { status: 303 });
   response.cookies.set(SESSION_COOKIE_NAME, "", clearOptions);

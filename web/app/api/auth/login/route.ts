@@ -38,8 +38,10 @@ export async function POST(request: Request) {
     }
 
     const token = await createSessionToken(secret);
-    const isProduction = process.env.NODE_ENV === "production";
-    const cookieOptions = getSessionCookieOptions(isProduction);
+    const isHttps =
+      request.url.startsWith("https://") ||
+      request.headers.get("x-forwarded-proto") === "https";
+    const cookieOptions = getSessionCookieOptions(isHttps);
 
     const response = NextResponse.json({ ok: true, message: "Authenticated." }, { status: 200 });
     response.cookies.set(SESSION_COOKIE_NAME, token, cookieOptions);
