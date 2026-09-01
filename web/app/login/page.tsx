@@ -1,17 +1,19 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 
 export default function LoginPage() {
   const [credential, setCredential] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const router = useRouter();
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    if (!credential.trim()) {
+    const form = e.currentTarget;
+    const formData = new FormData(form);
+    const formCredential = ((formData.get("credential") as string) || credential || "").trim(); // pragma: allowlist secret
+
+    if (!formCredential) {
       setError("Please enter your operator access credential.");
       return;
     }
@@ -23,12 +25,11 @@ export default function LoginPage() {
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ credential }),
+        body: JSON.stringify({ credential: formCredential }),
       });
 
       if (res.ok) {
-        router.push("/");
-        router.refresh();
+        window.location.replace("/");
       } else {
         const data = await res.json().catch(() => ({}));
         setError(
@@ -84,7 +85,7 @@ export default function LoginPage() {
           <button
             type="submit"
             className="btn-submit"
-            disabled={loading || !credential.trim()}
+            disabled={loading}
           >
             {loading ? "Authenticating..." : "Sign In"}
           </button>
