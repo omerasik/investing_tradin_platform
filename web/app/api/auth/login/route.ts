@@ -9,6 +9,17 @@ import {
 
 export const dynamic = "force-dynamic";
 
+function getBaseUrl(request: Request): string {
+  const host = request.headers.get("x-forwarded-host") || request.headers.get("host");
+  const proto =
+    request.headers.get("x-forwarded-proto") ||
+    (request.url.startsWith("https") ? "https" : "http");
+  if (host) {
+    return `${proto}://${host}`;
+  }
+  return request.url;
+}
+
 export async function POST(request: Request) {
   try {
     const expected = process.env.TRADE_PLATFORM_DASHBOARD_VIEW_TOKEN?.trim();
@@ -43,7 +54,8 @@ export async function POST(request: Request) {
 
     if (!credential || !constantTimeCompare(credential, expected)) {
       if (isFormSubmit) {
-        const loginUrl = new URL("/login?error=Invalid+dashboard+credentials.", request.url);
+        const baseUrl = getBaseUrl(request);
+        const loginUrl = new URL("/login?error=Invalid+dashboard+credentials.", baseUrl);
         return NextResponse.redirect(loginUrl, { status: 303 });
       }
       return NextResponse.json(
@@ -67,7 +79,8 @@ export async function POST(request: Request) {
     const cookieOptions = getSessionCookieOptions(isHttps);
 
     if (isFormSubmit) {
-      const redirectUrl = new URL("/", request.url);
+      const baseUrl = getBaseUrl(request);
+      const redirectUrl = new URL("/", baseUrl);
       const response = NextResponse.redirect(redirectUrl, { status: 303 });
       response.cookies.set(SESSION_COOKIE_NAME, token, cookieOptions);
       return response;
