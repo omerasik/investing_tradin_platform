@@ -301,7 +301,7 @@ class PostgresProfessionalInstrumentMaster:
                 )
                 cursor.execute(
                     "INSERT INTO professional_instrument_lifecycle_events VALUES (%s,%s,'ACTIVE',%s,%s,%s)",
-                    (uuid4(), instrument.instrument_id, instrument.registered_at,
+                    (uuid5(_MVP_NAMESPACE, f"lifecycle:{instrument.instrument_id}:ACTIVE:{instrument.registered_at.isoformat()}"), instrument.instrument_id, instrument.registered_at,
                      instrument.registered_at, "initial_registration"),
                 )
         except Exception as error:
