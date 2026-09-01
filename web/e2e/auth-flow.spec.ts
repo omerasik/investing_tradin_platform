@@ -31,8 +31,8 @@ test.describe("Human Browser Authentication Flow", () => {
     // 3. Attempting invalid credential fails cleanly
     await page.getByLabel("Operator Access Credential").fill("incorrect-secret-password");
     await page.getByRole("button", { name: "Sign In" }).click();
-    await expect(page.getByRole("alert")).toBeVisible();
-    await expect(page.getByRole("alert")).toContainText("Invalid");
+    await expect(page.locator(".error-banner")).toBeVisible();
+    await expect(page.locator(".error-banner")).toContainText("Invalid");
     await expect(page).toHaveURL(/\/login/);
 
     // 4. Submitting valid credential logs in successfully and issues HttpOnly session cookie
