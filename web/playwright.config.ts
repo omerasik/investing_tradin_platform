@@ -17,7 +17,7 @@ export default defineConfig({
   webServer: {
     command: "npx next start -p 3000",
     url: "http://127.0.0.1:3000/login",
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: true,
     timeout: 30_000,
     env: {
       TRADE_PLATFORM_DASHBOARD_VIEW_TOKEN: process.env.TRADE_PLATFORM_DASHBOARD_VIEW_TOKEN ?? "module1b-view-token",
