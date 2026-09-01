@@ -20,8 +20,11 @@ function contentSecurityPolicy(nonce: string): string {
   ].join("; ");
 }
 
-function withCsp(response: NextResponse, policy: string): NextResponse {
+function withSecurityHeaders(response: NextResponse, policy: string): NextResponse {
   response.headers.set("Content-Security-Policy", policy);
+  response.headers.set("X-Frame-Options", "DENY");
+  response.headers.set("X-Content-Type-Options", "nosniff");
+  response.headers.set("Referrer-Policy", "no-referrer");
   return response;
 }
 
@@ -56,7 +59,7 @@ export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
 
   if (!expectedViewToken) {
-    return withCsp(
+    return withSecurityHeaders(
       NextResponse.json(
         { detail: "Dashboard authentication is not configured." },
         { status: 503 },
@@ -89,24 +92,24 @@ export async function proxy(request: NextRequest) {
 
   // Allow public paths
   if (isPublicPath(pathname)) {
-    // If user is already authenticated and visits /login, redirect to /
+    // If user is already authenticated and visits /login, redirect to /dashboard
     if (pathname === "/login" && isAuthenticated) {
-      const redirectRes = NextResponse.redirect(new URL("/", request.url));
-      return withCsp(redirectRes, policy);
+      const redirectRes = NextResponse.redirect(new URL("/dashboard", request.url));
+      return withSecurityHeaders(redirectRes, policy);
     }
 
     const requestHeaders = new Headers(request.headers);
     requestHeaders.set("Content-Security-Policy", policy);
     requestHeaders.set("x-nonce", nonce);
     const nextRes = NextResponse.next({ request: { headers: requestHeaders } });
-    return withCsp(nextRes, policy);
+    return withSecurityHeaders(nextRes, policy);
   }
 
   // Protected route handling
   if (!isAuthenticated) {
     // API routes return 401 JSON
     if (pathname.startsWith("/api/")) {
-      return withCsp(
+      return withSecurityHeaders(
         NextResponse.json(
           { detail: "Dashboard authentication required." },
           { status: 401, headers: { "WWW-Authenticate": "Bearer" } },
@@ -118,14 +121,16 @@ export async function proxy(request: NextRequest) {
     // Page routes redirect to /login
     const loginUrl = new URL("/login", request.url);
     const redirectRes = NextResponse.redirect(loginUrl);
-    return withCsp(redirectRes, policy);
+    return withSecurityHeaders(redirectRes, policy);
   }
 
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("Content-Security-Policy", policy);
   requestHeaders.set("x-nonce", nonce);
   const nextRes = NextResponse.next({ request: { headers: requestHeaders } });
-  return withCsp(nextRes, policy);
+  return withSecurityHeaders(nextRes, policy);
 }
 
-export const config = { matcher: ["/", "/login", "/api/:path*"] };
+export const config = {
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+};

@@ -280,6 +280,7 @@ jobs:
             sleep 1
           done
           pnpm test:e2e:module1b
+          pnpm test:e2e:module2a
           echo "Human browser demo: PASS"
       - name: Retain dependency and licensing evidence
         if: always()
