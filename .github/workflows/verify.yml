@@ -39,6 +39,9 @@ jobs:
       - run: python -m compileall -q src tests migrations scripts
       - run: alembic upgrade head
       - run: python -m unittest discover -s tests -v
+      - name: Module 1B disposable PostgreSQL demo acceptance
+        run: |
+          python scripts/verify_module1b_demo.py
       - name: PostgreSQL backup, fresh restore and reconciliation drill
         env:
           RESTORED_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:5432/trade_platform_restore
@@ -190,6 +193,8 @@ jobs:
         working-directory: web
       - run: pnpm test:session
         working-directory: web
+      - run: pnpm test:workspace
+        working-directory: web
       - run: pnpm audit --audit-level high
         working-directory: web
       - name: Record frontend production dependency licenses
@@ -248,6 +253,34 @@ jobs:
           done
           curl --fail --silent -H "Authorization: Bearer $TRADE_PLATFORM_DASHBOARD_VIEW_TOKEN" http://127.0.0.1:3000/ >/dev/null
           pnpm test:e2e
+      - name: Module 1B human browser demo with PostgreSQL discovery
+        env:
+          MODULE1B_DASHBOARD_CONFIG_PATH: /tmp/module1b-dashboard.config.json
+          MODULE1B_DASHBOARD_TOKEN_PATH: /tmp/module1b-dashboard.token
+          TRADE_PLATFORM_DASHBOARD_CONFIG_PATH: /tmp/module1b-dashboard.config.json
+          TRADE_PLATFORM_DASHBOARD_VIEW_TOKEN: module1b-view-token
+          TRADE_PLATFORM_SESSION_SECRET: module1b-ci-session-secret # pragma: allowlist secret
+          DASHBOARD_URL: http://127.0.0.1:3001
+        run: |
+          unset TRADE_PLATFORM_FEATURE_DEFINITION_ID TRADE_PLATFORM_FEATURE_INSTRUMENT TRADE_PLATFORM_FEATURE_DATASET_VERSION TRADE_PLATFORM_FEATURE_DECISION_TIME TRADE_PLATFORM_STRATEGY_ID TRADE_PLATFORM_EXPERIMENT_ID TRADE_PLATFORM_PROMOTION_DECISION_ID TRADE_PLATFORM_SCORECARD_ID TRADE_PLATFORM_REGIME_RUN_ID TRADE_PLATFORM_PORTFOLIO_CONSTRUCTION_RUN_ID TRADE_PLATFORM_INVESTMENT_THESIS_ID TRADE_PLATFORM_INVESTMENT_PORTFOLIO_ID TRADE_PLATFORM_PAPER_ORDER_INTENT_ID TRADE_PLATFORM_PAPER_ACCOUNT_ID TRADE_PLATFORM_SRE_SERVICE_VERSION_ID TRADE_PLATFORM_NEWS_INSTRUMENT
+          python scripts/seed_demo_evidence.py --postgres-dsn "$POSTGRES_TEST_DSN"
+          python scripts/serve_module1b_demo.py > /tmp/module1b-api.log 2>&1 &
+          api_pid=$!
+          trap 'kill $dashboard_pid $api_pid 2>/dev/null || true; rm -f "$MODULE1B_DASHBOARD_CONFIG_PATH" "$MODULE1B_DASHBOARD_TOKEN_PATH"' EXIT
+          for attempt in {1..30}; do
+            test -f "$MODULE1B_DASHBOARD_CONFIG_PATH" && curl --fail --silent http://127.0.0.1:8768/health/live && break
+            sleep 1
+          done
+          test -f "$MODULE1B_DASHBOARD_CONFIG_PATH"
+          cd web
+          pnpm exec next start -p 3001 > /tmp/module1b-dashboard.log 2>&1 &
+          dashboard_pid=$!
+          for attempt in {1..30}; do
+            curl --fail --silent http://127.0.0.1:3001/login >/dev/null && break
+            sleep 1
+          done
+          pnpm test:e2e:module1b
+          echo "Human browser demo: PASS"
       - name: Retain dependency and licensing evidence
         if: always()
         uses: actions/upload-artifact@v7
