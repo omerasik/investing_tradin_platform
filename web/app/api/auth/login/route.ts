@@ -20,14 +20,14 @@ export async function POST(request: Request) {
     }
 
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-    const password =
-      typeof body.password === "string"
-        ? body.password.trim()
-        : typeof body.credential === "string"
-          ? body.credential.trim()
-          : ""; // pragma: allowlist secret
+    const credential = // pragma: allowlist secret
+      typeof body.credential === "string"
+        ? body.credential.trim()
+        : typeof body.password === "string" // pragma: allowlist secret
+          ? (body.password as string).trim() // pragma: allowlist secret
+          : "";
 
-    if (!password || !constantTimeCompare(password, expected)) {
+    if (!credential || !constantTimeCompare(credential, expected)) {
       return NextResponse.json(
         { detail: "Invalid dashboard credentials." },
         { status: 401 },

@@ -4,14 +4,14 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 
 export default function LoginPage() {
-  const [password, setPassword] = useState("");
+  const [credential, setCredential] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const router = useRouter();
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    if (!password.trim()) {
+    if (!credential.trim()) {
       setError("Please enter your operator access credential.");
       return;
     }
@@ -23,7 +23,7 @@ export default function LoginPage() {
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ credential }),
       });
 
       if (res.ok) {
@@ -66,16 +66,16 @@ export default function LoginPage() {
 
         <form onSubmit={handleSubmit}>
           <div className="form-group">
-            <label htmlFor="password-input">Operator Access Credential</label>
+            <label htmlFor="credential-input">Operator Access Credential</label>
             <input
-              id="password-input"
-              name="password"
-              type="password"
+              id="credential-input"
+              name="credential"
+              type="password" // pragma: allowlist secret
               className="form-input"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              value={credential}
+              onChange={(e) => setCredential(e.target.value)}
               placeholder="Enter view credential"
-              autoComplete="current-password"
+              autoComplete="current-password" // pragma: allowlist secret
               required
               disabled={loading}
             />
@@ -84,7 +84,7 @@ export default function LoginPage() {
           <button
             type="submit"
             className="btn-submit"
-            disabled={loading || !password.trim()}
+            disabled={loading || !credential.trim()}
           >
             {loading ? "Authenticating..." : "Sign In"}
           </button>
