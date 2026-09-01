@@ -1,11 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export default function LoginPage() {
+  const [hydrated, setHydrated] = useState(false);
   const [credential, setCredential] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setHydrated(true);
+  }, []);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -85,7 +91,7 @@ export default function LoginPage() {
           <button
             type="submit"
             className="btn-submit"
-            disabled={loading}
+            disabled={!hydrated || loading}
           >
             {loading ? "Authenticating..." : "Sign In"}
           </button>
