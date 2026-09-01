@@ -42,6 +42,18 @@ Launch the complete stack (PostgreSQL, schema migrations, FastAPI backend, Next.
   python scripts/dev.py
   ```
 
+To launch the same local-only stack with the deterministic Module 1B synthetic
+engineering scenario, use:
+
+```bash
+python scripts/dev.py --reset-db --demo
+```
+
+The dashboard safely shows explicit unavailable states on a fresh database.
+Deployment-owned `web/dashboard.config.json` remains an optional override for
+pinning a specific authority record; it is not required for PostgreSQL
+Feature, Scorecard, Regime, Portfolio Construction, News, or SRE discovery.
+
 Once healthy, open `http://localhost:3000` in your browser. You will be redirected to the secure login page (`/login`). Sign in with your configured password (`local-dev-operator-secret-token`).
 
 ---
@@ -66,6 +78,10 @@ The dashboard uses a secure server-side session cookie architecture:
   ```bash
   python scripts/dev.py --reset-db
   ```
+
+`--reset-db` is guarded to the local Docker PostgreSQL DSN. `--demo` never
+contacts a data provider or broker and seeds only `SYNTHETIC / DEMO /
+ENGINEERING EVIDENCE`.
 
 ---
 
