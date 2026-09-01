@@ -44,7 +44,7 @@ from trade_platform.professional_instruments import (
 
 DEMO_SEED_VERSION = "module1b-demo-evidence-v1"
 DEMO_NAMESPACE = UUID("2472e4e8-c287-5298-a8b4-7a5d9fb78cae")
-DEMO_AT = datetime(2026, 9, 1, 12, tzinfo=UTC)
+DEMO_AT = datetime(2030, 1, 1, 12, tzinfo=UTC)
 DEMO_SOURCE = "SYNTHETIC_DEMO_ENGINEERING_EVIDENCE"
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
