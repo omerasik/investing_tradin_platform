@@ -11,10 +11,10 @@ export default async function LoginPage(props: LoginPageProps) {
     <main id="main-content">
       <div className="login-card">
         <div className="login-header">
-          <span className="badge" style={{ marginBottom: "12px", display: "inline-block" }}>
+          <span className="badge login-badge">
             LIVE TRADING: DISABLED
           </span>
-          <div className="eyebrow" style={{ marginTop: "4px" }}>
+          <div className="eyebrow login-eyebrow">
             RESEARCH / PAPER ONLY
           </div>
           <h1>Trade Investing Panel</h1>
@@ -49,7 +49,7 @@ export default async function LoginPage(props: LoginPageProps) {
           </button>
         </form>
 
-        <footer style={{ marginTop: "24px", textAlign: "center", fontSize: "12px", color: "#6b7d9c" }}>
+        <footer className="login-footer">
           Safe local development session • Server-side authority separation
         </footer>
       </div>

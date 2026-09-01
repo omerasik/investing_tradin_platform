@@ -15,8 +15,7 @@ const nextConfig: NextConfig = {
   reactStrictMode: true,
   async headers() {
     return [
-      { source: "/", headers: dashboardSecurityHeaders },
-      { source: "/api/:path*", headers: dashboardSecurityHeaders },
+      { source: "/:path*", headers: dashboardSecurityHeaders },
     ];
   },
 };
