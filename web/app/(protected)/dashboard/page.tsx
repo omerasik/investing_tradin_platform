@@ -192,7 +192,7 @@ export default async function DashboardPage() {
         {/* Data Sources / Providers */}
         <article id="data-sources" className="panel">
           <h2>
-            <span>Market Overview &amp; Providers</span>
+            <span>Data Sources / Providers</span>
             <StatusBadge status={health ? "AVAILABLE" : dataHealth.state} />
           </h2>
           <p>Provider status, ingestion cadences, and sealed dataset versioning.</p>

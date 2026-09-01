@@ -21,7 +21,7 @@ if (unauthenticatedApi.status !== 401) {
 const html = await page.text();
 for (const required of [
   "Command Center", "PAPER ONLY", "Instrument Workstation",
-  "Market Overview & Providers", "Feature Authority", "Signal Explorer", "Strategy Laboratory", "Backtest / Validation", "Strategy Scorecard V2", "Regime Workspace", "Portfolio Construction", "Investment Workspace", "News / Event Intelligence", "Paper OMS", "Operations / SRE", "Audit", "LIVE TRADING: DISABLED", "EXTERNAL_BLOCKED", "Live trading is deliberately unavailable",
+  "Data Sources / Providers", "Feature Authority", "Signal Explorer", "Strategy Laboratory", "Backtest / Validation", "Strategy Scorecard V2", "Regime Workspace", "Portfolio Construction", "Investment Workspace", "News / Event Intelligence", "Paper OMS", "Operations / SRE", "Audit", "LIVE TRADING: DISABLED", "EXTERNAL_BLOCKED", "Live trading is deliberately unavailable",
 ]) {
   if (!html.includes(required)) throw new Error(`Dashboard content missing: ${required}`);
 }
