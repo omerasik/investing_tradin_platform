@@ -27,7 +27,8 @@ export default function LoginPage() {
       });
 
       if (res.ok) {
-        window.location.href = "/";
+        router.push("/");
+        router.refresh();
       } else {
         const data = await res.json().catch(() => ({}));
         setError(

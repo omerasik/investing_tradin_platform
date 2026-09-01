@@ -20,7 +20,12 @@ export async function POST(request: Request) {
     }
 
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-    const password = typeof body.password === "string" ? body.password.trim() : ""; // pragma: allowlist secret
+    const password =
+      typeof body.password === "string"
+        ? body.password.trim()
+        : typeof body.credential === "string"
+          ? body.credential.trim()
+          : ""; // pragma: allowlist secret
 
     if (!password || !constantTimeCompare(password, expected)) {
       return NextResponse.json(
