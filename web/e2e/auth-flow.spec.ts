@@ -30,6 +30,7 @@ test.describe("Human Browser Authentication Flow", () => {
 
     // 3. Attempting invalid credential fails cleanly
     await page.goto("/login");
+    await page.locator("form[data-hydrated='true']").waitFor();
     await page.getByLabel("Operator Access Credential").fill("incorrect-secret-password");
     await page.getByRole("button", { name: "Sign In" }).click();
     await expect(page.getByRole("alert")).toBeVisible();
@@ -37,6 +38,7 @@ test.describe("Human Browser Authentication Flow", () => {
     await expect(page).toHaveURL(/\/login/);
 
     // 4. Submitting valid credential logs in successfully and issues HttpOnly session cookie
+    await page.locator("form[data-hydrated='true']").waitFor();
     await page.getByLabel("Operator Access Credential").fill(viewToken);
     await page.getByRole("button", { name: "Sign In" }).click();
 
