@@ -1,14 +1,17 @@
 "use client";
 
-import { useState, useSyncExternalStore } from "react";
-
-const emptySubscribe = () => () => {};
+import { useEffect, useState } from "react";
 
 export default function LoginPage() {
-  const mounted = useSyncExternalStore(emptySubscribe, () => true, () => false);
+  const [mounted, setMounted] = useState(false);
   const [credential, setCredential] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setMounted(true);
+  }, []);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
