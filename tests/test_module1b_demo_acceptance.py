@@ -94,7 +94,8 @@ class Module1BDemoAcceptanceTests(unittest.TestCase):
             self.queries.risk_decisions(limit=20, offset=0),
             self.queries.news_events(instrument=None, entity=None, category=None, start=None, end=None, correction_state=None, limit=20, offset=0),
         )
-        self.assertTrue(all(page.state == "UNAVAILABLE" for page in pages))
+        self.assertTrue(all(page.state in {"UNAVAILABLE", "EXTERNAL_BLOCKED"} for page in pages))
+        self.assertTrue(all(len(page.items) == 0 for page in pages))
 
         app = build_app(
             PlatformConfig(), SQLiteAuditStore(), OperatorAuthenticator("module1b-token"),
@@ -192,6 +193,7 @@ class Module1BDemoAcceptanceTests(unittest.TestCase):
         self.assertLessEqual(current.items[0].knowledge_time, self.seed_module.DEMO_AT)
 
     def test_04_all_demo_discovery_projections_are_available_and_bounded(self) -> None:
+        self.seed_module.seed_demo_evidence(self.dsn)
         pages = {
             "instruments": self.queries.instruments(limit=20, offset=0),
             "features": self.queries.feature_definitions(family=None, limit=20, offset=0),
