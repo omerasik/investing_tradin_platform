@@ -1,17 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 export default function LoginPage() {
-  const [mounted, setMounted] = useState(false);
   const [credential, setCredential] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setMounted(true);
-  }, []);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -71,7 +65,7 @@ export default function LoginPage() {
           </div>
         ) : null}
 
-        <form data-hydrated={mounted ? "true" : "false"} onSubmit={handleSubmit}>
+        <form onSubmit={handleSubmit}>
           <div className="form-group">
             <label htmlFor="credential-input">Operator Access Credential</label>
             <input
