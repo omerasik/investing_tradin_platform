@@ -720,7 +720,7 @@ class PostgresOperatorDashboardQueries:
             cursor.execute(
                 "SELECT e.experiment_id,d.strategy_id,v.strategy_version_id,v.version,dv.version,"
                 "v.feature_manifest,v.cost_model_version,e.created_at,"
-                "(SELECT MAX(w.evaluated_at) FROM walk_forward_evidence w WHERE w.experiment_id=e.experiment_id) "
+                "(SELECT MAX(w.test_end) FROM walk_forward_evidence w WHERE w.experiment_id=e.experiment_id) "
                 "FROM research_experiments e JOIN strategy_versions v USING(strategy_version_id) "
                 "JOIN strategy_definitions d USING(strategy_id) JOIN dataset_versions dv USING(dataset_version_id) "
                 "WHERE (CAST(%s AS uuid) IS NULL OR d.strategy_id=%s) "

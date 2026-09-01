@@ -70,6 +70,7 @@ class Module1BDemoAcceptanceTests(unittest.TestCase):
         cls.seed_module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = cls.seed_module
         spec.loader.exec_module(cls.seed_module)
+        cls.seed_result = {}
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -147,6 +148,7 @@ class Module1BDemoAcceptanceTests(unittest.TestCase):
             self.seed_module.seed_demo_evidence(self.dsn)
 
     def test_03_cross_domain_coherence_and_pit(self) -> None:
+        seed_result = getattr(self.__class__, "seed_result", None) or self.seed_module.seed_demo_evidence(self.dsn)
         stable_id = self.seed_module.stable_id
         with self.database.transaction() as connection, connection.cursor() as cursor:
             cursor.execute(
@@ -157,7 +159,7 @@ class Module1BDemoAcceptanceTests(unittest.TestCase):
             experiment = cursor.fetchone()
             cursor.execute(
                 "SELECT strategy_id,research_run_id,dataset_version FROM strategy_scorecards WHERE scorecard_id=%s",
-                (self.seed_result["scorecard_id"],),
+                (seed_result["scorecard_id"],),
             )
             scorecard = cursor.fetchone()
             cursor.execute("SELECT regime_run_id FROM portfolio_construction_runs WHERE run_id=%s", (stable_id("portfolio-run"),))
