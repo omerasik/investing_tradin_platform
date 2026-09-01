@@ -279,26 +279,95 @@ export default async function DashboardPage() {
             <StatusBadge status={featureDefinition ? "AVAILABLE" : feature.state} />
           </h2>
           <p>
-            Governed feature calculation specifications and point-in-time materialized values.
+            Feature values are displayed exactly as materialized by the point-in-time PostgreSQL
+            authority; the frontend never recomputes them.
           </p>
-          <dl>
-            <dt>Active Feature</dt>
-            <dd>
-              {featureDefinition
-                ? `${featureDefinition.feature_name} (${featureDefinition.semantic_version})`
-                : "UNAVAILABLE"}
-            </dd>
-            <dt>Feature Family</dt>
-            <dd>{featureDefinition?.family ?? "UNAVAILABLE"}</dd>
-            <dt>Materialized Values</dt>
-            <dd>
-              {materializations?.items.length
-                ? `${materializations.items.length} point-in-time record(s)`
-                : "No materializations in bounded scope"}
-            </dd>
-            <dt>Leakage Policy</dt>
-            <dd>Zero lookahead leakage guarantee</dd>
-          </dl>
+          {featureDefinition ? (
+            <>
+              <dl>
+                <dt>Definition / version</dt>
+                <dd>
+                  {featureDefinition.feature_name} / {featureDefinition.semantic_version}
+                </dd>
+                <dt>Family / status</dt>
+                <dd>
+                  {featureDefinition.family} / {featureDefinition.status}
+                </dd>
+                <dt>Required dataset / fields</dt>
+                <dd>
+                  {featureDefinition.required_dataset_types.join(", ")} /{" "}
+                  {featureDefinition.required_fields.join(", ")}
+                </dd>
+                <dt>Frequency / timestamp semantics / lookback</dt>
+                <dd>
+                  {featureDefinition.frequency} / {featureDefinition.timestamp_semantics} /{" "}
+                  {featureDefinition.lookback}
+                </dd>
+                <dt>Policies</dt>
+                <dd>
+                  Missing: {featureDefinition.missing_value_policy}; outlier:{" "}
+                  {featureDefinition.outlier_policy}; leakage: {featureDefinition.leakage_policy}
+                </dd>
+                <dt>Units / calculation</dt>
+                <dd>
+                  {featureDefinition.units} / {featureDefinition.calculation_version}
+                </dd>
+              </dl>
+              <EvidenceMeta
+                source="PostgreSQL Feature Authority"
+                asOf={featureDefinition.created_at}
+                version={featureDefinition.semantic_version}
+              />
+            </>
+          ) : (
+            <p className="empty-state">{stateText(feature)}</p>
+          )}
+          {materializations?.items.length ? (
+            <table>
+              <caption>Point-in-time materializations as of {utc(materializations.decision_time)}</caption>
+              <thead>
+                <tr>
+                  <th>Instrument / dataset</th>
+                  <th>Event / knowledge / computed</th>
+                  <th>Value</th>
+                  <th>Quality / provenance</th>
+                </tr>
+              </thead>
+              <tbody>
+                {materializations.items.map((item) => (
+                  <tr key={item.materialization_id}>
+                    <td>
+                      {item.instrument}
+                      <br />
+                      {item.dataset_version}
+                    </td>
+                    <td>
+                      {utc(item.event_time)}
+                      <br />
+                      {utc(item.knowledge_time)}
+                      <br />
+                      {utc(item.computed_time)}
+                    </td>
+                    <td>{item.value ?? "UNAVAILABLE"}</td>
+                    <td>
+                      {item.quality_state}
+                      <br />
+                      <code>{item.content_hash}</code>
+                      <br />
+                      {item.source_manifest.join(", ")}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p className="empty-state">
+              UNAVAILABLE:{" "}
+              {materializations
+                ? "no authorized materialization matched this bounded PIT scope; zero was not substituted."
+                : stateText(featureMaterializations)}
+            </p>
+          )}
           <div className="panel-footer-row">
             <span className="status">{materializations?.items.length ? "AVAILABLE" : "UNAVAILABLE"} / READ ONLY</span>
             <Link href="/features" className="workspace-link">
