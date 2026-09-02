@@ -252,18 +252,47 @@ export default async function DashboardPage() {
             <StatusBadge status={instruments.state} />
           </h2>
           <p>
-            Canonical point-in-time instrument identities, identifier mappings, and lifecycle provenance.
+            Canonical, point-in-time instrument discovery. Ambiguous symbols are displayed rather than
+            guessed.
           </p>
-          <dl>
-            <dt>Discovered Instruments</dt>
-            <dd><strong>{instrumentRows.length}</strong> instruments indexed</dd>
-            <dt>Sample Identifiers</dt>
-            <dd>
-              {instrumentRows.slice(0, 3).map((i) => i.canonical_symbol).join(", ") || "None"}
-            </dd>
-            <dt>Resolution Policy</dt>
-            <dd>Strict unambiguous canonical lookup only</dd>
-          </dl>
+          {instrumentRows.length ? (
+            <table>
+              <thead>
+                <tr>
+                  <th>Instrument</th>
+                  <th>Class / venue / lifecycle</th>
+                  <th>Validity / dataset</th>
+                  <th>Evidence</th>
+                </tr>
+              </thead>
+              <tbody>
+                {instrumentRows.map((item) => (
+                  <tr key={item.instrument_id}>
+                    <td>
+                      <strong>{item.canonical_symbol}</strong>
+                      <br />
+                      <code>{item.instrument_id}</code>
+                    </td>
+                    <td>
+                      {item.asset_class} / {item.venue} / {item.lifecycle_status}
+                    </td>
+                    <td>
+                      {utc(item.valid_from)} / {utc(item.valid_until)}
+                      <br />
+                      {item.latest_dataset_version ?? "UNAVAILABLE"}
+                    </td>
+                    <td>
+                      {item.synthetic_demo ? "SYNTHETIC / DEMO" : "AUTHORITATIVE"}; mappings{" "}
+                      {item.identifier_mapping_count};{" "}
+                      {item.ambiguous_mapping ? "AMBIGUOUS — not selected" : "unambiguous"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p className="empty-state">{stateText(instruments)}</p>
+          )}
           <div className="panel-footer-row">
             <span className="status">READ ONLY</span>
             <Link href="/instruments" className="workspace-link">
