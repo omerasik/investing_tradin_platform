@@ -45,7 +45,7 @@ from .operator_dashboard import (
     StrategyDiscoveryPage,
     StrategyScorecardDiscoveryPage,
     StrategyScorecardView,
-    classify_research_evidence,
+    classify_research_evidence_from_markers,
 )
 from .paper_oms import PaperOmsError, SQLitePaperOms
 from .persistence import PersistenceTarget
@@ -672,7 +672,7 @@ def build_app(
             card = app.state.strategy_registry.get(strategy_id)
         except StrategyValidationError as error:
             raise HTTPException(status_code=404, detail="Strategy research card not found.") from error
-        return {"strategy_id": str(card.strategy_id), "strategy_version": card.strategy_version, "family": card.family, "hypothesis": card.hypothesis, "required_datasets": card.required_datasets, "feature_versions": card.feature_versions, "universe_rules": card.universe_rules, "entry_logic": card.entry_logic, "exit_logic": card.exit_logic, "sizing_policy": card.sizing_policy, "risk_policy": card.risk_policy, "cost_model_version": card.cost_model_version, "capacity_model": card.capacity_model, "expected_regimes": card.expected_regimes, "parameter_schema": card.parameter_schema, "failure_conditions": card.failure_conditions, "limitations": card.limitations, "created_at": card.created_at.isoformat(), "evidence_classification": classify_research_evidence(list(card.required_datasets))}
+        return {"strategy_id": str(card.strategy_id), "strategy_version": card.strategy_version, "family": card.family, "hypothesis": card.hypothesis, "required_datasets": card.required_datasets, "feature_versions": card.feature_versions, "universe_rules": card.universe_rules, "entry_logic": card.entry_logic, "exit_logic": card.exit_logic, "sizing_policy": card.sizing_policy, "risk_policy": card.risk_policy, "cost_model_version": card.cost_model_version, "capacity_model": card.capacity_model, "expected_regimes": card.expected_regimes, "parameter_schema": card.parameter_schema, "failure_conditions": card.failure_conditions, "limitations": card.limitations, "created_at": card.created_at.isoformat(), "evidence_classification": classify_research_evidence_from_markers(*card.required_datasets)}
 
     @app.post("/research/strategies", status_code=201)
     def create_strategy_research_card(request: StrategyCreateRequest, subject: str = Depends(research_operator)) -> dict[str, object]:
@@ -690,7 +690,7 @@ def build_app(
             experiment = app.state.experiment_store.get(experiment_id)
         except KeyError as error:
             raise HTTPException(status_code=404, detail="Backtest research experiment not found.") from error
-        return {"experiment_id": str(experiment.experiment_id), "strategy_version": experiment.strategy_version, "dataset_version": experiment.dataset_version, "feature_versions": experiment.feature_versions, "cost_model_version": experiment.cost_model_version, "parameters": experiment.parameters, "created_at": experiment.created_at.isoformat(), "report": experiment.report, "evidence_classification": classify_research_evidence([experiment.dataset_version])}
+        return {"experiment_id": str(experiment.experiment_id), "strategy_version": experiment.strategy_version, "dataset_version": experiment.dataset_version, "feature_versions": experiment.feature_versions, "cost_model_version": experiment.cost_model_version, "parameters": experiment.parameters, "created_at": experiment.created_at.isoformat(), "report": experiment.report, "evidence_classification": classify_research_evidence_from_markers(experiment.dataset_version)}
 
     @app.get("/research/promotions/{decision_id}")
     def research_promotion(decision_id: UUID, _: None = Depends(protected_operator)) -> dict[str, object]:

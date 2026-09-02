@@ -27,7 +27,11 @@ test.describe("Module 2B-2 Professional Research, Backtest, Scorecard & Signal W
     await expect(page.getByRole("heading", { name: "Discovered Strategies" })).toBeVisible();
     await expect(page.getByLabel("Strategy Discovery Filters")).toBeVisible();
 
+    // Module 1B seed data is entirely synthetic and no real market-data provider is
+    // authorized on this platform (Module 2B-2.1): a demo-derived strategy must render
+    // the truthful SYNTHETIC classification, never REAL_DATA_RESEARCH_EVIDENCE.
     await expect(page.getByText("SYNTHETIC_ENGINEERING_EVIDENCE_ONLY").first()).toBeVisible();
+    await expect(page.getByText("REAL_DATA_RESEARCH_EVIDENCE")).toHaveCount(0);
     await expect(page.getByText("WHEN SHOULD THIS STRATEGY NOT WORK?")).toBeVisible();
 
     await expect(page.getByRole("heading", { name: "Create Research Strategy" })).toBeVisible();
@@ -69,6 +73,12 @@ test.describe("Module 2B-2 Professional Research, Backtest, Scorecard & Signal W
     await expect(page.getByText("Validation", { exact: false }).first()).toBeVisible();
     await expect(page.locator(".inspector-section-title", { hasText: "Promotion Decision" })).toBeVisible();
 
+    // Module 1B seed data is entirely synthetic and no real market-data provider is
+    // authorized on this platform (Module 2B-2.1): a demo-derived experiment must render
+    // the truthful SYNTHETIC classification, never REAL_DATA_RESEARCH_EVIDENCE.
+    await expect(page.getByText("SYNTHETIC_ENGINEERING_EVIDENCE_ONLY").first()).toBeVisible();
+    await expect(page.getByText("REAL_DATA_RESEARCH_EVIDENCE")).toHaveCount(0);
+
     await expect(page.getByRole("heading", { name: "Run Research Experiment" })).toBeVisible();
     await expect(page.getByText("RESEARCH ONLY", { exact: false }).first()).toBeVisible();
 
@@ -107,7 +117,11 @@ test.describe("Module 2B-2 Professional Research, Backtest, Scorecard & Signal W
     await expect(page.getByRole("region", { name: "PERFORMANCE", exact: true })).toBeVisible();
     await expect(page.getByText("MEASURED").first()).toBeVisible();
 
-    await expect(page.getByText(/SYNTHETIC_ENGINEERING_EVIDENCE_ONLY|REAL_DATA_RESEARCH_EVIDENCE|UNAVAILABLE/).first()).toBeVisible();
+    // Module 1B seed data is entirely synthetic and no real market-data provider is
+    // authorized on this platform (Module 2B-2.1): a demo-derived scorecard must render
+    // the truthful SYNTHETIC classification, never REAL_DATA_RESEARCH_EVIDENCE.
+    await expect(page.getByText("SYNTHETIC_ENGINEERING_EVIDENCE_ONLY").first()).toBeVisible();
+    await expect(page.getByText("REAL_DATA_RESEARCH_EVIDENCE")).toHaveCount(0);
 
     await expect(page.getByRole("button", { name: /execute|trade|buy|sell|order/i })).toHaveCount(0);
 
@@ -143,6 +157,13 @@ test.describe("Module 2B-2 Professional Research, Backtest, Scorecard & Signal W
     await expect(page.getByLabel("Signal Discovery Filters")).toBeVisible();
     await expect(page.getByText("Contradicting Evidence").first()).toBeVisible();
     await expect(page.getByText("Lifecycle Timeline for", { exact: false }).first()).toBeVisible();
+
+    // Module 1B seed data is entirely synthetic and no real market-data provider is
+    // authorized on this platform (Module 2B-2.1): a demo-derived signal must render
+    // the truthful SYNTHETIC classification, never REAL_DATA_RESEARCH_EVIDENCE -- a
+    // VALIDATED signal is not the same claim as real-data provenance.
+    await expect(page.getByText("SYNTHETIC_ENGINEERING_EVIDENCE_ONLY").first()).toBeVisible();
+    await expect(page.getByText("REAL_DATA_RESEARCH_EVIDENCE")).toHaveCount(0);
 
     await expect(page.getByRole("button", { name: /execute|trade|buy|sell|order/i })).toHaveCount(0);
     await expect(page.getByText("LIVE TRADING: DISABLED").first()).toBeVisible();

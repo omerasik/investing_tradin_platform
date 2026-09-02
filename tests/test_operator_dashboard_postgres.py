@@ -271,7 +271,13 @@ class OperatorDashboardPostgresTests(unittest.TestCase):
         )
         self.assertIn(ids["scorecard"], {item.scorecard_id for item in scorecards_by_status.items})
         self.assertEqual(scorecards_wrong_status.state, "UNAVAILABLE")
-        self.assertEqual(signals.items[0].evidence_classification, "REAL_DATA_RESEARCH_EVIDENCE")
+        # Truthfulness invariant (Module 2B-2.1): this is a fixture instrument
+        # (US:XNYS:C208-*) and a fixture validation package/dataset chain
+        # (datasets.provider='fixture') with no authorized real-data provider anywhere
+        # in the platform.  A realistic-looking instrument/strategy-version identifier
+        # must never be enough to earn REAL_DATA_RESEARCH_EVIDENCE; the only positive
+        # proof available here is synthetic, so the signal must classify as such.
+        self.assertEqual(signals.items[0].evidence_classification, "SYNTHETIC_ENGINEERING_EVIDENCE_ONLY")
         self.assertEqual((signals.state, signals.items[0].latest_reason, signals.items[0].automatic_authority), ("AVAILABLE", "all_validation_stages_passed", False))
         self.assertEqual((risks.state, len(risks.items), risks.items[0].approved, risks.items[0].reservation_id), ("AVAILABLE", 2, False, None))
         self.assertEqual((risks.items[1].approved, risks.items[1].reserved_notional, risks.items[1].research_or_paper_only, risks.items[1].automatic_authority), (True, "250", True, False))
@@ -292,6 +298,110 @@ class OperatorDashboardPostgresTests(unittest.TestCase):
         self.assertIn("feature_materializations_asof_idx", feature_plan)
         self.assertIn("news_document_pit_idx", news_plan)
         database.close()
+
+    def test_evidence_classification_fails_closed_without_authorized_real_provider(self) -> None:
+        """Module 2B-2.1 truthfulness invariant, exercised against real PostgreSQL lineage.
+
+        A dataset provider with a plausible, realistic-looking name and zero synthetic
+        markers must NOT be enough to earn REAL_DATA_RESEARCH_EVIDENCE while no real
+        provider is authorized on this platform -- it must resolve to UNAVAILABLE across
+        every research surface. Only once that same provider is explicitly added to the
+        authorized-provider allowlist does the identical lineage resolve to
+        REAL_DATA_RESEARCH_EVIDENCE, proving the mechanism works without this test
+        claiming the platform itself has a live/authorized provider.
+        """
+        from unittest.mock import patch
+
+        from alembic import command
+        from alembic.config import Config
+
+        from trade_platform import operator_dashboard
+        from trade_platform.operator_dashboard import PostgresOperatorDashboardQueries
+        from trade_platform.persistence import PostgresDatabase
+        from trade_platform.professional_instruments import (
+            PostgresProfessionalInstrumentMaster,
+            mvp_instrument_universe,
+        )
+
+        dsn = os.environ["POSTGRES_TEST_DSN"]
+        config = Config("alembic.ini")
+        config.set_main_option("sqlalchemy.url", dsn.replace("postgresql://", "postgresql+psycopg://", 1))
+        command.upgrade(config, "head")
+        database = PostgresDatabase(dsn)
+        # Deliberately far in the past relative to every other fixture/seed date in this
+        # suite (this DB is shared, uncleaned, cross-test state): this method's rows must
+        # never win an "ORDER BY ...evaluated_at/created_at DESC LIMIT 1" latest-record
+        # lookup performed by other tests, seed scripts, or CI's cycle208 dashboard fixture.
+        now = datetime(2000, 1, 1, 12, tzinfo=UTC)
+        suffix = uuid4().hex[:8]
+        digest = lambda name: hashlib.sha256(f"provenance:{suffix}:{name}".encode()).hexdigest()
+        instrument = replace(
+            mvp_instrument_universe(datetime(2024, 1, 1, tzinfo=UTC))[0],
+            instrument_id=f"US:XNYS:PROV-{suffix}", canonical_symbol=f"PROV{suffix[:4]}",
+        )
+        PostgresProfessionalInstrumentMaster(database).register(instrument)
+        ids = {name: uuid4() for name in ("dataset", "dataset_version", "strategy", "strategy_version", "experiment", "package", "scorecard", "signal")}
+        strategy_version_text = f"provenance-{suffix}"
+        family = f"PROVENANCE_TEST_{suffix}"
+        try:
+            with database.transaction() as connection, connection.cursor() as cursor:
+                # "AcmeMarketData" is a deliberately realistic-looking provider name with
+                # no demo/synthetic/fixture/module1b marker anywhere -- exactly the gap
+                # the old marker-absence heuristic used to fill in as REAL.
+                cursor.execute(
+                    "INSERT INTO datasets VALUES (%s,%s,'AcmeMarketData','terms-v1',%s)",
+                    (ids["dataset"], f"provenance-dataset-{suffix}", now - timedelta(days=1)),
+                )
+                cursor.execute(
+                    "INSERT INTO dataset_versions VALUES (%s,%s,%s,%s,NULL,NULL,%s)",
+                    (ids["dataset_version"], ids["dataset"], f"v-{suffix}", digest("dataset-version"), now - timedelta(days=1)),
+                )
+                cursor.execute("INSERT INTO strategy_definitions VALUES (%s,%s,'No-marker provenance-test hypothesis.',%s)", (ids["strategy"], family, now - timedelta(days=1)))
+                cursor.execute(
+                    "INSERT INTO strategy_versions VALUES (%s,%s,%s,'[]'::jsonb,'cost-v1','capacity-v1','{}'::jsonb,%s)",
+                    (ids["strategy_version"], ids["strategy"], strategy_version_text, now - timedelta(days=1)),
+                )
+                cursor.execute(
+                    "INSERT INTO research_experiments VALUES (%s,%s,%s,'{}'::jsonb,'{}'::jsonb,%s,%s)",
+                    (ids["experiment"], ids["strategy_version"], ids["dataset_version"], digest("experiment"), now - timedelta(days=1)),
+                )
+                cursor.execute(
+                    "INSERT INTO validation_packages (package_id,strategy_version_id,dataset_version_id,cost_model_version,content_hash,status,created_at,limitations,integrity_status) "
+                    "VALUES (%s,%s,%s,'cost-v1',%s,'REVIEW_REQUIRED_OR_BLOCKED',%s,'[\"Independent validation pending\"]'::jsonb,'LEGACY_UNVERIFIABLE')",
+                    (ids["package"], ids["strategy_version"], ids["dataset_version"], digest("package"), now - timedelta(hours=12)),
+                )
+                cursor.execute(
+                    "INSERT INTO strategy_scorecards VALUES (%s,'scorecard-v2',%s,%s,%s,'[]'::jsonb,%s,'cost-v1',%s,%s,'REVIEW_REQUIRED','[\"Independent validation pending\"]'::jsonb,'HEALTHY','[]'::jsonb,'{}'::jsonb,%s)",
+                    (ids["scorecard"], ids["strategy"], strategy_version_text, uuid4(), f"v-{suffix}", now, now - timedelta(hours=1), digest("scorecard")),
+                )
+                cursor.execute("INSERT INTO scorecard_validation_packages VALUES (%s,%s,%s)", (ids["scorecard"], ids["package"], digest("package")))
+                signal_payload = json.dumps({"direction": "BUY", "strength": "0.5", "confidence": "0.5", "data_quality_score": "1", "explanation": "No-marker provenance test signal.", "contradicting_evidence": []})
+                cursor.execute(
+                    "INSERT INTO runtime_signal_proposals VALUES (%s,%s,%s,%s,%s,%s::jsonb)",
+                    (ids["signal"], instrument.instrument_id, strategy_version_text, now - timedelta(hours=2), now + timedelta(hours=1), signal_payload),
+                )
+
+            queries = PostgresOperatorDashboardQueries(database)
+            strategies = queries.strategies(family=family, limit=10, offset=0)
+            experiments = queries.experiments(strategy_id=ids["strategy"], limit=10, offset=0)
+            scorecards = queries.strategy_scorecards(strategy_id=ids["strategy"], status=None, limit=10, offset=0)
+            signals = queries.signals(as_of=now, status=None, instrument=instrument.instrument_id, strategy_version=None, limit=10, offset=0)
+            self.assertEqual(strategies.items[0].evidence_classification, "UNAVAILABLE")
+            self.assertEqual(experiments.items[0].evidence_classification, "UNAVAILABLE")
+            self.assertEqual(scorecards.items[0].evidence_classification, "UNAVAILABLE")
+            self.assertEqual(signals.items[0].evidence_classification, "UNAVAILABLE")
+
+            with patch.object(operator_dashboard, "_AUTHORIZED_REAL_MARKET_DATA_PROVIDERS", frozenset({"AcmeMarketData"})):
+                strategies = queries.strategies(family=family, limit=10, offset=0)
+                experiments = queries.experiments(strategy_id=ids["strategy"], limit=10, offset=0)
+                scorecards = queries.strategy_scorecards(strategy_id=ids["strategy"], status=None, limit=10, offset=0)
+                signals = queries.signals(as_of=now, status=None, instrument=instrument.instrument_id, strategy_version=None, limit=10, offset=0)
+            self.assertEqual(strategies.items[0].evidence_classification, "REAL_DATA_RESEARCH_EVIDENCE")
+            self.assertEqual(experiments.items[0].evidence_classification, "REAL_DATA_RESEARCH_EVIDENCE")
+            self.assertEqual(scorecards.items[0].evidence_classification, "REAL_DATA_RESEARCH_EVIDENCE")
+            self.assertEqual(signals.items[0].evidence_classification, "REAL_DATA_RESEARCH_EVIDENCE")
+        finally:
+            database.close()
 
 
 if __name__ == "__main__":
