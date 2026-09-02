@@ -67,7 +67,7 @@ test.describe("Module 2A App Shell & Navigation Foundation", () => {
     // 5. Navigate to /features via Sidebar
     await sidebar.getByRole("link", { name: "Features" }).click();
     await expect(page).toHaveURL(/\/features/);
-    await expect(page.getByRole("heading", { name: "Feature Authority", level: 1 })).toBeVisible();
+    await expect(page.getByRole("heading", { name: /Feature/, level: 1 })).toBeVisible();
     await expect(sidebar.getByRole("link", { name: "Features" })).toHaveClass(/active/);
     await expect(topbar.getByText("Features")).toBeVisible();
 

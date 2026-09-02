@@ -12,12 +12,19 @@ from trade_platform.config import PlatformConfig
 from trade_platform.operator_dashboard import (
     CovarianceEvidenceView,
     DashboardQueryError,
+    DataHealthAssessmentPage,
+    DataHealthAssessmentView,
     DependencyHealthView,
     FeatureDefinitionPage,
     FeatureDefinitionView,
     FeatureMaterializationPage,
     FeatureMaterializationView,
+    HistoricalDatasetPage,
+    HistoricalDatasetView,
     IncidentView,
+    InstrumentDetailView,
+    InstrumentDiscoveryPage,
+    InstrumentDiscoveryView,
     NewsEventPage,
     NewsEventView,
     PageInfo,
@@ -153,6 +160,50 @@ class OperatorDashboardApiTests(unittest.TestCase):
                 evidence_reference="runbook://postgres",
             )], failure_drills=[],
         )
+        self.queries.instruments.return_value = InstrumentDiscoveryPage(
+            state="AVAILABLE", items=[InstrumentDiscoveryView(
+                instrument_id="US:XNYS:C208", canonical_symbol="C208", asset_class="EQUITY",
+                venue="XNYS", lifecycle_status="ACTIVE", valid_from=now, valid_until=None,
+                synthetic_demo=False, latest_dataset_version="v1", identifier_mapping_count=1,
+                ambiguous_mapping=False,
+            )], page=PageInfo(limit=50, offset=0, returned=1, has_more=False),
+        )
+        self.queries.instrument.return_value = InstrumentDetailView(
+            instrument_id="US:XNYS:C208", canonical_symbol="C208", asset_class="EQUITY",
+            instrument_type="COMMON_STOCK", exchange_name="New York Stock Exchange",
+            venue="XNYS", mic="XNYS", base_currency="USD", quote_currency="USD",
+            settlement_currency="USD", contract_multiplier="1", contract_size="1",
+            tick_size="0.01", lot_size="1", price_precision=2, quantity_precision=0,
+            trading_timezone="America/New_York", market_session_type="REGULAR",
+            representation_kind="DIRECT", isin=None, cusip=None, registered_at=now,
+            lifecycle_status="ACTIVE", synthetic_demo=False, ambiguous_mapping=False,
+            identifier_mappings=[], symbol_mappings=[], lifecycle_events=[], dataset_versions=["v1"],
+        )
+        self.queries.historical_datasets.return_value = HistoricalDatasetPage(
+            state="AVAILABLE", items=[HistoricalDatasetView(
+                dataset_version_id=identity, source_id=identity, version="v1",
+                normalization_version="n1", content_hash="a" * 64, valid_from=now, valid_until=None,
+                created_at=now, status="SEALED", provider="TEST", dataset_name="ohlcv",
+                asset_scope="US_EQUITIES_ETFS", provider_terms_version="t1",
+                authorization_reference="ref1", authorized_at=now, observation_count=100,
+                checkpoint_state="HEALTHY", synthetic_demo=False,
+            )], page=PageInfo(limit=50, offset=0, returned=1, has_more=False),
+        )
+        self.queries.data_health_assessments.return_value = DataHealthAssessmentPage(
+            state="AVAILABLE", overall_state="HEALTHY", total_assessments=1, blocking_count=0,
+            items=[DataHealthAssessmentView(
+                assessment_id=identity, dataset_version_id=identity, dataset_version="v1",
+                scope_type="GLOBAL", scope_value="*", policy_version="p1", evaluated_at=now,
+                expected_start=now, expected_end=now, max_action="INFO", blocking=False,
+                content_hash="b" * 64, summary={}, findings=[], synthetic_demo=False,
+            )], page=PageInfo(limit=50, offset=0, returned=1, has_more=False),
+        )
+        self.queries.data_health_assessment.return_value = DataHealthAssessmentView(
+            assessment_id=identity, dataset_version_id=identity, dataset_version="v1",
+            scope_type="GLOBAL", scope_value="*", policy_version="p1", evaluated_at=now,
+            expected_start=now, expected_end=now, max_action="INFO", blocking=False,
+            content_hash="b" * 64, summary={}, findings=[], synthetic_demo=False,
+        )
         self.queries.command_summaries.return_value = []
         self.client = TestClient(build_app(
             PlatformConfig(), SQLiteAuditStore(), OperatorAuthenticator("test-token"),
@@ -164,6 +215,11 @@ class OperatorDashboardApiTests(unittest.TestCase):
         now = "2026-08-18T00:00:00Z"
         identity = self.queries.feature_definition.return_value.feature_definition_id
         paths = [
+            "/operator-dashboard/instruments",
+            "/operator-dashboard/instruments/US%3AXNYS%3AC208",
+            "/operator-dashboard/historical-datasets",
+            "/operator-dashboard/data-health/assessments",
+            f"/operator-dashboard/data-health/assessments/{identity}",
             "/operator-dashboard/feature-definitions",
             f"/operator-dashboard/feature-definitions/{identity}",
             f"/operator-dashboard/feature-materializations?feature_id={identity}&instrument=fixture%3ASPY&dataset_version=fixture-v1&decision_time={now}",

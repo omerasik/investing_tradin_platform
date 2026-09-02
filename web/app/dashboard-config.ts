@@ -2,7 +2,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { env } from "node:process";
 
+export type AppEnvironment = "LOCAL" | "CI" | "PAPER" | "STAGING";
+
 export type DashboardConfig = {
+  environment: AppEnvironment;
   apiBaseUrl?: string;
   operatorTokenEnv?: string;
   operatorTokenFile?: string;
@@ -26,6 +29,23 @@ export type DashboardConfig = {
   sreServiceVersionId?: string;
   dashboardOrigin: string;
 };
+
+function resolveEnvironment(rawEnv: unknown): AppEnvironment {
+  const fromProcess = env.TRADE_PLATFORM_ENVIRONMENT;
+  if (fromProcess === "LOCAL" || fromProcess === "CI" || fromProcess === "PAPER" || fromProcess === "STAGING") {
+    return fromProcess;
+  }
+  if (env.CI === "true" || env.GITHUB_ACTIONS === "true") {
+    return "CI";
+  }
+  if (typeof rawEnv === "string") {
+    const upper = rawEnv.toUpperCase();
+    if (upper === "LOCAL" || upper === "CI" || upper === "PAPER" || upper === "STAGING") {
+      return upper;
+    }
+  }
+  return "LOCAL";
+}
 
 function optionalText(value: unknown, field: string): string | undefined {
   if (value === undefined) return undefined;
@@ -77,6 +97,7 @@ export function loadDashboardConfig(): DashboardConfig {
   const operatorTokenEnv = validateEnvReference(optionalText(raw.operator_token_env ?? (operatorTokenFile ? undefined : "TRADE_PLATFORM_OPERATOR_TOKEN"), "operator_token_env"));
   if (operatorTokenFile && operatorTokenEnv) throw new Error("invalid_dashboard_config_operator_token_reference");
   return {
+    environment: resolveEnvironment(raw.environment),
     apiBaseUrl: validateUrl(optionalText(raw.api_base_url ?? env.TRADE_PLATFORM_API_BASE_URL, "api_base_url"), "api_base_url"),
     operatorTokenEnv,
     operatorTokenFile,

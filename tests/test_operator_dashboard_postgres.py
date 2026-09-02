@@ -240,6 +240,17 @@ class OperatorDashboardPostgresTests(unittest.TestCase):
             end=now + timedelta(minutes=1), correction_state="RETRACTION", limit=10, offset=0,
         )
         sre = queries.sre_overview(ids["service_version"])
+        instruments = queries.instruments(query=instrument.canonical_symbol, limit=10, offset=0)
+        instrument_detail = queries.instrument(instrument.instrument_id)
+        datasets = queries.historical_datasets(limit=10, offset=0)
+        health_page = queries.data_health_assessments(limit=10, offset=0)
+        health_detail = queries.data_health_assessment(ids["health"])
+
+        self.assertEqual(instruments.items[0].instrument_id, instrument.instrument_id)
+        self.assertEqual(instrument_detail.canonical_symbol, instrument.canonical_symbol)
+        self.assertEqual(datasets.items[0].dataset_version_id, ids["historical_dataset"])
+        self.assertIn(health_page.overall_state, {"HEALTHY", "BLOCKING"})
+        self.assertEqual(health_detail.assessment_id, ids["health"])
         self.assertEqual(definitions.items[0].feature_definition_id, ids["feature"])
         self.assertEqual(pit_old.items, [])
         self.assertEqual((pit_before_revision.items[0].value, pit_before_revision.items[0].source_manifest), ("0.01", ["raw:old"]))

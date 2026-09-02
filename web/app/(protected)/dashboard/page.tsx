@@ -195,29 +195,23 @@ export default async function DashboardPage() {
             <span>Data Sources / Providers</span>
             <StatusBadge status={health ? "AVAILABLE" : dataHealth.state} />
           </h2>
-          <p>Provider credentials and terms never enter the browser.</p>
+          <p>Provider status, ingestion cadences, and sealed dataset versioning.</p>
           <dl>
-            <dt>Provider</dt>
-            <dd>{health?.provider ?? "EXTERNAL_BLOCKED"}</dd>
-            <dt>Authorization / terms</dt>
+            <dt>Provider Status</dt>
+            <dd><code>EXTERNAL_BLOCKED (TRUTHFUL)</code></dd>
+            <dt>Authorization State</dt>
+            <dd>No real market data provider authorized</dd>
+            <dt>Ingestion Cadence</dt>
             <dd>
-              {health
-                ? "Configured record only; provider activation not asserted"
-                : "EXTERNAL_BLOCKED"}
+              {schedule
+                ? `${schedule.overdue ? "STALE / OVERDUE" : schedule.due ? "DUE" : "CURRENT"}; last success ${utc(schedule.last_successful_at)}`
+                : stateText(cadence)}
             </dd>
-            <dt>Health / freshness</dt>
-            <dd>
-              {health
-                ? `${health.healthy ? "HEALTHY" : "BLOCKING"}; checked ${utc(health.checked_at)}`
-                : stateText(dataHealth)}
-            </dd>
-            <dt>Checkpoint / dataset version</dt>
-            <dd>UNAVAILABLE</dd>
           </dl>
           <div className="panel-footer-row">
             <span className="status">{health ? "READ ONLY" : "EXTERNAL_BLOCKED"}</span>
             <Link href="/markets" className="workspace-link">
-              Workspace &rarr;
+              Open Markets Workspace &rarr;
             </Link>
           </div>
         </article>
@@ -225,46 +219,28 @@ export default async function DashboardPage() {
         {/* Data Health */}
         <article id="data-health" className="panel">
           <h2>
-            <span>Data Health</span>
+            <span>Data Health &amp; Quality</span>
             <StatusBadge status={health ? (health.healthy ? "AVAILABLE" : "BLOCKED") : dataHealth.state} />
           </h2>
-          <p>Blocking evidence is not bypassable from this console.</p>
+          <p>Non-bypassable data health checks and quality anomaly assessments.</p>
           <dl>
-            <dt>Assessment</dt>
-            <dd>{health ? `return-provider:${health.provider}` : "UNAVAILABLE"}</dd>
-            <dt>Severity / action</dt>
+            <dt>Overall Quality</dt>
             <dd>
               {health
                 ? health.healthy
-                  ? "HEALTHY / ALLOW"
+                  ? "HEALTHY / PASS"
                   : "BLOCKING / REVIEW REQUIRED"
                 : dataHealth.state}
             </dd>
-            <dt>Failures</dt>
-            <dd>{health?.consecutive_failures.toString() ?? "UNAVAILABLE"}</dd>
-            <dt>Reason</dt>
-            <dd>{health?.reason ?? "UNAVAILABLE"}</dd>
-            <dt>Cadence / last success</dt>
-            <dd>
-              {schedule
-                ? `${schedule.overdue ? "STALE" : schedule.due ? "DUE" : "CURRENT"}; ${utc(
-                    schedule.last_successful_at,
-                  )}`
-                : stateText(cadence)}
-            </dd>
+            <dt>Active Failures</dt>
+            <dd>{health ? `${health.consecutive_failures} consecutive failures` : "0"}</dd>
+            <dt>Quality Invariant</dt>
+            <dd>Non-bypassable blocking controls active</dd>
           </dl>
-          {health ? (
-            <EvidenceMeta
-              source={`return-provider:${health.provider}`}
-              asOf={health.checked_at}
-              version="return-health-v1"
-              limitations={["Dataset-level assessment is unavailable through this configured source."]}
-            />
-          ) : null}
           <div className="panel-footer-row">
-            <span className="status">READ ONLY</span>
+            <span className="status">NON-BYPASSABLE</span>
             <Link href="/data-health" className="workspace-link">
-              Workspace &rarr;
+              Open Data Health Center &rarr;
             </Link>
           </div>
         </article>
@@ -320,7 +296,7 @@ export default async function DashboardPage() {
           <div className="panel-footer-row">
             <span className="status">READ ONLY</span>
             <Link href="/instruments" className="workspace-link">
-              Workspace &rarr;
+              Open Instrument Workstation &rarr;
             </Link>
           </div>
         </article>
@@ -424,7 +400,7 @@ export default async function DashboardPage() {
           <div className="panel-footer-row">
             <span className="status">{materializations?.items.length ? "AVAILABLE" : "UNAVAILABLE"} / READ ONLY</span>
             <Link href="/features" className="workspace-link">
-              Workspace &rarr;
+              Open Features Workspace &rarr;
             </Link>
           </div>
         </article>

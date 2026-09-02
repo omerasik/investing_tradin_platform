@@ -35,6 +35,7 @@ export type FeatureDefinition = {
   outlier_policy: string; leakage_policy: string; units: string; calculation_version: string;
   created_at: string; retired_at: string | null;
 };
+export type FeatureDefinitionPage = { state: EvidenceStatus; items: FeatureDefinition[]; page: PageInfo };
 export type FeatureMaterialization = {
   materialization_id: string; instrument: string; feature_definition_id: string; feature_name: string;
   semantic_version: string; dataset_version: string; event_time: string; effective_time: string;
@@ -42,6 +43,53 @@ export type FeatureMaterialization = {
   content_hash: string; source_manifest: string[];
 };
 export type FeatureMaterializationPage = { state: EvidenceStatus; decision_time: string; items: FeatureMaterialization[]; page: PageInfo };
+
+export type IdentifierMapping = {
+  mapping_id: string; source_kind: string; namespace: string; value: string;
+  valid_from: string; valid_until: string | null; source_reference: string; ingested_at: string;
+};
+export type SymbolMapping = {
+  mapping_id: string; venue: string; symbol: string; valid_from: string;
+  valid_until: string | null; source_reference: string; ingested_at: string;
+};
+export type LifecycleEvent = {
+  event_id: string; status: string; effective_at: string; ingested_at: string; reason: string;
+};
+export type InstrumentDetail = {
+  instrument_id: string; canonical_symbol: string; asset_class: string; instrument_type: string;
+  exchange_name: string; venue: string; mic: string | null; base_currency: string; quote_currency: string;
+  settlement_currency: string; contract_multiplier: string; contract_size: string; tick_size: string;
+  lot_size: string; price_precision: number; quantity_precision: number; trading_timezone: string;
+  market_session_type: string; representation_kind: string; isin: string | null; cusip: string | null;
+  registered_at: string; lifecycle_status: string; synthetic_demo: boolean; ambiguous_mapping: boolean;
+  identifier_mappings: IdentifierMapping[]; symbol_mappings: SymbolMapping[];
+  lifecycle_events: LifecycleEvent[]; dataset_versions: string[];
+};
+
+export type HistoricalDataset = {
+  dataset_version_id: string; source_id: string; version: string; normalization_version: string;
+  content_hash: string; valid_from: string; valid_until: string | null; created_at: string;
+  status: string; provider: string; dataset_name: string; asset_scope: string;
+  provider_terms_version: string; authorization_reference: string; authorized_at: string;
+  observation_count: number; checkpoint_state: string | null; synthetic_demo: boolean;
+};
+export type HistoricalDatasetPage = { state: EvidenceStatus; items: HistoricalDataset[]; page: PageInfo };
+
+export type DataHealthFinding = {
+  finding_id: string; sequence: number; check_type: string; action: string;
+  observed_at: string | null; detail: Record<string, unknown>; content_hash: string;
+};
+export type DataHealthAssessment = {
+  assessment_id: string; dataset_version_id: string | null; dataset_version: string | null;
+  scope_type: string; scope_value: string; policy_version: string; evaluated_at: string;
+  expected_start: string; expected_end: string; max_action: string; blocking: boolean;
+  content_hash: string; summary: Record<string, unknown>; findings: DataHealthFinding[];
+  synthetic_demo: boolean;
+};
+export type DataHealthAssessmentPage = {
+  state: EvidenceStatus; overall_state: string; total_assessments: number;
+  blocking_count: number; items: DataHealthAssessment[]; page: PageInfo;
+};
 export type SignalPage = { state: EvidenceStatus; as_of: string; page: PageInfo; items: {
   signal_id: string; instrument: string; strategy_version: string; direction: string; status: string;
   expiry_state: "CURRENT" | "OVERDUE" | "EXPIRED"; created_at: string; expires_at: string;
