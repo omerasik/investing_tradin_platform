@@ -237,7 +237,26 @@ class OperatorDashboardPostgresTests(unittest.TestCase):
         scorecards_by_status = queries.strategy_scorecards(strategy_id=None, status="REVIEW_REQUIRED", limit=10, offset=0)
         scorecards_wrong_status = queries.strategy_scorecards(strategy_id=ids["strategy"], status="BLOCKED", limit=10, offset=0)
         signals = queries.signals(as_of=now, status="VALIDATED", instrument=instrument.instrument_id, strategy_version=None, limit=10, offset=0)
-        risks = queries.risk_decisions(limit=10, offset=0)
+        risks = queries.risk_decisions(
+            approved=None, account_id=None, policy_version_id=None, business_date=None,
+            has_reservation=None, limit=10, offset=0,
+        )
+        risks_approved_only = queries.risk_decisions(
+            approved=True, account_id=None, policy_version_id=None, business_date=None,
+            has_reservation=None, limit=10, offset=0,
+        )
+        risks_with_reservation = queries.risk_decisions(
+            approved=None, account_id=None, policy_version_id=None, business_date=None,
+            has_reservation=True, limit=10, offset=0,
+        )
+        risks_without_reservation = queries.risk_decisions(
+            approved=None, account_id=None, policy_version_id=None, business_date=None,
+            has_reservation=False, limit=10, offset=0,
+        )
+        risks_wrong_account = queries.risk_decisions(
+            approved=None, account_id="no-such-account", policy_version_id=None, business_date=None,
+            has_reservation=None, limit=10, offset=0,
+        )
         regime = queries.regime_run(ids["regime_run"])
         portfolio = queries.portfolio_construction(ids["portfolio_run"])
         news = queries.news_events(
@@ -281,6 +300,13 @@ class OperatorDashboardPostgresTests(unittest.TestCase):
         self.assertEqual((signals.state, signals.items[0].latest_reason, signals.items[0].automatic_authority), ("AVAILABLE", "all_validation_stages_passed", False))
         self.assertEqual((risks.state, len(risks.items), risks.items[0].approved, risks.items[0].reservation_id), ("AVAILABLE", 2, False, None))
         self.assertEqual((risks.items[1].approved, risks.items[1].reserved_notional, risks.items[1].research_or_paper_only, risks.items[1].automatic_authority), (True, "250", True, False))
+        # Module 2B-3: bounded risk-decision filters (approved, has_reservation, account) are
+        # applied server-side, never left to the frontend to sift through unbounded history.
+        self.assertEqual((len(risks_approved_only.items), risks_approved_only.items[0].risk_decision_id), (1, ids["risk_decision_approved"]))
+        self.assertEqual((len(risks_with_reservation.items), risks_with_reservation.items[0].risk_decision_id), (1, ids["risk_decision_approved"]))
+        self.assertEqual((len(risks_without_reservation.items), risks_without_reservation.items[0].risk_decision_id), (1, ids["risk_decision_rejected"]))
+        self.assertEqual(risks_wrong_account.state, "UNAVAILABLE")
+        self.assertEqual(risks_wrong_account.items, [])
         self.assertEqual((regime.dimensions[0].dimension, regime.risk_effects[0].action), ("TREND", "REDUCE"))
         self.assertFalse(regime.risk_effects[0].automatic_authority)
         self.assertEqual((portfolio.review_only, portfolio.sleeves[0].adjustment_reasons, portfolio.covariance.provider_backed), (True, ["capacity_reduction", "regime_reduction"], False))

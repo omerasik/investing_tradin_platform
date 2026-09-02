@@ -31,7 +31,16 @@ function allowedTarget(target: string): boolean {
     return parsed.searchParams.has("as_of") && [...parsed.searchParams.keys()].every((key) => allowed.has(key));
   }
   if (parsed.pathname === "/operator-dashboard/risk-decisions") {
-    return [...parsed.searchParams.keys()].every((key) => key === "limit" || key === "offset");
+    const allowed = new Set(["approved", "account_id", "policy_version_id", "business_date", "has_reservation", "limit", "offset"]);
+    return [...parsed.searchParams.keys()].every((key) => allowed.has(key));
+  }
+  if (parsed.pathname === "/operator-dashboard/regime-runs") {
+    const allowed = new Set(["instrument", "status", "model_version_id", "dataset_version", "limit", "offset"]);
+    return [...parsed.searchParams.keys()].every((key) => allowed.has(key));
+  }
+  if (parsed.pathname === "/operator-dashboard/portfolio-construction-runs") {
+    const allowed = new Set(["status", "policy_version_id", "regime_run_id", "limit", "offset"]);
+    return [...parsed.searchParams.keys()].every((key) => allowed.has(key));
   }
   if (parsed.pathname === "/operator-dashboard/news-events") {
     const allowed = new Set(["instrument", "entity", "category", "start", "end", "correction_state", "limit", "offset"]);

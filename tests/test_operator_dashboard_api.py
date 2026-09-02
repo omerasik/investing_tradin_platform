@@ -28,9 +28,14 @@ from trade_platform.operator_dashboard import (
     NewsEventPage,
     NewsEventView,
     PageInfo,
+    PortfolioConstructionDiscoveryPage,
+    PortfolioConstructionDiscoveryView,
     PortfolioConstructionView,
     RegimeDimensionView,
     RegimeProbabilityView,
+    RegimeRunDimensionSummaryView,
+    RegimeRunDiscoveryPage,
+    RegimeRunDiscoveryView,
     RegimeRunView,
     RiskDecisionPage,
     RiskDecisionView,
@@ -132,6 +137,23 @@ class OperatorDashboardApiTests(unittest.TestCase):
                 classification="NO_REAL_PROVIDER_BACKED_COVARIANCE_EVIDENCE",
             ), sleeves=[], constraints=[],
         )
+        self.queries.regime_runs.return_value = RegimeRunDiscoveryPage(
+            state="AVAILABLE", items=[RegimeRunDiscoveryView(
+                run_id=identity, model_version_id=uuid4(), model_version="v1", rule_version="rule-v1",
+                dataset_version="fixture-v1", instrument="fixture:SPY", as_of_timestamp=now, status="REVIEW_REQUIRED",
+                dimension_summary=[RegimeRunDimensionSummaryView(
+                    dimension="TREND", hard_label="UP", top_probability_state="UP", top_probability="0.8", uncertainty="0.2",
+                )], uncertainty_summary="TREND=0.2",
+            )], page=PageInfo(limit=50, offset=0, returned=1, has_more=False),
+        )
+        self.queries.portfolio_construction_runs.return_value = PortfolioConstructionDiscoveryPage(
+            state="AVAILABLE", items=[PortfolioConstructionDiscoveryView(
+                run_id=identity, policy_version_id=uuid4(), policy_version="v1", regime_run_id=uuid4(),
+                constructed_at=now, status="REVIEW_REQUIRED", review_only=True, automatic_authority=False,
+                equity="100000", target_volatility="0.1", portfolio_volatility="0.09", stressed_volatility="0.11",
+                risk_gate_approved=True,
+            )], page=PageInfo(limit=50, offset=0, returned=1, has_more=False),
+        )
         self.queries.news_events.return_value = NewsEventPage(
             state="EXTERNAL_BLOCKED", provider_state="EXTERNAL_BLOCKED",
             items=[NewsEventView(
@@ -226,8 +248,13 @@ class OperatorDashboardApiTests(unittest.TestCase):
             f"/operator-dashboard/feature-materializations?feature_id={identity}&instrument=fixture%3ASPY&dataset_version=fixture-v1&decision_time={now}",
             f"/operator-dashboard/signals?as_of={now}&limit=20",
             "/operator-dashboard/risk-decisions?limit=20&offset=0",
+            f"/operator-dashboard/risk-decisions?approved=true&has_reservation=false&account_id=fixture-account&policy_version_id={uuid4()}&business_date=2026-08-18",
             f"/operator-dashboard/strategy-scorecards/{identity}",
+            "/operator-dashboard/regime-runs",
+            f"/operator-dashboard/regime-runs?instrument=fixture%3ASPY&status=REVIEW_REQUIRED&model_version_id={uuid4()}&dataset_version=fixture-v1",
             f"/operator-dashboard/regime-runs/{identity}",
+            "/operator-dashboard/portfolio-construction-runs",
+            f"/operator-dashboard/portfolio-construction-runs?status=REVIEW_REQUIRED&policy_version_id={uuid4()}&regime_run_id={uuid4()}",
             f"/operator-dashboard/portfolio-construction-runs/{identity}",
             "/operator-dashboard/news-events?limit=20",
             "/operator-dashboard/sre-overview",
@@ -257,7 +284,43 @@ class OperatorDashboardApiTests(unittest.TestCase):
         )
         invalid_id = self.client.get("/operator-dashboard/regime-runs/not-a-uuid", headers=self.headers)
         invalid_signal = self.client.get("/operator-dashboard/signals?as_of=2026-01-01T00%3A00%3A00&status=UNKNOWN", headers=self.headers)
-        self.assertEqual((naive.status_code, oversized.status_code, inverted.status_code, invalid_id.status_code, invalid_signal.status_code), (422, 422, 422, 422, 422))
+        invalid_regime_status = self.client.get("/operator-dashboard/regime-runs?status=NOT_A_STATUS", headers=self.headers)
+        invalid_regime_model_version = self.client.get("/operator-dashboard/regime-runs?model_version_id=not-a-uuid", headers=self.headers)
+        oversized_regime = self.client.get("/operator-dashboard/regime-runs?limit=101", headers=self.headers)
+        invalid_portfolio_status = self.client.get("/operator-dashboard/portfolio-construction-runs?status=NOT_A_STATUS", headers=self.headers)
+        invalid_portfolio_regime_run = self.client.get("/operator-dashboard/portfolio-construction-runs?regime_run_id=not-a-uuid", headers=self.headers)
+        negative_portfolio_offset = self.client.get("/operator-dashboard/portfolio-construction-runs?offset=-1", headers=self.headers)
+        invalid_risk_business_date = self.client.get("/operator-dashboard/risk-decisions?business_date=not-a-date", headers=self.headers)
+        invalid_risk_policy_version = self.client.get("/operator-dashboard/risk-decisions?policy_version_id=not-a-uuid", headers=self.headers)
+        self.assertEqual(
+            (
+                naive.status_code, oversized.status_code, inverted.status_code, invalid_id.status_code, invalid_signal.status_code,
+                invalid_regime_status.status_code, invalid_regime_model_version.status_code, oversized_regime.status_code,
+                invalid_portfolio_status.status_code, invalid_portfolio_regime_run.status_code, negative_portfolio_offset.status_code,
+                invalid_risk_business_date.status_code, invalid_risk_policy_version.status_code,
+            ),
+            (422, 422, 422, 422, 422, 422, 422, 422, 422, 422, 422, 422, 422),
+        )
+        self.queries.regime_runs.assert_not_called()
+        self.queries.portfolio_construction_runs.assert_not_called()
+
+    def test_regime_and_portfolio_discovery_never_expose_automatic_authority(self) -> None:
+        """Module 2B-3 invariant: regime effects, portfolio review-only and automatic_authority stay fail-closed."""
+        regime_response = self.client.get("/operator-dashboard/regime-runs", headers=self.headers)
+        portfolio_response = self.client.get("/operator-dashboard/portfolio-construction-runs", headers=self.headers)
+        regime_run_response = self.client.get(
+            f"/operator-dashboard/regime-runs/{self.queries.regime_run.return_value.regime_assessment_id}", headers=self.headers,
+        )
+        portfolio_run_response = self.client.get(
+            f"/operator-dashboard/portfolio-construction-runs/{self.queries.portfolio_construction.return_value.portfolio_construction_run_id}",
+            headers=self.headers,
+        )
+        self.assertEqual(portfolio_response.json()["items"][0]["automatic_authority"], False)
+        self.assertEqual(portfolio_response.json()["items"][0]["review_only"], True)
+        self.assertEqual(portfolio_run_response.json()["automatic_authority"], False)
+        self.assertEqual(portfolio_run_response.json()["review_only"], True)
+        self.assertNotIn("automatic_authority", regime_response.json()["items"][0])
+        self.assertIn("REGIME MAY REDUCE OR BLOCK RISK", regime_run_response.json()["risk_boundary"])
 
 
 

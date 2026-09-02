@@ -7,7 +7,7 @@ calculation, provider access, job trigger, order path, or mutation authority.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from threading import RLock
 from typing import Any, Literal, Protocol
@@ -530,6 +530,33 @@ class RegimeRunView(BaseModel):
     risk_boundary: Literal["REGIME MAY REDUCE OR BLOCK RISK; REGIME CANNOT INCREASE GLOBAL RISK LIMITS"]
 
 
+class RegimeRunDimensionSummaryView(BaseModel):
+    dimension: str
+    hard_label: str | None
+    top_probability_state: str | None
+    top_probability: str | None
+    uncertainty: str | None
+
+
+class RegimeRunDiscoveryView(BaseModel):
+    run_id: UUID
+    model_version_id: UUID
+    model_version: str
+    rule_version: str
+    dataset_version: str
+    instrument: str
+    as_of_timestamp: datetime
+    status: str
+    dimension_summary: list[RegimeRunDimensionSummaryView]
+    uncertainty_summary: str
+
+
+class RegimeRunDiscoveryPage(BaseModel):
+    state: Availability
+    items: list[RegimeRunDiscoveryView]
+    page: PageInfo
+
+
 class PortfolioSleeveView(BaseModel):
     sleeve_input_id: UUID
     strategy_key: str
@@ -596,6 +623,28 @@ class PortfolioConstructionView(BaseModel):
     covariance: CovarianceEvidenceView
     sleeves: list[PortfolioSleeveView]
     constraints: list[PortfolioConstraintView]
+
+
+class PortfolioConstructionDiscoveryView(BaseModel):
+    run_id: UUID
+    policy_version_id: UUID
+    policy_version: str
+    regime_run_id: UUID
+    constructed_at: datetime
+    status: str
+    review_only: Literal[True]
+    automatic_authority: Literal[False]
+    equity: str
+    target_volatility: str | None
+    portfolio_volatility: str
+    stressed_volatility: str
+    risk_gate_approved: bool
+
+
+class PortfolioConstructionDiscoveryPage(BaseModel):
+    state: Availability
+    items: list[PortfolioConstructionDiscoveryView]
+    page: PageInfo
 
 
 class NewsEntityView(BaseModel):
@@ -775,6 +824,21 @@ def _page(rows: list[tuple[Any, ...]], limit: int, offset: int) -> tuple[list[tu
     has_more = len(rows) > limit
     selected = rows[:limit]
     return selected, PageInfo(limit=limit, offset=offset, returned=len(selected), has_more=has_more)
+
+
+def _top_probability(probabilities: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Pick the persisted probability with the largest value; never infers a new one."""
+    best_state: str | None = None
+    best_value: str | None = None
+    best_numeric: float | None = None
+    for state, value in probabilities.items():
+        try:
+            numeric = float(str(value))
+        except (TypeError, ValueError):
+            continue
+        if best_numeric is None or numeric > best_numeric:
+            best_numeric, best_state, best_value = numeric, state, str(value)
+    return best_state, best_value
 
 
 _SYNTHETIC_EVIDENCE_MARKERS = ("demo", "synthetic", "fixture", "module1b")
@@ -1375,7 +1439,10 @@ class PostgresOperatorDashboardQueries:
             return SignalPage(state=state, as_of=as_of, items=items, page=page)
         return self._read(operation)
 
-    def risk_decisions(self, *, limit: int, offset: int) -> RiskDecisionPage:
+    def risk_decisions(
+        self, *, approved: bool | None, account_id: str | None, policy_version_id: UUID | None,
+        business_date: date | None, has_reservation: bool | None, limit: int, offset: int,
+    ) -> RiskDecisionPage:
         """Immutable risk-decision evidence only; reading cannot evaluate or override risk."""
         def operation(cursor: _Cursor) -> RiskDecisionPage:
             cursor.execute(
@@ -1385,8 +1452,16 @@ class PostgresOperatorDashboardQueries:
                 "FROM risk_decisions d JOIN risk_policy_versions pv ON pv.risk_policy_version_id=d.risk_policy_version_id "
                 "JOIN risk_policies p ON p.risk_policy_id=pv.risk_policy_id "
                 "LEFT JOIN risk_reservations r ON r.intent_id=d.intent_id "
+                "WHERE (CAST(%s AS boolean) IS NULL OR d.approved=%s) "
+                "AND (CAST(%s AS text) IS NULL OR r.account_id=%s) "
+                "AND (CAST(%s AS uuid) IS NULL OR d.risk_policy_version_id=%s) "
+                "AND (CAST(%s AS date) IS NULL OR r.business_date=%s) "
+                "AND (CAST(%s AS boolean) IS NULL OR (r.reservation_id IS NOT NULL)=%s) "
                 "ORDER BY d.decided_at DESC,d.risk_decision_id DESC LIMIT %s OFFSET %s",
-                (limit + 1, offset),
+                (
+                    approved, approved, account_id, account_id, policy_version_id, policy_version_id,
+                    business_date, business_date, has_reservation, has_reservation, limit + 1, offset,
+                ),
             )
             rows, page = _page(cursor.fetchall(), limit, offset)
             items = [RiskDecisionView(
@@ -1610,6 +1685,59 @@ class PostgresOperatorDashboardQueries:
         row = cursor.fetchone()
         return None if row is None else UUID(str(row[0]))
 
+    def regime_runs(
+        self, *, instrument: str | None, status: str | None, model_version_id: UUID | None,
+        dataset_version: str | None, limit: int, offset: int,
+    ) -> RegimeRunDiscoveryPage:
+        """Bounded regime-run discovery; no calculation, only persisted evidence ordering."""
+        def operation(cursor: _Cursor) -> RegimeRunDiscoveryPage:
+            cursor.execute(
+                "SELECT r.run_id,r.model_version_id,m.version,m.implementation_version,r.dataset_version,"
+                "r.instrument_id,r.evaluated_at,r.status "
+                "FROM regime_runs r JOIN regime_model_versions m USING(model_version_id) "
+                "WHERE (CAST(%s AS text) IS NULL OR r.instrument_id=%s) "
+                "AND (CAST(%s AS text) IS NULL OR r.status=%s) "
+                "AND (CAST(%s AS uuid) IS NULL OR r.model_version_id=%s) "
+                "AND (CAST(%s AS text) IS NULL OR r.dataset_version=%s) "
+                "ORDER BY r.evaluated_at DESC,r.run_id DESC LIMIT %s OFFSET %s",
+                (
+                    instrument, instrument, status, status, model_version_id, model_version_id,
+                    dataset_version, dataset_version, limit + 1, offset,
+                ),
+            )
+            rows, page = _page(cursor.fetchall(), limit, offset)
+            run_ids = [row[0] for row in rows]
+            dims_by_run: dict[UUID, list[RegimeRunDimensionSummaryView]] = {UUID(str(value)): [] for value in run_ids}
+            if run_ids:
+                cursor.execute(
+                    "SELECT ro.run_id,o.dimension,o.hard_label,o.probabilities,o.uncertainty "
+                    "FROM regime_run_observations ro JOIN regime_observations o USING(observation_id) "
+                    "WHERE ro.run_id=ANY(%s) ORDER BY ro.run_id,ro.sequence",
+                    (run_ids,),
+                )
+                for item in cursor.fetchall():
+                    run_key = UUID(str(item[0]))
+                    probability_map = _mapping(item[3])
+                    top_state, top_value = _top_probability(probability_map)
+                    dims_by_run.setdefault(run_key, []).append(RegimeRunDimensionSummaryView(
+                        dimension=str(item[1]), hard_label=None if item[2] is None else str(item[2]),
+                        top_probability_state=top_state, top_probability=top_value, uncertainty=_decimal(item[4]),
+                    ))
+            items: list[RegimeRunDiscoveryView] = []
+            for row in rows:
+                dims = dims_by_run.get(UUID(str(row[0])), [])
+                uncertainty_summary = "; ".join(
+                    f"{dim.dimension}={dim.uncertainty if dim.uncertainty is not None else 'UNAVAILABLE'}"
+                    for dim in dims
+                ) if dims else "UNAVAILABLE"
+                items.append(RegimeRunDiscoveryView(
+                    run_id=row[0], model_version_id=row[1], model_version=str(row[2]), rule_version=str(row[3]),
+                    dataset_version=str(row[4]), instrument=str(row[5]), as_of_timestamp=row[6], status=str(row[7]),
+                    dimension_summary=dims, uncertainty_summary=uncertainty_summary,
+                ))
+            return RegimeRunDiscoveryPage(state="AVAILABLE" if items else "UNAVAILABLE", items=items, page=page)
+        return self._read(operation)
+
     def regime_run(self, run_id: UUID) -> RegimeRunView:
         def operation(cursor: _Cursor) -> RegimeRunView:
             cursor.execute(
@@ -1658,6 +1786,38 @@ class PostgresOperatorDashboardQueries:
 
     def latest_regime_run_id(self) -> UUID | None:
         return self._read(lambda cursor: self._latest_id(cursor, "regime_runs", "run_id", "evaluated_at"))
+
+    def portfolio_construction_runs(
+        self, *, status: str | None, policy_version_id: UUID | None, regime_run_id: UUID | None,
+        limit: int, offset: int,
+    ) -> PortfolioConstructionDiscoveryPage:
+        """Bounded portfolio-construction-run discovery; every run carries risk-gate evidence."""
+        def operation(cursor: _Cursor) -> PortfolioConstructionDiscoveryPage:
+            cursor.execute(
+                "SELECT r.run_id,r.policy_version_id,p.version,r.regime_run_id,r.constructed_at,r.status,"
+                "r.equity,p.policy,t.portfolio_volatility,t.stressed_volatility,g.approved "
+                "FROM portfolio_construction_runs r "
+                "JOIN portfolio_construction_policy_versions p USING(policy_version_id) "
+                "JOIN portfolio_target_candidates t USING(run_id) "
+                "JOIN portfolio_risk_gate_evidence g USING(run_id) "
+                "WHERE (CAST(%s AS text) IS NULL OR r.status=%s) "
+                "AND (CAST(%s AS uuid) IS NULL OR r.policy_version_id=%s) "
+                "AND (CAST(%s AS uuid) IS NULL OR r.regime_run_id=%s) "
+                "ORDER BY r.constructed_at DESC,r.run_id DESC LIMIT %s OFFSET %s",
+                (
+                    status, status, policy_version_id, policy_version_id, regime_run_id, regime_run_id,
+                    limit + 1, offset,
+                ),
+            )
+            rows, page = _page(cursor.fetchall(), limit, offset)
+            items = [PortfolioConstructionDiscoveryView(
+                run_id=row[0], policy_version_id=row[1], policy_version=str(row[2]), regime_run_id=row[3],
+                constructed_at=row[4], status=str(row[5]), review_only=True, automatic_authority=False,
+                equity=str(row[6]), target_volatility=_decimal(_mapping(row[7]).get("target_volatility")),
+                portfolio_volatility=str(row[8]), stressed_volatility=str(row[9]), risk_gate_approved=bool(row[10]),
+            ) for row in rows]
+            return PortfolioConstructionDiscoveryPage(state="AVAILABLE" if items else "UNAVAILABLE", items=items, page=page)
+        return self._read(operation)
 
     def portfolio_construction(self, run_id: UUID) -> PortfolioConstructionView:
         def operation(cursor: _Cursor) -> PortfolioConstructionView:
@@ -1713,7 +1873,12 @@ class PostgresOperatorDashboardQueries:
             if gate is None:
                 raise DashboardQueryError("portfolio_risk_gate_missing")
             dataset_version = str(row[16])
-            provider_backed = str(row[24]).upper() != "FIXTURE" and bool(str(row[26]).strip())
+            # Module 2B-3 truthfulness fix: provider-backed status must come from the same
+            # fail-closed allowlist as classify_research_evidence(), never from a heuristic
+            # over provider_identifier_namespace/authorization_reference text -- those are
+            # free-text fields any synthetic fixture can populate, and doing so previously
+            # let a demo/fixture covariance render as PROVIDER_BACKED_COVARIANCE.
+            provider_backed = str(row[23]).strip() in _AUTHORIZED_REAL_MARKET_DATA_PROVIDERS
             return PortfolioConstructionView(
                 portfolio_construction_run_id=row[0], policy_version_id=row[1], regime_run_id=row[2],
                 constructed_at=row[3], status=str(row[4]), review_only=True, automatic_authority=False,
