@@ -549,49 +549,18 @@ export default async function DashboardPage() {
             override, release, reserve, submit or cancel anything.
           </p>
           {riskEvidence?.items.length ? (
-            <table>
-              <caption>Latest bounded risk decisions</caption>
-              <thead>
-                <tr>
-                  <th>Decision / policy</th>
-                  <th>Outcome / reasons</th>
-                  <th>Reservation evidence</th>
-                  <th>Boundary</th>
-                </tr>
-              </thead>
-              <tbody>
-                {riskEvidence.items.map((item) => (
-                  <tr key={item.risk_decision_id}>
-                    <td>
-                      <code>{item.risk_decision_id}</code>
-                      <br />
-                      {item.policy_name} / {item.policy_version}
-                      <br />
-                      <code>{item.policy_content_hash}</code>
-                    </td>
-                    <td>
-                      <strong>{item.approved ? "APPROVED" : "REJECTED"}</strong>
-                      <br />
-                      {item.reasons.join("; ") || "none recorded"}
-                      <br />
-                      {utc(item.decided_at)}
-                    </td>
-                    <td>
-                      {item.reservation_id ?? "UNAVAILABLE"}
-                      <br />
-                      {item.account_id ?? "UNAVAILABLE"} / {item.business_date ?? "UNAVAILABLE"}
-                      <br />
-                      {item.reserved_notional ?? "UNAVAILABLE"}
-                    </td>
-                    <td>
-                      RESEARCH / PAPER ONLY
-                      <br />
-                      NO AUTOMATIC AUTHORITY
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <dl>
+              <dt>Latest decision</dt>
+              <dd>
+                <StatusBadge status={riskEvidence.items[0].approved ? "APPROVED" : "REJECTED"} /> &bull;{" "}
+                {utc(riskEvidence.items[0].decided_at)}
+              </dd>
+              <dt>Approved / Rejected (current page)</dt>
+              <dd>
+                {riskEvidence.items.filter((item) => item.approved).length} approved /{" "}
+                {riskEvidence.items.filter((item) => !item.approved).length} rejected
+              </dd>
+            </dl>
           ) : (
             <p className="empty-state">
               {riskEvidence
@@ -602,7 +571,7 @@ export default async function DashboardPage() {
           <div className="panel-footer-row">
             <span className="status">READ ONLY / NO RISK OVERRIDE / NO EXECUTION ACTION</span>
             <Link href="/risk" className="workspace-link">
-              Workspace &rarr;
+              Open Risk Workspace &rarr;
             </Link>
           </div>
         </article>
@@ -715,80 +684,27 @@ export default async function DashboardPage() {
             REGIME MAY REDUCE OR BLOCK RISK. REGIME CANNOT INCREASE GLOBAL RISK LIMITS.
           </p>
           {regimeEvidence ? (
-            <>
-              <dl>
-                <dt>Assessment / model / rule</dt>
-                <dd>
-                  <code>{regimeEvidence.regime_assessment_id}</code> / {regimeEvidence.model_version} /{" "}
-                  {regimeEvidence.rule_version}
-                </dd>
-                <dt>Dataset / instrument</dt>
-                <dd>
-                  {regimeEvidence.dataset_version} / {regimeEvidence.instrument}
-                </dd>
-                <dt>As of / knowledge time</dt>
-                <dd>
-                  {utc(regimeEvidence.as_of_timestamp)} / {utc(regimeEvidence.knowledge_timestamp)}
-                </dd>
-                <dt>Status / evidence hash</dt>
-                <dd>
-                  {regimeEvidence.status} / <code>{regimeEvidence.evidence_hash}</code>
-                </dd>
-              </dl>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Dimension / method</th>
-                    <th>State probabilities</th>
-                    <th>Uncertainty</th>
-                    <th>Evidence</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {regimeEvidence.dimensions.map((item) => (
-                    <tr key={item.observation_id}>
-                      <td>
-                        {item.dimension}
-                        <br />
-                        {item.method}
-                      </td>
-                      <td>
-                        {item.probabilities.map((prob) => `${prob.state} ${prob.probability}`).join("; ") ||
-                          "UNAVAILABLE"}
-                      </td>
-                      <td>{item.uncertainty ?? "UNAVAILABLE"}</td>
-                      <td>
-                        {item.evidence_state}; <code>{item.content_hash}</code>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <h3>Eligibility / reduction effects</h3>
-              {regimeEvidence.risk_effects.length ? (
-                regimeEvidence.risk_effects.map((item) => (
-                  <p key={item.candidate_id}>
-                    {item.action}: {item.current_risk_multiplier} &rarr; {item.proposed_risk_multiplier};
-                    maximum {item.preapproved_maximum}; {item.status} {item.reasons.join(", ")}
-                  </p>
-                ))
-              ) : (
-                <p className="empty-state">UNAVAILABLE: no reduction candidate is bound to this run.</p>
-              )}
-              <EvidenceMeta
-                source="PostgreSQL Regime Engine V2"
-                asOf={regimeEvidence.as_of_timestamp}
-                version={regimeEvidence.model_version}
-                limitations={regimeEvidence.limitations}
-              />
-            </>
+            <dl>
+              <dt>Instrument / status</dt>
+              <dd>
+                {regimeEvidence.instrument} &bull; <StatusBadge status={regimeEvidence.status} />
+              </dd>
+              <dt>Dominant regime</dt>
+              <dd>
+                {regimeEvidence.dimensions.map((item) => `${item.dimension}=${item.hard_label ?? "UNAVAILABLE"}`).join("; ") || "UNAVAILABLE"}
+              </dd>
+              <dt>Uncertainty summary</dt>
+              <dd>
+                {regimeEvidence.dimensions.map((item) => `${item.dimension}=${item.uncertainty ?? "UNAVAILABLE"}`).join("; ") || "UNAVAILABLE"}
+              </dd>
+            </dl>
           ) : (
             <p className="empty-state">{stateText(regime)}</p>
           )}
           <div className="panel-footer-row">
             <span className="status">RESEARCH ONLY / NO RISK-INCREASE CONTROL</span>
             <Link href="/regimes" className="workspace-link">
-              Workspace &rarr;
+              Open Regime Workspace &rarr;
             </Link>
           </div>
         </article>
@@ -801,94 +717,26 @@ export default async function DashboardPage() {
           </h2>
           <p>Review-only requested and constrained allocations. This workspace has no apply or execution action.</p>
           {constructionEvidence ? (
-            <>
-              <dl>
-                <dt>Run / policy</dt>
-                <dd>
-                  <code>{constructionEvidence.portfolio_construction_run_id}</code> /{" "}
-                  {constructionEvidence.policy_version}
-                </dd>
-                <dt>Status / constructed</dt>
-                <dd>
-                  {constructionEvidence.status} / {utc(constructionEvidence.constructed_at)}
-                </dd>
-                <dt>Equity / target volatility</dt>
-                <dd>
-                  {constructionEvidence.equity} /{" "}
-                  {constructionEvidence.target_volatility ?? "UNAVAILABLE"}
-                </dd>
-                <dt>Cash / gross / net</dt>
-                <dd>
-                  {constructionEvidence.cash_weight} / {constructionEvidence.gross_weight} /{" "}
-                  {constructionEvidence.net_weight}
-                </dd>
-                <dt>Volatility / stressed</dt>
-                <dd>
-                  {constructionEvidence.portfolio_volatility} / {constructionEvidence.stressed_volatility}
-                </dd>
-                <dt>Covariance evidence</dt>
-                <dd>
-                  {constructionEvidence.covariance.classification};{" "}
-                  {constructionEvidence.covariance.dataset_version};{" "}
-                  {constructionEvidence.covariance.observations} observations; uncertainty{" "}
-                  {constructionEvidence.covariance.uncertainty}
-                </dd>
-                <dt>Risk gate</dt>
-                <dd>
-                  {constructionEvidence.risk_gate_approved ? "REVIEW ELIGIBLE" : "BLOCKED"}:{" "}
-                  {constructionEvidence.risk_gate_reasons.join(", ")}
-                </dd>
-              </dl>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Sleeve</th>
-                    <th>Requested / review</th>
-                    <th>Risk / marginal / component</th>
-                    <th>Reductions / rejection</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {constructionEvidence.sleeves.map((item) => (
-                    <tr key={item.sleeve_input_id}>
-                      <td>{item.strategy_key}</td>
-                      <td>
-                        {item.requested_allocation} / {item.review_allocation ?? "REJECTED"}
-                      </td>
-                      <td>
-                        {item.risk_budget} / {item.marginal_risk ?? "UNAVAILABLE"} /{" "}
-                        {item.component_risk ?? "UNAVAILABLE"}
-                      </td>
-                      <td>
-                        capacity {item.capacity_weight}; liquidity {item.liquidity_score}; drawdown{" "}
-                        {item.drawdown}; regime {item.regime_current_multiplier}&rarr;
-                        {item.regime_proposed_multiplier}; {item.adjustment_reasons.join(", ") || "none"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <h3>Constraints</h3>
-              {constructionEvidence.constraints.map((item) => (
-                <p key={item.constraint_id}>
-                  {item.name}: {item.state}; observed {item.observed ?? "UNAVAILABLE"}; limit{" "}
-                  {item.limit ?? "UNAVAILABLE"}; {item.reasons.join(", ")}
-                </p>
-              ))}
-              <EvidenceMeta
-                source="PostgreSQL Portfolio Construction V2"
-                asOf={constructionEvidence.constructed_at}
-                version={constructionEvidence.policy_version}
-                limitations={constructionEvidence.limitations}
-              />
-            </>
+            <dl>
+              <dt>Status / constructed</dt>
+              <dd>
+                <StatusBadge status={constructionEvidence.status} /> &bull; {utc(constructionEvidence.constructed_at)}
+              </dd>
+              <dt>Risk gate</dt>
+              <dd>
+                <StatusBadge
+                  status={constructionEvidence.risk_gate_approved ? "APPROVED" : "BLOCKED"}
+                  label={constructionEvidence.risk_gate_approved ? "REVIEW ELIGIBLE" : "BLOCKED"}
+                />
+              </dd>
+            </dl>
           ) : (
             <p className="empty-state">{stateText(construction)}</p>
           )}
           <div className="panel-footer-row">
             <span className="status">REVIEW ONLY / NO EXECUTION ACTION</span>
             <Link href="/portfolio" className="workspace-link">
-              Workspace &rarr;
+              Open Portfolio Workspace &rarr;
             </Link>
           </div>
         </article>

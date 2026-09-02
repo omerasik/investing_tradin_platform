@@ -12,7 +12,9 @@ import {
   type InstrumentDetail,
   type NewsEventPage,
   type PortfolioConstruction,
+  type PortfolioConstructionDiscoveryPage,
   type RegimeRun,
+  type RegimeRunDiscoveryPage,
   type RiskDecisionPage,
   type SignalPage,
   type SreOverview,
@@ -440,12 +442,31 @@ export async function getSignalDiscovery(
   );
 }
 
-export async function getRiskEvidence(ctx: WorkspaceContext): Promise<EvidenceResult<RiskDecisionPage>> {
+export async function getRiskDecisions(
+  ctx: WorkspaceContext,
+  params?: {
+    approved?: boolean; account_id?: string; policy_version_id?: string;
+    business_date?: string; has_reservation?: boolean; limit?: number; offset?: number;
+  },
+): Promise<EvidenceResult<RiskDecisionPage>> {
+  const query = new URLSearchParams({
+    limit: String(params?.limit ?? 20),
+    offset: String(params?.offset ?? 0),
+  });
+  if (params?.approved !== undefined) query.set("approved", String(params.approved));
+  if (params?.account_id) query.set("account_id", params.account_id);
+  if (params?.policy_version_id) query.set("policy_version_id", params.policy_version_id);
+  if (params?.business_date) query.set("business_date", params.business_date);
+  if (params?.has_reservation !== undefined) query.set("has_reservation", String(params.has_reservation));
   return readEvidence<RiskDecisionPage>(
-    authorityUrl(ctx.origin, "/operator-dashboard/risk-decisions?limit=20&offset=0"),
+    authorityUrl(ctx.origin, `/operator-dashboard/risk-decisions?${query.toString()}`),
     ctx.protectedApi,
     "Risk decision authority is not configured.",
   );
+}
+
+export async function getRiskEvidence(ctx: WorkspaceContext): Promise<EvidenceResult<RiskDecisionPage>> {
+  return getRiskDecisions(ctx, { limit: 20, offset: 0 });
 }
 
 export async function getStrategyCard(
@@ -542,23 +563,61 @@ export async function getScorecardDiscovery(
   );
 }
 
-export async function getRegimeEvidence(ctx: WorkspaceContext): Promise<EvidenceResult<RegimeRun>> {
+export async function getRegimeRunDiscovery(
+  ctx: WorkspaceContext,
+  params?: { instrument?: string; status?: string; model_version_id?: string; dataset_version?: string; limit?: number; offset?: number },
+): Promise<EvidenceResult<RegimeRunDiscoveryPage>> {
+  const query = new URLSearchParams({ limit: String(params?.limit ?? 20), offset: String(params?.offset ?? 0) });
+  if (params?.instrument) query.set("instrument", params.instrument);
+  if (params?.status && params.status !== "ALL") query.set("status", params.status);
+  if (params?.model_version_id) query.set("model_version_id", params.model_version_id);
+  if (params?.dataset_version) query.set("dataset_version", params.dataset_version);
+  return readEvidence<RegimeRunDiscoveryPage>(
+    authorityUrl(ctx.origin, `/operator-dashboard/regime-runs?${query.toString()}`),
+    ctx.protectedApi,
+    "Regime run discovery is unavailable.",
+  );
+}
+
+export async function getRegimeRun(ctx: WorkspaceContext, params: { runId: string }): Promise<EvidenceResult<RegimeRun>> {
   return readEvidence<RegimeRun>(
-    authorityUrl(ctx.origin, `/operator-dashboard/regime-runs/${encodeURIComponent(ctx.workspace.regimeRunId ?? "")}`),
-    Boolean(ctx.workspace.regimeRunId && ctx.protectedApi),
+    authorityUrl(ctx.origin, `/operator-dashboard/regime-runs/${encodeURIComponent(params.runId)}`),
+    Boolean(params.runId && ctx.protectedApi),
     "Regime run reference is unavailable.",
   );
 }
 
-export async function getPortfolioConstructionEvidence(ctx: WorkspaceContext): Promise<EvidenceResult<PortfolioConstruction>> {
+export async function getRegimeEvidence(ctx: WorkspaceContext): Promise<EvidenceResult<RegimeRun>> {
+  return getRegimeRun(ctx, { runId: ctx.workspace.regimeRunId ?? "" });
+}
+
+export async function getPortfolioConstructionRunDiscovery(
+  ctx: WorkspaceContext,
+  params?: { status?: string; policy_version_id?: string; regime_run_id?: string; limit?: number; offset?: number },
+): Promise<EvidenceResult<PortfolioConstructionDiscoveryPage>> {
+  const query = new URLSearchParams({ limit: String(params?.limit ?? 20), offset: String(params?.offset ?? 0) });
+  if (params?.status && params.status !== "ALL") query.set("status", params.status);
+  if (params?.policy_version_id) query.set("policy_version_id", params.policy_version_id);
+  if (params?.regime_run_id) query.set("regime_run_id", params.regime_run_id);
+  return readEvidence<PortfolioConstructionDiscoveryPage>(
+    authorityUrl(ctx.origin, `/operator-dashboard/portfolio-construction-runs?${query.toString()}`),
+    ctx.protectedApi,
+    "Portfolio construction run discovery is unavailable.",
+  );
+}
+
+export async function getPortfolioConstructionRun(
+  ctx: WorkspaceContext, params: { runId: string },
+): Promise<EvidenceResult<PortfolioConstruction>> {
   return readEvidence<PortfolioConstruction>(
-    authorityUrl(
-      ctx.origin,
-      `/operator-dashboard/portfolio-construction-runs/${encodeURIComponent(ctx.workspace.portfolioConstructionRunId ?? "")}`,
-    ),
-    Boolean(ctx.workspace.portfolioConstructionRunId && ctx.protectedApi),
+    authorityUrl(ctx.origin, `/operator-dashboard/portfolio-construction-runs/${encodeURIComponent(params.runId)}`),
+    Boolean(params.runId && ctx.protectedApi),
     "Portfolio construction run reference is unavailable.",
   );
+}
+
+export async function getPortfolioConstructionEvidence(ctx: WorkspaceContext): Promise<EvidenceResult<PortfolioConstruction>> {
+  return getPortfolioConstructionRun(ctx, { runId: ctx.workspace.portfolioConstructionRunId ?? "" });
 }
 
 export async function getInvestmentThesisEvidence(ctx: WorkspaceContext): Promise<EvidenceResult<Thesis>> {

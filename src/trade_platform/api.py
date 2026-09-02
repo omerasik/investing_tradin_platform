@@ -2,7 +2,7 @@
 
 import json
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -36,8 +36,10 @@ from .operator_dashboard import (
     InvestmentThesisDiscoveryPage,
     NewsEventPage,
     PaperOrderDiscoveryPage,
+    PortfolioConstructionDiscoveryPage,
     PortfolioConstructionView,
     PostgresOperatorDashboardQueries,
+    RegimeRunDiscoveryPage,
     RegimeRunView,
     RiskDecisionPage,
     SignalPage,
@@ -504,11 +506,19 @@ def build_app(
 
     @app.get("/operator-dashboard/risk-decisions", response_model=RiskDecisionPage)
     def operator_risk_decisions(
+        approved: bool | None = Query(default=None),
+        account_id: str | None = Query(default=None, min_length=1, max_length=64),
+        policy_version_id: UUID | None = None,
+        business_date: date | None = Query(default=None),
+        has_reservation: bool | None = Query(default=None),
         limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10_000),
         _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
     ) -> object:
         """Read immutable risk-policy, decision and reservation evidence only."""
-        return read_dashboard(lambda: queries.risk_decisions(limit=limit, offset=offset))
+        return read_dashboard(lambda: queries.risk_decisions(
+            approved=approved, account_id=account_id, policy_version_id=policy_version_id,
+            business_date=business_date, has_reservation=has_reservation, limit=limit, offset=offset,
+        ))
 
     @app.get("/operator-dashboard/strategy-scorecards", response_model=StrategyScorecardDiscoveryPage)
     def dashboard_strategy_scorecards(
@@ -528,12 +538,40 @@ def build_app(
     ) -> object:
         return read_dashboard(lambda: queries.strategy_scorecard(scorecard_id))
 
+    @app.get("/operator-dashboard/regime-runs", response_model=RegimeRunDiscoveryPage)
+    def regime_runs(
+        instrument: str | None = Query(default=None, min_length=1, max_length=160),
+        status: str | None = Query(default=None, pattern="^(BLOCKED|REVIEW_REQUIRED)$"),
+        model_version_id: UUID | None = None,
+        dataset_version: str | None = Query(default=None, min_length=1, max_length=160),
+        limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10_000),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """Bounded regime-run discovery; no ad-hoc search, no calculation."""
+        return read_dashboard(lambda: queries.regime_runs(
+            instrument=instrument, status=status, model_version_id=model_version_id,
+            dataset_version=dataset_version, limit=limit, offset=offset,
+        ))
+
     @app.get("/operator-dashboard/regime-runs/{run_id}", response_model=RegimeRunView)
     def regime_run(
         run_id: UUID, _: None = Depends(protected_operator),
         queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
     ) -> object:
         return read_dashboard(lambda: queries.regime_run(run_id))
+
+    @app.get("/operator-dashboard/portfolio-construction-runs", response_model=PortfolioConstructionDiscoveryPage)
+    def portfolio_construction_runs(
+        status: str | None = Query(default=None, pattern="^(BLOCKED|REVIEW_REQUIRED)$"),
+        policy_version_id: UUID | None = None, regime_run_id: UUID | None = None,
+        limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10_000),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """Bounded portfolio-construction-run discovery; no ad-hoc search, no calculation."""
+        return read_dashboard(lambda: queries.portfolio_construction_runs(
+            status=status, policy_version_id=policy_version_id, regime_run_id=regime_run_id,
+            limit=limit, offset=offset,
+        ))
 
     @app.get("/operator-dashboard/portfolio-construction-runs/{run_id}", response_model=PortfolioConstructionView)
     def portfolio_construction(

@@ -283,6 +283,7 @@ jobs:
           pnpm test:e2e:module2a
           pnpm test:e2e:module2b1
           pnpm test:e2e:module2b2
+          pnpm test:e2e:module2b3
           echo "Human browser demo: PASS"
       - name: Retain dependency and licensing evidence
         if: always()

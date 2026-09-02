@@ -97,23 +97,38 @@ test("scorecard groups preserve synthetic and metric evidence distinctions", asy
 
 test("regime probabilities and uncertainty render without risk-increase control", async ({ page }) => {
   const workspace = page.locator("#regime");
-  await expect(workspace).toContainText("BULL_TREND 0.8");
   await expect(workspace).toContainText("Uncertainty");
   await expect(workspace).toContainText("REGIME CANNOT INCREASE GLOBAL RISK LIMITS");
   await expect(workspace.getByRole("button")).toHaveCount(0);
   await expect(workspace).not.toContainText("Increase risk");
+
+  // Module 2B-3: the dashboard card is a concise summary with a link out; the full
+  // per-state probability breakdown it used to inline now lives on /regimes instead.
+  await workspace.getByRole("link", { name: "Open Regime Workspace" }).click();
+  await expect(page).toHaveURL(/\/regimes/);
+  await expect(page.getByText("BULL_TREND", { exact: false }).first()).toBeVisible();
+  await expect(page.getByText("0.8", { exact: false }).first()).toBeVisible();
+  await expect(page.getByText("REGIME CANNOT INCREASE GLOBAL RISK LIMITS").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: /increase.*risk/i })).toHaveCount(0);
 });
 
 test("portfolio allocations and reductions are review-only with no execution action", async ({ page }) => {
   const workspace = page.locator("#portfolio");
-  await expect(workspace).toContainText("0.5 / 0.6");
-  await expect(workspace).toContainText("capacity_reduction");
-  await expect(workspace).toContainText("regime_reduction");
-  await expect(workspace).toContainText("NO_REAL_PROVIDER_BACKED_COVARIANCE_EVIDENCE");
   await expect(workspace).toContainText("REVIEW ONLY / NO EXECUTION ACTION");
   await expect(workspace.getByRole("button")).toHaveCount(0);
   await expect(workspace).not.toContainText("Apply portfolio");
   await expect(workspace).not.toContainText("Execute trade");
+
+  // Module 2B-3: the dashboard card is a concise summary with a link out; the detailed
+  // requested/review allocation, reduction reasons, and covariance evidence it used to
+  // inline now live on the dedicated /portfolio workspace instead.
+  await workspace.getByRole("link", { name: "Open Portfolio Workspace" }).click();
+  await expect(page).toHaveURL(/\/portfolio/);
+  await expect(page.getByText("capacity_reduction")).toBeVisible();
+  await expect(page.getByText("regime_reduction")).toBeVisible();
+  await expect(page.getByText("NO_REAL_PROVIDER_BACKED_COVARIANCE_EVIDENCE", { exact: false })).toBeVisible();
+  await expect(page.getByText("REVIEW ONLY", { exact: false }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: /apply.*portfolio|execute|rebalance/i })).toHaveCount(0);
 });
 
 test("news correction evidence remains externally blocked and never appears live", async ({ page }) => {

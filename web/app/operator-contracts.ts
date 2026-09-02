@@ -130,6 +130,25 @@ export type RegimeRun = {
   risk_effects: { candidate_id: string; strategy_version_id: string; current_risk_multiplier: string; proposed_risk_multiplier: string;
     preapproved_maximum: string; action: string; status: string; reasons: string[]; automatic_authority: false }[];
 };
+export type RegimeRunDimensionSummary = {
+  dimension: string;
+  hard_label: string | null;
+  top_probability_state: string | null;
+  top_probability: string | null;
+  uncertainty: string | null;
+};
+export type RegimeRunDiscovery = {
+  run_id: string; model_version_id: string; model_version: string; rule_version: string; dataset_version: string;
+  instrument: string; as_of_timestamp: string; status: string;
+  dimension_summary: RegimeRunDimensionSummary[]; uncertainty_summary: string;
+};
+export type RegimeRunDiscoveryPage = { state: EvidenceStatus; items: RegimeRunDiscovery[]; page: PageInfo };
+export type PortfolioConstructionDiscovery = {
+  run_id: string; policy_version_id: string; policy_version: string; regime_run_id: string; constructed_at: string;
+  status: string; review_only: true; automatic_authority: false; equity: string; target_volatility: string | null;
+  portfolio_volatility: string; stressed_volatility: string; risk_gate_approved: boolean;
+};
+export type PortfolioConstructionDiscoveryPage = { state: EvidenceStatus; items: PortfolioConstructionDiscovery[]; page: PageInfo };
 export type PortfolioConstruction = {
   portfolio_construction_run_id: string; policy_version_id: string; policy_version: string; regime_run_id: string;
   constructed_at: string; status: string; review_only: true; automatic_authority: false; equity: string; target_volatility: string | null;

@@ -91,7 +91,10 @@ class Module1BDemoAcceptanceTests(unittest.TestCase):
             self.queries.paper_orders(limit=20, offset=0),
             self.queries.feature_definitions(family=None, limit=20, offset=0),
             self.queries.signals(as_of=self.seed_module.DEMO_AT, status=None, instrument=None, strategy_version=None, limit=20, offset=0),
-            self.queries.risk_decisions(limit=20, offset=0),
+            self.queries.risk_decisions(
+                approved=None, account_id=None, policy_version_id=None, business_date=None,
+                has_reservation=None, limit=20, offset=0,
+            ),
             self.queries.news_events(instrument=None, entity=None, category=None, start=None, end=None, correction_state=None, limit=20, offset=0),
         )
         self.assertTrue(all(page.state in {"UNAVAILABLE", "EXTERNAL_BLOCKED"} for page in pages))
@@ -203,7 +206,10 @@ class Module1BDemoAcceptanceTests(unittest.TestCase):
             "portfolio": self.queries.investment_portfolios(limit=20, offset=0),
             "paper_oms": self.queries.paper_orders(limit=20, offset=0),
             "signals": self.queries.signals(as_of=self.seed_module.DEMO_AT, status=None, instrument=None, strategy_version=None, limit=20, offset=0),
-            "risk": self.queries.risk_decisions(limit=20, offset=0),
+            "risk": self.queries.risk_decisions(
+                approved=None, account_id=None, policy_version_id=None, business_date=None,
+                has_reservation=None, limit=20, offset=0,
+            ),
             "news": self.queries.news_events(instrument="DEMO:XNAS:DEMO_EQ_A", entity=None, category=None, start=None, end=None, correction_state=None, limit=20, offset=0),
         }
         self.assertTrue(all(page.state == "AVAILABLE" and page.items for page in pages.values()), pages)
