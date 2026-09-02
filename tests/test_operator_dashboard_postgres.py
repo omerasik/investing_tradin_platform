@@ -328,7 +328,11 @@ class OperatorDashboardPostgresTests(unittest.TestCase):
         config.set_main_option("sqlalchemy.url", dsn.replace("postgresql://", "postgresql+psycopg://", 1))
         command.upgrade(config, "head")
         database = PostgresDatabase(dsn)
-        now = datetime(2026, 8, 19, 12, tzinfo=UTC)
+        # Deliberately far in the past relative to every other fixture/seed date in this
+        # suite (this DB is shared, uncleaned, cross-test state): this method's rows must
+        # never win an "ORDER BY ...evaluated_at/created_at DESC LIMIT 1" latest-record
+        # lookup performed by other tests, seed scripts, or CI's cycle208 dashboard fixture.
+        now = datetime(2000, 1, 1, 12, tzinfo=UTC)
         suffix = uuid4().hex[:8]
         digest = lambda name: hashlib.sha256(f"provenance:{suffix}:{name}".encode()).hexdigest()
         instrument = replace(
