@@ -18,7 +18,6 @@ export default async function DashboardPage() {
     cadence,
     strategy,
     experiment,
-    promotion,
     thesis,
     portfolio,
     alerts,
@@ -486,7 +485,7 @@ export default async function DashboardPage() {
           <div className="panel-footer-row">
             <span className="status">RESEARCH / PAPER ONLY / READ ONLY / NO AUTOMATIC AUTHORITY</span>
             <Link href="/signals" className="workspace-link">
-              Workspace &rarr;
+              Open Signal Workspace &rarr;
             </Link>
           </div>
         </article>
@@ -497,63 +496,20 @@ export default async function DashboardPage() {
             <span>Strategy Laboratory</span>
             <StatusBadge status={strategyCard ? "AVAILABLE" : strategy.state} />
           </h2>
-          {strategyCard ? (
-            <>
-              <dl>
-                <dt>Family / version</dt>
-                <dd>
-                  {strategyCard.family} / {strategyCard.strategy_version}
-                </dd>
-                <dt>Hypothesis</dt>
-                <dd>{strategyCard.hypothesis}</dd>
-                <dt>Features / datasets</dt>
-                <dd>
-                  {strategyCard.feature_versions.join(", ")} / {strategyCard.required_datasets.join(", ")}
-                </dd>
-                <dt>Regimes / failures</dt>
-                <dd>
-                  {strategyCard.expected_regimes.join(", ")} / {strategyCard.failure_conditions.join(", ")}
-                </dd>
-                <dt>Evidence classification</dt>
-                <dd>
-                  {strategyCard.family.toLowerCase().includes("trend")
-                    ? "SYNTHETIC_ENGINEERING_EVIDENCE_ONLY"
-                    : "RESEARCH EVIDENCE ONLY"}
-                </dd>
-              </dl>
-              <EvidenceMeta
-                source="strategy-registry"
-                asOf={strategyCard.created_at}
-                version={strategyCard.strategy_version}
-                limitations={strategyCard.limitations}
-              />
-            </>
-          ) : strategyRows.length ? (
-            strategyRows.map((item) => (
-              <dl key={item.strategy_version_id}>
-                <dt>Family / version</dt>
-                <dd>
-                  {item.family} / {item.version}
-                </dd>
-                <dt>Hypothesis</dt>
-                <dd>{item.hypothesis}</dd>
-                <dt>Features / datasets</dt>
-                <dd>
-                  {item.feature_versions.join(", ")} / {item.dataset_requirements.join(", ")}
-                </dd>
-                <dt>Status / classification</dt>
-                <dd>
-                  {item.status} / {item.evidence_classification}
-                </dd>
-              </dl>
-            ))
-          ) : (
-            <p className="empty-state">{stateText(strategies)}</p>
-          )}
+          <dl>
+            <dt>Current Strategy</dt>
+            <dd>
+              {strategyCard
+                ? `${strategyCard.family} / ${strategyCard.strategy_version} — ${strategyCard.evidence_classification}`
+                : strategyRows.length
+                  ? `${strategyRows.length} discovered — ${strategyRows[0].family} (${strategyRows[0].evidence_classification})`
+                  : stateText(strategies)}
+            </dd>
+          </dl>
           <div className="panel-footer-row">
             <span className="status">RESEARCH ONLY / READ ONLY</span>
             <Link href="/strategies" className="workspace-link">
-              Workspace &rarr;
+              Open Strategy Workspace &rarr;
             </Link>
           </div>
         </article>
@@ -564,71 +520,20 @@ export default async function DashboardPage() {
             <span>Backtest / Validation</span>
             <StatusBadge status={backtest ? "AVAILABLE" : experiment.state} />
           </h2>
-          {backtest ? (
-            <>
-              <dl>
-                <dt>Strategy / dataset</dt>
-                <dd>
-                  {backtest.strategy_version} / {backtest.dataset_version}
-                </dd>
-                <dt>Features / cost model</dt>
-                <dd>
-                  {backtest.feature_versions.join(", ")} / {backtest.cost_model_version}
-                </dd>
-                <dt>Return</dt>
-                <dd>{String(backtest.report.total_return ?? "UNAVAILABLE")}</dd>
-                <dt>Independent accounting</dt>
-                <dd>
-                  {backtest.report.independent_bar_engine_reconciled === "1"
-                    ? "RECONCILED"
-                    : "UNAVAILABLE OR DIVERGENT"}
-                </dd>
-                <dt>Walk-forward</dt>
-                <dd>{String(backtest.report.walk_forward_status ?? "UNAVAILABLE")}</dd>
-                <dt>Costs / capacity / latency</dt>
-                <dd>{String(backtest.report.pessimistic_cost_multiplier ?? "UNAVAILABLE")} / UNAVAILABLE / UNAVAILABLE</dd>
-                <dt>Promotion</dt>
-                <dd>
-                  {promotion.state === "AVAILABLE"
-                    ? `${promotion.value.status}: ${promotion.value.reasons.join(", ")}`
-                    : stateText(promotion)}
-                </dd>
-              </dl>
-              <EvidenceMeta
-                source="experiment-store"
-                asOf={backtest.created_at}
-                version={backtest.cost_model_version}
-                limitations={["No aggregate score hides unavailable validation evidence."]}
-              />
-            </>
-          ) : experimentRows.length ? (
-            experimentRows.map((item) => (
-              <dl key={item.experiment_id}>
-                <dt>Strategy / dataset</dt>
-                <dd>
-                  {item.strategy_version} / {item.dataset_version}
-                </dd>
-                <dt>Features / cost model</dt>
-                <dd>
-                  {item.feature_versions.join(", ")} / {item.cost_model_version}
-                </dd>
-                <dt>Created / evaluated</dt>
-                <dd>
-                  {utc(item.created_at)} / {utc(item.evaluated_at)}
-                </dd>
-                <dt>Status / classification</dt>
-                <dd>
-                  {item.status} / {item.evidence_classification}
-                </dd>
-              </dl>
-            ))
-          ) : (
-            <p className="empty-state">{stateText(experiments)}</p>
-          )}
+          <dl>
+            <dt>Latest Backtest Status</dt>
+            <dd>
+              {backtest
+                ? `${String(backtest.report.walk_forward_status ?? "UNAVAILABLE")} — total return ${String(backtest.report.total_return ?? "UNAVAILABLE")}`
+                : experimentRows.length
+                  ? `${experimentRows.length} discovered — dataset ${experimentRows[0].dataset_version}`
+                  : stateText(experiments)}
+            </dd>
+          </dl>
           <div className="panel-footer-row">
             <span className="status">HISTORICAL / RESEARCH ONLY</span>
             <Link href="/backtests" className="workspace-link">
-              Workspace &rarr;
+              Open Backtest Workspace &rarr;
             </Link>
           </div>
         </article>
@@ -795,7 +700,7 @@ export default async function DashboardPage() {
           <div className="panel-footer-row">
             <span className="status">RESEARCH EVIDENCE / READ ONLY</span>
             <Link href="/scorecards" className="workspace-link">
-              Workspace &rarr;
+              Open Scorecard Workspace &rarr;
             </Link>
           </div>
         </article>

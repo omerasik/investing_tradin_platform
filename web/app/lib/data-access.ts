@@ -17,6 +17,7 @@ import {
   type SignalPage,
   type SreOverview,
   type StrategyScorecard,
+  type StrategyScorecardDiscoveryPage,
   readEvidence,
 } from "../operator-contracts";
 
@@ -38,16 +39,25 @@ export type Cadence = {
 };
 
 export type StrategyCard = {
+  strategy_id: string;
   strategy_version: string;
   family: string;
   hypothesis: string;
   required_datasets: string[];
   feature_versions: string[];
+  universe_rules: string;
+  entry_logic: string;
+  exit_logic: string;
+  sizing_policy: string;
+  risk_policy: string;
   cost_model_version: string;
+  capacity_model: string;
+  parameter_schema: Record<string, unknown>;
   limitations: string[];
   expected_regimes: string[];
   failure_conditions: string[];
   created_at: string;
+  evidence_classification: string;
 };
 
 export type Experiment = {
@@ -59,6 +69,7 @@ export type Experiment = {
   parameters: Record<string, unknown>;
   created_at: string;
   report: Record<string, string | number | null>;
+  evidence_classification: string;
 };
 
 export type Promotion = {
@@ -410,9 +421,20 @@ export async function getFeatureMaterializations(
   );
 }
 
-export async function getSignalEvidence(ctx: WorkspaceContext): Promise<EvidenceResult<SignalPage>> {
+export async function getSignalDiscovery(
+  ctx: WorkspaceContext,
+  params?: { as_of?: string; status?: string; instrument?: string; strategy_version?: string; limit?: number; offset?: number },
+): Promise<EvidenceResult<SignalPage>> {
+  const query = new URLSearchParams({
+    as_of: params?.as_of ?? ctx.evidenceTime,
+    limit: String(params?.limit ?? 20),
+    offset: String(params?.offset ?? 0),
+  });
+  if (params?.status && params.status !== "ALL") query.set("status", params.status);
+  if (params?.instrument) query.set("instrument", params.instrument);
+  if (params?.strategy_version) query.set("strategy_version", params.strategy_version);
   return readEvidence<SignalPage>(
-    authorityUrl(ctx.origin, `/operator-dashboard/signals?as_of=${encodeURIComponent(ctx.evidenceTime)}&limit=20&offset=0`),
+    authorityUrl(ctx.origin, `/operator-dashboard/signals?${query.toString()}`),
     ctx.protectedApi,
     "Signal lifecycle authority is not configured.",
   );
@@ -426,37 +448,59 @@ export async function getRiskEvidence(ctx: WorkspaceContext): Promise<EvidenceRe
   );
 }
 
-export async function getStrategyCard(ctx: WorkspaceContext): Promise<EvidenceResult<StrategyCard>> {
+export async function getStrategyCard(
+  ctx: WorkspaceContext,
+  params?: { strategyId?: string },
+): Promise<EvidenceResult<StrategyCard>> {
+  const strategyId = params?.strategyId ?? ctx.workspace.strategyId ?? "";
   return readEvidence<StrategyCard>(
-    `${ctx.origin}/api/research?target=/research/strategies/${encodeURIComponent(ctx.workspace.strategyId ?? "")}`,
-    Boolean(ctx.workspace.strategyId && ctx.protectedApi),
+    `${ctx.origin}/api/research?target=/research/strategies/${encodeURIComponent(strategyId)}`,
+    Boolean(strategyId && ctx.protectedApi),
     "Strategy research reference is unavailable.",
   );
 }
 
-export async function getStrategyDiscovery(ctx: WorkspaceContext): Promise<EvidenceResult<DiscoveryPage<StrategyDiscovery>>> {
+export async function getStrategyDiscovery(
+  ctx: WorkspaceContext,
+  params?: { family?: string; limit?: number; offset?: number },
+): Promise<EvidenceResult<DiscoveryPage<StrategyDiscovery>>> {
+  const query = new URLSearchParams({
+    limit: String(params?.limit ?? 20),
+    offset: String(params?.offset ?? 0),
+  });
+  if (params?.family) query.set("family", params.family);
   return readEvidence<DiscoveryPage<StrategyDiscovery>>(
-    authorityUrl(ctx.origin, "/operator-dashboard/strategies?limit=20&offset=0"),
+    authorityUrl(ctx.origin, `/operator-dashboard/strategies?${query.toString()}`),
     ctx.protectedApi,
     "Strategy discovery is unavailable.",
   );
 }
 
-export async function getExperimentEvidence(ctx: WorkspaceContext): Promise<EvidenceResult<Experiment>> {
+export async function getExperimentEvidence(
+  ctx: WorkspaceContext,
+  params?: { experimentId?: string },
+): Promise<EvidenceResult<Experiment>> {
+  const experimentId = params?.experimentId ?? ctx.workspace.experimentId ?? "";
   return readEvidence<Experiment>(
-    `${ctx.origin}/api/research?target=/research/experiments/${encodeURIComponent(ctx.workspace.experimentId ?? "")}`,
-    Boolean(ctx.workspace.experimentId && ctx.protectedApi),
+    `${ctx.origin}/api/research?target=/research/experiments/${encodeURIComponent(experimentId)}`,
+    Boolean(experimentId && ctx.protectedApi),
     "Backtest experiment reference is unavailable.",
   );
 }
 
-export async function getExperimentDiscovery(ctx: WorkspaceContext): Promise<EvidenceResult<DiscoveryPage<ExperimentDiscovery>>> {
+export async function getExperimentDiscovery(
+  ctx: WorkspaceContext,
+  params?: { strategy_id?: string; limit?: number; offset?: number },
+): Promise<EvidenceResult<DiscoveryPage<ExperimentDiscovery>>> {
+  const strategyId = params?.strategy_id ?? ctx.workspace.strategyId ?? "";
+  const query = new URLSearchParams({
+    limit: String(params?.limit ?? 20),
+    offset: String(params?.offset ?? 0),
+  });
+  if (strategyId) query.set("strategy_id", strategyId);
   return readEvidence<DiscoveryPage<ExperimentDiscovery>>(
-    authorityUrl(
-      ctx.origin,
-      `/operator-dashboard/experiments?strategy_id=${encodeURIComponent(ctx.workspace.strategyId ?? "")}&limit=20&offset=0`,
-    ),
-    Boolean(ctx.workspace.strategyId && ctx.protectedApi),
+    authorityUrl(ctx.origin, `/operator-dashboard/experiments?${query.toString()}`),
+    ctx.protectedApi,
     "Backtest discovery is unavailable.",
   );
 }
@@ -469,11 +513,32 @@ export async function getPromotionEvidence(ctx: WorkspaceContext): Promise<Evide
   );
 }
 
-export async function getScorecardEvidence(ctx: WorkspaceContext): Promise<EvidenceResult<StrategyScorecard>> {
+export async function getScorecardEvidence(
+  ctx: WorkspaceContext,
+  params?: { scorecardId?: string },
+): Promise<EvidenceResult<StrategyScorecard>> {
+  const scorecardId = params?.scorecardId ?? ctx.workspace.scorecardId ?? "";
   return readEvidence<StrategyScorecard>(
-    authorityUrl(ctx.origin, `/operator-dashboard/strategy-scorecards/${encodeURIComponent(ctx.workspace.scorecardId ?? "")}`),
-    Boolean(ctx.workspace.scorecardId && ctx.protectedApi),
+    authorityUrl(ctx.origin, `/operator-dashboard/strategy-scorecards/${encodeURIComponent(scorecardId)}`),
+    Boolean(scorecardId && ctx.protectedApi),
     "Strategy scorecard reference is unavailable.",
+  );
+}
+
+export async function getScorecardDiscovery(
+  ctx: WorkspaceContext,
+  params?: { strategy_id?: string; status?: string; limit?: number; offset?: number },
+): Promise<EvidenceResult<StrategyScorecardDiscoveryPage>> {
+  const query = new URLSearchParams({
+    limit: String(params?.limit ?? 20),
+    offset: String(params?.offset ?? 0),
+  });
+  if (params?.strategy_id) query.set("strategy_id", params.strategy_id);
+  if (params?.status && params.status !== "ALL") query.set("status", params.status);
+  return readEvidence<StrategyScorecardDiscoveryPage>(
+    authorityUrl(ctx.origin, `/operator-dashboard/strategy-scorecards?${query.toString()}`),
+    ctx.protectedApi,
+    "Strategy scorecard discovery is unavailable.",
   );
 }
 
@@ -661,7 +726,7 @@ export async function getAllDashboardEvidence(): Promise<AllDashboardEvidence> {
     getPaperOrderDiscovery(ctx),
     getFeatureDefinition(ctx),
     getFeatureMaterializations(ctx),
-    getSignalEvidence(ctx),
+    getSignalDiscovery(ctx),
     getRiskEvidence(ctx),
     getScorecardEvidence(ctx),
     getRegimeEvidence(ctx),

@@ -7,6 +7,7 @@ calculation, provider access, job trigger, order path, or mutation authority.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import datetime
 from decimal import Decimal
 from threading import RLock
@@ -380,6 +381,7 @@ class SignalView(BaseModel):
     failed_stages: list[str]
     latest_reason: str
     lifecycle: list[SignalLifecycleEventView]
+    evidence_classification: str
     research_or_paper_only: Literal[True]
     automatic_authority: Literal[False]
 
@@ -462,6 +464,24 @@ class StrategyScorecardView(BaseModel):
     content_hash: str
     groups: list[ScorecardGroupView]
     complexity_components: list[ScorecardComponentView]
+
+
+class StrategyScorecardDiscoveryView(BaseModel):
+    scorecard_id: UUID
+    strategy_id: UUID
+    strategy_version: str
+    research_run_id: UUID
+    dataset_version: str
+    evaluated_at: datetime
+    status: str
+    dataset_health_status: str
+    evidence_classification: str
+
+
+class StrategyScorecardDiscoveryPage(BaseModel):
+    state: Availability
+    items: list[StrategyScorecardDiscoveryView]
+    page: PageInfo
 
 
 class RegimeProbabilityView(BaseModel):
@@ -758,6 +778,25 @@ def _page(rows: list[tuple[Any, ...]], limit: int, offset: int) -> tuple[list[tu
     return selected, PageInfo(limit=limit, offset=offset, returned=len(selected), has_more=has_more)
 
 
+_SYNTHETIC_EVIDENCE_MARKERS = ("demo", "synthetic", "fixture", "module1b")
+
+
+def classify_research_evidence(signals: Sequence[str | None]) -> str:
+    """Classify research evidence as synthetic-vs-real from existing demo/fixture markers.
+
+    Never fabricates a real-data label: no non-empty signal yields UNAVAILABLE, and any
+    known synthetic marker anywhere in the signals yields the synthetic label. This is the
+    single source of truth for evidence_classification across strategies/experiments/
+    scorecards/signals so no endpoint re-derives it independently.
+    """
+    values = [signal for signal in signals if signal]
+    if not values:
+        return "UNAVAILABLE"
+    if any(marker in value.casefold() for value in values for marker in _SYNTHETIC_EVIDENCE_MARKERS):
+        return "SYNTHETIC_ENGINEERING_EVIDENCE_ONLY"
+    return "REAL_DATA_RESEARCH_EVIDENCE"
+
+
 class PostgresOperatorDashboardQueries:
     """Centralized bounded projections over existing immutable PostgreSQL tables."""
 
@@ -1037,14 +1076,15 @@ class PostgresOperatorDashboardQueries:
             )
         return self._read(operation)
 
-    def strategies(self, *, limit: int, offset: int) -> StrategyDiscoveryPage:
+    def strategies(self, *, family: str | None, limit: int, offset: int) -> StrategyDiscoveryPage:
         def operation(cursor: _Cursor) -> StrategyDiscoveryPage:
             cursor.execute(
                 "SELECT d.strategy_id,v.strategy_version_id,v.version,d.family,d.hypothesis,"
                 "v.feature_manifest,v.cost_model_version,v.contract,v.created_at "
                 "FROM strategy_versions v JOIN strategy_definitions d USING(strategy_id) "
+                "WHERE (CAST(%s AS text) IS NULL OR d.family=%s) "
                 "ORDER BY v.created_at DESC,v.strategy_version_id DESC LIMIT %s OFFSET %s",
-                (limit + 1, offset),
+                (family, family, limit + 1, offset),
             )
             rows, page = _page(cursor.fetchall(), limit, offset)
             return StrategyDiscoveryPage(
@@ -1053,7 +1093,7 @@ class PostgresOperatorDashboardQueries:
                     strategy_id=row[0], strategy_version_id=row[1], version=str(row[2]), family=str(row[3]),
                     hypothesis=str(row[4]), status="RESEARCH_ONLY", dataset_requirements=_strings(_mapping(row[7]).get("required_datasets")),
                     feature_versions=_strings(row[5]), cost_model_version=str(row[6]), created_at=row[8],
-                    evidence_classification="RESEARCH_ONLY; NO_LIVE_OR_EXECUTION_AUTHORITY",
+                    evidence_classification=classify_research_evidence(_strings(_mapping(row[7]).get("required_datasets"))),
                 ) for row in rows], page=page,
             )
         return self._read(operation)
@@ -1077,7 +1117,7 @@ class PostgresOperatorDashboardQueries:
                     experiment_id=row[0], strategy_id=row[1], strategy_version_id=row[2], strategy_version=str(row[3]),
                     dataset_version=str(row[4]), feature_versions=_strings(row[5]), cost_model_version=str(row[6]),
                     created_at=row[7], evaluated_at=row[8], status="RESEARCH_ONLY",
-                    evidence_classification="RESEARCH_ONLY; NO_PROMOTION_OR_EXECUTION_AUTHORITY",
+                    evidence_classification=classify_research_evidence([str(row[4])]),
                 ) for row in rows], page=page,
             )
         return self._read(operation)
@@ -1248,6 +1288,7 @@ class PostgresOperatorDashboardQueries:
                     contradicting_evidence=[str(item) for item in contradicting] if isinstance(contradicting, list) else [],
                     validation_id=row[7], passed_stages=_strings(row[8]), failed_stages=_strings(row[9]),
                     latest_reason=str(row[10] or "candidate_not_yet_assessed"), lifecycle=lifecycle,
+                    evidence_classification=classify_research_evidence([str(row[1])]),
                     research_or_paper_only=True, automatic_authority=False,
                 ))
             state: Availability = "BLOCKED" if any(item.expiry_state == "OVERDUE" for item in items) else ("AVAILABLE" if items else "UNAVAILABLE")
@@ -1307,7 +1348,6 @@ class PostgresOperatorDashboardQueries:
                       for family in ("PERFORMANCE", "ROBUSTNESS", "EXECUTION", "RISK", "DATA_QUALITY", "SIGNAL_DECAY")]
             limitations = _strings(row[11])
             manifest = _mapping(row[14])
-            synthetic = any("synthetic" in item.casefold() or "fixture" in item.casefold() for item in limitations)
             return StrategyScorecardView(
                 scorecard_id=row[0], schema_version=str(row[1]), strategy_id=row[2],
                 strategy_version=str(row[3]), research_run_id=row[4], feature_versions=_strings(row[5]),
@@ -1315,9 +1355,33 @@ class PostgresOperatorDashboardQueries:
                 knowledge_cutoff=row[9], status=str(row[10]), limitations=limitations,
                 dataset_health_status=str(row[12]), validation_package_id=row[16],
                 validation_package_content_hash=None if row[17] is None else str(row[17]),
-                evidence_classification=("SYNTHETIC_ENGINEERING_EVIDENCE_ONLY" if synthetic else "RESEARCH_EVIDENCE_ONLY"),
+                evidence_classification=classify_research_evidence([str(row[6]), *limitations]),
                 evidence_manifest_references=[f"{key}:{value}" for key, value in sorted(manifest.items())],
                 content_hash=str(row[15]), groups=groups, complexity_components=components,
+            )
+        return self._read(operation)
+
+    def strategy_scorecards(
+        self, *, strategy_id: UUID | None, status: str | None, limit: int, offset: int,
+    ) -> StrategyScorecardDiscoveryPage:
+        def operation(cursor: _Cursor) -> StrategyScorecardDiscoveryPage:
+            cursor.execute(
+                "SELECT scorecard_id,strategy_id,strategy_version,research_run_id,dataset_version,"
+                "evaluated_at,status,dataset_health_status,limitations "
+                "FROM strategy_scorecards "
+                "WHERE (CAST(%s AS uuid) IS NULL OR strategy_id=%s) AND (CAST(%s AS text) IS NULL OR status=%s) "
+                "ORDER BY evaluated_at DESC,scorecard_id DESC LIMIT %s OFFSET %s",
+                (strategy_id, strategy_id, status, status, limit + 1, offset),
+            )
+            rows, page = _page(cursor.fetchall(), limit, offset)
+            return StrategyScorecardDiscoveryPage(
+                state="AVAILABLE" if rows else "UNAVAILABLE",
+                items=[StrategyScorecardDiscoveryView(
+                    scorecard_id=row[0], strategy_id=row[1], strategy_version=str(row[2]), research_run_id=row[3],
+                    dataset_version=str(row[4]), evaluated_at=row[5], status=str(row[6]),
+                    dataset_health_status=str(row[7]),
+                    evidence_classification=classify_research_evidence([str(row[4]), *_strings(row[8])]),
+                ) for row in rows], page=page,
             )
         return self._read(operation)
 

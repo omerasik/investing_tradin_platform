@@ -85,7 +85,8 @@ class OperatorDashboardApiTests(unittest.TestCase):
                     event_id=uuid4(), from_status="CANDIDATE", to_status="VALIDATED",
                     actor="signal_validation", reason="all_validation_stages_passed",
                     evidence_references=["signal-validation:fixture"], occurred_at=now,
-                )], research_or_paper_only=True, automatic_authority=False,
+                )], evidence_classification="SYNTHETIC_ENGINEERING_EVIDENCE_ONLY",
+                research_or_paper_only=True, automatic_authority=False,
             )], page=PageInfo(limit=50, offset=0, returned=1, has_more=False),
         )
         self.queries.risk_decisions.return_value = RiskDecisionPage(

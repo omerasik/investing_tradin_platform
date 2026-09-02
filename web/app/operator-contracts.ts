@@ -95,7 +95,7 @@ export type SignalPage = { state: EvidenceStatus; as_of: string; page: PageInfo;
   expiry_state: "CURRENT" | "OVERDUE" | "EXPIRED"; created_at: string; expires_at: string;
   strength: string; confidence: string; data_quality_score: string; explanation: string;
   contradicting_evidence: string[]; validation_id: string | null; passed_stages: string[]; failed_stages: string[];
-  latest_reason: string; research_or_paper_only: true; automatic_authority: false;
+  latest_reason: string; evidence_classification: string; research_or_paper_only: true; automatic_authority: false;
   lifecycle: { event_id: string; from_status: string; to_status: string; actor: string; reason: string;
     evidence_references: string[]; occurred_at: string }[];
 }[] };
@@ -115,6 +115,12 @@ export type StrategyScorecard = {
   content_hash: string; groups: { name: string; metrics: ScorecardMetric[] }[];
   complexity_components: { component_id: string; name: string; formula_version: string; value: string | null; rationale: string }[];
 };
+export type StrategyScorecardDiscovery = {
+  scorecard_id: string; strategy_id: string; strategy_version: string; research_run_id: string;
+  dataset_version: string; evaluated_at: string; status: string; dataset_health_status: string;
+  evidence_classification: string;
+};
+export type StrategyScorecardDiscoveryPage = { state: EvidenceStatus; items: StrategyScorecardDiscovery[]; page: PageInfo };
 export type RegimeRun = {
   regime_assessment_id: string; model_version_id: string; model_version: string; rule_version: string; dataset_version: string;
   instrument: string; as_of_timestamp: string; knowledge_timestamp: string | null; status: string; limitations: string[];

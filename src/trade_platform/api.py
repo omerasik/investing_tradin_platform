@@ -43,7 +43,9 @@ from .operator_dashboard import (
     SignalPage,
     SreOverviewView,
     StrategyDiscoveryPage,
+    StrategyScorecardDiscoveryPage,
     StrategyScorecardView,
+    classify_research_evidence,
 )
 from .paper_oms import PaperOmsError, SQLitePaperOms
 from .persistence import PersistenceTarget
@@ -418,10 +420,11 @@ def build_app(
 
     @app.get("/operator-dashboard/strategies", response_model=StrategyDiscoveryPage)
     def dashboard_strategies(
+        family: str | None = Query(default=None, min_length=1, max_length=80),
         limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10_000),
         _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
     ) -> object:
-        return read_dashboard(lambda: queries.strategies(limit=limit, offset=offset))
+        return read_dashboard(lambda: queries.strategies(family=family, limit=limit, offset=offset))
 
     @app.get("/operator-dashboard/experiments", response_model=ExperimentDiscoveryPage)
     def dashboard_experiments(
@@ -506,6 +509,17 @@ def build_app(
     ) -> object:
         """Read immutable risk-policy, decision and reservation evidence only."""
         return read_dashboard(lambda: queries.risk_decisions(limit=limit, offset=offset))
+
+    @app.get("/operator-dashboard/strategy-scorecards", response_model=StrategyScorecardDiscoveryPage)
+    def dashboard_strategy_scorecards(
+        strategy_id: UUID | None = None,
+        status: str | None = Query(default=None, pattern="^(BLOCKED|REVIEW_REQUIRED)$"),
+        limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10_000),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        return read_dashboard(lambda: queries.strategy_scorecards(
+            strategy_id=strategy_id, status=status, limit=limit, offset=offset,
+        ))
 
     @app.get("/operator-dashboard/strategy-scorecards/{scorecard_id}", response_model=StrategyScorecardView)
     def strategy_scorecard(
@@ -658,7 +672,7 @@ def build_app(
             card = app.state.strategy_registry.get(strategy_id)
         except StrategyValidationError as error:
             raise HTTPException(status_code=404, detail="Strategy research card not found.") from error
-        return {"strategy_id": str(card.strategy_id), "strategy_version": card.strategy_version, "family": card.family, "hypothesis": card.hypothesis, "required_datasets": card.required_datasets, "feature_versions": card.feature_versions, "universe_rules": card.universe_rules, "entry_logic": card.entry_logic, "exit_logic": card.exit_logic, "sizing_policy": card.sizing_policy, "risk_policy": card.risk_policy, "cost_model_version": card.cost_model_version, "capacity_model": card.capacity_model, "expected_regimes": card.expected_regimes, "parameter_schema": card.parameter_schema, "failure_conditions": card.failure_conditions, "limitations": card.limitations, "created_at": card.created_at.isoformat()}
+        return {"strategy_id": str(card.strategy_id), "strategy_version": card.strategy_version, "family": card.family, "hypothesis": card.hypothesis, "required_datasets": card.required_datasets, "feature_versions": card.feature_versions, "universe_rules": card.universe_rules, "entry_logic": card.entry_logic, "exit_logic": card.exit_logic, "sizing_policy": card.sizing_policy, "risk_policy": card.risk_policy, "cost_model_version": card.cost_model_version, "capacity_model": card.capacity_model, "expected_regimes": card.expected_regimes, "parameter_schema": card.parameter_schema, "failure_conditions": card.failure_conditions, "limitations": card.limitations, "created_at": card.created_at.isoformat(), "evidence_classification": classify_research_evidence(list(card.required_datasets))}
 
     @app.post("/research/strategies", status_code=201)
     def create_strategy_research_card(request: StrategyCreateRequest, subject: str = Depends(research_operator)) -> dict[str, object]:
@@ -676,7 +690,7 @@ def build_app(
             experiment = app.state.experiment_store.get(experiment_id)
         except KeyError as error:
             raise HTTPException(status_code=404, detail="Backtest research experiment not found.") from error
-        return {"experiment_id": str(experiment.experiment_id), "strategy_version": experiment.strategy_version, "dataset_version": experiment.dataset_version, "feature_versions": experiment.feature_versions, "cost_model_version": experiment.cost_model_version, "parameters": experiment.parameters, "created_at": experiment.created_at.isoformat(), "report": experiment.report}
+        return {"experiment_id": str(experiment.experiment_id), "strategy_version": experiment.strategy_version, "dataset_version": experiment.dataset_version, "feature_versions": experiment.feature_versions, "cost_model_version": experiment.cost_model_version, "parameters": experiment.parameters, "created_at": experiment.created_at.isoformat(), "report": experiment.report, "evidence_classification": classify_research_evidence([experiment.dataset_version])}
 
     @app.get("/research/promotions/{decision_id}")
     def research_promotion(decision_id: UUID, _: None = Depends(protected_operator)) -> dict[str, object]:
