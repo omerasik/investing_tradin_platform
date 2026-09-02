@@ -17,7 +17,7 @@ test("Module 1B synthetic demo auto-discovers every read-only workspace", async 
   await expect(page.getByText("LIVE TRADING: DISABLED", { exact: true })).toBeVisible();
 
   for (const [selector, label] of [
-    ["#instrument", "DEMO_EQ_A"], ["#features", "demo_"], ["#strategy", "Trend V2 synthetic"],
+    ["#instrument", "DEMO_EQ_A"], ["#features", "demo_"], ["#strategy", "SYNTHETIC_ENGINEERING_EVIDENCE_ONLY"],
     ["#backtest", "module1b-demo-evidence-v1"], ["#scorecard", "SYNTHETIC_ENGINEERING_EVIDENCE_ONLY"],
     ["#regime", "UPTREND"], ["#portfolio", "reduced_to_review_limit"], ["#investment", "SYNTHETIC / DEMO"],
     ["#news", "Demo issuer retracts fictional guidance"], ["#signals", "DEMO:XNAS:DEMO_EQ_A"],

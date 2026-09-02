@@ -231,6 +231,11 @@ class OperatorDashboardPostgresTests(unittest.TestCase):
             decision_time=now - timedelta(minutes=90), limit=10, offset=0,
         )
         scorecard = queries.strategy_scorecard(ids["scorecard"])
+        strategies_by_family = queries.strategies(family="TREND", limit=10, offset=0)
+        strategies_wrong_family = queries.strategies(family="NONEXISTENT_FAMILY", limit=10, offset=0)
+        scorecards_by_strategy = queries.strategy_scorecards(strategy_id=ids["strategy"], status=None, limit=10, offset=0)
+        scorecards_by_status = queries.strategy_scorecards(strategy_id=None, status="REVIEW_REQUIRED", limit=10, offset=0)
+        scorecards_wrong_status = queries.strategy_scorecards(strategy_id=ids["strategy"], status="BLOCKED", limit=10, offset=0)
         signals = queries.signals(as_of=now, status="VALIDATED", instrument=instrument.instrument_id, strategy_version=None, limit=10, offset=0)
         risks = queries.risk_decisions(limit=10, offset=0)
         regime = queries.regime_run(ids["regime_run"])
@@ -258,6 +263,15 @@ class OperatorDashboardPostgresTests(unittest.TestCase):
         evidence_states = {metric.evidence_state for group in scorecard.groups for metric in group.metrics}
         self.assertEqual(evidence_states, {"MEASURED", "ASSUMED", "UNAVAILABLE"})
         self.assertEqual(scorecard.evidence_classification, "SYNTHETIC_ENGINEERING_EVIDENCE_ONLY")
+        self.assertEqual((strategies_by_family.state, strategies_by_family.items[0].strategy_id), ("AVAILABLE", ids["strategy"]))
+        self.assertEqual(strategies_wrong_family.state, "UNAVAILABLE")
+        self.assertEqual(
+            (scorecards_by_strategy.items[0].scorecard_id, scorecards_by_strategy.items[0].evidence_classification),
+            (ids["scorecard"], "SYNTHETIC_ENGINEERING_EVIDENCE_ONLY"),
+        )
+        self.assertIn(ids["scorecard"], {item.scorecard_id for item in scorecards_by_status.items})
+        self.assertEqual(scorecards_wrong_status.state, "UNAVAILABLE")
+        self.assertEqual(signals.items[0].evidence_classification, "REAL_DATA_RESEARCH_EVIDENCE")
         self.assertEqual((signals.state, signals.items[0].latest_reason, signals.items[0].automatic_authority), ("AVAILABLE", "all_validation_stages_passed", False))
         self.assertEqual((risks.state, len(risks.items), risks.items[0].approved, risks.items[0].reservation_id), ("AVAILABLE", 2, False, None))
         self.assertEqual((risks.items[1].approved, risks.items[1].reserved_notional, risks.items[1].research_or_paper_only, risks.items[1].automatic_authority), (True, "250", True, False))

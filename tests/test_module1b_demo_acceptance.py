@@ -84,7 +84,7 @@ class Module1BDemoAcceptanceTests(unittest.TestCase):
         self.assertEqual(references.state, "UNAVAILABLE")
         pages = (
             self.queries.instruments(limit=20, offset=0),
-            self.queries.strategies(limit=20, offset=0),
+            self.queries.strategies(family=None, limit=20, offset=0),
             self.queries.experiments(strategy_id=None, limit=20, offset=0),
             self.queries.investment_theses(limit=20, offset=0),
             self.queries.investment_portfolios(limit=20, offset=0),
@@ -197,7 +197,7 @@ class Module1BDemoAcceptanceTests(unittest.TestCase):
         pages = {
             "instruments": self.queries.instruments(limit=20, offset=0),
             "features": self.queries.feature_definitions(family=None, limit=20, offset=0),
-            "strategy": self.queries.strategies(limit=20, offset=0),
+            "strategy": self.queries.strategies(family=None, limit=20, offset=0),
             "backtest": self.queries.experiments(strategy_id=self.seed_module.stable_id("strategy"), limit=20, offset=0),
             "investment": self.queries.investment_theses(limit=20, offset=0),
             "portfolio": self.queries.investment_portfolios(limit=20, offset=0),
