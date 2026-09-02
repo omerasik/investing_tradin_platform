@@ -213,7 +213,11 @@ def _seed_scorecard(database: PostgresDatabase, ids: dict[str, UUID]) -> None:
     PostgresStrategyScorecardStore(database).publish(scorecard)
 
     # Second scorecard (different strategy/status/metric) for discovery filter/pagination coverage.
-    scorecard_2 = StrategyScorecardV2("cycle-201-demo", ids["strategy-2"], "mean-reversion-v1", ids["experiment-2"], DEMO_SEED_VERSION, ("demo_return:1.0.0", "demo_trend:1.0.0", "demo_momentum:1.0.0", "demo_volatility:1.0.0"), "demo-cost-model-v1", DEMO_AT, DEMO_AT - timedelta(hours=1), ScorecardStatus.BLOCKED, ("Synthetic engineering evidence only.",), (MetricObservation(MetricFamily.PERFORMANCE, "total_return", EvidenceState.MEASURED, Decimal("-0.01"), "fraction"),), (ScoreComponentV2("complexity_penalty", "demo-v1", Decimal("1"), "Transparent synthetic diagnostic."),), "HEALTHY", (ids["health"],), {"classification": digest({"classification": DEMO_SOURCE, "variant": "2"})})
+    # evaluated_at is kept strictly earlier than the primary scorecard's so
+    # workspace_references()'s "ORDER BY evaluated_at DESC" default-binding
+    # query deterministically keeps resolving to the primary research chain.
+    scorecard_2_evaluated_at = DEMO_AT - timedelta(minutes=5)
+    scorecard_2 = StrategyScorecardV2("cycle-201-demo", ids["strategy-2"], "mean-reversion-v1", ids["experiment-2"], DEMO_SEED_VERSION, ("demo_return:1.0.0", "demo_trend:1.0.0", "demo_momentum:1.0.0", "demo_volatility:1.0.0"), "demo-cost-model-v1", scorecard_2_evaluated_at, scorecard_2_evaluated_at - timedelta(hours=1), ScorecardStatus.BLOCKED, ("Synthetic engineering evidence only.",), (MetricObservation(MetricFamily.PERFORMANCE, "total_return", EvidenceState.MEASURED, Decimal("-0.01"), "fraction"),), (ScoreComponentV2("complexity_penalty", "demo-v1", Decimal("1"), "Transparent synthetic diagnostic."),), "HEALTHY", (ids["health"],), {"classification": digest({"classification": DEMO_SOURCE, "variant": "2"})})
     ids["scorecard-2"] = scorecard_2.scorecard_id
     PostgresStrategyScorecardStore(database).publish(scorecard_2)
 
