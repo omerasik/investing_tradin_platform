@@ -15,7 +15,9 @@ Module 2B-2 transforms the four transitional research views (`/strategies`, `/ba
 ## 2. Tech Debts Resolved from Module 2A / 2B-1
 
 ### Tech Debt 1: Dishonest evidence classification
-`strategies()` and `experiments()` previously hardcoded an authority-disclaimer string (`"RESEARCH_ONLY; NO_LIVE_OR_EXECUTION_AUTHORITY"`) in the `evidence_classification` field — a field that is supposed to answer "is this evidence synthetic or real," not "does this grant execution authority." `strategy_scorecard()` computed classification via an inline, one-off heuristic with the wrong vocabulary (`RESEARCH_EVIDENCE_ONLY` instead of `REAL_DATA_RESEARCH_EVIDENCE`), and `signals()` had no classification field at all. Replaced all four with a single shared helper, `classify_research_evidence()` in `operator_dashboard.py`, reusing the same demo/synthetic markers already trusted elsewhere in the file (`policy_version LIKE '%demo%'`, `instrument_id LIKE 'DEMO:%'`).
+`strategies()` and `experiments()` previously hardcoded an authority-disclaimer string (`"RESEARCH_ONLY; NO_LIVE_OR_EXECUTION_AUTHORITY"`) in the `evidence_classification` field — a field that is supposed to answer "is this evidence synthetic or real," not "does this grant execution authority." `strategy_scorecard()` computed classification via an inline, one-off heuristic with the wrong vocabulary (`RESEARCH_EVIDENCE_ONLY` instead of `REAL_DATA_RESEARCH_EVIDENCE`), and `signals()` had no classification field at all. Replaced all four with a single shared helper, `classify_research_evidence()` in `operator_dashboard.py`.
+
+**Module 2B-2.1 correction (see §3.1 below):** the shared helper's first version was fail-open — absence of a demo/synthetic marker was (incorrectly) enough to return `REAL_DATA_RESEARCH_EVIDENCE`. That defect is fixed; `classify_research_evidence()` is now fail-closed and requires positive, persisted real-provider proof.
 
 ### Tech Debt 2: Duplicated signal lifecycle timeline markup
 The signal lifecycle `<details><ol>` block was hand-duplicated between `signals/page.tsx` and `dashboard/page.tsx`. Extracted into `SignalLifecycleTimeline` (`web/app/components/signal-lifecycle-timeline.tsx`), now the single source for both.
@@ -32,9 +34,29 @@ All changes are read-only, authenticated, bounded, deterministic, and PIT-safe.
 1. **`GET /operator-dashboard/strategy-scorecards`** (new): the only genuinely missing discovery endpoint — scorecards previously had no list route, only single-record `GET /operator-dashboard/strategy-scorecards/{id}`. Filters: `strategy_id`, `status` (`BLOCKED` | `REVIEW_REQUIRED`), bounded `limit`/`offset`.
 2. **`GET /operator-dashboard/strategies?family=`**: added an exact-match `family` filter (previously unfilterable).
 3. **`GET /research/strategies/{id}`** and **`GET /research/experiments/{id}`**: now include `evidence_classification`, matching the field already present on the discovery views.
-4. **`classify_research_evidence(signals)`** (`operator_dashboard.py`): the single source of truth for synthetic-vs-real classification, applied consistently across `strategies()`, `experiments()`, `strategy_scorecard()`, `strategy_scorecards()`, and `signals()`.
+4. **`classify_research_evidence(...)`** (`operator_dashboard.py`): the single source of truth for synthetic-vs-real classification, applied consistently across `strategies()`, `experiments()`, `strategy_scorecard()`, `strategy_scorecards()`, and `signals()`.
 
-**Known limitation of the classification heuristic:** it scans dataset version, limitations, and (for signals) instrument ID for demo/synthetic/fixture markers. A signal or experiment referencing a realistic-looking ID with no such marker (e.g. the `cycle208` Postgres integration test's fixture instrument `US:XNYS:C208-*`) is classified `REAL_DATA_RESEARCH_EVIDENCE`, since no marker is present to prove otherwise — this is documented, expected behavior of a marker-based heuristic, not a defect, and is covered explicitly in `tests/test_operator_dashboard_postgres.py`.
+---
+
+### 3.1 Module 2B-2.1 — Evidence classification truthfulness patch
+
+**The defect.** The original `classify_research_evidence()` was a fail-open string-marker heuristic: it scanned dataset version/limitations/instrument-ID text for `demo`/`synthetic`/`fixture`/`module1b`, and returned `REAL_DATA_RESEARCH_EVIDENCE` whenever *none* of those markers were present. Absence of a marker is not proof of real data — a realistic-looking identifier with no marker (e.g. the `cycle208` Postgres integration test's fixture instrument `US:XNYS:C208-*` and its `trend-cycle208-v1` signal) was incorrectly classified `REAL_DATA_RESEARCH_EVIDENCE`. This was a real correctness/truthfulness defect, not documented, expected behavior — it has been fixed.
+
+**The rule now.** `classify_research_evidence()` takes three booleans — `synthetic_provenance`, `real_data_provenance_verified`, `lineage_complete` — and is fail-closed:
+
+```text
+synthetic_provenance == True                               -> SYNTHETIC_ENGINEERING_EVIDENCE_ONLY
+real_data_provenance_verified == True AND lineage_complete  -> REAL_DATA_RESEARCH_EVIDENCE
+otherwise                                                   -> UNAVAILABLE
+```
+
+Every call site resolves these booleans from **positive, persisted, foreign-key-joined provenance** — the `datasets.provider` / `historical_data_sources.provider` column reached by actually walking `strategy_versions` / `research_experiments` / `validation_packages` / `strategy_scorecards` → `dataset_versions` → `datasets` — never from a dataset name, instrument symbol, UUID, or any other free-text identifier. `real_data_provenance_verified` additionally requires the resolved provider to be on `_AUTHORIZED_REAL_MARKET_DATA_PROVIDERS`, an explicit allowlist in `operator_dashboard.py` that is **deliberately empty**: no real market-data provider is authorized or activated on this platform, so no research object can classify as `REAL_DATA_RESEARCH_EVIDENCE` today, by construction — not by convention. String markers (`demo`/`synthetic`/`fixture`/`module1b`) remain as a *defensive* synthetic detector layered on top of that persisted provenance (a validation package or strategy contract that explicitly declares itself synthetic still wins), but they are never sufficient on their own to prove real provenance.
+
+A legacy, non-Postgres research surface (`/research/strategies/{id}`, `/research/experiments/{id}` in `api.py`, backed by an in-memory `StrategyRunCard`/`ResearchExperiment` registry with no dataset-provider table at all) has no lineage to positively verify, so it uses `classify_research_evidence_from_markers()` — the same fail-closed rule with `lineage_complete` always `False`, so it can only ever return `SYNTHETIC_ENGINEERING_EVIDENCE_ONLY` or `UNAVAILABLE`, never `REAL_DATA_RESEARCH_EVIDENCE`.
+
+**Validation status is not data provenance.** A signal's lifecycle `VALIDATED` status and its `evidence_classification` are computed independently — a fully validated signal built entirely on synthetic data still classifies `SYNTHETIC_ENGINEERING_EVIDENCE_ONLY`.
+
+**Current platform real-provider state: NO REAL PROVIDER ACTIVATED.** Every Module 1B seeded demo object (strategies, experiments, scorecards, signals) therefore classifies `SYNTHETIC_ENGINEERING_EVIDENCE_ONLY`, confirmed by `tests/test_operator_dashboard_postgres.py` and `web/e2e/module2b2-research.spec.ts`. Test coverage (`tests/test_classify_research_evidence.py`, `tests/test_operator_dashboard_postgres.py`) exercises all three outcomes: synthetic fixture lineage, unknown/incomplete provenance (a realistic, marker-free provider name that is simply not on the allowlist — `UNAVAILABLE`, not `REAL_DATA_RESEARCH_EVIDENCE`), and classifier semantics for positive real provenance (via a temporarily patched allowlist, proving the mechanism without claiming any provider is actually authorized).
 
 ---
 
@@ -92,8 +114,9 @@ All changes are read-only, authenticated, bounded, deterministic, and PIT-safe.
 
 ## 7. Test Coverage
 
-- **`web/e2e/module2b2-research.spec.ts`**: one `test.describe` block, four tests (`/strategies`, `/backtests`, `/scorecards`, `/signals`), each following the `module2b1-market-data.spec.ts` pattern — login, navigate, assert heading, assert key evidence text, assert zero execute/trade/buy/sell/order controls, `AxeBuilder` WCAG 2.0/2.1 A/AA scan, zero console errors.
-- **`tests/test_operator_dashboard_postgres.py`**: extended with coverage for the `family` filter on `strategies()`, the new `strategy_scorecards()` discovery method (strategy_id filter, status filter, wrong-status-returns-empty), and confirmed `signals()` now returns `evidence_classification`.
+- **`web/e2e/module2b2-research.spec.ts`**: one `test.describe` block, four tests (`/strategies`, `/backtests`, `/scorecards`, `/signals`), each following the `module2b1-market-data.spec.ts` pattern — login, navigate, assert heading, assert key evidence text, assert zero execute/trade/buy/sell/order controls, `AxeBuilder` WCAG 2.0/2.1 A/AA scan, zero console errors. **(Module 2B-2.1)** every test now asserts `SYNTHETIC_ENGINEERING_EVIDENCE_ONLY` specifically for Module 1B demo-derived objects and asserts zero occurrences of `REAL_DATA_RESEARCH_EVIDENCE` on the page — previously it accepted synthetic, real, or unavailable indiscriminately, which was too permissive to catch the fail-open defect described in §3.1.
+- **`tests/test_operator_dashboard_postgres.py`**: extended with coverage for the `family` filter on `strategies()`, the new `strategy_scorecards()` discovery method (strategy_id filter, status filter, wrong-status-returns-empty), and confirmed `signals()` now returns `evidence_classification`. **(Module 2B-2.1)** the `cycle208` fixture signal assertion was corrected from `REAL_DATA_RESEARCH_EVIDENCE` to `SYNTHETIC_ENGINEERING_EVIDENCE_ONLY` (see §3.1), and a new `test_evidence_classification_fails_closed_without_authorized_real_provider` test proves, against real PostgreSQL lineage, that a realistic marker-free provider name resolves to `UNAVAILABLE` while unauthorized, and to `REAL_DATA_RESEARCH_EVIDENCE` only once explicitly added to the allowlist.
+- **`tests/test_classify_research_evidence.py`** (new, Module 2B-2.1): pure-Python unit coverage of the classifier's full boolean contract, marker detection, the empty real-provider allowlist, and `classify_research_evidence_from_markers()`.
 - **`tests/test_operator_dashboard_api.py`** and **`tests/test_module1b_demo_acceptance.py`**: updated call sites for the new required `family` keyword argument on `strategies()`.
 
 ---
@@ -120,5 +143,5 @@ All changes are read-only, authenticated, bounded, deterministic, and PIT-safe.
 
 - Scorecard side-by-side comparison (2-3 scorecards) is not implemented; deferred as a frontend-only follow-on (see §5.3).
 - The `/research/strategies/{id}` and `/research/experiments/{id}` single-record detail routes depend on a `StrategyRunCard`/`ResearchExperiment` registry that is not wired into the Postgres-backed demo/CI server fixture (`serve_module1b_demo.py`), so in that environment the Strategy and Experiment inspectors always render via the discovery-row fallback described in §5.1/§5.2, never the full single-record detail. This is a pre-existing gap in the demo server construction, not something this module introduced or was in scope to fix (wiring a Postgres-backed strategy/experiment registry is a larger backend change beyond "bounded read-only" additions).
-- The evidence-classification heuristic is marker-based (dataset version / limitations / instrument ID containing `demo`, `synthetic`, `fixture`, or `module1b`), not a ground-truth provider flag — see §3.
 - No lightweight visualization was added (see §5, "Visualization — explicitly skipped").
+- (Resolved in Module 2B-2.1, see §3.1) Evidence classification is now fail-closed on positive, persisted provider lineage rather than a demo/synthetic string-marker heuristic; no real market-data provider is authorized on this platform, so no research object can classify `REAL_DATA_RESEARCH_EVIDENCE` today.

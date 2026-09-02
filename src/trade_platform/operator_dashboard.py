@@ -7,7 +7,6 @@ calculation, provider access, job trigger, order path, or mutation authority.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
 from datetime import datetime
 from decimal import Decimal
 from threading import RLock
@@ -780,21 +779,68 @@ def _page(rows: list[tuple[Any, ...]], limit: int, offset: int) -> tuple[list[tu
 
 _SYNTHETIC_EVIDENCE_MARKERS = ("demo", "synthetic", "fixture", "module1b")
 
+# No real market-data provider is authorized/activated on this platform yet (see
+# docs/MODULE_2B2_RESEARCH_WORKSPACES.md).  This allowlist is deliberately empty: adding
+# a provider name here is the *only* way classify_research_evidence() can ever return
+# REAL_DATA_RESEARCH_EVIDENCE for it, so it must never be populated to make a demo/test
+# fixture pass -- only when a real provider is actually integrated and authorized.
+_AUTHORIZED_REAL_MARKET_DATA_PROVIDERS: frozenset[str] = frozenset()
 
-def classify_research_evidence(signals: Sequence[str | None]) -> str:
-    """Classify research evidence as synthetic-vs-real from existing demo/fixture markers.
 
-    Never fabricates a real-data label: no non-empty signal yields UNAVAILABLE, and any
-    known synthetic marker anywhere in the signals yields the synthetic label. This is the
-    single source of truth for evidence_classification across strategies/experiments/
-    scorecards/signals so no endpoint re-derives it independently.
+def _has_synthetic_marker(*values: str | None) -> bool:
+    return any(marker in value.casefold() for value in values if value for marker in _SYNTHETIC_EVIDENCE_MARKERS)
+
+
+def _provenance_flags(provider: str | None, *synthetic_texts: str | None) -> tuple[bool, bool, bool]:
+    """Resolve (synthetic_provenance, real_data_provenance_verified, lineage_complete).
+
+    ``provider`` must come from a persisted ``datasets.provider`` /
+    ``historical_data_sources.provider`` column reached through an explicit foreign-key
+    join -- never from a dataset name, instrument symbol, or generated identifier.
+    ``synthetic_texts`` are additional structured, persisted fields (declared dataset
+    requirements, validation-package limitations, a scorecard's own dataset_version) that
+    may defensively prove synthetic provenance even when no provider row resolves.
     """
-    values = [signal for signal in signals if signal]
-    if not values:
-        return "UNAVAILABLE"
-    if any(marker in value.casefold() for value in values for marker in _SYNTHETIC_EVIDENCE_MARKERS):
+    synthetic = _has_synthetic_marker(provider, *synthetic_texts)
+    lineage_complete = provider is not None
+    real_verified = provider is not None and provider in _AUTHORIZED_REAL_MARKET_DATA_PROVIDERS
+    return synthetic, real_verified, lineage_complete
+
+
+def classify_research_evidence(
+    *, synthetic_provenance: bool, real_data_provenance_verified: bool, lineage_complete: bool,
+) -> str:
+    """Fail-closed synthetic-vs-real classification from positive authoritative provenance.
+
+    Absence of a synthetic marker is never treated as proof of real data: this only ever
+    returns REAL_DATA_RESEARCH_EVIDENCE when a resolved dataset provider is explicitly on
+    the authorized real-provider allowlist AND the lineage that reached it is complete.
+    Everything else -- including a real-looking dataset/provider name whose provenance
+    chain never resolves -- returns UNAVAILABLE. Synthetic provenance always wins over an
+    unresolved chain. This is the single source of truth for evidence_classification
+    across strategies/experiments/scorecards/signals so no endpoint re-derives it
+    independently.
+    """
+    if synthetic_provenance:
         return "SYNTHETIC_ENGINEERING_EVIDENCE_ONLY"
-    return "REAL_DATA_RESEARCH_EVIDENCE"
+    if real_data_provenance_verified and lineage_complete:
+        return "REAL_DATA_RESEARCH_EVIDENCE"
+    return "UNAVAILABLE"
+
+
+def classify_research_evidence_from_markers(*values: str | None) -> str:
+    """Fail-closed classification from free-text fields alone (no persisted provider row).
+
+    Used only where no authoritative dataset-provider lineage exists to query -- e.g. the
+    legacy in-memory strategy/experiment research-card registry, which stores dataset
+    names as plain text with no dataset/provider table binding at all.  A synthetic
+    marker in the text still proves SYNTHETIC_ENGINEERING_EVIDENCE_ONLY, but absence of
+    one can never prove REAL_DATA_RESEARCH_EVIDENCE -- it always yields UNAVAILABLE.
+    """
+    synthetic, real_verified, complete = _provenance_flags(None, *values)
+    return classify_research_evidence(
+        synthetic_provenance=synthetic, real_data_provenance_verified=real_verified, lineage_complete=complete,
+    )
 
 
 class PostgresOperatorDashboardQueries:
@@ -1080,22 +1126,35 @@ class PostgresOperatorDashboardQueries:
         def operation(cursor: _Cursor) -> StrategyDiscoveryPage:
             cursor.execute(
                 "SELECT d.strategy_id,v.strategy_version_id,v.version,d.family,d.hypothesis,"
-                "v.feature_manifest,v.cost_model_version,v.contract,v.created_at "
+                "v.feature_manifest,v.cost_model_version,v.contract,v.created_at,"
+                "(SELECT ds.provider FROM research_experiments e "
+                "JOIN dataset_versions dsv ON dsv.dataset_version_id=e.dataset_version_id "
+                "JOIN datasets ds ON ds.dataset_id=dsv.dataset_id "
+                "WHERE e.strategy_version_id=v.strategy_version_id "
+                "ORDER BY e.created_at DESC LIMIT 1) "
                 "FROM strategy_versions v JOIN strategy_definitions d USING(strategy_id) "
                 "WHERE (CAST(%s AS text) IS NULL OR d.family=%s) "
                 "ORDER BY v.created_at DESC,v.strategy_version_id DESC LIMIT %s OFFSET %s",
                 (family, family, limit + 1, offset),
             )
             rows, page = _page(cursor.fetchall(), limit, offset)
-            return StrategyDiscoveryPage(
-                state="AVAILABLE" if rows else "UNAVAILABLE",
-                items=[StrategyDiscoveryView(
+            items: list[StrategyDiscoveryView] = []
+            for row in rows:
+                contract = _mapping(row[7])
+                dataset_requirements = _strings(contract.get("required_datasets"))
+                synthetic, real_verified, complete = _provenance_flags(
+                    None if row[9] is None else str(row[9]),
+                    *dataset_requirements, str(contract.get("evidence_classification", "")),
+                )
+                items.append(StrategyDiscoveryView(
                     strategy_id=row[0], strategy_version_id=row[1], version=str(row[2]), family=str(row[3]),
-                    hypothesis=str(row[4]), status="RESEARCH_ONLY", dataset_requirements=_strings(_mapping(row[7]).get("required_datasets")),
+                    hypothesis=str(row[4]), status="RESEARCH_ONLY", dataset_requirements=dataset_requirements,
                     feature_versions=_strings(row[5]), cost_model_version=str(row[6]), created_at=row[8],
-                    evidence_classification=classify_research_evidence(_strings(_mapping(row[7]).get("required_datasets"))),
-                ) for row in rows], page=page,
-            )
+                    evidence_classification=classify_research_evidence(
+                        synthetic_provenance=synthetic, real_data_provenance_verified=real_verified, lineage_complete=complete,
+                    ),
+                ))
+            return StrategyDiscoveryPage(state="AVAILABLE" if rows else "UNAVAILABLE", items=items, page=page)
         return self._read(operation)
 
     def experiments(self, *, strategy_id: UUID | None, limit: int, offset: int) -> ExperimentDiscoveryPage:
@@ -1103,23 +1162,28 @@ class PostgresOperatorDashboardQueries:
             cursor.execute(
                 "SELECT e.experiment_id,d.strategy_id,v.strategy_version_id,v.version,dv.version,"
                 "v.feature_manifest,v.cost_model_version,e.created_at,"
-                "(SELECT MAX(w.test_end) FROM walk_forward_evidence w WHERE w.experiment_id=e.experiment_id) "
+                "(SELECT MAX(w.test_end) FROM walk_forward_evidence w WHERE w.experiment_id=e.experiment_id),"
+                "ds.provider "
                 "FROM research_experiments e JOIN strategy_versions v USING(strategy_version_id) "
                 "JOIN strategy_definitions d USING(strategy_id) JOIN dataset_versions dv USING(dataset_version_id) "
+                "JOIN datasets ds ON ds.dataset_id=dv.dataset_id "
                 "WHERE (CAST(%s AS uuid) IS NULL OR d.strategy_id=%s) "
                 "ORDER BY e.created_at DESC,e.experiment_id DESC LIMIT %s OFFSET %s",
                 (strategy_id, strategy_id, limit + 1, offset),
             )
             rows, page = _page(cursor.fetchall(), limit, offset)
-            return ExperimentDiscoveryPage(
-                state="AVAILABLE" if rows else "UNAVAILABLE",
-                items=[ExperimentDiscoveryView(
+            items: list[ExperimentDiscoveryView] = []
+            for row in rows:
+                synthetic, real_verified, complete = _provenance_flags(str(row[9]), str(row[4]))
+                items.append(ExperimentDiscoveryView(
                     experiment_id=row[0], strategy_id=row[1], strategy_version_id=row[2], strategy_version=str(row[3]),
                     dataset_version=str(row[4]), feature_versions=_strings(row[5]), cost_model_version=str(row[6]),
                     created_at=row[7], evaluated_at=row[8], status="RESEARCH_ONLY",
-                    evidence_classification=classify_research_evidence([str(row[4])]),
-                ) for row in rows], page=page,
-            )
+                    evidence_classification=classify_research_evidence(
+                        synthetic_provenance=synthetic, real_data_provenance_verified=real_verified, lineage_complete=complete,
+                    ),
+                ))
+            return ExperimentDiscoveryPage(state="AVAILABLE" if rows else "UNAVAILABLE", items=items, page=page)
         return self._read(operation)
 
     def investment_theses(self, *, limit: int, offset: int) -> InvestmentThesisDiscoveryPage:
@@ -1245,7 +1309,20 @@ class PostgresOperatorDashboardQueries:
         def operation(cursor: _Cursor) -> SignalPage:
             cursor.execute(
                 "SELECT p.signal_id,p.instrument_id,p.strategy_version,p.created_at,p.expires_at,p.payload,"
-                "COALESCE(e.to_status,v.status,'CANDIDATE') current_status,v.assessment_id,v.passed_stages,v.failures,e.reason "
+                "COALESCE(e.to_status,v.status,'CANDIDATE') current_status,v.assessment_id,v.passed_stages,v.failures,e.reason,"
+                "COALESCE("
+                "(SELECT ds1.provider FROM strategy_versions sv "
+                "JOIN research_experiments ex ON ex.strategy_version_id=sv.strategy_version_id "
+                "JOIN dataset_versions dsv1 ON dsv1.dataset_version_id=ex.dataset_version_id "
+                "JOIN datasets ds1 ON ds1.dataset_id=dsv1.dataset_id "
+                "WHERE sv.version=p.strategy_version ORDER BY ex.created_at DESC LIMIT 1),"
+                "(SELECT ds2.provider FROM strategy_scorecards sc "
+                "JOIN scorecard_validation_packages svp ON svp.scorecard_id=sc.scorecard_id "
+                "JOIN validation_packages vp ON vp.package_id=svp.package_id "
+                "JOIN dataset_versions dsv2 ON dsv2.dataset_version_id=vp.dataset_version_id "
+                "JOIN datasets ds2 ON ds2.dataset_id=dsv2.dataset_id "
+                "WHERE sc.strategy_version=p.strategy_version ORDER BY sc.evaluated_at DESC LIMIT 1)"
+                ") bound_provider "
                 "FROM runtime_signal_proposals p "
                 "LEFT JOIN LATERAL (SELECT to_status,reason FROM runtime_signal_lifecycle_events WHERE signal_id=p.signal_id AND occurred_at<=%s ORDER BY event_sequence DESC LIMIT 1) e ON TRUE "
                 "LEFT JOIN LATERAL (SELECT assessment_id,status,passed_stages,failures FROM runtime_signal_validations WHERE signal_id=p.signal_id AND assessed_at<=%s ORDER BY assessed_at DESC,assessment_id DESC LIMIT 1) v ON TRUE "
@@ -1277,6 +1354,7 @@ class PostgresOperatorDashboardQueries:
                 else:
                     expiry_state = "CURRENT"
                 contradicting = payload.get("contradicting_evidence", [])
+                synthetic, real_verified, complete = _provenance_flags(None if row[11] is None else str(row[11]))
                 items.append(SignalView(
                     signal_id=row[0], instrument=str(row[1]), strategy_version=str(row[2]),
                     direction=str(payload.get("direction", "UNAVAILABLE")), status=current_status,
@@ -1288,7 +1366,9 @@ class PostgresOperatorDashboardQueries:
                     contradicting_evidence=[str(item) for item in contradicting] if isinstance(contradicting, list) else [],
                     validation_id=row[7], passed_stages=_strings(row[8]), failed_stages=_strings(row[9]),
                     latest_reason=str(row[10] or "candidate_not_yet_assessed"), lifecycle=lifecycle,
-                    evidence_classification=classify_research_evidence([str(row[1])]),
+                    evidence_classification=classify_research_evidence(
+                        synthetic_provenance=synthetic, real_data_provenance_verified=real_verified, lineage_complete=complete,
+                    ),
                     research_or_paper_only=True, automatic_authority=False,
                 ))
             state: Availability = "BLOCKED" if any(item.expiry_state == "OVERDUE" for item in items) else ("AVAILABLE" if items else "UNAVAILABLE")
@@ -1323,8 +1403,13 @@ class PostgresOperatorDashboardQueries:
     def strategy_scorecard(self, scorecard_id: UUID) -> StrategyScorecardView:
         def operation(cursor: _Cursor) -> StrategyScorecardView:
             cursor.execute(
-                "SELECT s.*,v.package_id,v.package_content_hash FROM strategy_scorecards s "
-                "LEFT JOIN scorecard_validation_packages v USING(scorecard_id) WHERE s.scorecard_id=%s",
+                "SELECT s.*,v.package_id,v.package_content_hash,ds.provider,vp.limitations "
+                "FROM strategy_scorecards s "
+                "LEFT JOIN scorecard_validation_packages v USING(scorecard_id) "
+                "LEFT JOIN validation_packages vp ON vp.package_id=v.package_id "
+                "LEFT JOIN dataset_versions dsv ON dsv.dataset_version_id=vp.dataset_version_id "
+                "LEFT JOIN datasets ds ON ds.dataset_id=dsv.dataset_id "
+                "WHERE s.scorecard_id=%s",
                 (scorecard_id,),
             )
             row = cursor.fetchone()
@@ -1348,6 +1433,9 @@ class PostgresOperatorDashboardQueries:
                       for family in ("PERFORMANCE", "ROBUSTNESS", "EXECUTION", "RISK", "DATA_QUALITY", "SIGNAL_DECAY")]
             limitations = _strings(row[11])
             manifest = _mapping(row[14])
+            synthetic, real_verified, complete = _provenance_flags(
+                None if row[18] is None else str(row[18]), str(row[6]), *limitations, *_strings(row[19]),
+            )
             return StrategyScorecardView(
                 scorecard_id=row[0], schema_version=str(row[1]), strategy_id=row[2],
                 strategy_version=str(row[3]), research_run_id=row[4], feature_versions=_strings(row[5]),
@@ -1355,7 +1443,9 @@ class PostgresOperatorDashboardQueries:
                 knowledge_cutoff=row[9], status=str(row[10]), limitations=limitations,
                 dataset_health_status=str(row[12]), validation_package_id=row[16],
                 validation_package_content_hash=None if row[17] is None else str(row[17]),
-                evidence_classification=classify_research_evidence([str(row[6]), *limitations]),
+                evidence_classification=classify_research_evidence(
+                    synthetic_provenance=synthetic, real_data_provenance_verified=real_verified, lineage_complete=complete,
+                ),
                 evidence_manifest_references=[f"{key}:{value}" for key, value in sorted(manifest.items())],
                 content_hash=str(row[15]), groups=groups, complexity_components=components,
             )
@@ -1366,23 +1456,32 @@ class PostgresOperatorDashboardQueries:
     ) -> StrategyScorecardDiscoveryPage:
         def operation(cursor: _Cursor) -> StrategyScorecardDiscoveryPage:
             cursor.execute(
-                "SELECT scorecard_id,strategy_id,strategy_version,research_run_id,dataset_version,"
-                "evaluated_at,status,dataset_health_status,limitations "
-                "FROM strategy_scorecards "
-                "WHERE (CAST(%s AS uuid) IS NULL OR strategy_id=%s) AND (CAST(%s AS text) IS NULL OR status=%s) "
-                "ORDER BY evaluated_at DESC,scorecard_id DESC LIMIT %s OFFSET %s",
+                "SELECT s.scorecard_id,s.strategy_id,s.strategy_version,s.research_run_id,s.dataset_version,"
+                "s.evaluated_at,s.status,s.dataset_health_status,s.limitations,ds.provider,vp.limitations "
+                "FROM strategy_scorecards s "
+                "LEFT JOIN scorecard_validation_packages svp ON svp.scorecard_id=s.scorecard_id "
+                "LEFT JOIN validation_packages vp ON vp.package_id=svp.package_id "
+                "LEFT JOIN dataset_versions dsv ON dsv.dataset_version_id=vp.dataset_version_id "
+                "LEFT JOIN datasets ds ON ds.dataset_id=dsv.dataset_id "
+                "WHERE (CAST(%s AS uuid) IS NULL OR s.strategy_id=%s) AND (CAST(%s AS text) IS NULL OR s.status=%s) "
+                "ORDER BY s.evaluated_at DESC,s.scorecard_id DESC LIMIT %s OFFSET %s",
                 (strategy_id, strategy_id, status, status, limit + 1, offset),
             )
             rows, page = _page(cursor.fetchall(), limit, offset)
-            return StrategyScorecardDiscoveryPage(
-                state="AVAILABLE" if rows else "UNAVAILABLE",
-                items=[StrategyScorecardDiscoveryView(
+            items: list[StrategyScorecardDiscoveryView] = []
+            for row in rows:
+                synthetic, real_verified, complete = _provenance_flags(
+                    None if row[9] is None else str(row[9]), str(row[4]), *_strings(row[8]), *_strings(row[10]),
+                )
+                items.append(StrategyScorecardDiscoveryView(
                     scorecard_id=row[0], strategy_id=row[1], strategy_version=str(row[2]), research_run_id=row[3],
                     dataset_version=str(row[4]), evaluated_at=row[5], status=str(row[6]),
                     dataset_health_status=str(row[7]),
-                    evidence_classification=classify_research_evidence([str(row[4]), *_strings(row[8])]),
-                ) for row in rows], page=page,
-            )
+                    evidence_classification=classify_research_evidence(
+                        synthetic_provenance=synthetic, real_data_provenance_verified=real_verified, lineage_complete=complete,
+                    ),
+                ))
+            return StrategyScorecardDiscoveryPage(state="AVAILABLE" if rows else "UNAVAILABLE", items=items, page=page)
         return self._read(operation)
 
     def latest_scorecard_id(self) -> UUID | None:
