@@ -288,6 +288,7 @@ class PaperOrderDiscoveryView(BaseModel):
     instrument_id: str
     canonical_symbol: str | None
     side: str
+    quantity: str
     paper_only: bool = True
     lifecycle_status: str
     created_at: datetime
@@ -299,6 +300,56 @@ class PaperOrderDiscoveryPage(BaseModel):
     state: Availability
     items: list[PaperOrderDiscoveryView]
     page: PageInfo
+
+
+class PaperOrderEventView(BaseModel):
+    event_id: UUID
+    event_type: str
+    occurred_at: datetime
+
+
+class PaperFillView(BaseModel):
+    fill_id: UUID
+    external_fill_id: str
+    quantity: str
+    price: str
+    occurred_at: datetime
+
+
+class PaperOrderView(BaseModel):
+    paper_only: Literal[True] = True
+    intent_id: UUID
+    account_id: str
+    instrument_id: str
+    canonical_symbol: str | None
+    side: str
+    quantity: str
+    limit_price: str
+    status: str
+    filled_quantity: str
+    average_fill_price: str | None
+    created_at: datetime
+    events: list[PaperOrderEventView]
+    fills: list[PaperFillView]
+
+
+class PaperReconciledAccountView(BaseModel):
+    evidence_id: UUID
+    healthy: bool
+    as_of: datetime
+    cash_currency: str
+    cash_amount: str
+    buying_power: str
+
+
+class PaperReconciliationView(BaseModel):
+    paper_only: Literal[True] = True
+    account_id: str
+    source: str
+    occurred_at: datetime
+    complete: bool
+    discrepancies: list[str]
+    reconciled_account: PaperReconciledAccountView | None
 
 
 class FeatureDefinitionView(BaseModel):
@@ -1332,28 +1383,124 @@ class PostgresOperatorDashboardQueries:
             return InvestmentPortfolioDiscoveryPage(state="AVAILABLE" if items else "UNAVAILABLE", items=items, page=page)
         return self._read(operation)
 
-    def paper_orders(self, *, limit: int, offset: int) -> PaperOrderDiscoveryPage:
+    def paper_orders(
+        self, *, account_id: str | None = None, instrument: str | None = None, side: str | None = None,
+        lifecycle_status: str | None = None, fill_state: str | None = None, reconciliation_state: str | None = None,
+        limit: int, offset: int,
+    ) -> PaperOrderDiscoveryPage:
+        """Bounded paper-order discovery; lifecycle/fill/reconciliation state is derived from
+        persisted OMS events and reconciliation rows, never inferred -- missing reconciliation
+        evidence always resolves to ``UNAVAILABLE``, never ``HEALTHY``."""
         def operation(cursor: _Cursor) -> PaperOrderDiscoveryPage:
             cursor.execute(
-                "SELECT o.account_id,o.intent_id,o.instrument_id,i.canonical_symbol,o.side,o.created_at,"
+                "WITH order_state AS ("
+                "SELECT o.account_id,o.intent_id,o.instrument_id,i.canonical_symbol,o.side,o.quantity,o.created_at,"
                 "COALESCE((SELECT e.payload->>'to' FROM oms_events e WHERE e.intent_id=o.intent_id "
-                "AND e.event_type='ORDER_STATUS_CHANGED' ORDER BY e.event_sequence DESC LIMIT 1),o.status),"
-                "(SELECT COUNT(*) FROM fills f WHERE f.intent_id=o.intent_id),"
+                "AND e.event_type='ORDER_STATUS_CHANGED' ORDER BY e.event_sequence DESC LIMIT 1),o.status) AS lifecycle_status,"
+                "CASE WHEN (SELECT COUNT(*) FROM fills f WHERE f.intent_id=o.intent_id)=0 THEN 'UNFILLED' ELSE 'PARTIAL_OR_FINAL_FILL' END AS fill_state,"
                 "COALESCE((SELECT CASE WHEN r.complete THEN 'HEALTHY' ELSE 'RECONCILIATION_REQUIRED' END "
-                "FROM reconciliations r WHERE r.account_id=o.account_id ORDER BY r.occurred_at DESC,r.reconciliation_id DESC LIMIT 1),'UNAVAILABLE') "
-                "FROM paper_order_intents o JOIN instruments i ON i.instrument_id=o.instrument_id "
-                "ORDER BY o.created_at DESC,o.intent_id DESC LIMIT %s OFFSET %s",
-                (limit + 1, offset),
+                "FROM reconciliations r WHERE r.account_id=o.account_id ORDER BY r.occurred_at DESC,r.reconciliation_id DESC LIMIT 1),'UNAVAILABLE') AS reconciliation_state "
+                "FROM paper_order_intents o JOIN instruments i ON i.instrument_id=o.instrument_id"
+                ") "
+                "SELECT * FROM order_state WHERE "
+                "(CAST(%s AS text) IS NULL OR account_id=%s) "
+                "AND (CAST(%s AS text) IS NULL OR canonical_symbol=%s OR instrument_id::text=%s) "
+                "AND (CAST(%s AS text) IS NULL OR side=%s) "
+                "AND (CAST(%s AS text) IS NULL OR lifecycle_status=%s) "
+                "AND (CAST(%s AS text) IS NULL OR fill_state=%s) "
+                "AND (CAST(%s AS text) IS NULL OR reconciliation_state=%s) "
+                "ORDER BY created_at DESC,intent_id DESC LIMIT %s OFFSET %s",
+                (
+                    account_id, account_id, instrument, instrument, instrument, side, side,
+                    lifecycle_status, lifecycle_status, fill_state, fill_state,
+                    reconciliation_state, reconciliation_state, limit + 1, offset,
+                ),
             )
             rows, page = _page(cursor.fetchall(), limit, offset)
             return PaperOrderDiscoveryPage(
                 state="AVAILABLE" if rows else "UNAVAILABLE",
                 items=[PaperOrderDiscoveryView(
                     account_id=str(row[0]), intent_id=row[1], instrument_id=str(row[2]),
-                    canonical_symbol=None if row[3] is None else str(row[3]), side=str(row[4]), created_at=row[5],
-                    lifecycle_status=str(row[6]), fill_state="UNFILLED" if int(row[7]) == 0 else ("PARTIAL_OR_FINAL_FILL"),
-                    reconciliation_state=str(row[8]),
+                    canonical_symbol=None if row[3] is None else str(row[3]), side=str(row[4]),
+                    quantity=_decimal(row[5]) or "0", created_at=row[6],
+                    lifecycle_status=str(row[7]), fill_state=str(row[8]),
+                    reconciliation_state=str(row[9]),
                 ) for row in rows], page=page,
+            )
+        return self._read(operation)
+
+    def paper_order(self, intent_id: UUID) -> PaperOrderView:
+        """Full paper-order lifecycle evidence from the same PostgreSQL authority as
+        discovery -- never the dev-only SQLite paper OMS store."""
+        def operation(cursor: _Cursor) -> PaperOrderView:
+            cursor.execute(
+                "SELECT o.intent_id,o.account_id,o.instrument_id,i.canonical_symbol,o.side,o.quantity,"
+                "o.limit_price,o.status,o.created_at FROM paper_order_intents o "
+                "JOIN instruments i ON i.instrument_id=o.instrument_id WHERE o.intent_id=%s",
+                (intent_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise DashboardObjectNotFound("paper_order_not_found")
+            cursor.execute(
+                "SELECT oms_event_id,event_type,occurred_at,payload FROM oms_events "
+                "WHERE intent_id=%s ORDER BY event_sequence",
+                (intent_id,),
+            )
+            event_rows = cursor.fetchall()
+            events = [PaperOrderEventView(event_id=item[0], event_type=str(item[1]), occurred_at=item[2]) for item in event_rows]
+            status_changes = [item for item in event_rows if item[1] == "ORDER_STATUS_CHANGED"]
+            lifecycle_status = str(_mapping(status_changes[-1][3]).get("to")) if status_changes else str(row[7])
+
+            cursor.execute(
+                "SELECT fill_id,external_fill_id,quantity,price,occurred_at FROM fills "
+                "WHERE intent_id=%s ORDER BY occurred_at,fill_id",
+                (intent_id,),
+            )
+            fill_rows = cursor.fetchall()
+            fills = [PaperFillView(
+                fill_id=item[0], external_fill_id=str(item[1]),
+                quantity=_decimal(item[2]) or "0", price=_decimal(item[3]) or "0", occurred_at=item[4],
+            ) for item in fill_rows]
+            filled_quantity = sum((Decimal(str(item[2])) for item in fill_rows), Decimal(0))
+            notional = sum((Decimal(str(item[2])) * Decimal(str(item[3])) for item in fill_rows), Decimal(0))
+            average_fill_price = _decimal(notional / filled_quantity) if filled_quantity > 0 else None
+
+            return PaperOrderView(
+                intent_id=row[0], account_id=str(row[1]), instrument_id=str(row[2]),
+                canonical_symbol=None if row[3] is None else str(row[3]), side=str(row[4]),
+                quantity=_decimal(row[5]) or "0", limit_price=_decimal(row[6]) or "0",
+                status=lifecycle_status, filled_quantity=_decimal(filled_quantity) or "0",
+                average_fill_price=average_fill_price, created_at=row[8], events=events, fills=fills,
+            )
+        return self._read(operation)
+
+    def paper_reconciliation(self, account_id: str) -> PaperReconciliationView:
+        """Latest paper-account reconciliation evidence; missing evidence raises
+        ``DashboardObjectNotFound`` (surfaced as EMPTY, never a fabricated HEALTHY state)."""
+        def operation(cursor: _Cursor) -> PaperReconciliationView:
+            cursor.execute(
+                "SELECT reconciliation_id,source,occurred_at,complete,discrepancies FROM reconciliations "
+                "WHERE account_id=%s ORDER BY occurred_at DESC,reconciliation_id DESC LIMIT 1",
+                (account_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise DashboardObjectNotFound("paper_reconciliation_not_found")
+            cursor.execute(
+                "SELECT evidence_id,healthy,as_of,cash_currency,cash_amount,buying_power "
+                "FROM reconciled_account_evidence WHERE reconciliation_id=%s",
+                (row[0],),
+            )
+            evidence_row = cursor.fetchone()
+            reconciled_account = None if evidence_row is None else PaperReconciledAccountView(
+                evidence_id=evidence_row[0], healthy=bool(evidence_row[1]), as_of=evidence_row[2],
+                cash_currency=str(evidence_row[3]), cash_amount=_decimal(evidence_row[4]) or "0",
+                buying_power=_decimal(evidence_row[5]) or "0",
+            )
+            return PaperReconciliationView(
+                account_id=account_id, source=str(row[1]), occurred_at=row[2], complete=bool(row[3]),
+                discrepancies=_strings(row[4]), reconciled_account=reconciled_account,
             )
         return self._read(operation)
 

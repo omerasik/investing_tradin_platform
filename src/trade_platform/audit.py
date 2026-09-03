@@ -53,10 +53,68 @@ class SQLiteAuditStore:
             raise ValueError("limit must be from 1 through 1000")
         rows = self._connection.execute(
             "SELECT event_id, event_type, occurred_at, actor, payload_json "
-            "FROM audit_events ORDER BY occurred_at DESC LIMIT ?",
+            "FROM audit_events ORDER BY occurred_at DESC, event_id DESC LIMIT ?",
             (limit,),
         ).fetchall()
         return [
             AuditEvent(UUID(row[0]), row[1], datetime.fromisoformat(row[2]), row[3], json.loads(row[4]))
             for row in rows
         ]
+
+    def query(
+        self,
+        *,
+        event_type: str | None = None,
+        actor: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[AuditEvent], bool]:
+        """Bounded, deterministically-ordered lookup (timestamp DESC, event ID DESC tie-breaker).
+
+        Returns ``(items, has_more)``; ``has_more`` never requires loading unbounded rows.
+        """
+        if not 1 <= limit <= 200:
+            raise ValueError("limit must be from 1 through 200")
+        if offset < 0:
+            raise ValueError("offset must be non-negative")
+        clauses: list[str] = []
+        params: list[object] = []
+        if event_type is not None:
+            clauses.append("event_type = ?")
+            params.append(event_type)
+        if actor is not None:
+            clauses.append("actor = ?")
+            params.append(actor)
+        if start is not None:
+            clauses.append("occurred_at >= ?")
+            params.append(start.isoformat())
+        if end is not None:
+            clauses.append("occurred_at <= ?")
+            params.append(end.isoformat())
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._connection.execute(
+            # `where` is assembled only from the fixed literal clause strings above,
+            # never from caller-supplied identifiers; every value is bound via `?`.
+            "SELECT event_id, event_type, occurred_at, actor, payload_json "
+            f"FROM audit_events {where} ORDER BY occurred_at DESC, event_id DESC LIMIT ? OFFSET ?",  # nosec B608
+            (*params, limit + 1, offset),
+        ).fetchall()
+        has_more = len(rows) > limit
+        selected = rows[:limit]
+        items = [
+            AuditEvent(UUID(row[0]), row[1], datetime.fromisoformat(row[2]), row[3], json.loads(row[4]))
+            for row in selected
+        ]
+        return items, has_more
+
+    def get(self, event_id: UUID) -> AuditEvent | None:
+        row = self._connection.execute(
+            "SELECT event_id, event_type, occurred_at, actor, payload_json "
+            "FROM audit_events WHERE event_id = ?",
+            (str(event_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return AuditEvent(UUID(row[0]), row[1], datetime.fromisoformat(row[2]), row[3], json.loads(row[4]))

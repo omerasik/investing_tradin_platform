@@ -249,6 +249,52 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(events.json()[0]["event_id"], created.json()["event_id"])
         self.assertEqual(events.json()[0]["actor"], "local-operator")
 
+    def test_dashboard_audit_events_are_bounded_filtered_and_redact_secret_shaped_payload_keys(self) -> None:
+        client = TestClient(build_app(PlatformConfig(), SQLiteAuditStore(), OperatorAuthenticator("test-token"), InMemoryRateLimiter(max_requests=10)))
+        self.assertEqual(
+            client.post(
+                "/audit/events",
+                json={"event_type": "risk.rejected", "actor": "risk-engine", "payload": {"reason": "stale", "api_key": "sk-super-secret", "nested": {"password": "hunter2", "safe": "ok"}}},  # pragma: allowlist secret
+                headers=self.headers,
+            ).status_code,
+            201,
+        )
+        self.assertEqual(
+            client.post(
+                "/audit/events",
+                json={"event_type": "signal.blocked", "actor": "signal-engine", "payload": {"reason": "risk"}},
+                headers=self.headers,
+            ).status_code,
+            201,
+        )
+        self.assertEqual(client.get("/operator-dashboard/audit-events").status_code, 401)
+        page = client.get("/operator-dashboard/audit-events", headers=self.headers)
+        self.assertEqual(page.status_code, 200)
+        body = page.json()
+        self.assertEqual((body["state"], len(body["items"]), body["mutation_route_exposed_by_dashboard"]), ("AVAILABLE", 2, False))
+        self.assertEqual(body["audit_authority"], "SQLITE_APPEND_ONLY_STORE")
+
+        risk_only = client.get("/operator-dashboard/audit-events", params={"event_type": "risk.rejected"}, headers=self.headers)
+        self.assertEqual([item["event_type"] for item in risk_only.json()["items"]], ["risk.rejected"])
+        redacted_payload = risk_only.json()["items"][0]["payload"]
+        self.assertEqual((redacted_payload["reason"], redacted_payload["api_key"], redacted_payload["nested"]["password"], redacted_payload["nested"]["safe"]), ("stale", "REDACTED", "REDACTED", "ok"))
+
+        event_id = risk_only.json()["items"][0]["event_id"]
+        detail = client.get(f"/operator-dashboard/audit-events/{event_id}", headers=self.headers)
+        self.assertEqual((detail.status_code, detail.json()["payload"]["api_key"]), (200, "REDACTED"))
+        self.assertEqual(client.get(f"/operator-dashboard/audit-events/{uuid4()}", headers=self.headers).status_code, 404)
+
+    def test_alerts_and_audit_events_are_distinct_domains(self) -> None:
+        alerts = SQLiteOperationalAlertStore()
+        alerts.raise_alert(source="risk", code="RISK_BREACH", severity=AlertSeverity.WARNING, resource="account:demo", details={})
+        client = TestClient(build_app(PlatformConfig(), SQLiteAuditStore(), OperatorAuthenticator("test-token"), InMemoryRateLimiter(max_requests=10), alert_store=alerts))
+        alert_response = client.get("/alerts", headers=self.headers)
+        audit_response = client.get("/operator-dashboard/audit-events", headers=self.headers)
+        self.assertEqual(len(alert_response.json()), 1)
+        self.assertEqual(audit_response.json()["state"], "UNAVAILABLE")
+        self.assertEqual(audit_response.json()["items"], [])
+        self.assertNotIn("alert_id", audit_response.json())
+
     def test_operational_endpoints_require_bearer_token(self) -> None:
         self.assertEqual(self.client.get("/audit/events").status_code, 401)
 

@@ -1074,6 +1074,15 @@ footer {
   border-left: 3px solid var(--accent-primary);
 }
 
+.data-table tbody tr.incident-open {
+  border-left: 3px solid var(--status-danger-border, #ef4444);
+}
+
+.data-table tbody tr.incident-resolved {
+  opacity: 0.72;
+  border-left: 3px solid var(--border-default);
+}
+
 .data-table tbody td {
   padding: 10px 14px;
   color: var(--text-primary);

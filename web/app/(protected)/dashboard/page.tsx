@@ -38,6 +38,7 @@ export default async function DashboardPage() {
     construction,
     news,
     sre,
+    auditEvents,
   } = data;
 
   const health = dataHealth.state === "AVAILABLE" ? dataHealth.value : undefined;
@@ -59,6 +60,7 @@ export default async function DashboardPage() {
   const constructionEvidence = construction.state === "AVAILABLE" ? construction.value : undefined;
   const newsEvidence = news.state === "AVAILABLE" ? news.value : undefined;
   const sreEvidence = sre.state === "AVAILABLE" ? sre.value : undefined;
+  const latestAuditEvent = auditEvents.state === "AVAILABLE" ? auditEvents.value.items[0] : undefined;
 
   const instrumentRows = instruments.state === "AVAILABLE" ? instruments.value.items : [];
   const strategyRows = strategies.state === "AVAILABLE" ? strategies.value.items : [];
@@ -828,202 +830,83 @@ export default async function DashboardPage() {
           </div>
         </article>
 
-        {/* Paper OMS */}
+        {/* Paper OMS -- concise summary only; full lifecycle/fills/reconciliation terminal is /paper (Module 2B-5). */}
         <article id="paper-oms" className="panel">
           <h2>
             <span>Paper OMS</span>
-            <StatusBadge status={order ? "AVAILABLE" : paperOrder.state} />
+            <StatusBadge status={order ? "AVAILABLE" : (paperOrderRows.length ? "AVAILABLE" : paperOrder.state)} />
           </h2>
-          <p>Paper lifecycle and reconciliation evidence only; this page cannot submit an order.</p>
-          {order ? (
-            <>
-              <dl>
-                <dt>Intent / instrument</dt>
-                <dd>
-                  <code>{order.intent_id}</code> / {order.instrument_id}
-                </dd>
-                <dt>Status / quantity / filled</dt>
-                <dd>
-                  {order.status} / {order.quantity} / {order.filled_quantity}
-                </dd>
-                <dt>Partial fills</dt>
-                <dd>
-                  {order.fills
-                    .map((fill) => `${fill.external_fill_id}: ${fill.quantity} @ ${fill.price}`)
-                    .join("; ") || "EMPTY"}
-                </dd>
-                <dt>Lifecycle</dt>
-                <dd>
-                  {order.events.map((event) => `${event.event_type} @ ${utc(event.occurred_at)}`).join("; ")}
-                </dd>
-                <dt>Reconciliation</dt>
-                <dd>
-                  {account
-                    ? `${account.complete ? "COMPLETE" : account.discrepancies.join(", ")}; ${
-                        account.source
-                      }; ${utc(account.occurred_at)}`
-                    : stateText(reconciliation)}
-                </dd>
-              </dl>
-              <EvidenceMeta
-                source="paper-oms"
-                asOf={order.created_at}
-                version="paper-oms-v1"
-                limitations={["Paper-only evidence; no broker execution capability."]}
-              />
-            </>
-          ) : paperOrderRows.length ? (
-            paperOrderRows.map((item) => (
-              <dl key={item.intent_id}>
-                <dt>Intent / instrument</dt>
-                <dd>
-                  <code>{item.intent_id}</code> / {item.canonical_symbol ?? item.instrument_id}
-                </dd>
-                <dt>Side / lifecycle / fill</dt>
-                <dd>
-                  {item.side} / {item.lifecycle_status} / {item.fill_state}
-                </dd>
-                <dt>Paper / reconciliation</dt>
-                <dd>
-                  {item.paper_only ? "PAPER ONLY" : "BLOCKED"} / {item.reconciliation_state}
-                </dd>
-                <dt>Created</dt>
-                <dd>{utc(item.created_at)}</dd>
-              </dl>
-            ))
+          <p>PAPER ONLY. NO BROKER CONNECTIVITY. NO LIVE ORDER SUBMISSION.</p>
+          {order ?? paperOrderRows[0] ? (
+            <dl>
+              <dt>Latest paper lifecycle</dt>
+              <dd>
+                {order ? `${order.instrument_id} / ${order.status}` : `${paperOrderRows[0].canonical_symbol ?? paperOrderRows[0].instrument_id} / ${paperOrderRows[0].lifecycle_status}`}
+              </dd>
+              <dt>Reconciliation status</dt>
+              <dd>
+                {account ? (account.complete ? "PAPER ACCOUNT RECONCILED" : "DISCREPANCY") : (paperOrderRows[0]?.reconciliation_state ?? stateText(reconciliation))}
+              </dd>
+            </dl>
           ) : (
             <p className="empty-state">{stateText(paperOrders)}</p>
           )}
           <div className="panel-footer-row">
             <span className="status">PAPER ONLY / READ ONLY</span>
             <Link href="/paper" className="workspace-link">
-              Workspace &rarr;
+              Open Paper OMS &rarr;
             </Link>
           </div>
         </article>
 
-        {/* Operations / SRE */}
+        {/* Operations / SRE -- concise summary only; full dependency/SLO/incident/drill terminal is /operations (Module 2B-5). */}
         <article id="operations" className="panel">
           <h2>
-            <span>Operations / SRE</span>
+            <span>Operations</span>
             <StatusBadge status={sreEvidence ? "AVAILABLE" : sre.state} />
           </h2>
-          <p>
-            TARGET and MEASURED are distinct. Candidate targets are never presented as achieved
-            operational evidence.
-          </p>
+          <p>TARGET and MEASURED are distinct; candidate targets are never presented as achieved.</p>
           {sreEvidence ? (
-            <>
-              <dl>
-                <dt>Subsystem / version / environment</dt>
-                <dd>
-                  {sreEvidence.subsystem} / {sreEvidence.version} / {sreEvidence.environment}
-                </dd>
-                <dt>PostgreSQL / provider</dt>
-                <dd>
-                  {sreEvidence.postgres_state} / {sreEvidence.provider_state}
-                </dd>
-                <dt>Ingestion / dataset / feature freshness</dt>
-                <dd>
-                  {sreEvidence.ingestion_checkpoint_freshness} / {sreEvidence.dataset_freshness} /{" "}
-                  {sreEvidence.feature_freshness}
-                </dd>
-                <dt>Research / signal / risk</dt>
-                <dd>
-                  {sreEvidence.research_job_health} / {sreEvidence.signal_freshness} /{" "}
-                  {sreEvidence.risk_status}
-                </dd>
-                <dt>Reconciliation / backup-restore / kill switch</dt>
-                <dd>
-                  {sreEvidence.reconciliation_status} / {sreEvidence.backup_restore_status} /{" "}
-                  {sreEvidence.kill_switch_state}
-                </dd>
-              </dl>
-
-              <h3>SLO evidence</h3>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Indicator</th>
-                    <th>TARGET</th>
-                    <th>MEASURED</th>
-                    <th>Evidence state</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sreEvidence.slos.map((item) => (
-                    <tr key={item.slo_policy_version_id}>
-                      <td>
-                        {item.name}: {item.indicator}
-                      </td>
-                      <td>{item.target}</td>
-                      <td>{item.measured_value ?? "UNAVAILABLE"}</td>
-                      <td>
-                        {item.measured_state}; {item.claim_status ?? "NO MEASUREMENT"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-
-              <h3>Incidents</h3>
-              {sreEvidence.incidents.length ? (
-                sreEvidence.incidents.map((item) => (
-                  <p key={item.incident_id}>
-                    <code>{item.incident_id}</code>: {item.severity} {item.subsystem}; opened{" "}
-                    {utc(item.opened_at)}; acknowledged {utc(item.acknowledged_at)}; resolved{" "}
-                    {utc(item.resolved_at)}; {item.status}; {item.reason}; {item.evidence_reference}
-                  </p>
-                ))
-              ) : (
-                <p className="empty-state">UNAVAILABLE: no persisted incident evidence.</p>
-              )}
-
-              <h3>Failure / recovery drills</h3>
-              {sreEvidence.failure_drills.map((item) => (
-                <p key={item.drill_run_id}>
-                  {item.scenario}: {item.passed ? "PASSED" : "FAILED"}; expected {item.expected_protection};
-                  measured {item.observed_protection}; {item.evidence_reference}
-                </p>
-              ))}
-            </>
+            <dl>
+              <dt>PostgreSQL</dt>
+              <dd><StatusBadge status={sreEvidence.postgres_state} /></dd>
+              <dt>Service Health</dt>
+              <dd>{sreEvidence.subsystem} / v{sreEvidence.version} / <StatusBadge status={sreEvidence.deployment_status} /></dd>
+              <dt>Active Incident Count</dt>
+              <dd>{sreEvidence.incidents.filter((item) => item.status !== "RESOLVED").length}</dd>
+              <dt>Kill Switch</dt>
+              <dd><StatusBadge status={sreEvidence.kill_switch_state} /></dd>
+            </dl>
           ) : (
             <p className="empty-state">{stateText(sre)}</p>
           )}
           <div className="panel-footer-row">
             <span className="status">READ ONLY / TARGET &ne; MEASURED</span>
             <Link href="/operations" className="workspace-link">
-              Workspace &rarr;
+              Open Operations &rarr;
             </Link>
           </div>
         </article>
 
-        {/* Audit */}
+        {/* Audit -- concise summary only; full audit-event/alert terminal is /audit (Module 2B-5). */}
         <article id="audit" className="panel">
           <h2>
             <span>Audit</span>
             <StatusBadge status="AVAILABLE" />
           </h2>
-          <p>
-            Audit evidence is immutable and read-only: actor, action, domain object, version, timestamp,
-            decision, reasons, and evidence IDs belong to protected backend records.
-          </p>
+          <p>READ ONLY. IMMUTABLE EVIDENCE. NO MUTATION ROUTE EXPOSED BY DASHBOARD.</p>
           <dl>
-            <dt>Alert evidence</dt>
+            <dt>Latest Audit Event</dt>
             <dd>
-              {alertRows
-                ? alertRows
-                    .map((item) => `${item.alert_id}: ${item.severity} ${item.code} @ ${utc(item.created_at)}`)
-                    .join("; ") || "No active alerts recorded."
-                : stateText(alerts)}
+              {latestAuditEvent ? `${latestAuditEvent.event_type} @ ${utc(latestAuditEvent.occurred_at)}` : (auditEvents.state === "AVAILABLE" ? "EMPTY: no audit events persisted." : stateText(auditEvents))}
             </dd>
-            <dt>Mutation control</dt>
-            <dd>NO MUTATION ROUTE EXPOSED BY THIS DASHBOARD</dd>
+            <dt>Active Alert Count</dt>
+            <dd>{alertRows ? alertRows.length : stateText(alerts)}</dd>
           </dl>
           <div className="panel-footer-row">
             <span className="status">READ ONLY</span>
             <Link href="/audit" className="workspace-link">
-              Workspace &rarr;
+              Open Audit &rarr;
             </Link>
           </div>
         </article>
