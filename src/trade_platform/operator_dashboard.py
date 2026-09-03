@@ -259,6 +259,7 @@ class InvestmentThesisDiscoveryView(BaseModel):
     as_of: datetime
     review_state: str | None
     synthetic_demo: bool
+    evidence_classification: str
 
 
 class InvestmentThesisDiscoveryPage(BaseModel):
@@ -1250,43 +1251,85 @@ class PostgresOperatorDashboardQueries:
             return ExperimentDiscoveryPage(state="AVAILABLE" if rows else "UNAVAILABLE", items=items, page=page)
         return self._read(operation)
 
-    def investment_theses(self, *, limit: int, offset: int) -> InvestmentThesisDiscoveryPage:
+    def investment_theses(
+        self, *, instrument: str | None, status: str | None, review_state: str | None,
+        synthetic_demo: bool | None, limit: int, offset: int,
+    ) -> InvestmentThesisDiscoveryPage:
+        """Bounded investment-thesis discovery; no calculation, only persisted evidence ordering.
+
+        ``instrument`` matches either the PIT instrument reference or the canonical symbol
+        exactly (never a substring scan). ``synthetic_demo`` filters on the same positive
+        ``DEMO:``-prefix marker used elsewhere in this file (``instruments()``), not a
+        heuristic. ``evidence_classification`` is resolved through the shared fail-closed
+        ``classify_research_evidence_from_markers`` helper -- absence of a synthetic marker
+        is never treated as proof of real data.
+        """
         def operation(cursor: _Cursor) -> InvestmentThesisDiscoveryPage:
             cursor.execute(
-                "SELECT t.thesis_id,COALESCE(t.pit_instrument_id,t.instrument_id::text),p.canonical_symbol,t.version,"
-                "t.status,t.created_at,(SELECT r.status FROM investment_reviews r WHERE r.thesis_id=t.thesis_id "
-                "ORDER BY r.reviewed_at DESC,r.review_id DESC LIMIT 1) "
-                "FROM investment_theses t LEFT JOIN professional_instruments p ON p.instrument_id=t.pit_instrument_id "
+                "SELECT t.thesis_id,COALESCE(t.pit_instrument_id,t.instrument_id::text) AS instrument_ref,"
+                "p.canonical_symbol,t.version,t.status,t.created_at,lr.status AS review_state "
+                "FROM investment_theses t "
+                "LEFT JOIN professional_instruments p ON p.instrument_id=t.pit_instrument_id "
+                "LEFT JOIN LATERAL (SELECT r.status FROM investment_reviews r WHERE r.thesis_id=t.thesis_id "
+                "ORDER BY r.reviewed_at DESC,r.review_id DESC LIMIT 1) lr ON TRUE "
+                "WHERE (CAST(%s AS text) IS NULL OR COALESCE(t.pit_instrument_id,t.instrument_id::text)=%s "
+                "OR p.canonical_symbol=%s) "
+                "AND (CAST(%s AS text) IS NULL OR t.status=%s) "
+                "AND (CAST(%s AS text) IS NULL OR lr.status=%s) "
+                "AND (CAST(%s AS boolean) IS NULL OR (COALESCE(t.pit_instrument_id,t.instrument_id::text) LIKE 'DEMO:%%')=%s) "
                 "ORDER BY t.created_at DESC,t.thesis_id DESC LIMIT %s OFFSET %s",
-                (limit + 1, offset),
+                (
+                    instrument, instrument, instrument, status, status, review_state, review_state,
+                    synthetic_demo, synthetic_demo, limit + 1, offset,
+                ),
             )
             rows, page = _page(cursor.fetchall(), limit, offset)
-            return InvestmentThesisDiscoveryPage(
-                state="AVAILABLE" if rows else "UNAVAILABLE",
-                items=[InvestmentThesisDiscoveryView(
-                    thesis_id=row[0], instrument_id=str(row[1]), canonical_symbol=None if row[2] is None else str(row[2]),
+            items: list[InvestmentThesisDiscoveryView] = []
+            for row in rows:
+                instrument_ref = str(row[1])
+                items.append(InvestmentThesisDiscoveryView(
+                    thesis_id=row[0], instrument_id=instrument_ref, canonical_symbol=None if row[2] is None else str(row[2]),
                     thesis_version=str(row[3]), status=str(row[4]), as_of=row[5],
                     review_state=None if row[6] is None else str(row[6]),
-                    synthetic_demo=str(row[1]).startswith("DEMO:"),
-                ) for row in rows], page=page,
-            )
+                    synthetic_demo=instrument_ref.startswith("DEMO:"),
+                    evidence_classification=classify_research_evidence_from_markers(instrument_ref),
+                ))
+            return InvestmentThesisDiscoveryPage(state="AVAILABLE" if items else "UNAVAILABLE", items=items, page=page)
         return self._read(operation)
 
-    def investment_portfolios(self, *, limit: int, offset: int) -> InvestmentPortfolioDiscoveryPage:
+    def investment_portfolios(
+        self, *, status: str | None, account_id: str | None, limit: int, offset: int,
+    ) -> InvestmentPortfolioDiscoveryPage:
+        """Bounded investment-portfolio discovery over persisted rebalance candidates.
+
+        ``evidence_classification`` previously returned a hardcoded authority-disclaimer
+        string for every row regardless of provenance -- a Module 2B-2.1-style truthfulness
+        defect (see docs/MODULE_2B4_INVESTMENTS_NEWS.md). It now resolves through the same
+        fail-closed ``classify_research_evidence_from_markers`` helper used everywhere else,
+        scanning the account id, persisted limitations text, and candidate instrument keys
+        for a positive synthetic marker; absence of one never proves real data.
+        """
         def operation(cursor: _Cursor) -> InvestmentPortfolioDiscoveryPage:
             cursor.execute(
-                "SELECT c.account_id,c.as_of,c.status,(SELECT COUNT(*) FROM jsonb_object_keys(c.candidate_weights)) "
-                "FROM investment_rebalance_candidates c ORDER BY c.as_of DESC,c.candidate_id DESC LIMIT %s OFFSET %s",
-                (limit + 1, offset),
+                "SELECT c.account_id,c.as_of,c.status,c.candidate_weights,c.limitations "
+                "FROM investment_rebalance_candidates c "
+                "WHERE (CAST(%s AS text) IS NULL OR c.status=%s) "
+                "AND (CAST(%s AS text) IS NULL OR c.account_id=%s) "
+                "ORDER BY c.as_of DESC,c.candidate_id DESC LIMIT %s OFFSET %s",
+                (status, status, account_id, account_id, limit + 1, offset),
             )
             rows, page = _page(cursor.fetchall(), limit, offset)
-            return InvestmentPortfolioDiscoveryPage(
-                state="AVAILABLE" if rows else "UNAVAILABLE",
-                items=[InvestmentPortfolioDiscoveryView(
-                    portfolio_id=str(row[0]), as_of=row[1], review_status=str(row[2]), holdings_count=int(row[3]),
-                    evidence_classification="REVIEW_ONLY; LONG_TERM_INVESTMENT; NO_EXECUTION_AUTHORITY",
-                ) for row in rows], page=page,
-            )
+            items: list[InvestmentPortfolioDiscoveryView] = []
+            for row in rows:
+                weights = _mapping(row[3])
+                limitations_text = " ".join(_strings(row[4]))
+                items.append(InvestmentPortfolioDiscoveryView(
+                    portfolio_id=str(row[0]), as_of=row[1], review_status=str(row[2]), holdings_count=len(weights),
+                    evidence_classification=classify_research_evidence_from_markers(
+                        str(row[0]), limitations_text, *weights.keys(),
+                    ),
+                ))
+            return InvestmentPortfolioDiscoveryPage(state="AVAILABLE" if items else "UNAVAILABLE", items=items, page=page)
         return self._read(operation)
 
     def paper_orders(self, *, limit: int, offset: int) -> PaperOrderDiscoveryPage:

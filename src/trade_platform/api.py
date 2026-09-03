@@ -438,17 +438,30 @@ def build_app(
 
     @app.get("/operator-dashboard/investment-theses", response_model=InvestmentThesisDiscoveryPage)
     def dashboard_investment_theses(
+        instrument: str | None = Query(default=None, min_length=1, max_length=160),
+        status: str | None = Query(default=None, min_length=1, max_length=64),
+        review_state: str | None = Query(default=None, min_length=1, max_length=64),
+        synthetic_demo: bool | None = Query(default=None),
         limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10_000),
         _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
     ) -> object:
-        return read_dashboard(lambda: queries.investment_theses(limit=limit, offset=offset))
+        """Bounded investment-thesis discovery; no ad-hoc search, no calculation."""
+        return read_dashboard(lambda: queries.investment_theses(
+            instrument=instrument, status=status, review_state=review_state, synthetic_demo=synthetic_demo,
+            limit=limit, offset=offset,
+        ))
 
     @app.get("/operator-dashboard/investment-portfolios", response_model=InvestmentPortfolioDiscoveryPage)
     def dashboard_investment_portfolios(
+        status: str | None = Query(default=None, min_length=1, max_length=64),
+        account_id: str | None = Query(default=None, min_length=1, max_length=64),
         limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10_000),
         _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
     ) -> object:
-        return read_dashboard(lambda: queries.investment_portfolios(limit=limit, offset=offset))
+        """Bounded investment-portfolio discovery; no ad-hoc search, no calculation."""
+        return read_dashboard(lambda: queries.investment_portfolios(
+            status=status, account_id=account_id, limit=limit, offset=offset,
+        ))
 
     @app.get("/operator-dashboard/paper-orders", response_model=PaperOrderDiscoveryPage)
     def dashboard_paper_orders(

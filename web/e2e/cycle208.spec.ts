@@ -133,12 +133,24 @@ test("portfolio allocations and reductions are review-only with no execution act
 
 test("news correction evidence remains externally blocked and never appears live", async ({ page }) => {
   const workspace = page.locator("#news");
-  await expect(workspace).toContainText("RETRACTION #1");
-  await expect(workspace).toContainText("RETRACTS");
   await expect(workspace).toContainText("EXTERNAL_BLOCKED");
   await expect(workspace).toContainText("NOT LIVE NEWS");
   await expect(workspace.getByRole("button")).toHaveCount(0);
   await expect(workspace).not.toContainText("Execute trade");
+
+  // Module 2B-4: the dashboard card is a concise summary with a link out; the full
+  // revision chain (RETRACTION #1 / RETRACTS) it used to inline now lives on the
+  // dedicated /news workspace instead.
+  await workspace.getByRole("link", { name: "Open News Intelligence" }).click();
+  await expect(page).toHaveURL(/\/news/);
+  // Scoped to the inspector aside so the correction-state filter's own "Retraction"
+  // <option> (present in the DOM but not visible while the <select> is closed) is
+  // never the match.
+  const newsInspector = page.getByLabel("News Event Inspector");
+  await expect(newsInspector.getByText("RETRACTION", { exact: false }).first()).toBeVisible();
+  await expect(newsInspector.getByText("RETRACTS", { exact: false }).first()).toBeVisible();
+  await expect(page.getByText("NOT LIVE NEWS").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: /execute|trade|buy|sell|order/i })).toHaveCount(0);
 });
 
 test("SRE incident, reconciliation, and TARGET versus MEASURED evidence render", async ({ page }) => {

@@ -86,8 +86,10 @@ class Module1BDemoAcceptanceTests(unittest.TestCase):
             self.queries.instruments(limit=20, offset=0),
             self.queries.strategies(family=None, limit=20, offset=0),
             self.queries.experiments(strategy_id=None, limit=20, offset=0),
-            self.queries.investment_theses(limit=20, offset=0),
-            self.queries.investment_portfolios(limit=20, offset=0),
+            self.queries.investment_theses(
+                instrument=None, status=None, review_state=None, synthetic_demo=None, limit=20, offset=0,
+            ),
+            self.queries.investment_portfolios(status=None, account_id=None, limit=20, offset=0),
             self.queries.paper_orders(limit=20, offset=0),
             self.queries.feature_definitions(family=None, limit=20, offset=0),
             self.queries.signals(as_of=self.seed_module.DEMO_AT, status=None, instrument=None, strategy_version=None, limit=20, offset=0),
@@ -202,8 +204,10 @@ class Module1BDemoAcceptanceTests(unittest.TestCase):
             "features": self.queries.feature_definitions(family=None, limit=20, offset=0),
             "strategy": self.queries.strategies(family=None, limit=20, offset=0),
             "backtest": self.queries.experiments(strategy_id=self.seed_module.stable_id("strategy"), limit=20, offset=0),
-            "investment": self.queries.investment_theses(limit=20, offset=0),
-            "portfolio": self.queries.investment_portfolios(limit=20, offset=0),
+            "investment": self.queries.investment_theses(
+                instrument=None, status=None, review_state=None, synthetic_demo=None, limit=20, offset=0,
+            ),
+            "portfolio": self.queries.investment_portfolios(status=None, account_id=None, limit=20, offset=0),
             "paper_oms": self.queries.paper_orders(limit=20, offset=0),
             "signals": self.queries.signals(as_of=self.seed_module.DEMO_AT, status=None, instrument=None, strategy_version=None, limit=20, offset=0),
             "risk": self.queries.risk_decisions(

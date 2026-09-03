@@ -25,6 +25,10 @@ from trade_platform.operator_dashboard import (
     InstrumentDetailView,
     InstrumentDiscoveryPage,
     InstrumentDiscoveryView,
+    InvestmentPortfolioDiscoveryPage,
+    InvestmentPortfolioDiscoveryView,
+    InvestmentThesisDiscoveryPage,
+    InvestmentThesisDiscoveryView,
     NewsEventPage,
     NewsEventView,
     PageInfo,
@@ -154,6 +158,19 @@ class OperatorDashboardApiTests(unittest.TestCase):
                 risk_gate_approved=True,
             )], page=PageInfo(limit=50, offset=0, returned=1, has_more=False),
         )
+        self.queries.investment_theses.return_value = InvestmentThesisDiscoveryPage(
+            state="AVAILABLE", items=[InvestmentThesisDiscoveryView(
+                thesis_id=identity, instrument_id="DEMO:XNAS:DEMO_EQ_A", canonical_symbol="DEMO_EQ_A",
+                thesis_version="v1", status="REVIEW_REQUIRED", as_of=now, review_state="REVIEW_REQUIRED",
+                synthetic_demo=True, evidence_classification="SYNTHETIC_ENGINEERING_EVIDENCE_ONLY",
+            )], page=PageInfo(limit=50, offset=0, returned=1, has_more=False),
+        )
+        self.queries.investment_portfolios.return_value = InvestmentPortfolioDiscoveryPage(
+            state="AVAILABLE", items=[InvestmentPortfolioDiscoveryView(
+                portfolio_id="demo-investment", as_of=now, review_status="REVIEW_REQUIRED", holdings_count=1,
+                evidence_classification="SYNTHETIC_ENGINEERING_EVIDENCE_ONLY",
+            )], page=PageInfo(limit=50, offset=0, returned=1, has_more=False),
+        )
         self.queries.news_events.return_value = NewsEventPage(
             state="EXTERNAL_BLOCKED", provider_state="EXTERNAL_BLOCKED",
             items=[NewsEventView(
@@ -256,6 +273,10 @@ class OperatorDashboardApiTests(unittest.TestCase):
             "/operator-dashboard/portfolio-construction-runs",
             f"/operator-dashboard/portfolio-construction-runs?status=REVIEW_REQUIRED&policy_version_id={uuid4()}&regime_run_id={uuid4()}",
             f"/operator-dashboard/portfolio-construction-runs/{identity}",
+            "/operator-dashboard/investment-theses",
+            "/operator-dashboard/investment-theses?instrument=DEMO%3AXNAS%3ADEMO_EQ_A&status=REVIEW_REQUIRED&review_state=REVIEW_REQUIRED&synthetic_demo=true",
+            "/operator-dashboard/investment-portfolios",
+            "/operator-dashboard/investment-portfolios?status=REVIEW_REQUIRED&account_id=demo-investment",
             "/operator-dashboard/news-events?limit=20",
             "/operator-dashboard/sre-overview",
         ]
@@ -292,17 +313,34 @@ class OperatorDashboardApiTests(unittest.TestCase):
         negative_portfolio_offset = self.client.get("/operator-dashboard/portfolio-construction-runs?offset=-1", headers=self.headers)
         invalid_risk_business_date = self.client.get("/operator-dashboard/risk-decisions?business_date=not-a-date", headers=self.headers)
         invalid_risk_policy_version = self.client.get("/operator-dashboard/risk-decisions?policy_version_id=not-a-uuid", headers=self.headers)
+        oversized_investment_theses = self.client.get("/operator-dashboard/investment-theses?limit=101", headers=self.headers)
+        negative_investment_theses_offset = self.client.get("/operator-dashboard/investment-theses?offset=-1", headers=self.headers)
+        oversized_investment_portfolios = self.client.get("/operator-dashboard/investment-portfolios?limit=101", headers=self.headers)
         self.assertEqual(
             (
                 naive.status_code, oversized.status_code, inverted.status_code, invalid_id.status_code, invalid_signal.status_code,
                 invalid_regime_status.status_code, invalid_regime_model_version.status_code, oversized_regime.status_code,
                 invalid_portfolio_status.status_code, invalid_portfolio_regime_run.status_code, negative_portfolio_offset.status_code,
                 invalid_risk_business_date.status_code, invalid_risk_policy_version.status_code,
+                oversized_investment_theses.status_code, negative_investment_theses_offset.status_code,
+                oversized_investment_portfolios.status_code,
             ),
-            (422, 422, 422, 422, 422, 422, 422, 422, 422, 422, 422, 422, 422),
+            (422, 422, 422, 422, 422, 422, 422, 422, 422, 422, 422, 422, 422, 422, 422, 422),
         )
         self.queries.regime_runs.assert_not_called()
         self.queries.portfolio_construction_runs.assert_not_called()
+        self.queries.investment_theses.assert_not_called()
+        self.queries.investment_portfolios.assert_not_called()
+
+    def test_investment_discovery_surfaces_fail_closed_evidence_classification(self) -> None:
+        """Module 2B-4: the API must pass through the authority's classification verbatim,
+        never recompute or default it to a real-data claim when absent."""
+        theses = self.client.get("/operator-dashboard/investment-theses", headers=self.headers)
+        portfolios = self.client.get("/operator-dashboard/investment-portfolios", headers=self.headers)
+        self.assertEqual(theses.json()["items"][0]["evidence_classification"], "SYNTHETIC_ENGINEERING_EVIDENCE_ONLY")
+        self.assertEqual(portfolios.json()["items"][0]["evidence_classification"], "SYNTHETIC_ENGINEERING_EVIDENCE_ONLY")
+        self.assertNotEqual(theses.json()["items"][0]["evidence_classification"], "REAL_DATA_RESEARCH_EVIDENCE")
+        self.assertNotEqual(portfolios.json()["items"][0]["evidence_classification"], "REAL_DATA_RESEARCH_EVIDENCE")
 
     def test_regime_and_portfolio_discovery_never_expose_automatic_authority(self) -> None:
         """Module 2B-3 invariant: regime effects, portfolio review-only and automatic_authority stay fail-closed."""
