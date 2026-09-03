@@ -304,5 +304,209 @@ class RegimeAndPortfolioDiscoveryPostgresTests(unittest.TestCase):
         self.assertEqual(client.get("/operator-dashboard/portfolio-construction-runs?regime_run_id=not-a-uuid", headers=headers).status_code, 422)
 
 
+@unittest.skipUnless(os.environ.get("POSTGRES_TEST_DSN"), "POSTGRES_TEST_DSN not configured")
+class InvestmentDiscoveryPostgresTests(unittest.TestCase):
+    """Module 2B-4 coverage for the bounded investment-thesis/-portfolio discovery lists.
+
+    Owns its own disposable database (same pattern as
+    RegimeAndPortfolioDiscoveryPostgresTests above) so it never races the shared
+    cycle208/demo fixtures. Exercises the new filters and, most importantly, the
+    fail-closed evidence_classification fix: a DEMO-marked row must classify
+    SYNTHETIC_ENGINEERING_EVIDENCE_ONLY, and a row with no synthetic marker at all must
+    still classify UNAVAILABLE, never REAL_DATA_RESEARCH_EVIDENCE -- absence of a
+    synthetic marker is never treated as proof of real data.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        source_dsn = os.environ["POSTGRES_TEST_DSN"]
+        if urlparse(source_dsn).hostname not in LOCAL_HOSTS:
+            raise unittest.SkipTest("Module 2B-4 discovery coverage requires a local or CI disposable PostgreSQL DSN")
+        cls.database_name = f"module2b4_investment_discovery_{os.getpid()}"
+        cls.dsn = _test_dsn(source_dsn, cls.database_name)
+        with psycopg.connect(source_dsn, autocommit=True) as connection, connection.cursor() as cursor:
+            cursor.execute(f'DROP DATABASE IF EXISTS "{cls.database_name}" WITH (FORCE)')
+            cursor.execute(f'CREATE DATABASE "{cls.database_name}"')
+
+        from alembic import command
+        from alembic.config import Config
+
+        config = Config("alembic.ini")
+        config.set_main_option("sqlalchemy.url", cls.dsn.replace("postgresql://", "postgresql+psycopg://", 1))
+        old_dsn = os.environ.get("POSTGRES_TEST_DSN")
+        try:
+            os.environ["POSTGRES_TEST_DSN"] = cls.dsn
+            command.upgrade(config, "head")
+        finally:
+            if old_dsn is not None:
+                os.environ["POSTGRES_TEST_DSN"] = old_dsn
+        cls.database = PostgresDatabase(cls.dsn)
+        cls.queries = PostgresOperatorDashboardQueries(cls.database)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        source_dsn = os.environ["POSTGRES_TEST_DSN"]
+        with psycopg.connect(source_dsn, autocommit=True) as connection, connection.cursor() as cursor:
+            cursor.execute(f'DROP DATABASE IF EXISTS "{cls.database_name}" WITH (FORCE)')
+
+    def test_01_empty_database_returns_explicit_unavailable_discovery(self) -> None:
+        thesis_page = self.queries.investment_theses(
+            instrument=None, status=None, review_state=None, synthetic_demo=None, limit=20, offset=0,
+        )
+        portfolio_page = self.queries.investment_portfolios(status=None, account_id=None, limit=20, offset=0)
+        self.assertEqual((thesis_page.state, thesis_page.items), ("UNAVAILABLE", []))
+        self.assertEqual((portfolio_page.state, portfolio_page.items), ("UNAVAILABLE", []))
+
+    def test_02_thesis_and_portfolio_discovery_filters_pagination_and_fail_closed_classification(self) -> None:
+        database = self.database
+        now = datetime(2024, 6, 1, tzinfo=UTC)
+        demo_instrument = replace(
+            mvp_instrument_universe(datetime(2023, 1, 1, tzinfo=UTC))[0],
+            instrument_id="DEMO:XNAS:M2B4DEMO", canonical_symbol="M2B4DEMO",
+        )
+        real_looking_instrument = replace(
+            mvp_instrument_universe(datetime(2023, 1, 1, tzinfo=UTC))[1],
+            instrument_id="US:XNAS:M2B4RL", canonical_symbol="M2B4RL",
+        )
+        PostgresProfessionalInstrumentMaster(database).register(demo_instrument)
+        PostgresProfessionalInstrumentMaster(database).register(real_looking_instrument)
+
+        ids = {name: uuid4() for name in (
+            "exchange", "instrument_demo", "instrument_real_looking",
+            "thesis_demo", "thesis_real_looking", "review_demo", "review_real_looking",
+            "policy_demo", "policy_real_looking",
+        )}
+        with database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute("INSERT INTO exchanges VALUES (%s,%s,'Module 2B-4 Discovery','UTC',%s)", (ids["exchange"], "M2B4X", now))
+            cursor.execute(
+                "INSERT INTO instruments VALUES (%s,%s,'M2B4DEMO','EQUITY','USD',0.01,1,%s,NULL,%s)",
+                (ids["instrument_demo"], ids["exchange"], now, now),
+            )
+            cursor.execute(
+                "INSERT INTO instruments VALUES (%s,%s,'M2B4RL','EQUITY','USD',0.01,1,%s,NULL,%s)",
+                (ids["instrument_real_looking"], ids["exchange"], now, now),
+            )
+            cursor.execute("INSERT INTO accounts VALUES ('demo-m2b4-portfolio','INVESTMENT','USD',%s)", (now,))
+            cursor.execute("INSERT INTO accounts VALUES ('m2b4-review-only-portfolio','INVESTMENT','USD',%s)", (now,))
+            # thesis_demo: a positive DEMO: marker -> must classify SYNTHETIC.
+            cursor.execute(
+                "INSERT INTO investment_theses(thesis_id,instrument_id,version,status,created_at,thesis_schema_version,"
+                "pit_instrument_id,knowledge_cutoff,contract,content_hash) VALUES (%s,%s,'v1','REVIEW_REQUIRED',%s,'m2b4-v1',"
+                "%s,%s,%s::jsonb,%s)",
+                (ids["thesis_demo"], ids["instrument_demo"], now, demo_instrument.instrument_id, now,
+                 json.dumps({"classification": "SYNTHETIC_DEMO_ENGINEERING_EVIDENCE"}), _digest("thesis-demo")),
+            )
+            cursor.execute(
+                "INSERT INTO investment_reviews VALUES (%s,%s,'m2b4-reviewer','REVIEW_REQUIRED',%s,%s::jsonb)",
+                (ids["review_demo"], ids["thesis_demo"], now + timedelta(hours=1), json.dumps({})),
+            )
+            # thesis_real_looking: no DEMO/synthetic/fixture marker anywhere -> must still
+            # classify UNAVAILABLE (never REAL_DATA_RESEARCH_EVIDENCE) because no
+            # authorized real-data provider allowlist entry exists on this platform.
+            cursor.execute(
+                "INSERT INTO investment_theses(thesis_id,instrument_id,version,status,created_at,thesis_schema_version,"
+                "pit_instrument_id,knowledge_cutoff,contract,content_hash) VALUES (%s,%s,'v1','ACTIVE',%s,'m2b4-v1',"
+                "%s,%s,%s::jsonb,%s)",
+                (ids["thesis_real_looking"], ids["instrument_real_looking"], now + timedelta(hours=2),
+                 real_looking_instrument.instrument_id, now, json.dumps({}), _digest("thesis-real-looking")),
+            )
+            cursor.execute(
+                "INSERT INTO investment_reviews VALUES (%s,%s,'m2b4-reviewer','APPROVED',%s,%s::jsonb)",
+                (ids["review_real_looking"], ids["thesis_real_looking"], now + timedelta(hours=3), json.dumps({})),
+            )
+            for policy_id, account_id in (
+                (ids["policy_demo"], "demo-m2b4-portfolio"), (ids["policy_real_looking"], "m2b4-review-only-portfolio"),
+            ):
+                cursor.execute(
+                    "INSERT INTO investment_policy_versions VALUES (%s,%s,'v1',%s,'LONG_TERM_INVESTMENT','USD',"
+                    "100000,0.4,0.1,0.3,'m2b4-committee',%s,%s::jsonb,%s)",
+                    (policy_id, uuid4(), account_id, now, json.dumps(["Synthetic review-only fixture."]), _digest(f"policy:{policy_id}")),
+                )
+            # demo-m2b4-portfolio: candidate_weights key carries a DEMO: marker -> SYNTHETIC.
+            cursor.execute(
+                "INSERT INTO investment_rebalance_candidates VALUES (%s,%s,'demo-m2b4-portfolio',%s,%s,'[]'::jsonb,"
+                "%s::jsonb,%s::jsonb,0.1,'REVIEW_REQUIRED','[]'::jsonb,'[]'::jsonb,FALSE,%s)",
+                (uuid4(), ids["policy_demo"], now, _digest("holdings-demo"),
+                 json.dumps({demo_instrument.instrument_id: "0.2"}), json.dumps({demo_instrument.instrument_id: "0.3"}),
+                 _digest("candidate-demo")),
+            )
+            # m2b4-review-only-portfolio: no synthetic marker anywhere in account id,
+            # limitations, or candidate weight keys -> must still classify UNAVAILABLE.
+            cursor.execute(
+                "INSERT INTO investment_rebalance_candidates VALUES (%s,%s,'m2b4-review-only-portfolio',%s,%s,'[]'::jsonb,"
+                "%s::jsonb,%s::jsonb,0.1,'BLOCKED','[]'::jsonb,'[]'::jsonb,FALSE,%s)",
+                (uuid4(), ids["policy_real_looking"], now + timedelta(hours=1), _digest("holdings-real-looking"),
+                 json.dumps({real_looking_instrument.instrument_id: "0.1"}), json.dumps({real_looking_instrument.instrument_id: "0.15"}),
+                 _digest("candidate-real-looking")),
+            )
+
+        queries = self.queries
+
+        # --- Thesis discovery: deterministic ordering, fail-closed classification ---
+        all_theses = queries.investment_theses(instrument=None, status=None, review_state=None, synthetic_demo=None, limit=20, offset=0)
+        self.assertEqual([item.thesis_id for item in all_theses.items], [ids["thesis_real_looking"], ids["thesis_demo"]])
+        demo_thesis_view = next(item for item in all_theses.items if item.thesis_id == ids["thesis_demo"])
+        real_looking_thesis_view = next(item for item in all_theses.items if item.thesis_id == ids["thesis_real_looking"])
+        self.assertEqual((demo_thesis_view.synthetic_demo, demo_thesis_view.evidence_classification), (True, "SYNTHETIC_ENGINEERING_EVIDENCE_ONLY"))
+        self.assertEqual((real_looking_thesis_view.synthetic_demo, real_looking_thesis_view.evidence_classification), (False, "UNAVAILABLE"))
+        self.assertNotEqual(real_looking_thesis_view.evidence_classification, "REAL_DATA_RESEARCH_EVIDENCE")
+
+        # --- Thesis discovery: bounded pagination ---
+        page_1 = queries.investment_theses(instrument=None, status=None, review_state=None, synthetic_demo=None, limit=1, offset=0)
+        page_2 = queries.investment_theses(instrument=None, status=None, review_state=None, synthetic_demo=None, limit=1, offset=1)
+        self.assertEqual(([item.thesis_id for item in page_1.items], page_1.page.has_more), ([ids["thesis_real_looking"]], True))
+        self.assertEqual(([item.thesis_id for item in page_2.items], page_2.page.has_more), ([ids["thesis_demo"]], False))
+
+        # --- Thesis discovery: bounded filters ---
+        by_instrument = queries.investment_theses(instrument=demo_instrument.instrument_id, status=None, review_state=None, synthetic_demo=None, limit=20, offset=0)
+        self.assertEqual([item.thesis_id for item in by_instrument.items], [ids["thesis_demo"]])
+        by_status = queries.investment_theses(instrument=None, status="ACTIVE", review_state=None, synthetic_demo=None, limit=20, offset=0)
+        self.assertEqual([item.thesis_id for item in by_status.items], [ids["thesis_real_looking"]])
+        by_review_state = queries.investment_theses(instrument=None, status=None, review_state="APPROVED", synthetic_demo=None, limit=20, offset=0)
+        self.assertEqual([item.thesis_id for item in by_review_state.items], [ids["thesis_real_looking"]])
+        by_synthetic_demo = queries.investment_theses(instrument=None, status=None, review_state=None, synthetic_demo=True, limit=20, offset=0)
+        self.assertEqual([item.thesis_id for item in by_synthetic_demo.items], [ids["thesis_demo"]])
+        no_match = queries.investment_theses(instrument="US:XNAS:NOMATCH", status=None, review_state=None, synthetic_demo=None, limit=20, offset=0)
+        self.assertEqual((no_match.state, no_match.items), ("UNAVAILABLE", []))
+
+        # --- Portfolio discovery: deterministic ordering, fail-closed classification ---
+        all_portfolios = queries.investment_portfolios(status=None, account_id=None, limit=20, offset=0)
+        self.assertEqual([item.portfolio_id for item in all_portfolios.items], ["m2b4-review-only-portfolio", "demo-m2b4-portfolio"])
+        demo_portfolio_view = next(item for item in all_portfolios.items if item.portfolio_id == "demo-m2b4-portfolio")
+        real_looking_portfolio_view = next(item for item in all_portfolios.items if item.portfolio_id == "m2b4-review-only-portfolio")
+        self.assertEqual(demo_portfolio_view.evidence_classification, "SYNTHETIC_ENGINEERING_EVIDENCE_ONLY")
+        self.assertEqual(real_looking_portfolio_view.evidence_classification, "UNAVAILABLE")
+        self.assertNotEqual(real_looking_portfolio_view.evidence_classification, "REAL_DATA_RESEARCH_EVIDENCE")
+        self.assertEqual(demo_portfolio_view.holdings_count, 1)
+
+        # --- Portfolio discovery: bounded filters ---
+        by_account = queries.investment_portfolios(status=None, account_id="demo-m2b4-portfolio", limit=20, offset=0)
+        self.assertEqual([item.portfolio_id for item in by_account.items], ["demo-m2b4-portfolio"])
+        by_portfolio_status = queries.investment_portfolios(status="BLOCKED", account_id=None, limit=20, offset=0)
+        self.assertEqual([item.portfolio_id for item in by_portfolio_status.items], ["m2b4-review-only-portfolio"])
+        no_portfolio_match = queries.investment_portfolios(status=None, account_id="does-not-exist", limit=20, offset=0)
+        self.assertEqual((no_portfolio_match.state, no_portfolio_match.items), ("UNAVAILABLE", []))
+
+    def test_03_discovery_api_layer_validates_and_never_leaks_secrets(self) -> None:
+        app = build_app(
+            PlatformConfig(), SQLiteAuditStore(), OperatorAuthenticator("module2b4-discovery-token"),
+            InMemoryRateLimiter(max_requests=100), operator_dashboard_queries=self.queries,
+        )
+        client = TestClient(app)
+        headers = {"Authorization": "Bearer module2b4-discovery-token"}
+        for path in ("/operator-dashboard/investment-theses?limit=20&offset=0", "/operator-dashboard/investment-portfolios?limit=20&offset=0"):
+            with self.subTest(path=path):
+                self.assertEqual(client.get(path).status_code, 401)
+                response = client.get(path, headers=headers)
+                self.assertEqual(response.status_code, 200, response.text)
+                serialized = response.text.casefold()
+                self.assertNotIn(self.dsn.casefold(), serialized)
+                self.assertNotIn("password", serialized)
+                self.assertNotIn("module2b4-discovery-token", serialized)
+                self.assertEqual(client.post(path.split("?")[0], headers=headers).status_code, 405)
+        self.assertEqual(client.get("/operator-dashboard/investment-theses?limit=101", headers=headers).status_code, 422)
+        self.assertEqual(client.get("/operator-dashboard/investment-portfolios?limit=101", headers=headers).status_code, 422)
+
+
 if __name__ == "__main__":
     unittest.main()

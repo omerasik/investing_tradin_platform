@@ -89,32 +89,76 @@ export type Thesis = {
     instrument_id: string;
     version: string;
     statement: string;
-    status: string;
+    horizon_days: number;
     catalysts: string[];
     risks: string[];
     evidence_ids: string[];
+    status: string;
+    created_at: string;
   };
+  facts: {
+    fact_id: string; metric: string; value: string; unit: string;
+    observed_at: string; available_at: string; ingested_at: string;
+    source_reference: string; source_url: string; revision: number;
+  }[];
+  analytics: {
+    analysis_id: string; as_of: string; unit: string;
+    revenue_growth: string; net_margin: string; free_cash_flow_margin: string;
+    debt_to_equity: string; net_debt: string; source_fact_ids: string[];
+  }[];
   valuations: {
+    valuation_id: string;
     model_version: string;
     intrinsic_value_per_share: string;
     as_of: string;
+    currency: string;
+    source_fact_ids: string[];
+  }[];
+  recommendations: {
+    recommendation_id: string; target_weight: string; maximum_weight: string; confidence: string;
+    as_of: string; rationale_evidence_ids: string[];
+  }[];
+  reviews: {
+    review_id: string; outcome: string; reviewed_at: string; rationale: string;
+    evidence_ids: string[]; next_review_at: string;
+    drift: { as_of: string; checked_fact_ids: string[]; breached_metrics: string[]; detected: boolean };
   }[];
   company_research: {
+    record_id: string;
+    as_of: string;
     bull_case: string;
     base_case: string;
     bear_case: string;
+    catalysts: string[];
+    invalidation_conditions: string[];
+    position_sizing_rationale: string;
+    replacement_candidates: string[];
     evidence_ids: string[];
   }[];
-  reviews: { outcome: string; reviewed_at: string }[];
+  theme_discoveries: {
+    discovery_id: string; theme: string; score: string; company_research_id: string;
+    matched_phrases: string[]; evidence_ids: string[]; rule_version: string; discovered_at: string;
+  }[];
+  review_schedule: {
+    cadence_days: number; next_review_at: string; approved_by: string;
+    expectations: { metric: string; minimum: string | null; maximum: string | null }[];
+  } | null;
+  scheduled_drift_history: {
+    assessment_id: string; assessed_at: string; checked_fact_ids: string[]; breached_metrics: string[];
+    scheduled_for: string; detected: boolean;
+  }[];
 };
 
 export type InvestmentPortfolio = {
   portfolio_id: string;
   as_of: string;
+  policy: { base_currency: string; maximum_investment_value: string; maximum_single_weight: string };
   assessment: { total_value: string; approved: boolean; reasons: string[] };
-  holdings: { instrument_id: string; market_value: string; source_reference: string }[];
-  rebalance_decisions: { rationale: string; approved_by: string }[];
-  performance: { observed_at: string; net_asset_value: string; cumulative_return: string }[];
+  holdings: { instrument_id: string; market_value: string; observed_at: string; source_reference: string }[];
+  rebalance_decisions: { decision_id: string; rationale: string; approved_by: string }[];
+  performance: { observed_at: string; net_asset_value: string; cumulative_return: string; source_reference: string }[];
+  themes: { instrument_id: string; theme: string; exposure: string; source_reference: string }[];
+  macro_sensitivities: { instrument_id: string; series_id: string; sensitivity: string; source_reference: string }[];
 };
 
 export type OperationalAlert = {
@@ -207,6 +251,7 @@ export type InvestmentThesisDiscovery = {
   as_of: string;
   review_state: string | null;
   synthetic_demo: boolean;
+  evidence_classification: string;
 };
 
 export type InvestmentPortfolioDiscovery = {
@@ -621,32 +666,54 @@ export async function getPortfolioConstructionEvidence(ctx: WorkspaceContext): P
 }
 
 export async function getInvestmentThesisEvidence(ctx: WorkspaceContext): Promise<EvidenceResult<Thesis>> {
+  return getInvestmentThesis(ctx, { thesisId: ctx.workspace.investmentThesisId ?? "" });
+}
+
+export async function getInvestmentThesis(ctx: WorkspaceContext, params: { thesisId: string }): Promise<EvidenceResult<Thesis>> {
   return readEvidence<Thesis>(
-    `${ctx.origin}/api/investments?target=/investments/theses/${encodeURIComponent(ctx.workspace.investmentThesisId ?? "")}`,
-    Boolean(ctx.workspace.investmentThesisId && ctx.protectedApi),
+    `${ctx.origin}/api/investments?target=/investments/theses/${encodeURIComponent(params.thesisId)}`,
+    Boolean(params.thesisId && ctx.protectedApi),
     "Investment thesis reference is unavailable.",
   );
 }
 
-export async function getInvestmentThesisDiscovery(ctx: WorkspaceContext): Promise<EvidenceResult<DiscoveryPage<InvestmentThesisDiscovery>>> {
+export async function getInvestmentThesisDiscovery(
+  ctx: WorkspaceContext,
+  params?: { instrument?: string; status?: string; review_state?: string; synthetic_demo?: boolean; limit?: number; offset?: number },
+): Promise<EvidenceResult<DiscoveryPage<InvestmentThesisDiscovery>>> {
+  const query = new URLSearchParams({ limit: String(params?.limit ?? 20), offset: String(params?.offset ?? 0) });
+  if (params?.instrument) query.set("instrument", params.instrument);
+  if (params?.status && params.status !== "ALL") query.set("status", params.status);
+  if (params?.review_state && params.review_state !== "ALL") query.set("review_state", params.review_state);
+  if (params?.synthetic_demo !== undefined) query.set("synthetic_demo", String(params.synthetic_demo));
   return readEvidence<DiscoveryPage<InvestmentThesisDiscovery>>(
-    authorityUrl(ctx.origin, "/operator-dashboard/investment-theses?limit=20&offset=0"),
+    authorityUrl(ctx.origin, `/operator-dashboard/investment-theses?${query.toString()}`),
     ctx.protectedApi,
     "Investment thesis discovery is unavailable.",
   );
 }
 
 export async function getInvestmentPortfolioEvidence(ctx: WorkspaceContext): Promise<EvidenceResult<InvestmentPortfolio>> {
+  return getInvestmentPortfolio(ctx, { portfolioId: ctx.workspace.investmentPortfolioId ?? "" });
+}
+
+export async function getInvestmentPortfolio(ctx: WorkspaceContext, params: { portfolioId: string }): Promise<EvidenceResult<InvestmentPortfolio>> {
   return readEvidence<InvestmentPortfolio>(
-    `${ctx.origin}/api/investments?target=/investments/portfolios/${encodeURIComponent(ctx.workspace.investmentPortfolioId ?? "")}`,
-    Boolean(ctx.workspace.investmentPortfolioId && ctx.protectedApi),
+    `${ctx.origin}/api/investments?target=/investments/portfolios/${encodeURIComponent(params.portfolioId)}`,
+    Boolean(params.portfolioId && ctx.protectedApi),
     "Investment portfolio reference is unavailable.",
   );
 }
 
-export async function getInvestmentPortfolioDiscovery(ctx: WorkspaceContext): Promise<EvidenceResult<DiscoveryPage<InvestmentPortfolioDiscovery>>> {
+export async function getInvestmentPortfolioDiscovery(
+  ctx: WorkspaceContext,
+  params?: { status?: string; account_id?: string; limit?: number; offset?: number },
+): Promise<EvidenceResult<DiscoveryPage<InvestmentPortfolioDiscovery>>> {
+  const query = new URLSearchParams({ limit: String(params?.limit ?? 20), offset: String(params?.offset ?? 0) });
+  if (params?.status && params.status !== "ALL") query.set("status", params.status);
+  if (params?.account_id) query.set("account_id", params.account_id);
   return readEvidence<DiscoveryPage<InvestmentPortfolioDiscovery>>(
-    authorityUrl(ctx.origin, "/operator-dashboard/investment-portfolios?limit=20&offset=0"),
+    authorityUrl(ctx.origin, `/operator-dashboard/investment-portfolios?${query.toString()}`),
     ctx.protectedApi,
     "Investment portfolio discovery is unavailable.",
   );
@@ -658,6 +725,27 @@ export async function getNewsEvidence(ctx: WorkspaceContext): Promise<EvidenceRe
       ctx.origin,
       `/operator-dashboard/news-events?limit=20&offset=0${ctx.workspace.newsInstrument ? `&instrument=${encodeURIComponent(ctx.workspace.newsInstrument)}` : ""}`,
     ),
+    ctx.protectedApi,
+    "News/event authority is not configured.",
+  );
+}
+
+export async function getNewsEventDiscovery(
+  ctx: WorkspaceContext,
+  params?: {
+    instrument?: string; entity?: string; category?: string; start?: string; end?: string;
+    correction_state?: string; limit?: number; offset?: number;
+  },
+): Promise<EvidenceResult<NewsEventPage>> {
+  const query = new URLSearchParams({ limit: String(params?.limit ?? 20), offset: String(params?.offset ?? 0) });
+  if (params?.instrument) query.set("instrument", params.instrument);
+  if (params?.entity) query.set("entity", params.entity);
+  if (params?.category && params.category !== "ALL") query.set("category", params.category);
+  if (params?.start) query.set("start", params.start);
+  if (params?.end) query.set("end", params.end);
+  if (params?.correction_state && params.correction_state !== "ALL") query.set("correction_state", params.correction_state);
+  return readEvidence<NewsEventPage>(
+    authorityUrl(ctx.origin, `/operator-dashboard/news-events?${query.toString()}`),
     ctx.protectedApi,
     "News/event authority is not configured.",
   );

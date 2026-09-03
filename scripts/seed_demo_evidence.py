@@ -262,6 +262,13 @@ def _seed_investment_paper_news_sre(database: PostgresDatabase, core: dict[str, 
             link = stable_id(f"news-link:{revision}")
             assessment = stable_id(f"news-assessment:{revision}")
             _insert(cursor, "INSERT INTO news_document_entity_links VALUES (%s,%s,'DEMO:XNAS:DEMO_EQ_A','REVIEWED',1,FALSE,%s::jsonb,%s) ON CONFLICT (entity_link_id) DO NOTHING", (link, document_id, json.dumps({"classification": DEMO_SOURCE}), digest({"news-link": revision})))
+            if revision == 0:
+                # A second, ambiguous entity link on the same document (a different
+                # instrument, lower confidence, non-reviewed linking method) so News
+                # Module 2B-4 E2E coverage has a real fixture for "ambiguous entity
+                # link" instead of asserting on a state nothing ever produces.
+                ambiguous_link = stable_id(f"news-link-ambiguous:{revision}")
+                _insert(cursor, "INSERT INTO news_document_entity_links VALUES (%s,%s,'DEMO:XNAS:DEMO_EQ_B','DETERMINISTIC_ALIAS',0.4,TRUE,%s::jsonb,%s) ON CONFLICT (entity_link_id) DO NOTHING", (ambiguous_link, document_id, json.dumps({"classification": DEMO_SOURCE, "ambiguity_reason": "synthetic alias collision"}), digest({"news-link-ambiguous": revision})))
             _insert(cursor, "INSERT INTO news_event_extractions VALUES (%s,%s,'GUIDANCE','demo-v1','demo-model-v1',0.5,0.5,0.5,'DAYS',%s,'[]'::jsonb,%s::jsonb,%s) ON CONFLICT (extraction_id) DO NOTHING", (extraction, document_id, DEMO_AT + timedelta(minutes=revision), json.dumps(["Synthetic extraction"]), digest({"news-extraction": revision})))
             state = "WITHDRAWN" if kind == "RETRACTION" else "REVIEW_REQUIRED"
             _insert(cursor, "INSERT INTO news_event_assessments VALUES (%s,%s,%s,%s,%s,%s,0.5,%s::jsonb,%s::jsonb,%s) ON CONFLICT (assessment_id) DO NOTHING", (assessment, document_id, extraction, link, DEMO_AT + timedelta(minutes=revision), state, json.dumps(["Synthetic evidence"]), json.dumps({"classification": DEMO_SOURCE}), digest({"news-assessment": revision})))

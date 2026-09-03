@@ -67,10 +67,6 @@ export default async function DashboardPage() {
   const investmentPortfolioRows = investmentPortfolios.state === "AVAILABLE" ? investmentPortfolios.value.items : [];
   const paperOrderRows = paperOrders.state === "AVAILABLE" ? paperOrders.value.items : [];
 
-  const latestValuation = investment?.valuations.at(-1);
-  const company = investment?.company_research.at(-1);
-  const latestPerformance = investmentPortfolio?.performance.at(-1);
-
   return (
     <>
       <PageHeader
@@ -741,110 +737,49 @@ export default async function DashboardPage() {
           </div>
         </article>
 
-        {/* Investment Workspace */}
+        {/* Investment Workspace -- concise summary only; full research terminal is /investments (Module 2B-4). */}
         <article id="investment" className="panel">
           <h2>
             <span>Investment Workspace</span>
             <StatusBadge status={investment ? "AVAILABLE" : thesis.state} />
           </h2>
           <p className="warning">
-            NOT A REAL INVESTMENT RECOMMENDATION. Long-horizon research is separate from trading.
+            NOT A REAL INVESTMENT RECOMMENDATION. REVIEW ONLY. NO BUY / SELL AUTHORITY.
           </p>
-          {investment ? (
-            <>
-              <dl>
-                <dt>Instrument / thesis</dt>
-                <dd>
-                  {investment.thesis.instrument_id} / {investment.thesis.statement}
-                </dd>
-                <dt>Status / version</dt>
-                <dd>
-                  {investment.thesis.status} / {investment.thesis.version}
-                </dd>
-                <dt>Catalysts / risks</dt>
-                <dd>
-                  {investment.thesis.catalysts.join(", ")} / {investment.thesis.risks.join(", ")}
-                </dd>
-                <dt>Bear / base / bull</dt>
-                <dd>
-                  {company ? `${company.bear_case} / ${company.base_case} / ${company.bull_case}` : "UNAVAILABLE"}
-                </dd>
-                <dt>Valuation</dt>
-                <dd>
-                  {latestValuation
-                    ? `${latestValuation.intrinsic_value_per_share}; ${latestValuation.model_version}`
-                    : "UNAVAILABLE"}
-                </dd>
-                <dt>Latest review</dt>
-                <dd>{investment.reviews.at(-1)?.outcome ?? "UNAVAILABLE"}</dd>
-              </dl>
-              <EvidenceMeta
-                source="investment-store"
-                asOf={investment.as_of}
-                version={investment.thesis.version}
-                limitations={["Fixture valuation is not investment advice."]}
-              />
-            </>
-          ) : thesisRows.length ? (
-            thesisRows.map((item) => (
-              <dl key={item.thesis_id}>
-                <dt>Instrument / thesis</dt>
-                <dd>
-                  {item.canonical_symbol ?? item.instrument_id} / <code>{item.thesis_id}</code>
-                </dd>
-                <dt>Status / version / review</dt>
-                <dd>
-                  {item.status} / {item.thesis_version} / {item.review_state ?? "UNAVAILABLE"}
-                </dd>
-                <dt>As of / classification</dt>
-                <dd>
-                  {utc(item.as_of)} / {item.synthetic_demo ? "SYNTHETIC / DEMO" : "RESEARCH"}
-                </dd>
-              </dl>
-            ))
+          {thesisRows.length ? (
+            <dl>
+              <dt>Selected thesis / status</dt>
+              <dd>
+                {investment ? investment.thesis.instrument_id : thesisRows[0].canonical_symbol ?? thesisRows[0].instrument_id}
+                {" / "}
+                {investment ? investment.thesis.status : thesisRows[0].status}
+              </dd>
+              <dt>Latest review / classification</dt>
+              <dd>
+                {investment ? (investment.reviews.at(-1)?.outcome ?? "UNAVAILABLE") : (thesisRows[0].review_state ?? "UNAVAILABLE")}
+                {" / "}
+                {thesisRows[0].synthetic_demo ? "SYNTHETIC / DEMO" : "RESEARCH"}
+              </dd>
+            </dl>
           ) : (
             <p className="empty-state">{stateText(investmentTheses)}</p>
           )}
 
-          {investmentPortfolio ? (
+          {investmentPortfolioRows.length ? (
             <dl>
-              <dt>Portfolio / review state</dt>
+              <dt>Portfolio review status</dt>
+              <dd>
+                {investmentPortfolioRows[0].portfolio_id} / {investmentPortfolioRows[0].review_status}
+              </dd>
+            </dl>
+          ) : investmentPortfolio ? (
+            <dl>
+              <dt>Portfolio review status</dt>
               <dd>
                 {investmentPortfolio.portfolio_id} /{" "}
-                {investmentPortfolio.assessment.approved
-                  ? "WITHIN LIMITS"
-                  : investmentPortfolio.assessment.reasons.join(", ")}
+                {investmentPortfolio.assessment.approved ? "WITHIN LIMITS" : investmentPortfolio.assessment.reasons.join(", ")}
               </dd>
-              <dt>Value / NAV / return</dt>
-              <dd>
-                {investmentPortfolio.assessment.total_value} /{" "}
-                {latestPerformance
-                  ? `${latestPerformance.net_asset_value} / ${latestPerformance.cumulative_return}`
-                  : "UNAVAILABLE"}
-              </dd>
-              <dt>Holdings provenance</dt>
-              <dd>
-                {investmentPortfolio.holdings.map((item) => `${item.instrument_id}: ${item.source_reference}`).join("; ") ||
-                  "EMPTY"}
-              </dd>
-              <dt>Rebalance candidate</dt>
-              <dd>{investmentPortfolio.rebalance_decisions.at(-1)?.rationale ?? "EMPTY"}</dd>
             </dl>
-          ) : investmentPortfolioRows.length ? (
-            investmentPortfolioRows.map((item) => (
-              <dl key={item.portfolio_id}>
-                <dt>Portfolio / review state</dt>
-                <dd>
-                  {item.portfolio_id} / {item.review_status}
-                </dd>
-                <dt>As of / holdings</dt>
-                <dd>
-                  {utc(item.as_of)} / {item.holdings_count}
-                </dd>
-                <dt>Classification</dt>
-                <dd>{item.evidence_classification}</dd>
-              </dl>
-            ))
           ) : (
             <p className="empty-state">{stateText(investmentPortfolios)}</p>
           )}
@@ -852,70 +787,32 @@ export default async function DashboardPage() {
           <div className="panel-footer-row">
             <span className="status">REVIEW ONLY / NO BUY OR SELL</span>
             <Link href="/investments" className="workspace-link">
-              Workspace &rarr;
+              Open Investment Workspace &rarr;
             </Link>
           </div>
         </article>
 
-        {/* News / Event Intelligence */}
+        {/* News / Event Intelligence -- concise summary only; full revision-chain evidence is /news (Module 2B-4). */}
         <article id="news" className="panel">
           <h2>
             <span>News / Event Intelligence</span>
             <StatusBadge status={newsEvidence?.provider_state ?? news.state} />
           </h2>
-          <p>
-            Persisted correction-aware research evidence is never presented as a live feed and cannot
-            create an order.
-          </p>
           <p className="warning">
-            {newsEvidence?.provider_state ?? "EXTERNAL_BLOCKED"}
-            {newsEvidence?.provider_state === "EXTERNAL_BLOCKED"
-              ? ": no external provider is authorized or activated."
-              : ""}
+            {newsEvidence?.provider_state ?? "EXTERNAL_BLOCKED"} / NOT LIVE NEWS / NO EXTERNAL NEWS PROVIDER AUTHORIZED
           </p>
           {newsEvidence?.items.length ? (
-            newsEvidence.items.map((item) => (
-              <section key={item.event_id} aria-labelledby={`news-${item.event_id}`}>
-                <h3 id={`news-${item.event_id}`}>{item.headline}</h3>
-                <dl>
-                  <dt>Source / terms / rights</dt>
-                  <dd>
-                    {item.source} / {item.source_terms_version} / {item.rights_state}; provider
-                    activated: {item.provider_activated ? "YES" : "NO"}
-                  </dd>
-                  <dt>Published / ingested / correction</dt>
-                  <dd>
-                    {utc(item.published_at)} / {utc(item.ingested_at)} /{" "}
-                    {utc(item.correction_or_retraction_at)}
-                  </dd>
-                  <dt>Category / novelty / credibility</dt>
-                  <dd>
-                    {item.category} / {item.novelty} / {item.credibility ?? "UNAVAILABLE"}
-                  </dd>
-                  <dt>Uncertainty / urgency / horizon</dt>
-                  <dd>
-                    {item.uncertainty} / {item.urgency} / {item.horizon}
-                  </dd>
-                  <dt>Revision / chain</dt>
-                  <dd>
-                    {item.revision_kind} #{item.revision};{" "}
-                    {item.correction_chain
-                      .map((link) => `${link.relation} ${link.predecessor_id}\u2192${link.successor_id}`)
-                      .join("; ") || "no predecessor/replacement"}
-                  </dd>
-                  <dt>Linked instruments</dt>
-                  <dd>
-                    {item.entities
-                      .map((entity) => `${entity.instrument} (${entity.method}, ${entity.confidence})`)
-                      .join("; ") || "UNAVAILABLE"}
-                  </dd>
-                  <dt>Fingerprint / provenance</dt>
-                  <dd>
-                    <code>{item.content_fingerprint}</code> / {item.provenance_reference}
-                  </dd>
-                </dl>
-              </section>
-            ))
+            <dl>
+              <dt>Latest persisted event</dt>
+              <dd>{newsEvidence.items[0].headline}</dd>
+              <dt>Revision / correction-retraction state</dt>
+              <dd>
+                {newsEvidence.items[0].revision_kind} #{newsEvidence.items[0].revision}
+                {newsEvidence.items[0].correction_chain.length
+                  ? ` (${newsEvidence.items[0].correction_chain.map((link) => link.relation).join(", ")})`
+                  : ""}
+              </dd>
+            </dl>
           ) : (
             <p className="empty-state">
               {newsEvidence
@@ -926,7 +823,7 @@ export default async function DashboardPage() {
           <div className="panel-footer-row">
             <span className="status">{newsEvidence?.provider_state ?? "EXTERNAL_BLOCKED"} / READ ONLY / NOT LIVE NEWS</span>
             <Link href="/news" className="workspace-link">
-              Workspace &rarr;
+              Open News Intelligence &rarr;
             </Link>
           </div>
         </article>

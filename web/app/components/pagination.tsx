@@ -8,6 +8,8 @@ export function Pagination({
   hasMore,
   basePath,
   searchParams = {},
+  offsetParam = "offset",
+  limitParam = "limit",
 }: {
   limit: number;
   offset: number;
@@ -15,6 +17,13 @@ export function Pagination({
   hasMore: boolean;
   basePath: string;
   searchParams?: Record<string, string | undefined>;
+  /** Query-string key to write the page offset under. Defaults to "offset"; pages with
+   * more than one independent bounded list (e.g. /investments' thesis + portfolio
+   * discovery tables) pass a distinct name per list so paging one never clobbers the
+   * other's position. */
+  offsetParam?: string;
+  /** Query-string key to write the page size under. Defaults to "limit". */
+  limitParam?: string;
 }) {
   const currentStart = offset + 1;
   const currentEnd = offset + returned;
@@ -27,8 +36,8 @@ export function Pagination({
     for (const [k, v] of Object.entries(searchParams)) {
       if (v !== undefined && v !== "") params.set(k, v);
     }
-    params.set("offset", String(targetOffset));
-    params.set("limit", String(limit));
+    params.set(offsetParam, String(targetOffset));
+    params.set(limitParam, String(limit));
     return `${basePath}?${params.toString()}`;
   }
 
