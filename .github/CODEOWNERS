@@ -1,0 +1,46 @@
+# CODEOWNERS — Module 3B governance & security hardening
+#
+# Requires reviews from the listed owner before merge, once branch protection
+# ("Require review from Code Owners") is enabled on `main`. As of this module,
+# branch protection is NOT yet enabled — see docs/MODULE_3B_GOVERNANCE_SECURITY.md.
+#
+# All paths below were verified to exist in this repository at the time this
+# file was written.
+
+# Default owner for anything not matched more specifically below.
+*                                           @omerasik
+
+# CI/CD and workflow definitions (supply-chain / pipeline integrity).
+/.github/workflows/**                      @omerasik
+/.github/CODEOWNERS                        @omerasik
+/.github/dependabot.yml                    @omerasik
+
+# Security-, identity- and risk-boundary source files.
+/src/trade_platform/security.py            @omerasik
+/src/trade_platform/external_identity.py   @omerasik
+/src/trade_platform/risk.py                @omerasik
+/src/trade_platform/policy_registry.py     @omerasik
+/src/trade_platform/paper_runtime.py       @omerasik
+/src/trade_platform/api.py                 @omerasik
+/src/trade_platform/config.py              @omerasik
+
+# Database migrations — schema changes to the authoritative Postgres store.
+/migrations/**                             @omerasik
+/alembic.ini                               @omerasik
+
+# Deployment / container / local-orchestration configuration.
+/Dockerfile                                @omerasik
+/.dockerignore                             @omerasik
+/compose.dev.yml                           @omerasik
+
+# Secret-hygiene and environment configuration.
+/.env.example                              @omerasik
+/.secrets.baseline                         @omerasik
+/.gitignore                                @omerasik
+
+# Governance and security documentation.
+/SECURITY.md                               @omerasik
+/CONTRIBUTING.md                           @omerasik
+/docs/SECURITY_MODEL.md                    @omerasik
+/docs/LIVE_TRADING_READINESS.md            @omerasik
+/docs/PRODUCTION_READINESS_MATRIX.md       @omerasik

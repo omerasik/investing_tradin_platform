@@ -52,7 +52,7 @@ Companion to [MODULE_3A_PRODUCTION_READINESS_AUDIT.md](MODULE_3A_PRODUCTION_READ
 
 | Category | Status | Evidence |
 |---|---|---|
-| Repository governance | **BLOCKED** | Public repo, branch protection disabled (verified live via `gh api`), no CODEOWNERS, no Dependabot |
+| Repository governance | PARTIAL | Module 3B added CODEOWNERS, Dependabot, CodeQL, `SECURITY.md`, `CONTRIBUTING.md`, and a PR template. Branch protection and private vulnerability reporting remain disabled (verified via `gh api`) — see `docs/MODULE_3B_GOVERNANCE_SECURITY.md` §14 |
 | Authentication | PARTIAL | Static shared-secret tokens (view token + operator token), no per-user credentials — `session.ts:42`, `security.py:212-222` |
 | Authorization / RBAC | PARTIAL | 6 roles/permissions defined backend-side (`security.py:59-98`) but exactly one static role active per deployment; no frontend role logic |
 | Secrets | PARTIAL | Environment variables only; `detect-secrets` scanning exists but no secret manager |
