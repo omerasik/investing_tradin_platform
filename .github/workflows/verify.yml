@@ -255,6 +255,13 @@ jobs:
           done
           echo "$body" | grep -q "POSTGRES_CONFIGURED"
           pnpm test:e2e
+      - name: Dump cycle208 fixture logs on failure
+        if: failure()
+        run: |
+          echo "---- cycle208-api.log ----"
+          cat /tmp/cycle208-api.log 2>/dev/null || true
+          echo "---- cycle208-dashboard.log ----"
+          cat /tmp/cycle208-dashboard.log 2>/dev/null || true
       - name: Module 1B human browser demo with PostgreSQL discovery
         env:
           MODULE1B_DASHBOARD_CONFIG_PATH: /tmp/module1b-dashboard.config.json
