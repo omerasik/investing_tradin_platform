@@ -22,7 +22,13 @@ COPY --chown=10001:10001 src ./src
 USER 10001:10001
 EXPOSE 8000
 
+# Liveness only: cheap process health, never a database round trip.
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2).read()"]
 
-CMD ["python", "-m", "uvicorn", "trade_platform.api:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
+# Serves the canonical runtime composition root (trade_platform.runtime_app), not the
+# unconfigured trade_platform.api:app default. This factory reads TRADE_PLATFORM_ENVIRONMENT
+# and POSTGRES_DSN and fails closed for paper/production if PostgreSQL is missing or
+# unreachable -- see src/trade_platform/runtime_app.py and
+# docs/MODULE_3C_POSTGRES_RUNTIME_WIRING.md.
+CMD ["python", "-m", "uvicorn", "trade_platform.runtime_app:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]

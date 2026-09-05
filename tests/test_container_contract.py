@@ -80,10 +80,14 @@ class ContainerContractTests(unittest.TestCase):
     def test_final_process_is_non_root_and_has_a_liveness_probe(self) -> None:
         self.assertIn("USER 10001:10001", self.dockerfile)
         self.assertIn("/health/live", self.dockerfile)
+        # Module 3C: the container serves the canonical runtime composition root
+        # (trade_platform.runtime_app), not the unconfigured trade_platform.api:app
+        # default -- see docs/MODULE_3C_POSTGRES_RUNTIME_WIRING.md.
         self.assertIn(
-            '["python", "-m", "uvicorn", "trade_platform.api:app"',
+            '["python", "-m", "uvicorn", "trade_platform.runtime_app:app"',
             self.dockerfile,
         )
+        self.assertNotIn('"trade_platform.api:app"', self.dockerfile)
         self.assertLess(
             self.dockerfile.index("USER 10001:10001"),
             self.dockerfile.index('CMD ["python", "-m", "uvicorn"'),

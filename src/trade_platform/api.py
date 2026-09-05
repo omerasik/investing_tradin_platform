@@ -18,7 +18,12 @@ from .investments import (
     materialize_fundamental_facts_authorized,
 )
 from .observability import MetricsRegistry, StructuredEventLogger
-from .operational_alerts import AlertError, AlertStatus, SQLiteOperationalAlertStore
+from .operational_alerts import (
+    AlertError,
+    AlertStatus,
+    PostgresOperationalAlertStore,
+    SQLiteOperationalAlertStore,
+)
 from .operator_dashboard import (
     DashboardObjectNotFound,
     DashboardQueryError,
@@ -60,6 +65,7 @@ from .portfolio_risk import (
     StressScenario,
     evaluate_portfolio,
 )
+from .postgres_paper_oms import PostgresPaperOms
 from .research import CostModel, ResearchValidationError, SQLiteExperimentStore, WalkForwardProtocol
 from .return_history import ReturnIngestionCadence, SQLitePortfolioReturnStore
 from .risk import SQLiteRiskDecisionStore
@@ -278,9 +284,9 @@ def build_app(
     return_history: SQLitePortfolioReturnStore | None = None,
     investment_store: SQLiteInvestmentStore | None = None,
     fundamental_store: SQLiteFundamentalStore | None = None,
-    alert_store: SQLiteOperationalAlertStore | None = None,
+    alert_store: SQLiteOperationalAlertStore | PostgresOperationalAlertStore | None = None,
     agent_research_store: SQLiteAgentResearchStore | None = None,
-    paper_oms: SQLitePaperOms | None = None,
+    paper_oms: SQLitePaperOms | PostgresPaperOms | None = None,
     risk_decisions: SQLiteRiskDecisionStore | None = None,
     strategy_registry: SQLiteStrategyRegistry | None = None,
     experiment_store: SQLiteExperimentStore | None = None,
@@ -327,6 +333,7 @@ def build_app(
 
     @app.get("/health/live")
     def liveness() -> dict[str, str]:
+        """Cheap process health only -- never touches the database. Must stay bounded."""
         app.state.metrics.increment("health.liveness.requests")
         return {"status": "ok"}
 
@@ -872,7 +879,27 @@ def build_app(
 
     @app.get("/health/ready")
     def readiness() -> dict[str, object]:
+        """Bounded readiness probe -- never the expensive check liveness must avoid.
+
+        Local/research mode is always ready (no required durable authority). A
+        protected deployment (paper/production) is ready only once every authority
+        required for its API surface is present *and* a cheap, already-bounded
+        PostgreSQL read succeeds. It never blocks indefinitely (the underlying
+        connection has a bounded connect timeout) and never claims readiness for an
+        authority that is missing or unreachable.
+        """
         app.state.metrics.increment("health.readiness.requests")
+        if protected_deployment:
+            if app.state.paper_oms is None or app.state.operator_dashboard_queries is None:
+                raise HTTPException(
+                    status_code=503, detail="required_postgres_authority_missing"
+                )
+            try:
+                app.state.operator_dashboard_queries.workspace_references()
+            except DashboardQueryError as error:
+                raise HTTPException(
+                    status_code=503, detail="postgres_authority_unreachable"
+                ) from error
         return {
             "status": "ready",
             "environment": platform_config.environment,

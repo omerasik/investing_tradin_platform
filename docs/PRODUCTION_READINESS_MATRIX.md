@@ -2,6 +2,21 @@
 
 Companion to [MODULE_3A_PRODUCTION_READINESS_AUDIT.md](MODULE_3A_PRODUCTION_READINESS_AUDIT.md). Verified against `main@11a028c9fb5fc4332113e70e3ae63db1f74c58e0` on 2026-09-05.
 
+> **Module 3C correction (see [MODULE_3C_POSTGRES_RUNTIME_WIRING.md](MODULE_3C_POSTGRES_RUNTIME_WIRING.md)):**
+> Several rows below originally said `build_app()` "defaults to SQLite" for the Paper OMS,
+> risk decisions, promotion ledger and operational alerts authorities. That wording was
+> inaccurate and has been corrected: `build_app()`'s optional store parameters default to
+> `None`, not to a SQLite implementation — `build_app()` itself never silently constructs
+> any SQLite authority on the caller's behalf. The real defect was that nothing composed
+> the existing PostgreSQL authority graph (`postgres_runtime.py`) and handed it to
+> `build_app()` for the object Docker actually served (`app = build_app()` in `api.py`,
+> run via `Dockerfile`'s `CMD`) — the served application simply had every optional
+> authority unset. Module 3C adds `trade_platform.runtime_app`, a canonical composition
+> factory that wires the PostgreSQL authority graph into `build_app()` for protected
+> (paper/production) runtimes and fails closed if PostgreSQL is missing or unreachable,
+> and repoints the Docker entrypoint at it. Rows and the wiring-gap list below are updated
+> to reflect what Module 3C actually wired versus what remains a genuine gap.
+
 ## 1. Domain Authority Map
 
 | Domain | Authoritative store | Read authority | Write authority | Immutability | Environment | Current production fitness | Known limitation |
@@ -20,33 +35,40 @@ Companion to [MODULE_3A_PRODUCTION_READINESS_AUDIT.md](MODULE_3A_PRODUCTION_READ
 | Signals | `SQLiteSignalStore` (signal_engine.py:154) dev; `PostgresSignalStore` (postgres_decision_authorities.py:193) prod | Risk/OMS pretrade checks | Signal engine | Mixed by implementation | Postgres covers only the validated-signal slice | PARTIAL | Full signal lifecycle not yet Postgres-covered |
 | Risk | `PostgresRiskStore` (risk.py:393); `SQLiteRiskDecisionStore` (risk.py:620) dev | Pretrade assessment, OMS | Risk engine, reservation repository | Reservations append-only, advisory-locked | Postgres required for paper/production by `PlatformConfig` | ACCEPTABLE | SQLite decision store is test-only by construction |
 | Reservations | `PostgresCriticalRepository.reserve_and_record_decision` (postgres_repositories.py:39-67) | Risk/OMS | Same (idempotent, advisory-locked) | Insert-only, idempotency-checked | Postgres-only | ACCEPTABLE | No local/dev path — correct by design for this boundary |
-| Paper OMS | `SQLitePaperOms` (paper_oms.py:64) dev; `PostgresPaperOms` (postgres_paper_oms.py:30) prod | api.py order/read endpoints | OMS engine only | Event-sourced | Postgres required in paper/production per config — **but `build_app()` defaults to SQLite regardless** | **BLOCKED** | See audit §1.2 / §4 P0-2: config enforcement and app wiring are disconnected |
+| Paper OMS | `SQLitePaperOms` (paper_oms.py:64) dev; `PostgresPaperOms` (postgres_paper_oms.py:30) prod | api.py order/read endpoints | OMS engine only | Event-sourced | Postgres required in paper/production per config, now composed and wired by `trade_platform.runtime_app` for protected runtimes (Module 3C) | ACCEPTABLE | Resolved by Module 3C — see `docs/MODULE_3C_POSTGRES_RUNTIME_WIRING.md` |
 | Reconciliation | `SQLiteReconciledAccountStore`/`PositionStore` (portfolio_evidence.py:71,182) dev; `PostgresPaperOms.latest_reconciled_account/...` (postgres_paper_oms.py:381,419) prod | Operator dashboard | Broker sync / OMS reconciliation job | Snapshot-based | Split authority between dedicated SQLite store and Postgres-OMS-embedded methods | PARTIAL | No single consistent interface across environments |
 | Investments | `SQLiteInvestmentStore` (investments.py:382) dev; `PostgresInvestmentEngineV2Store` (investment_engine_v2.py:774) prod | Operator dashboard, engine v2 | Investment engine | Append-only (v2) | Postgres v2 is the prod-capable engine | PARTIAL | Legacy SQLite store and Engine V2 coexist; verify prod callers target v2 |
 | News | `SQLiteNewsEventStore` (market_intelligence.py:72) metadata; `PostgresNewsEventIntelligenceStore` (news_event_intelligence.py:704) prod | Research agents (internal retrieval sources) | Ingestion pipeline | Append-only, unique(source_id, source_item_id) | Postgres store is prod path | ACCEPTABLE | No live content acquisition wired (by design at this stage) |
 | SRE | `PostgresSreV2Store` (observability_sre_v2.py:480) | Operator dashboard, incident review | SRE evidence pipeline | Append-only, hashed | Postgres-only | ACCEPTABLE | No SQLite/dev equivalent |
 | Audit events | `SQLiteAuditStore` (audit.py:22) | api.py audit endpoints | Any service via `.append()` | Append-only, no update/delete exposed | **Explicitly dev/paper-only per its own docstring** | **MUST MIGRATE** | No Postgres audit store exists at all — production-grade immutable audit trail is a real gap |
-| Alerts | `SQLiteOperationalAlertStore` (operational_alerts.py:313) dev; `PostgresOperationalAlertStore` (operational_alerts.py:56) prod; `SQLiteFailureDrillStore` (operational_alerts.py:374) | Operator dashboard, SRE | Alerting engine | Append-only | Postgres store is prod-capable — **but not the `build_app()` default** | PARTIAL | Failure-drill evidence has no Postgres counterpart |
+| Alerts | `SQLiteOperationalAlertStore` (operational_alerts.py:313) dev; `PostgresOperationalAlertStore` (operational_alerts.py:56) prod; `SQLiteFailureDrillStore` (operational_alerts.py:374) | Operator dashboard, SRE | Alerting engine | Append-only | Postgres store is prod-capable and is now wired for protected runtimes by `trade_platform.runtime_app` (Module 3C) | PARTIAL | Failure-drill evidence still has no Postgres counterpart (unchanged by Module 3C) |
 
-**Cross-cutting note:** `PlatformConfig` (config.py:30-49) defaults to SQLite/`:memory:` but its `__post_init__` forbids anything but Postgres for `environment in {"paper","production"}` and unconditionally forbids `live_trading_enabled=True`. Wherever this table shows both a SQLite and Postgres implementation, Postgres is the config-enforced runtime intent for any non-local environment — but `build_app()`'s literal default arguments do not consult `PlatformConfig` at all (see audit §1.2/§4 P0-2). This is the single highest-leverage fix identified in this audit.
+**Cross-cutting note:** `PlatformConfig` (config.py:30-49) defaults to SQLite/`:memory:` but its `__post_init__` forbids anything but Postgres for `environment in {"paper","production"}` and unconditionally forbids `live_trading_enabled=True`. Wherever this table shows both a SQLite and Postgres implementation, Postgres is the config-enforced runtime intent for any non-local environment. **Corrected (Module 3C):** `build_app()`'s optional store parameters default to `None`, not to a SQLite implementation, and `build_app()` never reads `PlatformConfig` to auto-select a store — the previously highest-leverage gap was that nothing composed the PostgreSQL authority graph and handed it to `build_app()` for the object the container actually served. `trade_platform.runtime_app.create_runtime_app_from_environment()` now does exactly that for protected (paper/production) runtimes, and the Dockerfile's `CMD` now targets it instead of the unconfigured `trade_platform.api:app`.
 
 ## 2. Remaining SQLite Authorities (production-blocking, no Postgres sibling)
 
-- Audit events — `SQLiteAuditStore` (audit.py:22)
-- Investment detail (legacy shape) — `SQLiteInvestmentStore`, `SQLiteFundamentalStore`
-- Strategy registry — `SQLiteStrategyRegistry` (strategy_validation.py:53)
-- Experiment registry — `SQLiteExperimentStore` (research.py:186)
-- AI/agent research — `SQLiteAgentResearchStore` (agent_research.py:235)
+- Audit events — `SQLiteAuditStore` (audit.py:22) (Module 3C decision: fail-closed for protected runtime; see `docs/MODULE_3C_POSTGRES_RUNTIME_WIRING.md` §5)
+- Investment detail (legacy shape) — `SQLiteInvestmentStore`, `SQLiteFundamentalStore` (not required for protected paper-API startup; unavailable in protected runtime per Module 3C)
+- Strategy registry — `SQLiteStrategyRegistry` (strategy_validation.py:53) (not required for protected paper-API startup; unavailable in protected runtime per Module 3C)
+- Experiment registry — `SQLiteExperimentStore` (research.py:186) (not required for protected paper-API startup; unavailable in protected runtime per Module 3C)
+- AI/agent research — `SQLiteAgentResearchStore` (agent_research.py:235) (not required for protected paper-API startup; unavailable in protected runtime per Module 3C)
 - Feature platform — `SQLiteFeatureStore` (feature_platform.py:75)
 - Full signal lifecycle beyond the validated-signal slice — `SQLiteSignalStore` (signal_engine.py:154)
 
-## 3. Remaining SQLite Authorities (wiring gap only — Postgres sibling already exists and is CI-verified)
+## 3. Wiring gap — Module 3C status
 
-- Paper OMS — `PostgresPaperOms` exists, `build_app()` defaults to `SQLitePaperOms`
-- Risk decisions — `PostgresRiskStore` exists, `build_app()` defaults to `SQLiteRiskDecisionStore`
-- Promotion ledger — `PostgresPromotionLedger` exists, `build_app()` defaults to `SQLitePromotionLedger`
-- Operational alerts — `PostgresOperationalAlertStore` exists, `build_app()` defaults to `SQLiteOperationalAlertStore`
-- Instrument/model-registry/pre-trade/policy/kill-switch/quote stores — Postgres siblings exist and are composed via `build_postgres_paper_runtime`, not the `api.py` default
+Resolved (wired into the protected `trade_platform.runtime_app` composition; safety-critical, isinstance-verified Postgres in tests):
+
+- Paper OMS — `PostgresPaperOms`, wired via `app.state.paper_oms`
+- Operational alerts — `PostgresOperationalAlertStore`, wired via `app.state.alert_store`
+- Operator dashboard queries — `PostgresOperatorDashboardQueries`, wired via `app.state.operator_dashboard_queries` (unchanged from `dev_app.py`, now also the Docker-served default for protected runtimes)
+
+Still a genuine gap — explicitly `None`/unavailable (HTTP 503) in the protected runtime, never silently SQLite, classified as **future migration blocker** (a Postgres sibling exists but its read interface does not yet cover what the legacy `api.py` route needs):
+
+- Risk decisions by intent — `PostgresRiskStore` exists and is used by pretrade/OMS assessment, but has no `decisions_for_intent` projection the `/paper-oms/{intent_id}` route needs (only `SQLiteRiskDecisionStore` has it)
+- Promotion ledger by-id read — `PostgresPromotionLedger` exists (append/append_activation) but has no `get(decision_id)` projection the `/promotion-decisions/{decision_id}` route needs (only `SQLitePromotionLedger` has it)
+- Return-history ingestion tracking — `PostgresPortfolioReturnStore` exists but only implements `append`/`observations_as_of`; it has no equivalent of `SQLitePortfolioReturnStore`'s `provider_health`/`ingestion_runs`/`ingestion_commands`/`set_ingestion_cadence`/`due_ingestion_cadences` used by the `/return-history/*` routes
+- Instrument/model-registry/pre-trade/policy/kill-switch/quote stores — Postgres siblings exist and are composed via `build_postgres_paper_runtime` for the paper-submission workflow (not the read-only `api.py` HTTP surface, which does not expose them as routes)
 
 ## 4. Production Readiness Scorecard
 
@@ -56,7 +78,7 @@ Companion to [MODULE_3A_PRODUCTION_READINESS_AUDIT.md](MODULE_3A_PRODUCTION_READ
 | Authentication | PARTIAL | Static shared-secret tokens (view token + operator token), no per-user credentials — `session.ts:42`, `security.py:212-222` |
 | Authorization / RBAC | PARTIAL | 6 roles/permissions defined backend-side (`security.py:59-98`) but exactly one static role active per deployment; no frontend role logic |
 | Secrets | PARTIAL | Environment variables only; `detect-secrets` scanning exists but no secret manager |
-| Database | PARTIAL | Postgres schema mature (36 migrations) but `build_app()` defaults several safety-relevant stores to SQLite (see §3 above) |
+| Database | PARTIAL | Postgres schema mature (36+ migrations). Module 3C wired the served application's Paper OMS, alert and operator-dashboard authorities to PostgreSQL for protected runtimes with no SQLite fallback; risk-decision, promotion-ledger and return-history read routes remain explicitly unavailable pending additional Postgres query methods (see §3 above) |
 | Backup / DR | PARTIAL | CI proves restore mechanics (`verify_postgres_restore.py`); no production RPO/RTO, offsite storage, or real drill — confirmed by the repo's own `DISASTER_RECOVERY.md` |
 | Deployment | NOT STARTED | No Kubernetes/Terraform/Railway/Procfile/systemd found anywhere; CI-built container image is never pushed or deployed |
 | Observability | PARTIAL | In-process metrics counter + structured logging only; no export format, no tracing, no external alert delivery (`LOCAL_OUTBOX` only) |
@@ -68,7 +90,7 @@ Companion to [MODULE_3A_PRODUCTION_READINESS_AUDIT.md](MODULE_3A_PRODUCTION_READ
 | Research (quant) | ACCEPTABLE (v2 engines) / PARTIAL (legacy registries) | v2 regime/portfolio/scorecard engines are Postgres-native and hashed; strategy/experiment registries are SQLite-only |
 | Investment (research) | PARTIAL | Engine V2 is Postgres-native; legacy investment store coexists and is SQLite-only |
 | Deterministic risk | ACCEPTABLE | `PostgresRiskStore` + advisory-locked idempotent reservations; config-enforced Postgres-only outside local dev |
-| Paper OMS | **BLOCKED** | Design is mature (event-sourced, idempotent, reconciled) but `build_app()` defaults to SQLite despite a CI-verified Postgres implementation |
+| Paper OMS | ACCEPTABLE | Design is mature (event-sourced, idempotent, reconciled); Module 3C composes and wires `PostgresPaperOms` into the served protected-runtime application with fail-closed startup if PostgreSQL is unavailable |
 | Broker sandbox | NOT STARTED | Only an in-memory simulator exists; no network-connected adapter, no real credentials model |
 | Reconciliation | PARTIAL | Implemented for paper-internal flows; authority split between a dedicated SQLite store and Postgres-OMS-embedded methods |
 | Audit | **BLOCKED** | No Postgres audit store exists at all; current store is explicitly scoped "for development and paper simulation" by its own docstring |
