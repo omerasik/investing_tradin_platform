@@ -244,14 +244,16 @@ jobs:
           test -f "$CYCLE208_DASHBOARD_CONFIG_PATH"
           curl --fail --silent http://127.0.0.1:8766/health/live >/dev/null
           cd web
+          fuser -k 3000/tcp 2>/dev/null || true
           pnpm exec next start -p 3000 > /tmp/cycle208-dashboard.log 2>&1 &
           dashboard_pid=$!
           trap 'kill $dashboard_pid $api_pid 2>/dev/null || true; wait $dashboard_pid $api_pid 2>/dev/null || true; rm -f "$CYCLE208_DASHBOARD_CONFIG_PATH" "$CYCLE208_DASHBOARD_TOKEN_PATH"' EXIT
           for attempt in {1..30}; do
-            curl --fail --silent -H "Authorization: Bearer $TRADE_PLATFORM_DASHBOARD_VIEW_TOKEN" http://127.0.0.1:3000/ && break
+            body=$(curl --fail --silent -H "Authorization: Bearer $TRADE_PLATFORM_DASHBOARD_VIEW_TOKEN" http://127.0.0.1:3000/ || true)
+            echo "$body" | grep -q "POSTGRES_CONFIGURED" && break
             sleep 1
           done
-          curl --fail --silent -H "Authorization: Bearer $TRADE_PLATFORM_DASHBOARD_VIEW_TOKEN" http://127.0.0.1:3000/ >/dev/null
+          echo "$body" | grep -q "POSTGRES_CONFIGURED"
           pnpm test:e2e
       - name: Module 1B human browser demo with PostgreSQL discovery
         env:
