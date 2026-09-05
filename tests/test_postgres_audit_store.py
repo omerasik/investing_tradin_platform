@@ -77,7 +77,7 @@ class PostgresAuditStoreTests(unittest.TestCase):
             connection.cursor() as cursor,
         ):
             cursor.execute(
-                "UPDATE audit_events SET actor='tampered' WHERE event_id=%s",
+                "UPDATE production_audit_events SET actor='tampered' WHERE event_id=%s",
                 (event.event_id,),
             )
 

@@ -91,11 +91,16 @@ The matrix classified audit as **BLOCKED**: "No Postgres audit store exists at a
 current store is explicitly scoped 'for development and paper simulation' by its own
 docstring." `PostgresAuditStore` implements the same `append`/`recent`/`query`/`get`
 shape as `SQLiteAuditStore` (formalized as the new `trade_platform.audit.AuditStore`
-protocol so `build_app` depends on neither concrete type), backed by a new `audit_events`
-table that is append-only, content-hashed, and immutable at the schema level (no
-`UPDATE`/`DELETE` trigger path exists — enforced by PostgreSQL itself, not just by which
-methods this class happens to expose). The dashboard-facing routes in `api.py` were
-already read-only against whatever store is injected; nothing there changed.
+protocol so `build_app` depends on neither concrete type), backed by a new
+`production_audit_events` table that is append-only, content-hashed, and immutable at
+the schema level (no `UPDATE`/`DELETE` trigger path exists — enforced by PostgreSQL
+itself, not just by which methods this class happens to expose). It is deliberately
+named distinctly from the pre-existing `audit_events` table (migration `20260813_0001`
+/ `postgres_schema.py`), which is a one-time legacy-migration backfill target with a
+different shape (`audit_event_id`, `entity_type`, `entity_id`) — not an
+application-facing audit authority any store had ever been wired to. The
+dashboard-facing routes in `api.py` were already read-only against whatever store is
+injected; nothing there changed.
 
 ### 2.5 CSRF protection for cookie-authenticated mutations (`trade_platform.csrf`)
 

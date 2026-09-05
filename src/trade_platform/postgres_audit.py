@@ -9,6 +9,11 @@ is that store: append-only, content-hashed, database-trigger-enforced immutable 
 ``20260906_0037``), and structurally interchangeable with ``SQLiteAuditStore`` via
 :class:`trade_platform.audit.AuditStore` so ``build_app`` never needs to know which
 backend it was handed.
+
+Backed by ``production_audit_events`` -- deliberately *not* the pre-existing
+``audit_events`` table (``postgres_schema.py``), which is a one-time legacy-migration
+backfill target with a different shape (``audit_event_id``, ``entity_type``,
+``entity_id``) that no application-facing store had ever been wired to.
 """
 
 from __future__ import annotations
@@ -40,7 +45,7 @@ class PostgresAuditStore:
         try:
             with self._database.transaction() as connection, connection.cursor() as cursor:
                 cursor.execute(
-                    "INSERT INTO audit_events VALUES (%s,%s,%s,%s,%s::jsonb,%s)",
+                    "INSERT INTO production_audit_events VALUES (%s,%s,%s,%s,%s::jsonb,%s)",
                     (
                         event.event_id,
                         event.event_type,
@@ -60,7 +65,7 @@ class PostgresAuditStore:
         if not 1 <= limit <= 1000:
             raise ValueError("limit must be from 1 through 1000")
         rows = self._select(
-            "SELECT event_id,event_type,occurred_at,actor,payload FROM audit_events "
+            "SELECT event_id,event_type,occurred_at,actor,payload FROM production_audit_events "
             "ORDER BY occurred_at DESC, event_id DESC LIMIT %s",
             (limit,),
         )
@@ -99,7 +104,7 @@ class PostgresAuditStore:
         rows = self._select(
             # `where` is assembled only from the fixed literal clause strings above,
             # never from caller-supplied identifiers; every value is bound via %s.
-            "SELECT event_id,event_type,occurred_at,actor,payload FROM audit_events "
+            "SELECT event_id,event_type,occurred_at,actor,payload FROM production_audit_events "
             f"{where} ORDER BY occurred_at DESC, event_id DESC LIMIT %s OFFSET %s",  # nosec B608
             (*params, limit + 1, offset),
         )
@@ -109,7 +114,7 @@ class PostgresAuditStore:
 
     def get(self, event_id: UUID) -> AuditEvent | None:
         rows = self._select(
-            "SELECT event_id,event_type,occurred_at,actor,payload FROM audit_events "
+            "SELECT event_id,event_type,occurred_at,actor,payload FROM production_audit_events "
             "WHERE event_id=%s",
             (event_id,),
         )
