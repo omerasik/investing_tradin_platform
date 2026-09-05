@@ -253,7 +253,7 @@ jobs:
           dashboard_pid=$!
           trap 'kill $dashboard_pid $api_pid 2>/dev/null || true; wait $dashboard_pid $api_pid 2>/dev/null || true; rm -f "$CYCLE208_DASHBOARD_CONFIG_PATH" "$CYCLE208_DASHBOARD_TOKEN_PATH"' EXIT
           for attempt in {1..30}; do
-            body=$(curl --fail --silent -H "Authorization: Bearer $TRADE_PLATFORM_DASHBOARD_VIEW_TOKEN" http://127.0.0.1:3000/ || true)
+            body=$(curl -L --fail --silent -H "Authorization: Bearer $TRADE_PLATFORM_DASHBOARD_VIEW_TOKEN" http://127.0.0.1:3000/ || true)
             echo "$body" | grep -q "POSTGRES_CONFIGURED" && break
             sleep 1
           done
