@@ -243,10 +243,6 @@ jobs:
           done
           test -f "$CYCLE208_DASHBOARD_CONFIG_PATH"
           curl --fail --silent http://127.0.0.1:8766/health/live >/dev/null
-          echo "---- cycle208 dashboard config ----"
-          cat "$CYCLE208_DASHBOARD_CONFIG_PATH"
-          echo "---- cycle208 token file readable? ----"
-          cat "$CYCLE208_DASHBOARD_TOKEN_PATH" && echo "(token file read OK)"
           cd web
           fuser -k 3000/tcp 2>/dev/null || true
           pnpm exec next start -p 3000 > /tmp/cycle208-dashboard.log 2>&1 &
