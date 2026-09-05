@@ -64,7 +64,7 @@ class PersistenceTargetRejectionTests(unittest.TestCase):
                 env=_env(
                     {
                         "TRADE_PLATFORM_ENVIRONMENT": "production",
-                        "POSTGRES_DSN": "postgresql://postgres:postgres@127.0.0.1:5439/trade_platform",
+                        "POSTGRES_DSN": "postgresql://postgres:postgres@127.0.0.1:5439/trade_platform",  # pragma: allowlist secret
                     }
                 )
             )
@@ -73,7 +73,7 @@ class PersistenceTargetRejectionTests(unittest.TestCase):
         with self.assertRaises(RuntimeCompositionError):
             compose_protected_postgres_app(
                 environment=RuntimeMode.PAPER,
-                dsn="postgresql://postgres:postgres@127.0.0.1:1/does_not_exist",
+                dsn="postgresql://postgres:postgres@127.0.0.1:1/does_not_exist",  # pragma: allowlist secret
                 operator_token="test-token",
             )
 
@@ -81,7 +81,7 @@ class PersistenceTargetRejectionTests(unittest.TestCase):
         with self.assertRaises(RuntimeCompositionError):
             compose_protected_postgres_app(
                 environment=RuntimeMode.LOCAL_RESEARCH,  # type: ignore[arg-type]
-                dsn="postgresql://postgres:postgres@127.0.0.1:5439/trade_platform",
+                dsn="postgresql://postgres:postgres@127.0.0.1:5439/trade_platform",  # pragma: allowlist secret
                 operator_token="test-token",
             )
 
