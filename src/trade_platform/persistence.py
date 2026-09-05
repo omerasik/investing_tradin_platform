@@ -71,7 +71,9 @@ class PostgresDatabase:
         except ImportError as error:  # keeps local/unit installation lightweight
             raise PersistenceError("postgres_driver_unavailable") from error
         try:
-            self.connection = psycopg.connect(self.dsn)
+            # Bounded connect: an unreachable or firewalled host must fail closed
+            # quickly, never hang the caller (startup, health checks) indefinitely.
+            self.connection = psycopg.connect(self.dsn, connect_timeout=10)
         except psycopg.Error as error:
             raise PersistenceError("postgres_connection_failed") from error
 
