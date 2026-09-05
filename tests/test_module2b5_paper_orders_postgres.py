@@ -17,7 +17,10 @@ from uuid import uuid4
 
 import psycopg
 
-from trade_platform.operator_dashboard import DashboardObjectNotFound, PostgresOperatorDashboardQueries
+from trade_platform.operator_dashboard import (
+    DashboardObjectNotFound,
+    PostgresOperatorDashboardQueries,
+)
 from trade_platform.persistence import PostgresDatabase
 
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
