@@ -20,3 +20,17 @@ web/playwright-report/
 web/dashboard.config.json
 web/dashboard.e2e.token
 *.local.json
+*.token
+*.credentials.json
+
+# Local database files (SQLite is the local/dev persistence backend)
+*.sqlite3
+*.sqlite3-journal
+*.db
+*.db-journal
+
+# Playwright artifacts (may capture session cookies/tokens from local runs)
+web/test-results/
+web/playwright-report/
+test-results/
+playwright-report/
