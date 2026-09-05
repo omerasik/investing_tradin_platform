@@ -268,11 +268,29 @@ export type PaperOrderDiscovery = {
   instrument_id: string;
   canonical_symbol: string | null;
   side: string;
+  quantity: string;
   paper_only: true;
   lifecycle_status: string;
   created_at: string;
   fill_state: string;
   reconciliation_state: string;
+};
+
+export type AuditEvent = {
+  event_id: string;
+  event_type: string;
+  actor: string;
+  occurred_at: string;
+  payload: Record<string, unknown>;
+};
+
+export type AuditEventDiscovery = {
+  state: "AVAILABLE" | "UNAVAILABLE";
+  items: AuditEvent[];
+  page: { limit: number; offset: number; returned: number; has_more: boolean };
+  audit_authority: string;
+  immutability_guarantee: string;
+  mutation_route_exposed_by_dashboard: boolean;
 };
 
 export function utc(value: string | null | undefined): string {
@@ -752,26 +770,83 @@ export async function getNewsEventDiscovery(
 }
 
 export async function getPaperOrderEvidence(ctx: WorkspaceContext): Promise<EvidenceResult<PaperOrder>> {
+  return getPaperOrderDetail(ctx, ctx.workspace.paperOrderIntentId ?? "");
+}
+
+export async function getPaperOrderDetail(ctx: WorkspaceContext, intentId: string): Promise<EvidenceResult<PaperOrder>> {
   return readEvidence<PaperOrder>(
-    `${ctx.origin}/api/paper-oms?target=/paper-oms/orders/${encodeURIComponent(ctx.workspace.paperOrderIntentId ?? "")}`,
-    Boolean(ctx.workspace.paperOrderIntentId && ctx.protectedApi),
+    authorityUrl(ctx.origin, `/operator-dashboard/paper-orders/${encodeURIComponent(intentId)}`),
+    Boolean(intentId && ctx.protectedApi),
     "Paper order evidence reference is unavailable.",
   );
 }
 
-export async function getPaperOrderDiscovery(ctx: WorkspaceContext): Promise<EvidenceResult<DiscoveryPage<PaperOrderDiscovery>>> {
+export async function getPaperOrderDiscovery(
+  ctx: WorkspaceContext,
+  params?: {
+    account_id?: string; instrument?: string; side?: string; lifecycle_status?: string;
+    fill_state?: string; reconciliation_state?: string; limit?: number; offset?: number;
+  },
+): Promise<EvidenceResult<DiscoveryPage<PaperOrderDiscovery>>> {
+  const query = new URLSearchParams({
+    limit: String(params?.limit ?? 20),
+    offset: String(params?.offset ?? 0),
+  });
+  if (params?.account_id) query.set("account_id", params.account_id);
+  if (params?.instrument) query.set("instrument", params.instrument);
+  if (params?.side && params.side !== "ALL") query.set("side", params.side);
+  if (params?.lifecycle_status && params.lifecycle_status !== "ALL") query.set("lifecycle_status", params.lifecycle_status);
+  if (params?.fill_state && params.fill_state !== "ALL") query.set("fill_state", params.fill_state);
+  if (params?.reconciliation_state && params.reconciliation_state !== "ALL") query.set("reconciliation_state", params.reconciliation_state);
   return readEvidence<DiscoveryPage<PaperOrderDiscovery>>(
-    authorityUrl(ctx.origin, "/operator-dashboard/paper-orders?limit=20&offset=0"),
+    authorityUrl(ctx.origin, `/operator-dashboard/paper-orders?${query.toString()}`),
     ctx.protectedApi,
     "Paper OMS discovery is unavailable.",
   );
 }
 
 export async function getPaperReconciliationEvidence(ctx: WorkspaceContext): Promise<EvidenceResult<Reconciliation>> {
+  return getPaperReconciliationDetail(ctx, ctx.workspace.paperAccountId ?? "");
+}
+
+export async function getPaperReconciliationDetail(ctx: WorkspaceContext, accountId: string): Promise<EvidenceResult<Reconciliation>> {
   return readEvidence<Reconciliation>(
-    `${ctx.origin}/api/paper-oms?target=/paper-oms/accounts/${encodeURIComponent(ctx.workspace.paperAccountId ?? "")}/reconciliation`,
-    Boolean(ctx.workspace.paperAccountId && ctx.protectedApi),
+    authorityUrl(ctx.origin, `/operator-dashboard/paper-accounts/${encodeURIComponent(accountId)}/reconciliation`),
+    Boolean(accountId && ctx.protectedApi),
     "Paper account evidence reference is unavailable.",
+  );
+}
+
+const BARE_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+function utcDayBound(value: string, bound: "start" | "end"): string {
+  return BARE_DATE_PATTERN.test(value) ? `${value}T${bound === "start" ? "00:00:00" : "23:59:59"}Z` : value;
+}
+
+export async function getAuditEventDiscovery(
+  ctx: WorkspaceContext,
+  params?: { event_type?: string; actor?: string; start?: string; end?: string; limit?: number; offset?: number },
+): Promise<EvidenceResult<AuditEventDiscovery>> {
+  const query = new URLSearchParams({
+    limit: String(params?.limit ?? 20),
+    offset: String(params?.offset ?? 0),
+  });
+  if (params?.event_type) query.set("event_type", params.event_type);
+  if (params?.actor) query.set("actor", params.actor);
+  if (params?.start) query.set("start", utcDayBound(params.start, "start"));
+  if (params?.end) query.set("end", utcDayBound(params.end, "end"));
+  return readEvidence<AuditEventDiscovery>(
+    authorityUrl(ctx.origin, `/operator-dashboard/audit-events?${query.toString()}`),
+    ctx.protectedApi,
+    "Audit event authority is unavailable.",
+  );
+}
+
+export async function getAuditEventDetail(ctx: WorkspaceContext, eventId: string): Promise<EvidenceResult<AuditEvent>> {
+  return readEvidence<AuditEvent>(
+    authorityUrl(ctx.origin, `/operator-dashboard/audit-events/${encodeURIComponent(eventId)}`),
+    Boolean(eventId && ctx.protectedApi),
+    "Audit event reference is unavailable.",
   );
 }
 
@@ -816,6 +891,7 @@ export type AllDashboardEvidence = {
   construction: EvidenceResult<PortfolioConstruction>;
   news: EvidenceResult<NewsEventPage>;
   sre: EvidenceResult<SreOverview>;
+  auditEvents: EvidenceResult<AuditEventDiscovery>;
   instruments: EvidenceResult<DiscoveryPage<InstrumentDiscovery>>;
   strategies: EvidenceResult<DiscoveryPage<StrategyDiscovery>>;
   experiments: EvidenceResult<DiscoveryPage<ExperimentDiscovery>>;
@@ -853,6 +929,7 @@ export async function getAllDashboardEvidence(): Promise<AllDashboardEvidence> {
     construction,
     news,
     sre,
+    auditEvents,
   ] = await Promise.all([
     getCommandCenterEvidence(ctx),
     getDataHealthEvidence(ctx),
@@ -880,6 +957,7 @@ export async function getAllDashboardEvidence(): Promise<AllDashboardEvidence> {
     getPortfolioConstructionEvidence(ctx),
     getNewsEvidence(ctx),
     getSreEvidence(ctx),
+    getAuditEventDiscovery(ctx, { limit: 1, offset: 0 }),
   ]);
 
   return {
@@ -910,5 +988,6 @@ export async function getAllDashboardEvidence(): Promise<AllDashboardEvidence> {
     construction,
     news,
     sre,
+    auditEvents,
   };
 }

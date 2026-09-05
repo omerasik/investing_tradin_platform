@@ -2,15 +2,25 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { loadDashboardConfig, resolveDashboardOperatorToken } from "../../dashboard-config";
 
-const exactUuidPath = /^\/operator-dashboard\/(feature-definitions|strategy-scorecards|regime-runs|portfolio-construction-runs)\/[0-9a-fA-F-]{36}$/;
+const exactUuidPath = /^\/operator-dashboard\/(feature-definitions|strategy-scorecards|regime-runs|portfolio-construction-runs|audit-events|paper-orders)\/[0-9a-fA-F-]{36}$/;
+const paperAccountReconciliationPath = /^\/operator-dashboard\/paper-accounts\/[A-Za-z0-9:_-]+\/reconciliation$/;
 
 function allowedTarget(target: string): boolean {
   const parsed = new URL(target, "http://dashboard.local");
   if (parsed.origin !== "http://dashboard.local") return false;
   if (exactUuidPath.test(parsed.pathname) && parsed.search === "") return true;
+  if (paperAccountReconciliationPath.test(parsed.pathname) && parsed.search === "") return true;
   if (parsed.pathname === "/operator-dashboard/workspace-references" && parsed.search === "") return true;
-  if (new Set(["/operator-dashboard/instruments", "/operator-dashboard/paper-orders"]).has(parsed.pathname)) {
+  if (parsed.pathname === "/operator-dashboard/instruments") {
     return [...parsed.searchParams.keys()].every((key) => key === "limit" || key === "offset");
+  }
+  if (parsed.pathname === "/operator-dashboard/paper-orders") {
+    const allowed = new Set(["account_id", "instrument", "side", "lifecycle_status", "fill_state", "reconciliation_state", "limit", "offset"]);
+    return [...parsed.searchParams.keys()].every((key) => allowed.has(key));
+  }
+  if (parsed.pathname === "/operator-dashboard/audit-events") {
+    const allowed = new Set(["event_type", "actor", "start", "end", "limit", "offset"]);
+    return [...parsed.searchParams.keys()].every((key) => allowed.has(key));
   }
   if (parsed.pathname === "/operator-dashboard/investment-theses") {
     const allowed = new Set(["instrument", "status", "review_state", "synthetic_demo", "limit", "offset"]);

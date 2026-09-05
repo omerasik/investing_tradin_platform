@@ -35,7 +35,10 @@ from .operator_dashboard import (
     InvestmentPortfolioDiscoveryPage,
     InvestmentThesisDiscoveryPage,
     NewsEventPage,
+    PageInfo,
     PaperOrderDiscoveryPage,
+    PaperOrderView,
+    PaperReconciliationView,
     PortfolioConstructionDiscoveryPage,
     PortfolioConstructionView,
     PostgresOperatorDashboardQueries,
@@ -187,6 +190,65 @@ def _serialize(event: AuditEvent) -> AuditEventResponse:
         occurred_at=event.occurred_at.isoformat(),
         actor=event.actor,
         payload=event.payload,
+    )
+
+
+_REDACTED_PAYLOAD_KEY_MARKERS = (
+    "token", "password", "secret", "dsn", "credential", "authorization",
+    "api_key", "apikey", "access_key", "private_key", "session",
+)
+
+
+def _redact_payload(payload: dict[str, object]) -> dict[str, object]:
+    """Typed-safe projection of an audit payload: strip keys that look secret-shaped.
+
+    Only a shallow, defensive redaction -- audit payloads are operator-authored free-form
+    metadata, never raw request/response bodies, so this is a safety net, not a parser.
+    """
+    safe: dict[str, object] = {}
+    for key, value in payload.items():
+        lowered = key.casefold()
+        if any(marker in lowered for marker in _REDACTED_PAYLOAD_KEY_MARKERS):
+            safe[key] = "REDACTED"
+        elif isinstance(value, dict):
+            safe[key] = _redact_payload(value)
+        else:
+            safe[key] = value
+    return safe
+
+
+AUDIT_IMMUTABILITY_GUARANTEE = (
+    "Append-only SQLite table with no update or delete operation exposed by this store or "
+    "API. This is a development-grade guarantee, not the PostgreSQL BEFORE UPDATE/DELETE "
+    "immutability trigger used elsewhere on this platform (see kill_switch_events, "
+    "broker_sync_events, paper_order_intents)."
+)
+
+
+class AuditEventProjection(BaseModel):
+    event_id: str
+    event_type: str
+    actor: str
+    occurred_at: str
+    payload: dict[str, object]
+
+
+class AuditEventDiscoveryPage(BaseModel):
+    state: str
+    items: list[AuditEventProjection]
+    page: PageInfo
+    audit_authority: str = "SQLITE_APPEND_ONLY_STORE"
+    immutability_guarantee: str = AUDIT_IMMUTABILITY_GUARANTEE
+    mutation_route_exposed_by_dashboard: bool = False
+
+
+def _audit_projection(event: AuditEvent) -> AuditEventProjection:
+    return AuditEventProjection(
+        event_id=str(event.event_id),
+        event_type=event.event_type,
+        actor=event.actor,
+        occurred_at=event.occurred_at.isoformat(),
+        payload=_redact_payload(event.payload),
     )
 
 
@@ -465,10 +527,33 @@ def build_app(
 
     @app.get("/operator-dashboard/paper-orders", response_model=PaperOrderDiscoveryPage)
     def dashboard_paper_orders(
+        account_id: str | None = Query(default=None, min_length=1, max_length=120),
+        instrument: str | None = Query(default=None, min_length=1, max_length=120),
+        side: str | None = Query(default=None, pattern="^(BUY|SELL)$"),
+        lifecycle_status: str | None = Query(default=None, min_length=1, max_length=40),
+        fill_state: str | None = Query(default=None, pattern="^(UNFILLED|PARTIAL_OR_FINAL_FILL)$"),
+        reconciliation_state: str | None = Query(default=None, pattern="^(HEALTHY|RECONCILIATION_REQUIRED|UNAVAILABLE)$"),
         limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10_000),
         _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
     ) -> object:
-        return read_dashboard(lambda: queries.paper_orders(limit=limit, offset=offset))
+        return read_dashboard(lambda: queries.paper_orders(
+            account_id=account_id, instrument=instrument, side=side, lifecycle_status=lifecycle_status,
+            fill_state=fill_state, reconciliation_state=reconciliation_state, limit=limit, offset=offset,
+        ))
+
+    @app.get("/operator-dashboard/paper-orders/{intent_id}", response_model=PaperOrderView)
+    def dashboard_paper_order(
+        intent_id: UUID, _: None = Depends(protected_operator),
+        queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        return read_dashboard(lambda: queries.paper_order(intent_id))
+
+    @app.get("/operator-dashboard/paper-accounts/{account_id}/reconciliation", response_model=PaperReconciliationView)
+    def dashboard_paper_reconciliation(
+        account_id: str, _: None = Depends(protected_operator),
+        queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        return read_dashboard(lambda: queries.paper_reconciliation(account_id))
 
     @app.get("/operator-dashboard/feature-definitions", response_model=FeatureDefinitionPage)
     def feature_definitions(
@@ -813,6 +898,45 @@ def build_app(
     ) -> list[AuditEventResponse]:
         app.state.metrics.increment("audit.events.listed")
         return [_serialize(event) for event in store.recent(limit)]
+
+    @app.get("/operator-dashboard/audit-events", response_model=AuditEventDiscoveryPage)
+    def dashboard_audit_events(
+        event_type: str | None = Query(default=None, min_length=1, max_length=120),
+        actor: str | None = Query(default=None, min_length=1, max_length=120),
+        start: datetime | None = Query(default=None), end: datetime | None = Query(default=None),
+        limit: int = Query(default=50, ge=1, le=200), offset: int = Query(default=0, ge=0, le=10_000),
+        _: None = Depends(protected_operator),
+    ) -> AuditEventDiscoveryPage:
+        """Bounded, deterministically-ordered read of the append-only audit event store.
+
+        Distinct from ``/alerts``: alerts are operational signal-detection records, audit
+        events are actor/action/decision evidence. Neither substitutes for the other.
+        """
+        for instant in (start, end):
+            if instant is not None and (instant.tzinfo is None or instant.utcoffset() is None):
+                raise HTTPException(status_code=422, detail="Audit event timestamps must be timezone-aware.")
+        if start is not None and end is not None and end < start:
+            raise HTTPException(status_code=422, detail="Audit event time range must be ordered.")
+        try:
+            items, has_more = store.query(
+                event_type=event_type, actor=actor, start=start, end=end, limit=limit, offset=offset,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        app.state.metrics.increment("audit.events.listed")
+        return AuditEventDiscoveryPage(
+            state="AVAILABLE" if items else "UNAVAILABLE",
+            items=[_audit_projection(event) for event in items],
+            page=PageInfo(limit=limit, offset=offset, returned=len(items), has_more=has_more),
+        )
+
+    @app.get("/operator-dashboard/audit-events/{event_id}", response_model=AuditEventProjection)
+    def dashboard_audit_event(event_id: UUID, _: None = Depends(protected_operator)) -> AuditEventProjection:
+        event = store.get(event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Audit event not found.")
+        app.state.metrics.increment("audit.events.listed")
+        return _audit_projection(event)
 
     @app.get("/observability/metrics")
     def metrics_snapshot(_: None = Depends(protected_operator)) -> dict[str, int]:

@@ -14,7 +14,8 @@
     "test:e2e:module2b1": "playwright test e2e/module2b1-market-data.spec.ts",
     "test:e2e:module2b2": "playwright test e2e/module2b2-research.spec.ts",
     "test:e2e:module2b3": "playwright test e2e/module2b3-risk-regime-portfolio.spec.ts",
-    "test:e2e:module2b4": "playwright test e2e/module2b4-investments-news.spec.ts"
+    "test:e2e:module2b4": "playwright test e2e/module2b4-investments-news.spec.ts",
+    "test:e2e:module2b5": "playwright test e2e/module2b5-paper-operations-audit.spec.ts"
   },
   "dependencies": {
     "next": "16.3.1",

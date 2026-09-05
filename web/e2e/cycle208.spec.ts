@@ -154,14 +154,24 @@ test("news correction evidence remains externally blocked and never appears live
 });
 
 test("SRE incident, reconciliation, and TARGET versus MEASURED evidence render", async ({ page }) => {
-  const workspace = page.locator("#operations");
+  // Module 2B-5: the dashboard's Operations card was intentionally trimmed to a concise
+  // summary (PostgreSQL, service health, active incident count, kill switch); the detailed
+  // SLO target/measured table, incident ledger, and reconciliation/backup evidence checked
+  // here now live on the dedicated /operations workspace instead.
+  const summary = page.locator("#operations");
+  await expect(summary).toContainText("PostgreSQL");
+  await expect(summary).toContainText("Kill Switch");
+
+  await summary.getByRole("link", { name: "Open Operations" }).click();
+  await expect(page).toHaveURL(/\/operations/);
+  const workspace = page.locator("main");
   await expect(workspace.getByRole("columnheader", { name: "TARGET" })).toBeVisible();
   await expect(workspace.getByRole("columnheader", { name: "MEASURED" })).toBeVisible();
   await expect(workspace).toContainText("0.99");
   await expect(workspace).toContainText("0.98");
   await expect(workspace).toContainText("DECLARED");
-  await expect(workspace).toContainText("Reconciliation / backup-restore / kill switch");
-  await expect(workspace).toContainText("UNAVAILABLE / PASSED / UNAVAILABLE");
+  await expect(workspace).toContainText("UNAVAILABLE");
+  await expect(workspace).toContainText("PASSED");
 });
 
 test("authority payload and DOM do not disclose credentials", async ({ page, request }) => {
