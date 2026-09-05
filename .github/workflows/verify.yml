@@ -209,7 +209,7 @@ jobs:
         run: |
           pnpm exec next start -p 3000 > /tmp/dashboard.log 2>&1 &
           dashboard_pid=$!
-          trap 'kill $dashboard_pid' EXIT
+          trap 'kill $dashboard_pid 2>/dev/null || true; wait $dashboard_pid 2>/dev/null || true' EXIT
           for attempt in {1..30}; do
             curl -L --fail --silent http://127.0.0.1:3000/ && break
             sleep 1
@@ -244,15 +244,24 @@ jobs:
           test -f "$CYCLE208_DASHBOARD_CONFIG_PATH"
           curl --fail --silent http://127.0.0.1:8766/health/live >/dev/null
           cd web
+          fuser -k 3000/tcp 2>/dev/null || true
           pnpm exec next start -p 3000 > /tmp/cycle208-dashboard.log 2>&1 &
           dashboard_pid=$!
-          trap 'kill $dashboard_pid $api_pid 2>/dev/null || true; rm -f "$CYCLE208_DASHBOARD_CONFIG_PATH" "$CYCLE208_DASHBOARD_TOKEN_PATH"' EXIT
+          trap 'kill $dashboard_pid $api_pid 2>/dev/null || true; wait $dashboard_pid $api_pid 2>/dev/null || true; rm -f "$CYCLE208_DASHBOARD_CONFIG_PATH" "$CYCLE208_DASHBOARD_TOKEN_PATH"' EXIT
           for attempt in {1..30}; do
-            curl --fail --silent -H "Authorization: Bearer $TRADE_PLATFORM_DASHBOARD_VIEW_TOKEN" http://127.0.0.1:3000/ && break
+            body=$(curl -L --fail --silent -H "Authorization: Bearer $TRADE_PLATFORM_DASHBOARD_VIEW_TOKEN" http://127.0.0.1:3000/ || true)
+            echo "$body" | grep -q "POSTGRES_CONFIGURED" && break
             sleep 1
           done
-          curl --fail --silent -H "Authorization: Bearer $TRADE_PLATFORM_DASHBOARD_VIEW_TOKEN" http://127.0.0.1:3000/ >/dev/null
+          echo "$body" | grep -q "POSTGRES_CONFIGURED"
           pnpm test:e2e
+      - name: Dump cycle208 fixture logs on failure
+        if: failure()
+        run: |
+          echo "---- cycle208-api.log ----"
+          cat /tmp/cycle208-api.log 2>/dev/null || true
+          echo "---- cycle208-dashboard.log ----"
+          cat /tmp/cycle208-dashboard.log 2>/dev/null || true
       - name: Module 1B human browser demo with PostgreSQL discovery
         env:
           MODULE1B_DASHBOARD_CONFIG_PATH: /tmp/module1b-dashboard.config.json
@@ -266,7 +275,7 @@ jobs:
           python scripts/seed_demo_evidence.py --postgres-dsn "$POSTGRES_TEST_DSN"
           python scripts/serve_module1b_demo.py > /tmp/module1b-api.log 2>&1 &
           api_pid=$!
-          trap 'kill $dashboard_pid $api_pid 2>/dev/null || true; rm -f "$MODULE1B_DASHBOARD_CONFIG_PATH" "$MODULE1B_DASHBOARD_TOKEN_PATH"' EXIT
+          trap 'kill $dashboard_pid $api_pid 2>/dev/null || true; wait $dashboard_pid $api_pid 2>/dev/null || true; rm -f "$MODULE1B_DASHBOARD_CONFIG_PATH" "$MODULE1B_DASHBOARD_TOKEN_PATH"' EXIT
           for attempt in {1..30}; do
             test -f "$MODULE1B_DASHBOARD_CONFIG_PATH" && curl --fail --silent http://127.0.0.1:8768/health/live && break
             sleep 1

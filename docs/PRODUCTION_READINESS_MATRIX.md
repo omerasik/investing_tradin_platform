@@ -1,0 +1,83 @@
+# Production Readiness Matrix — Module 3A
+
+Companion to [MODULE_3A_PRODUCTION_READINESS_AUDIT.md](MODULE_3A_PRODUCTION_READINESS_AUDIT.md). Verified against `main@11a028c9fb5fc4332113e70e3ae63db1f74c58e0` on 2026-09-05.
+
+## 1. Domain Authority Map
+
+| Domain | Authoritative store | Read authority | Write authority | Immutability | Environment | Current production fitness | Known limitation |
+|---|---|---|---|---|---|---|---|
+| Instruments | `PostgresInstrumentStore` (postgres_decision_authorities.py:38) | API, decision engines | Same store, admin ingestion | Mutable reference data | Prod-capable; `SQLiteInstrumentStore` (instruments.py:82) is dev/test default | ACCEPTABLE | Two parallel implementations must stay schema-consistent; no shared interface enforced in code |
+| Historical datasets | `PostgresHistoricalIngestionCheckpointStore` (provider_ingestion.py:135); bars via `SQLiteBarStore` (market_data.py:83) | Backtest/research engines | Ingestion pipeline | Append-only checkpoints | Checkpoint store is Postgres/prod; bar store has no Postgres equivalent | PARTIAL | Bar data has no confirmed prod-capable store |
+| Data Health | `PostgresDataHealthStore` (data_health.py:252) | Operator dashboard, gating checks | Data-health pipeline | Append-only evidence | Postgres-only, no SQLite dev variant | ACCEPTABLE | Cannot run checks against local SQLite dev DB |
+| Fundamentals | `SQLiteFundamentalStore` (fundamentals.py:55) raw; `PostgresPitFundamentalStore` (pit_fundamentals.py:164) PIT | Research/backtest (PIT); ingestion (raw) | Ingestion / restatement recorder | PIT store append-only | PIT store prod-capable; raw store SQLite-only | PARTIAL | Ambiguous which store is authoritative for a given consumer |
+| Macro | `SQLiteMacroReleaseStore` (macro_data.py:44) raw; `PostgresPitMacroStore` (pit_macro.py:90) PIT | Research (PIT reads) | Ingestion | PIT append-only | Postgres PIT is prod path | PARTIAL | Same raw/PIT split as fundamentals |
+| Features | `SQLiteFeatureStore` (feature_platform.py:75) | Model training/backtest | Feature pipeline | Mutable/versioned | SQLite only — no Postgres implementation | MUST MIGRATE | Not prod-capable as-is |
+| Strategies | `SQLiteStrategyRegistry` (strategy_validation.py:53) | Research UI, promotion gate | Registry writes | Mutable | SQLite only | MUST MIGRATE | No durable prod authority |
+| Experiments | `SQLiteExperimentStore` (research.py:186) | Research UI, promotion gate | Backtest runner | Append-only per experiment | SQLite only | MUST MIGRATE | No durable prod authority |
+| Scorecards | `PostgresStrategyScorecardStore` (strategy_scorecard_v2.py:272) | Operator dashboard, governance | Scorecard evaluator | Append-only, content-hashed | Postgres-only, prod-capable | ACCEPTABLE | Depends on upstream experiment data which is SQLite-only |
+| Regimes | `PostgresRegimeEngineV2Store` (regime_engine_v2.py:696) | Portfolio construction, scorecards | Regime engine | Append-only, hashed | Postgres, prod-capable | ACCEPTABLE | None material found |
+| Portfolio construction | `PostgresPortfolioConstructionV2Store` (portfolio_construction_v2.py:864) | Operator dashboard, risk | Portfolio construction engine | Append-only, hashed | Postgres, prod-capable | ACCEPTABLE | None material found |
+| Signals | `SQLiteSignalStore` (signal_engine.py:154) dev; `PostgresSignalStore` (postgres_decision_authorities.py:193) prod | Risk/OMS pretrade checks | Signal engine | Mixed by implementation | Postgres covers only the validated-signal slice | PARTIAL | Full signal lifecycle not yet Postgres-covered |
+| Risk | `PostgresRiskStore` (risk.py:393); `SQLiteRiskDecisionStore` (risk.py:620) dev | Pretrade assessment, OMS | Risk engine, reservation repository | Reservations append-only, advisory-locked | Postgres required for paper/production by `PlatformConfig` | ACCEPTABLE | SQLite decision store is test-only by construction |
+| Reservations | `PostgresCriticalRepository.reserve_and_record_decision` (postgres_repositories.py:39-67) | Risk/OMS | Same (idempotent, advisory-locked) | Insert-only, idempotency-checked | Postgres-only | ACCEPTABLE | No local/dev path — correct by design for this boundary |
+| Paper OMS | `SQLitePaperOms` (paper_oms.py:64) dev; `PostgresPaperOms` (postgres_paper_oms.py:30) prod | api.py order/read endpoints | OMS engine only | Event-sourced | Postgres required in paper/production per config — **but `build_app()` defaults to SQLite regardless** | **BLOCKED** | See audit §1.2 / §4 P0-2: config enforcement and app wiring are disconnected |
+| Reconciliation | `SQLiteReconciledAccountStore`/`PositionStore` (portfolio_evidence.py:71,182) dev; `PostgresPaperOms.latest_reconciled_account/...` (postgres_paper_oms.py:381,419) prod | Operator dashboard | Broker sync / OMS reconciliation job | Snapshot-based | Split authority between dedicated SQLite store and Postgres-OMS-embedded methods | PARTIAL | No single consistent interface across environments |
+| Investments | `SQLiteInvestmentStore` (investments.py:382) dev; `PostgresInvestmentEngineV2Store` (investment_engine_v2.py:774) prod | Operator dashboard, engine v2 | Investment engine | Append-only (v2) | Postgres v2 is the prod-capable engine | PARTIAL | Legacy SQLite store and Engine V2 coexist; verify prod callers target v2 |
+| News | `SQLiteNewsEventStore` (market_intelligence.py:72) metadata; `PostgresNewsEventIntelligenceStore` (news_event_intelligence.py:704) prod | Research agents (internal retrieval sources) | Ingestion pipeline | Append-only, unique(source_id, source_item_id) | Postgres store is prod path | ACCEPTABLE | No live content acquisition wired (by design at this stage) |
+| SRE | `PostgresSreV2Store` (observability_sre_v2.py:480) | Operator dashboard, incident review | SRE evidence pipeline | Append-only, hashed | Postgres-only | ACCEPTABLE | No SQLite/dev equivalent |
+| Audit events | `SQLiteAuditStore` (audit.py:22) | api.py audit endpoints | Any service via `.append()` | Append-only, no update/delete exposed | **Explicitly dev/paper-only per its own docstring** | **MUST MIGRATE** | No Postgres audit store exists at all — production-grade immutable audit trail is a real gap |
+| Alerts | `SQLiteOperationalAlertStore` (operational_alerts.py:313) dev; `PostgresOperationalAlertStore` (operational_alerts.py:56) prod; `SQLiteFailureDrillStore` (operational_alerts.py:374) | Operator dashboard, SRE | Alerting engine | Append-only | Postgres store is prod-capable — **but not the `build_app()` default** | PARTIAL | Failure-drill evidence has no Postgres counterpart |
+
+**Cross-cutting note:** `PlatformConfig` (config.py:30-49) defaults to SQLite/`:memory:` but its `__post_init__` forbids anything but Postgres for `environment in {"paper","production"}` and unconditionally forbids `live_trading_enabled=True`. Wherever this table shows both a SQLite and Postgres implementation, Postgres is the config-enforced runtime intent for any non-local environment — but `build_app()`'s literal default arguments do not consult `PlatformConfig` at all (see audit §1.2/§4 P0-2). This is the single highest-leverage fix identified in this audit.
+
+## 2. Remaining SQLite Authorities (production-blocking, no Postgres sibling)
+
+- Audit events — `SQLiteAuditStore` (audit.py:22)
+- Investment detail (legacy shape) — `SQLiteInvestmentStore`, `SQLiteFundamentalStore`
+- Strategy registry — `SQLiteStrategyRegistry` (strategy_validation.py:53)
+- Experiment registry — `SQLiteExperimentStore` (research.py:186)
+- AI/agent research — `SQLiteAgentResearchStore` (agent_research.py:235)
+- Feature platform — `SQLiteFeatureStore` (feature_platform.py:75)
+- Full signal lifecycle beyond the validated-signal slice — `SQLiteSignalStore` (signal_engine.py:154)
+
+## 3. Remaining SQLite Authorities (wiring gap only — Postgres sibling already exists and is CI-verified)
+
+- Paper OMS — `PostgresPaperOms` exists, `build_app()` defaults to `SQLitePaperOms`
+- Risk decisions — `PostgresRiskStore` exists, `build_app()` defaults to `SQLiteRiskDecisionStore`
+- Promotion ledger — `PostgresPromotionLedger` exists, `build_app()` defaults to `SQLitePromotionLedger`
+- Operational alerts — `PostgresOperationalAlertStore` exists, `build_app()` defaults to `SQLiteOperationalAlertStore`
+- Instrument/model-registry/pre-trade/policy/kill-switch/quote stores — Postgres siblings exist and are composed via `build_postgres_paper_runtime`, not the `api.py` default
+
+## 4. Production Readiness Scorecard
+
+| Category | Status | Evidence |
+|---|---|---|
+| Repository governance | **BLOCKED** | Public repo, branch protection disabled (verified live via `gh api`), no CODEOWNERS, no Dependabot |
+| Authentication | PARTIAL | Static shared-secret tokens (view token + operator token), no per-user credentials — `session.ts:42`, `security.py:212-222` |
+| Authorization / RBAC | PARTIAL | 6 roles/permissions defined backend-side (`security.py:59-98`) but exactly one static role active per deployment; no frontend role logic |
+| Secrets | PARTIAL | Environment variables only; `detect-secrets` scanning exists but no secret manager |
+| Database | PARTIAL | Postgres schema mature (36 migrations) but `build_app()` defaults several safety-relevant stores to SQLite (see §3 above) |
+| Backup / DR | PARTIAL | CI proves restore mechanics (`verify_postgres_restore.py`); no production RPO/RTO, offsite storage, or real drill — confirmed by the repo's own `DISASTER_RECOVERY.md` |
+| Deployment | NOT STARTED | No Kubernetes/Terraform/Railway/Procfile/systemd found anywhere; CI-built container image is never pushed or deployed |
+| Observability | PARTIAL | In-process metrics counter + structured logging only; no export format, no tracing, no external alert delivery (`LOCAL_OUTBOX` only) |
+| Scheduler / workers | NOT STARTED | Job policy/evidence model exists (`operational_jobs.py`) but nothing executes it on a cadence; confirmed human/CI-script dependency |
+| Market data | ARCHITECTURE READY | Adapter interface, raw capture, checkpointing, Data Health, PIT, sealing all exist; only a public unauthenticated CSV source is wired, no commercial vendor |
+| Fundamentals | ARCHITECTURE READY | PIT store + auth/terms model exist; no raw capture, no checkpoint, no dedicated health checks |
+| Macro | ARCHITECTURE READY | Same shape as fundamentals; self-documented as fixture-backed |
+| News | ARCHITECTURE READY | Metadata store + license-approval gate exist; no content acquisition by design at this stage |
+| Research (quant) | ACCEPTABLE (v2 engines) / PARTIAL (legacy registries) | v2 regime/portfolio/scorecard engines are Postgres-native and hashed; strategy/experiment registries are SQLite-only |
+| Investment (research) | PARTIAL | Engine V2 is Postgres-native; legacy investment store coexists and is SQLite-only |
+| Deterministic risk | ACCEPTABLE | `PostgresRiskStore` + advisory-locked idempotent reservations; config-enforced Postgres-only outside local dev |
+| Paper OMS | **BLOCKED** | Design is mature (event-sourced, idempotent, reconciled) but `build_app()` defaults to SQLite despite a CI-verified Postgres implementation |
+| Broker sandbox | NOT STARTED | Only an in-memory simulator exists; no network-connected adapter, no real credentials model |
+| Reconciliation | PARTIAL | Implemented for paper-internal flows; authority split between a dedicated SQLite store and Postgres-OMS-embedded methods |
+| Audit | **BLOCKED** | No Postgres audit store exists at all; current store is explicitly scoped "for development and paper simulation" by its own docstring |
+| Frontend | READY (with minor exceptions) | All 16 claimed workspaces exist and are professionalized; Signals page is thinner than the rest |
+| Compliance / licensing | PARTIAL | Provider terms/license-acceptance fields exist structurally across all data domains; nothing has been legally reviewed or activated yet |
+| Live readiness | **NOT APPLICABLE / CORRECTLY BLOCKED** | Live trading is forbidden at four independent, verified layers (config constructor, secondary runtime guard, hardcoded API response, frontend type + E2E assertions) |
+
+## 5. Live-Trading Path Audit Result
+
+**LIVE EXECUTION PATHS FOUND: NONE.**
+
+Verified independently via exhaustive grep across `src/`, `web/`, `tests/`, config files, and CI, plus code-path tracing of every enum touching order/execution modes. Full detail and citations in the main audit document §3.
