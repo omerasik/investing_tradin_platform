@@ -5,6 +5,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Protocol
 from uuid import UUID, uuid4
 
 from .domain import utc_now
@@ -17,6 +18,32 @@ class AuditEvent:
     occurred_at: datetime
     actor: str
     payload: dict[str, object]
+
+
+class AuditStore(Protocol):
+    """The audit-evidence shape ``build_app`` depends on, independent of backend.
+
+    Lets :func:`trade_platform.api.build_app` accept either ``SQLiteAuditStore``
+    (development/paper) or ``trade_platform.postgres_audit.PostgresAuditStore``
+    (protected/production) without a concrete-type dependency on either.
+    """
+
+    def append(self, event_type: str, actor: str, payload: dict[str, object]) -> AuditEvent: ...
+
+    def recent(self, limit: int = 100) -> list[AuditEvent]: ...
+
+    def query(
+        self,
+        *,
+        event_type: str | None = None,
+        actor: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[AuditEvent], bool]: ...
+
+    def get(self, event_id: UUID) -> AuditEvent | None: ...
 
 
 class SQLiteAuditStore:

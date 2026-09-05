@@ -109,6 +109,20 @@ def build_external_identity_mapping_policy(
     return policy
 
 
+class SessionRevocationStore(Protocol):
+    """Durable revocation authority, checked on every verified-session authentication.
+
+    Exists because a JWT's own ``exp`` claim cannot be shortened after issuance: an
+    operator's access must be revocable immediately (compromised device, offboarding,
+    incident response) without waiting for token expiry. Checked by hashed session id
+    only -- the store never needs to see, or store, the raw external session token.
+    """
+
+    def revoke(self, session_id_hash: str, *, revoked_by: str, reason: str) -> None: ...
+
+    def is_revoked(self, session_id_hash: str) -> bool: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ExternalSessionAuthenticator:
     verifier: ExternalTokenVerifier
@@ -116,6 +130,7 @@ class ExternalSessionAuthenticator:
     clock: Callable[[], datetime] = utc_now
     clock_skew: timedelta = timedelta(seconds=60)
     requires_durable_authorization_audit: bool = True
+    revocation_store: SessionRevocationStore | None = None
 
     def verify(self, authorization: str | None) -> OperatorPrincipal:
         token = _bearer_token(authorization)
@@ -164,6 +179,10 @@ class ExternalSessionAuthenticator:
             raise PermissionError("external_session_too_old")
         if not self.policy.required_authentication_methods.issubset(session.authentication_methods):
             raise PermissionError("external_session_authentication_method_insufficient")
+        if self.revocation_store is not None:
+            session_id_hash = hashlib.sha256(session.session_id.encode()).hexdigest()
+            if self.revocation_store.is_revoked(session_id_hash):
+                raise PermissionError("external_session_revoked")
 
 
 class PostgresIdentitySecurityStore:
@@ -249,6 +268,32 @@ class PostgresIdentitySecurityStore:
         except Exception as error:
             raise PersistenceError("authorization_decision_persistence_uncertain") from error
 
+    def latest_enabled_policy(self, policy_name: str) -> ExternalIdentityMappingPolicy | None:
+        """The most recently approved *enabled* policy for ``policy_name``, or ``None``.
+
+        Used by protected-runtime composition to load the active mapping policy at
+        startup without a deployment having to pass policy internals through
+        environment variables.
+        """
+        if not policy_name.strip():
+            raise ExternalIdentityError("policy_name_required")
+        try:
+            with self._database.transaction() as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT policy_id,policy_name,version,issuer,audience,group_role_map,"
+                    "required_authentication_methods,maximum_session_age_seconds,approved_by,"
+                    "approved_at,enabled,content_hash FROM external_identity_mapping_policies "
+                    "WHERE policy_name=%s AND enabled=TRUE "
+                    "ORDER BY approved_at DESC, policy_id DESC LIMIT 1",
+                    (policy_name,),
+                )
+                row = cursor.fetchone()
+            return self._policy_from_row(row) if row is not None else None
+        except (ExternalIdentityError, PersistenceError):
+            raise
+        except Exception as error:
+            raise PersistenceError("external_identity_policy_read_uncertain") from error
+
     def recent_decisions(self, limit: int = 100) -> list[AuthorizationDecision]:
         if not 1 <= limit <= 1000:
             raise ExternalIdentityError("authorization_decision_limit_invalid")
@@ -302,6 +347,76 @@ class PostgresIdentitySecurityStore:
             str(row[10]) if row[10] is not None else None,
             str(row[11]),
         )
+
+
+class PostgresSessionRevocationStore:
+    """Durable, insert-only revocation ledger for verified external sessions.
+
+    Modeled as an append-only event log (``operator_session_events``, immutable at the
+    schema level -- see migration ``20260906_0037``) rather than a mutable row, matching
+    every other durable-evidence store in this codebase: a revocation is a fact that
+    happened at a point in time, not a field that gets flipped.
+    """
+
+    durable = True
+
+    def __init__(self, database: PostgresDatabase) -> None:
+        self._database = database
+
+    def revoke(self, session_id_hash: str, *, revoked_by: str, reason: str) -> None:
+        _validate_session_hash(session_id_hash)
+        if not revoked_by.strip() or not reason.strip():
+            raise ExternalIdentityError("session_revocation_invalid")
+        occurred_at = utc_now()
+        content_hash = _hash(
+            {
+                "session_id_hash": session_id_hash,
+                "event_type": "revoked",
+                "occurred_at": occurred_at.isoformat(),
+                "actor": revoked_by,
+                "reason": reason,
+            }
+        )
+        try:
+            with self._database.transaction() as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "INSERT INTO operator_session_events VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                    (
+                        uuid4(),
+                        session_id_hash,
+                        "revoked",
+                        occurred_at,
+                        revoked_by,
+                        reason,
+                        content_hash,
+                    ),
+                )
+        except PersistenceError:
+            raise
+        except Exception as error:
+            raise PersistenceError("session_revocation_persistence_uncertain") from error
+
+    def is_revoked(self, session_id_hash: str) -> bool:
+        _validate_session_hash(session_id_hash)
+        try:
+            with self._database.transaction() as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT 1 FROM operator_session_events "
+                    "WHERE session_id_hash=%s AND event_type='revoked' LIMIT 1",
+                    (session_id_hash,),
+                )
+                return cursor.fetchone() is not None
+        except PersistenceError:
+            raise
+        except Exception as error:
+            raise PersistenceError("session_revocation_read_uncertain") from error
+
+
+def _validate_session_hash(session_id_hash: str) -> None:
+    if len(session_id_hash) != 64 or any(
+        character not in "0123456789abcdef" for character in session_id_hash
+    ):
+        raise ExternalIdentityError("session_id_hash_invalid")
 
 
 def _bearer_token(authorization: str | None) -> str:

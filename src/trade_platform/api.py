@@ -9,7 +9,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from .agent_research import AgentResearchError, AgentResearchOutput, SQLiteAgentResearchStore
-from .audit import AuditEvent, SQLiteAuditStore
+from .audit import AuditEvent, AuditStore, SQLiteAuditStore
 from .config import PlatformConfig
 from .fundamentals import SQLiteFundamentalStore
 from .investments import (
@@ -277,7 +277,7 @@ def _research_output_response(item: AgentResearchOutput) -> dict[str, object]:
 
 def build_app(
     config: PlatformConfig | None = None,
-    audit_store: SQLiteAuditStore | None = None,
+    audit_store: AuditStore | None = None,
     authenticator: OperatorAuthentication | None = None,
     rate_limiter: InMemoryRateLimiter | None = None,
     metrics: MetricsRegistry | None = None,

@@ -6,7 +6,9 @@ when PostgreSQL is missing, invalid, or unreachable.
 """
 
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from fastapi.testclient import TestClient
@@ -17,6 +19,7 @@ from trade_platform.postgres_paper_oms import PostgresPaperOms
 from trade_platform.runtime_app import (
     RuntimeCompositionError,
     RuntimeMode,
+    _compose_production_identity_authorities,
     compose_protected_postgres_app,
     create_runtime_app_from_environment,
 )
@@ -56,9 +59,10 @@ class PersistenceTargetRejectionTests(unittest.TestCase):
                 env=_env({"TRADE_PLATFORM_ENVIRONMENT": "paper", "POSTGRES_DSN": None})
             )
 
-    def test_production_always_fails_closed_today(self) -> None:
-        """Production identity/secret-manager authorities do not exist yet; this must
-        never silently serve a partially-wired production app, even with a valid DSN."""
+    def test_production_without_identity_and_secret_configuration_fails_closed(self) -> None:
+        """Module 3D wires real production authorities, but production must still never
+        start with any of them missing -- here, none of the new required settings are
+        configured at all (and the DSN is unreachable), so this must fail closed."""
         with self.assertRaises(RuntimeCompositionError):
             create_runtime_app_from_environment(
                 env=_env(
@@ -94,6 +98,162 @@ class DatabaseUnavailableStartupTests(unittest.TestCase):
                 dsn="not-a-postgres-dsn",
                 operator_token="test-token",
             )
+
+
+class ProductionIdentityCompositionFailClosedTests(unittest.TestCase):
+    """These never need a real database: every case fails before touching Postgres."""
+
+    def setUp(self) -> None:
+        self._tempdir = tempfile.TemporaryDirectory()
+        self.secrets_dir = Path(self._tempdir.name)
+        csrf_path = self.secrets_dir / "CSRF_SIGNING_KEY"
+        csrf_path.write_text("unit-test-csrf-secret", encoding="utf-8")  # pragma: allowlist secret
+        if os.name == "posix":
+            csrf_path.chmod(0o600)
+        self.valid_kwargs: dict[str, str | None] = {
+            "oidc_issuer": "https://identity.example.test/tenant",
+            "oidc_audience": "trade-platform",
+            "oidc_jwks_url": "https://identity.example.test/jwks.json",
+            "identity_policy_name": "operator-console",
+            "secrets_directory": str(self.secrets_dir),
+        }
+
+    def tearDown(self) -> None:
+        self._tempdir.cleanup()
+
+    def test_each_required_setting_is_individually_required(self) -> None:
+        for missing in self.valid_kwargs:
+            kwargs = dict(self.valid_kwargs)
+            kwargs[missing] = None
+            with self.subTest(missing=missing), self.assertRaises(RuntimeCompositionError):
+                _compose_production_identity_authorities(database=object(), **kwargs)  # type: ignore[arg-type]
+
+    def test_missing_secrets_directory_fails_closed(self) -> None:
+        kwargs = dict(self.valid_kwargs)
+        kwargs["secrets_directory"] = str(self.secrets_dir / "does-not-exist")
+        with self.assertRaises(RuntimeCompositionError):
+            _compose_production_identity_authorities(database=object(), **kwargs)  # type: ignore[arg-type]
+
+    def test_missing_csrf_secret_file_fails_closed(self) -> None:
+        (self.secrets_dir / "CSRF_SIGNING_KEY").unlink()
+        with self.assertRaises(RuntimeCompositionError):
+            _compose_production_identity_authorities(database=object(), **self.valid_kwargs)  # type: ignore[arg-type]
+
+    def test_insecure_oidc_issuer_fails_closed(self) -> None:
+        kwargs = dict(self.valid_kwargs)
+        kwargs["oidc_issuer"] = "http://identity.example.test/tenant"
+        with self.assertRaises(RuntimeCompositionError):
+            _compose_production_identity_authorities(database=object(), **kwargs)  # type: ignore[arg-type]
+
+    def test_compose_protected_postgres_app_requires_production_settings(self) -> None:
+        with self.assertRaises(RuntimeCompositionError):
+            compose_protected_postgres_app(
+                environment=RuntimeMode.PRODUCTION,
+                dsn="postgresql://postgres:postgres@127.0.0.1:1/does_not_exist",  # pragma: allowlist secret
+                operator_token=None,
+            )
+
+
+@unittest.skipUnless(os.environ.get("POSTGRES_TEST_DSN"), "POSTGRES_TEST_DSN not configured")
+class ProductionRuntimePostgresCompositionTests(unittest.TestCase):
+    """Runs against the disposable PostgreSQL service used by test_postgres_integration.py."""
+
+    def setUp(self) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        from alembic import command
+        from alembic.config import Config
+
+        from trade_platform.external_identity import (
+            PostgresIdentitySecurityStore,
+            build_external_identity_mapping_policy,
+        )
+        from trade_platform.persistence import PostgresDatabase
+        from trade_platform.security import OperatorRole
+
+        self.dsn = os.environ["POSTGRES_TEST_DSN"]
+        config = Config("alembic.ini")
+        config.set_main_option("sqlalchemy.url", self.dsn.replace("postgresql://", "postgresql+psycopg://", 1))
+        command.upgrade(config, "head")
+
+        self._tempdir = tempfile.TemporaryDirectory()
+        self.secrets_dir = Path(self._tempdir.name)
+        csrf_path = self.secrets_dir / "CSRF_SIGNING_KEY"
+        csrf_path.write_text("integration-csrf-secret", encoding="utf-8")  # pragma: allowlist secret
+        if os.name == "posix":
+            csrf_path.chmod(0o600)
+
+        self.policy_name = f"production-runtime-{datetime.now(UTC).timestamp()}"
+        database = PostgresDatabase(self.dsn)
+        try:
+            store = PostgresIdentitySecurityStore(database)
+            store.append_policy(
+                build_external_identity_mapping_policy(
+                    policy_name=self.policy_name,
+                    version="v1",
+                    issuer="https://identity.example.test/tenant",
+                    audience="trade-platform",
+                    group_role_map={"trade-operators": OperatorRole.OPERATOR},
+                    required_authentication_methods=frozenset({"mfa"}),
+                    maximum_session_age=timedelta(hours=1),
+                    approved_by="security-owner",
+                    approved_at=datetime.now(UTC) - timedelta(minutes=1),
+                )
+            )
+        finally:
+            database.close()
+
+    def tearDown(self) -> None:
+        self._tempdir.cleanup()
+
+    def test_production_composes_real_identity_secret_and_audit_authorities(self) -> None:
+        from trade_platform.csrf import CSRF_HEADER_NAME, SESSION_COOKIE_NAME, derive_csrf_token
+        from trade_platform.external_identity import (
+            ExternalSessionAuthenticator,
+            PostgresSessionRevocationStore,
+        )
+        from trade_platform.oidc_identity import JwksExternalTokenVerifier
+        from trade_platform.postgres_audit import PostgresAuditStore
+
+        app = compose_protected_postgres_app(
+            environment=RuntimeMode.PRODUCTION,
+            dsn=self.dsn,
+            operator_token=None,
+            oidc_issuer="https://identity.example.test/tenant",
+            oidc_audience="trade-platform",
+            oidc_jwks_url="https://identity.example.test/jwks.json",
+            identity_policy_name=self.policy_name,
+            secrets_directory=str(self.secrets_dir),
+        )
+        try:
+            production = app.state.production_identity_authorities
+            self.assertIsInstance(production.authenticator, ExternalSessionAuthenticator)
+            self.assertIsInstance(production.authenticator.verifier, JwksExternalTokenVerifier)
+            self.assertIsInstance(production.revocation_store, PostgresSessionRevocationStore)
+            self.assertIsInstance(production.audit_store, PostgresAuditStore)
+            self.assertIs(app.state.authenticator, production.authenticator)
+            self.assertIs(app.state.authorization_decision_sink, production.authorization_decision_sink)
+
+            client = TestClient(app)
+            self.assertEqual(client.get("/health/live").status_code, 200)
+            unauthenticated = client.get("/audit/events")
+            self.assertEqual(unauthenticated.status_code, 401)
+
+            # A cookie-authenticated mutation without a matching CSRF header is rejected,
+            # even against a route CSRF has no other opinion about.
+            client.cookies.set(SESSION_COOKIE_NAME, "some-session")
+            no_csrf = client.post("/audit/events", json={"event_type": "x", "actor": "y", "payload": {}})
+            self.assertEqual(no_csrf.status_code, 403)
+            token = derive_csrf_token(csrf_secret=production.csrf_secret, session_id="some-session")
+            # Still 401 (no bearer credential) -- proves CSRF ran *and* real auth still applies.
+            with_csrf = client.post(
+                "/audit/events",
+                headers={CSRF_HEADER_NAME: token},
+                json={"event_type": "x", "actor": "y", "payload": {}},
+            )
+            self.assertEqual(with_csrf.status_code, 401)
+        finally:
+            app.state.postgres_authorities.close()
 
 
 @unittest.skipUnless(os.environ.get("POSTGRES_TEST_DSN"), "POSTGRES_TEST_DSN not configured")
