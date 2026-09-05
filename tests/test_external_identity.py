@@ -22,6 +22,17 @@ from trade_platform.security import (
 )
 
 
+class MemoryRevocationStore:
+    def __init__(self) -> None:
+        self.revoked: set[str] = set()
+
+    def revoke(self, session_id_hash: str, *, revoked_by: str, reason: str) -> None:
+        self.revoked.add(session_id_hash)
+
+    def is_revoked(self, session_id_hash: str) -> bool:
+        return session_id_hash in self.revoked
+
+
 class FixtureVerifier:
     def __init__(self, session: VerifiedExternalSession) -> None:
         self.session = session
@@ -149,6 +160,27 @@ class ExternalIdentityTests(unittest.TestCase):
             ExternalSessionAuthenticator(
                 FixtureVerifier(self.session), future_policy, clock=lambda: self.now
             ).verify("Bearer opaque-provider-token")
+
+    def test_revoked_session_is_rejected_even_though_the_jwt_has_not_expired(self) -> None:
+        import hashlib
+
+        revocation_store = MemoryRevocationStore()
+        authenticator = ExternalSessionAuthenticator(
+            FixtureVerifier(self.session),
+            self.policy,
+            clock=lambda: self.now,
+            revocation_store=revocation_store,
+        )
+        # Not yet revoked: authenticates normally.
+        authenticator.verify("Bearer opaque-provider-token")
+
+        revocation_store.revoke(
+            hashlib.sha256(self.session.session_id.encode()).hexdigest(),
+            revoked_by="security-owner",
+            reason="device compromise",
+        )
+        with self.assertRaisesRegex(PermissionError, "external_session_revoked"):
+            authenticator.verify("Bearer opaque-provider-token")
 
     def test_api_requires_durable_audit_and_records_allow_and_deny(self) -> None:
         authenticator, _ = self._authenticator()

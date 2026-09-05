@@ -17,6 +17,16 @@ Companion to [MODULE_3A_PRODUCTION_READINESS_AUDIT.md](MODULE_3A_PRODUCTION_READ
 > and repoints the Docker entrypoint at it. Rows and the wiring-gap list below are updated
 > to reflect what Module 3C actually wired versus what remains a genuine gap.
 
+> **Module 3D update (see [MODULE_3D_PRODUCTION_IDENTITY_SECRETS_AUDIT.md](MODULE_3D_PRODUCTION_IDENTITY_SECRETS_AUDIT.md)):**
+> `production` mode previously refused to start unconditionally because production
+> identity, a secret-management boundary, and a durable Postgres audit authority did
+> not exist. Module 3D implements all three (`oidc_identity.py`, `secrets_manager.py`,
+> `postgres_audit.py`, plus durable session revocation and CSRF protection) and updates
+> `trade_platform.runtime_app` so `production` starts only once every one of them is
+> actually configured — never partially wired. Paper's authentication, RBAC, and
+> secrets behavior is unchanged; the Authentication, Authorization/RBAC, Secrets, and
+> Audit rows below are updated to distinguish paper (unchanged) from production (new).
+
 ## 1. Domain Authority Map
 
 | Domain | Authoritative store | Read authority | Write authority | Immutability | Environment | Current production fitness | Known limitation |
@@ -75,10 +85,10 @@ Still a genuine gap — explicitly `None`/unavailable (HTTP 503) in the protecte
 | Category | Status | Evidence |
 |---|---|---|
 | Repository governance | PARTIAL | Module 3B added CODEOWNERS, Dependabot, CodeQL, `SECURITY.md`, `CONTRIBUTING.md`, and a PR template. Branch protection and private vulnerability reporting remain disabled (verified via `gh api`) — see `docs/MODULE_3B_GOVERNANCE_SECURITY.md` §14 |
-| Authentication | PARTIAL | Static shared-secret tokens (view token + operator token), no per-user credentials — `session.ts:42`, `security.py:212-222` |
-| Authorization / RBAC | PARTIAL | 6 roles/permissions defined backend-side (`security.py:59-98`) but exactly one static role active per deployment; no frontend role logic |
-| Secrets | PARTIAL | Environment variables only; `detect-secrets` scanning exists but no secret manager |
-| Database | PARTIAL | Postgres schema mature (36+ migrations). Module 3C wired the served application's Paper OMS, alert and operator-dashboard authorities to PostgreSQL for protected runtimes with no SQLite fallback; risk-decision, promotion-ledger and return-history read routes remain explicitly unavailable pending additional Postgres query methods (see §3 above) |
+| Authentication | PARTIAL (paper) / ACCEPTABLE (production, when configured) | Paper still uses the static local-bearer boundary unchanged from Module 3A/3B (`security.py:212-222`) — a deliberate, documented dev/paper mechanism, not a regression. Module 3D adds a real JWKS-verified external identity path (`oidc_identity.py`) with durable session revocation (`external_identity.py:PostgresSessionRevocationStore`), required for `production` to start at all — see `docs/MODULE_3D_PRODUCTION_IDENTITY_SECRETS_AUDIT.md` |
+| Authorization / RBAC | PARTIAL (paper) / ACCEPTABLE (production, when configured) | 6 roles/permissions defined backend-side (`security.py:59-98`); paper still activates exactly one static role per deployment. Production maps external-identity groups to roles via an approved, durably-stored `ExternalIdentityMappingPolicy`, loaded at startup by policy name (`external_identity.py:latest_enabled_policy`); no frontend role logic yet |
+| Secrets | PARTIAL (paper) / ACCEPTABLE (production, when configured) | Paper still resolves secrets from environment variables. Module 3D adds a real secret-management boundary (`secrets_manager.py`) with a production-capable `FileSecretProvider` (one file per secret, POSIX-permission-enforced) speaking the on-disk contract mainstream secret managers already populate; production composition never accepts the environment-variable provider |
+| Database | PARTIAL | Postgres schema mature (37+ migrations). Module 3C wired the served application's Paper OMS, alert and operator-dashboard authorities to PostgreSQL for protected runtimes with no SQLite fallback; risk-decision, promotion-ledger and return-history read routes remain explicitly unavailable pending additional Postgres query methods (see §3 above) |
 | Backup / DR | PARTIAL | CI proves restore mechanics (`verify_postgres_restore.py`); no production RPO/RTO, offsite storage, or real drill — confirmed by the repo's own `DISASTER_RECOVERY.md` |
 | Deployment | NOT STARTED | No Kubernetes/Terraform/Railway/Procfile/systemd found anywhere; CI-built container image is never pushed or deployed |
 | Observability | PARTIAL | In-process metrics counter + structured logging only; no export format, no tracing, no external alert delivery (`LOCAL_OUTBOX` only) |
@@ -93,7 +103,7 @@ Still a genuine gap — explicitly `None`/unavailable (HTTP 503) in the protecte
 | Paper OMS | ACCEPTABLE | Design is mature (event-sourced, idempotent, reconciled); Module 3C composes and wires `PostgresPaperOms` into the served protected-runtime application with fail-closed startup if PostgreSQL is unavailable |
 | Broker sandbox | NOT STARTED | Only an in-memory simulator exists; no network-connected adapter, no real credentials model |
 | Reconciliation | PARTIAL | Implemented for paper-internal flows; authority split between a dedicated SQLite store and Postgres-OMS-embedded methods |
-| Audit | **BLOCKED** | No Postgres audit store exists at all; current store is explicitly scoped "for development and paper simulation" by its own docstring |
+| Audit | PARTIAL (paper stays SQLite by design) / ACCEPTABLE (production) | Module 3D adds `postgres_audit.py:PostgresAuditStore`: append-only, content-hashed, immutable at the schema level, structurally interchangeable with `SQLiteAuditStore` via the new `audit.py:AuditStore` protocol. Production composition uses it unconditionally; paper intentionally keeps `SQLiteAuditStore` (dev/paper simulation is exactly what it was scoped for) |
 | Frontend | READY (with minor exceptions) | All 16 claimed workspaces exist and are professionalized; Signals page is thinner than the rest |
 | Compliance / licensing | PARTIAL | Provider terms/license-acceptance fields exist structurally across all data domains; nothing has been legally reviewed or activated yet |
 | Live readiness | **NOT APPLICABLE / CORRECTLY BLOCKED** | Live trading is forbidden at four independent, verified layers (config constructor, secondary runtime guard, hardcoded API response, frontend type + E2E assertions) |

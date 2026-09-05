@@ -22,21 +22,35 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
+from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 
 from fastapi import FastAPI
 
 from .api import build_app
-from .audit import SQLiteAuditStore
+from .audit import AuditStore, SQLiteAuditStore
 from .config import PlatformConfig
+from .csrf import CsrfProtectionMiddleware
+from .external_identity import (
+    ExternalIdentityError,
+    ExternalIdentityMappingPolicy,
+    ExternalSessionAuthenticator,
+    PostgresIdentitySecurityStore,
+    PostgresSessionRevocationStore,
+)
 from .observability import MetricsRegistry
+from .oidc_identity import JwksExternalTokenVerifier, OidcConfigurationError
 from .operational_alerts import PostgresOperationalAlertStore
 from .operator_dashboard import PostgresOperatorDashboardQueries
 from .persistence import PersistenceError, PersistenceTarget, PostgresDatabase
+from .postgres_audit import PostgresAuditStore
 from .postgres_paper_oms import PostgresPaperOms
-from .security import InMemoryRateLimiter, OperatorAuthenticator
+from .secrets_manager import FileSecretProvider, SecretUnavailableError
+from .security import AuthorizationDecisionSink, InMemoryRateLimiter, OperatorAuthenticator
 
 __all__ = [
+    "ProductionIdentityAuthorities",
     "ProtectedPostgresAuthorities",
     "RuntimeCompositionError",
     "RuntimeMode",
@@ -94,17 +108,123 @@ def _require_env(name: str) -> str:
     return value
 
 
+def _require_production_setting(value: str | None, name: str) -> str:
+    if value is None or not value.strip():
+        raise RuntimeCompositionError(f"required_environment_variable_missing:{name}")
+    return value.strip()
+
+
+@dataclass(slots=True)
+class ProductionIdentityAuthorities:
+    """The identity, secret-management and durable-audit authorities production requires.
+
+    Composed only for ``RuntimeMode.PRODUCTION`` -- see
+    ``docs/MODULE_3D_PRODUCTION_IDENTITY_SECRETS_AUDIT.md``. Each field replaces a
+    documented Module 3C blocker: ``authenticator`` replaces the local static-token
+    boundary with real JWKS-verified external identity plus durable revocation;
+    ``audit_store`` replaces the dev/paper-only ``SQLiteAuditStore``;
+    ``authorization_decision_sink`` is the same durable Postgres authority that made
+    ``requires_durable_authorization_audit`` satisfiable; ``secret_provider`` replaces
+    raw environment variables as production's final secret authority.
+    """
+
+    authenticator: ExternalSessionAuthenticator
+    audit_store: PostgresAuditStore
+    authorization_decision_sink: AuthorizationDecisionSink
+    revocation_store: PostgresSessionRevocationStore
+    secret_provider: FileSecretProvider
+    csrf_secret: str
+
+
+def _compose_production_identity_authorities(
+    *,
+    database: PostgresDatabase,
+    oidc_issuer: str | None,
+    oidc_audience: str | None,
+    oidc_jwks_url: str | None,
+    identity_policy_name: str | None,
+    secrets_directory: str | None,
+) -> ProductionIdentityAuthorities:
+    """Compose the identity/secret/audit authorities required to start production.
+
+    Fails closed with :class:`RuntimeCompositionError` for any missing configuration,
+    unreachable secrets directory, missing CSRF signing secret, or missing/unapproved
+    identity mapping policy -- production never starts partially wired.
+    """
+    issuer = _require_production_setting(oidc_issuer, "TRADE_PLATFORM_OIDC_ISSUER")
+    audience = _require_production_setting(oidc_audience, "TRADE_PLATFORM_OIDC_AUDIENCE")
+    jwks_url = _require_production_setting(oidc_jwks_url, "TRADE_PLATFORM_OIDC_JWKS_URL")
+    policy_name = _require_production_setting(
+        identity_policy_name, "TRADE_PLATFORM_IDENTITY_POLICY_NAME"
+    )
+    secrets_dir = _require_production_setting(secrets_directory, "TRADE_PLATFORM_SECRETS_DIR")
+
+    try:
+        secret_provider = FileSecretProvider(Path(secrets_dir))
+    except SecretUnavailableError as error:
+        raise RuntimeCompositionError("production_secrets_directory_unavailable") from error
+
+    try:
+        csrf_secret = secret_provider.get_secret("CSRF_SIGNING_KEY")
+    except SecretUnavailableError as error:
+        raise RuntimeCompositionError("production_csrf_secret_unavailable") from error
+
+    identity_store = PostgresIdentitySecurityStore(database)
+    try:
+        policy: ExternalIdentityMappingPolicy | None = identity_store.latest_enabled_policy(
+            policy_name
+        )
+    except (ExternalIdentityError, PersistenceError) as error:
+        raise RuntimeCompositionError("production_identity_policy_lookup_failed") from error
+    if policy is None:
+        raise RuntimeCompositionError(
+            f"production_identity_mapping_policy_not_configured:{policy_name}"
+        )
+
+    try:
+        verifier = JwksExternalTokenVerifier.from_jwks_url(
+            issuer=issuer, audience=audience, jwks_url=jwks_url
+        )
+    except OidcConfigurationError as error:
+        raise RuntimeCompositionError("production_oidc_verifier_misconfigured") from error
+
+    revocation_store = PostgresSessionRevocationStore(database)
+    authenticator = ExternalSessionAuthenticator(
+        verifier=verifier,
+        policy=policy,
+        revocation_store=revocation_store,
+    )
+    return ProductionIdentityAuthorities(
+        authenticator=authenticator,
+        audit_store=PostgresAuditStore(database),
+        authorization_decision_sink=identity_store,
+        revocation_store=revocation_store,
+        secret_provider=secret_provider,
+        csrf_secret=csrf_secret,
+    )
+
+
 def compose_protected_postgres_app(
     *,
     environment: RuntimeMode,
     dsn: str,
     operator_token: str | None,
+    oidc_issuer: str | None = None,
+    oidc_audience: str | None = None,
+    oidc_jwks_url: str | None = None,
+    identity_policy_name: str | None = None,
+    secrets_directory: str | None = None,
 ) -> FastAPI:
     """Build the protected (PAPER or PRODUCTION-shaped) PostgreSQL-backed application.
 
     Fails closed -- raises :class:`RuntimeCompositionError` -- rather than returning an
     app backed by SQLite or in-memory state, for any of: an invalid DSN, an unreachable
-    database, or a PostgreSQL authority that cannot be composed.
+    database, or a PostgreSQL authority that cannot be composed. For
+    ``RuntimeMode.PRODUCTION`` this additionally requires and composes real external
+    identity (JWKS-verified, durably revocable), a file-based production secret
+    provider, and a durable PostgreSQL audit authority -- see
+    :func:`_compose_production_identity_authorities`. ``PAPER`` behavior is unchanged
+    from Module 3C.
     """
     if environment not in {RuntimeMode.PAPER, RuntimeMode.PRODUCTION}:
         raise RuntimeCompositionError("compose_protected_postgres_app_requires_protected_mode")
@@ -125,18 +245,54 @@ def compose_protected_postgres_app(
         database.close()
         raise RuntimeCompositionError("postgres_authority_composition_failed") from error
 
+    production_authorities: ProductionIdentityAuthorities | None = None
+    if environment is RuntimeMode.PRODUCTION:
+        try:
+            production_authorities = _compose_production_identity_authorities(
+                database=database,
+                oidc_issuer=oidc_issuer,
+                oidc_audience=oidc_audience,
+                oidc_jwks_url=oidc_jwks_url,
+                identity_policy_name=identity_policy_name,
+                secrets_directory=secrets_directory,
+            )
+        except RuntimeCompositionError:
+            authorities.close()
+            raise
+        except Exception as error:
+            authorities.close()
+            raise RuntimeCompositionError("production_identity_composition_failed") from error
+
     try:
         config = PlatformConfig(
             environment=environment.value,
             persistence_target=PersistenceTarget.POSTGRES,
             persistence_location=dsn,
         )
+        audit_store: AuditStore = (
+            production_authorities.audit_store
+            if production_authorities is not None
+            else SQLiteAuditStore()
+        )
+        authenticator = (
+            production_authorities.authenticator
+            if production_authorities is not None
+            else (
+                OperatorAuthenticator.from_environment()
+                if operator_token is None
+                else OperatorAuthenticator(operator_token)
+            )
+        )
+        authorization_decision_sink: AuthorizationDecisionSink | None = (
+            production_authorities.authorization_decision_sink
+            if production_authorities is not None
+            else None
+        )
         app = build_app(
             config=config,
-            audit_store=SQLiteAuditStore(),
-            authenticator=OperatorAuthenticator.from_environment()
-            if operator_token is None
-            else OperatorAuthenticator(operator_token),
+            audit_store=audit_store,
+            authenticator=authenticator,
+            authorization_decision_sink=authorization_decision_sink,
             rate_limiter=InMemoryRateLimiter(max_requests=10_000),
             metrics=MetricsRegistry(),
             alert_store=authorities.alert_store,
@@ -157,11 +313,16 @@ def compose_protected_postgres_app(
             #     (out of scope for this module; not required for protected
             #     paper-API startup).
         )
+        if production_authorities is not None:
+            app.add_middleware(
+                CsrfProtectionMiddleware, csrf_secret=production_authorities.csrf_secret
+            )
     except Exception:
         authorities.close()
         raise
 
     app.state.postgres_authorities = authorities
+    app.state.production_identity_authorities = production_authorities
 
     @app.on_event("shutdown")
     def _close_postgres_authorities() -> None:  # pragma: no cover - exercised via lifespan
@@ -190,18 +351,24 @@ def create_runtime_app_from_environment(
         ``production``.
       - ``POSTGRES_DSN``: required for ``paper``/``production``; a ``postgres://`` or
         ``postgresql://`` connection string.
-      - ``TRADE_PLATFORM_OPERATOR_TOKEN``: optional override, otherwise
-        ``OperatorAuthenticator.from_environment()`` is used.
+      - ``TRADE_PLATFORM_OPERATOR_TOKEN``: optional override for ``paper``, otherwise
+        ``OperatorAuthenticator.from_environment()`` is used. Ignored for ``production``,
+        which never uses the static local-bearer boundary.
+      - ``production`` additionally requires ``TRADE_PLATFORM_OIDC_ISSUER``,
+        ``TRADE_PLATFORM_OIDC_AUDIENCE``, ``TRADE_PLATFORM_OIDC_JWKS_URL``,
+        ``TRADE_PLATFORM_IDENTITY_POLICY_NAME`` and ``TRADE_PLATFORM_SECRETS_DIR`` --
+        see :func:`_compose_production_identity_authorities` and
+        ``docs/MODULE_3D_PRODUCTION_IDENTITY_SECRETS_AUDIT.md``.
 
     Fail-closed behavior:
       - ``paper`` or ``production`` with no ``POSTGRES_DSN`` -> raises
         :class:`RuntimeCompositionError` before any app object is returned.
       - ``paper`` or ``production`` with an unreachable/invalid Postgres DSN -> raises
         :class:`RuntimeCompositionError`.
-      - ``production`` additionally always fails closed today: production identity,
-        secret-manager and production-grade audit-durability authorities do not exist
-        yet in this codebase, so this factory refuses to pretend the platform is
-        production-ready rather than serving a partially-wired production app.
+      - ``production`` with any required identity/secret/audit configuration missing,
+        an unreachable secrets directory, a missing CSRF signing secret, or no approved
+        identity mapping policy -> raises :class:`RuntimeCompositionError`. Production
+        never starts partially wired.
     """
     raw_environment = (env("TRADE_PLATFORM_ENVIRONMENT") or RuntimeMode.LOCAL_RESEARCH.value).strip().lower()
     try:
@@ -212,18 +379,22 @@ def create_runtime_app_from_environment(
     if mode is RuntimeMode.LOCAL_RESEARCH:
         return _build_local_research_app()
 
-    if mode is RuntimeMode.PRODUCTION:
-        # Deliberate, documented fail-closed: do not fake a green production path.
-        # See docs/MODULE_3C_POSTGRES_RUNTIME_WIRING.md "Remaining blockers".
-        raise RuntimeCompositionError(
-            "production_mode_not_yet_supported: production identity, secret-manager and "
-            "production-grade audit-durability authorities are not implemented; refusing "
-            "to start rather than serve an unready production app"
-        )
-
     dsn = env("POSTGRES_DSN")
     if not dsn:
         raise RuntimeCompositionError("required_environment_variable_missing:POSTGRES_DSN")
+
+    if mode is RuntimeMode.PRODUCTION:
+        return compose_protected_postgres_app(
+            environment=mode,
+            dsn=dsn,
+            operator_token=None,
+            oidc_issuer=env("TRADE_PLATFORM_OIDC_ISSUER"),
+            oidc_audience=env("TRADE_PLATFORM_OIDC_AUDIENCE"),
+            oidc_jwks_url=env("TRADE_PLATFORM_OIDC_JWKS_URL"),
+            identity_policy_name=env("TRADE_PLATFORM_IDENTITY_POLICY_NAME"),
+            secrets_directory=env("TRADE_PLATFORM_SECRETS_DIR"),
+        )
+
     return compose_protected_postgres_app(
         environment=mode,
         dsn=dsn,
