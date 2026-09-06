@@ -220,6 +220,7 @@ def run_data_health_evaluation(context: JobContext, as_of: datetime) -> Mapping[
         assessment = build_assessment(
             [_to_observation(bar) for bar in bars], policy,
             scope_type=DataHealthScope.INSTRUMENT, scope_value=instrument_id, evaluated_at=as_of,
+            interval=interval,
         )
         context.data_health_store.persist(assessment)
         if assessment.blocking:

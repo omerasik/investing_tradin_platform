@@ -83,3 +83,37 @@ class DataHealthTests(unittest.TestCase):
             {item.check_type for item in empty.findings},
             {DataHealthCheck.MISSING_BARS, DataHealthCheck.INCOMPLETE_DATASET},
         )
+
+    def test_interval_defaults_to_empty_and_distinguishes_otherwise_identical_assessments(self) -> None:
+        """``interval`` is an explicit identity dimension, not an afterthought.
+
+        Two assessments for the same instrument/scope/evaluated_at/findings but a
+        different interval must be genuinely distinguishable -- including in
+        ``content_hash``, which carries a database-level global UNIQUE constraint
+        independent of the (scope_type, scope_value, interval, evaluated_at)
+        uniqueness, so it must not coincidentally collide once scope_value alone no
+        longer uniquely identifies a series.
+        """
+        event = datetime(2024, 1, 1, tzinfo=UTC)
+        policy = DataHealthPolicy(
+            "health-v1", event, event, timedelta(days=1), timedelta(0), Decimal("0.05"), 1
+        )
+        no_interval = build_assessment(
+            [observation("provider", event)], policy,
+            scope_type=DataHealthScope.INSTRUMENT, scope_value="US:XNAS:HEALTH",
+            evaluated_at=event + timedelta(minutes=2),
+        )
+        self.assertEqual(no_interval.interval, "")
+
+        daily = build_assessment(
+            [observation("provider", event)], policy,
+            scope_type=DataHealthScope.INSTRUMENT, scope_value="US:XNAS:HEALTH",
+            evaluated_at=event + timedelta(minutes=2), interval="1d",
+        )
+        minute = build_assessment(
+            [observation("provider", event)], policy,
+            scope_type=DataHealthScope.INSTRUMENT, scope_value="US:XNAS:HEALTH",
+            evaluated_at=event + timedelta(minutes=2), interval="1m",
+        )
+        self.assertEqual((daily.interval, minute.interval), ("1d", "1m"))
+        self.assertEqual(len({no_interval.content_hash, daily.content_hash, minute.content_hash}), 3)
