@@ -55,6 +55,29 @@ class QualityStatus(StrEnum):
     REJECTED = "REJECTED"
 
 
+CONSOLIDATED_TAPE_EXCHANGE = "CONSOLIDATED_TAPE"
+"""Sentinel ``RawHistoricalObservation.exchange`` value for genuinely multi-venue data.
+
+US equities/ETFs trade under the CTA/UTP consolidated-tape system: a composite,
+cross-venue print/quote stream that -- by design -- carries no single execution-venue
+attribution per record (e.g. Databento's ``EQUS.SUMMARY``/``EQUS.MINI``, documented as
+consolidated across "all NMS exchanges and ATSs"). A raw observation whose provider
+genuinely produced consolidated data, not a specific execution venue, declares that
+honestly with this exact value rather than claiming a venue it has no basis for. This
+is provider-neutral: any future consolidated-tape source uses the same sentinel, and
+any single-venue provider (e.g. a direct exchange feed) is unaffected and still must
+match the instrument's actual registered ``venue``/``mic``.
+"""
+
+_CONSOLIDATED_TAPE_ELIGIBLE_VENUES = frozenset({"XNAS", "ARCX"})
+"""Listing venues this repository's instrument master actually models as eligible for
+the US consolidated tape (``professional_instruments.mvp_instrument_universe``). This
+is deliberately the exhaustive set this codebase currently knows about, not a general
+claim about every US exchange -- extend it only as new US equity/ETF listing venues are
+onboarded to the instrument master, never speculatively.
+"""
+
+
 def _aware(value: datetime, name: str) -> None:
     if value.tzinfo is None or value.utcoffset() is None:
         raise HistoricalMarketDataError(f"{name}_must_be_timezone_aware")
@@ -336,7 +359,11 @@ class PostgresHistoricalMarketDataPipeline:
         if instrument.asset_class not in {AssetClass.EQUITY, AssetClass.ETF}:
             raise HistoricalDataResolutionError("historical_source_asset_out_of_scope")
         issues: list[str] = []
-        if str(row[3]) not in {instrument.venue, instrument.mic}:
+        raw_exchange = str(row[3])
+        if raw_exchange == CONSOLIDATED_TAPE_EXCHANGE:
+            if instrument.venue not in _CONSOLIDATED_TAPE_ELIGIBLE_VENUES:
+                issues.append("exchange_instrument_mismatch")
+        elif raw_exchange not in {instrument.venue, instrument.mic}:
             issues.append("exchange_instrument_mismatch")
         payload = cast(dict[str, object], row[6])
         normalized, payload_issues = normalize_payload(ObservationKind(str(row[1])), payload)
