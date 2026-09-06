@@ -21,8 +21,8 @@ from trade_platform.provider_ingestion import (
 )
 
 NOW = datetime(2026, 9, 6, 12, tzinfo=UTC)
-SECRET_ENV_VAR = "DATABENTO_TEST_API_KEY"
-API_KEY = "s3cr3t"
+SECRET_ENV_VAR = "DATABENTO_TEST_API_KEY"  # pragma: allowlist secret
+API_KEY = "s3cr3t"  # pragma: allowlist secret
 
 
 def _config(**overrides: object) -> ProviderConfiguration:
