@@ -52,6 +52,17 @@ for the first concrete step toward the real-data portion of this north star
 (a research/documentation-only provider recommendation, pending owner
 approval — no provider is activated).
 
+Sub-module status toward the first real-data vertical slice: **3G.1a**
+(disabled-by-default Databento adapter), **3G.1b** (OHLCV bridge into
+`PostgresHistoricalBarStore`) and **3G.1b.1** (multi-interval Data Health
+correctness) are merged and exact-main verified. **3G.1c**
+([pilot readiness and activation gates](MODULE_3G1C_PILOT_READINESS_AND_ACTIVATION_GATES.md))
+makes that path operationally ready for a real pilot without activating
+anything. **3G.1d** (the bounded real pilot) remains **not yet authorized** —
+it requires a separate, explicit owner approval of the exact activation packet
+in that document. **3G.2** (corporate actions) has not started and is
+separately approved only after a successful 3G.1d.
+
 ## 2026-08-19 Cycle 209 roadmap synchronization
 
 Every RQ-001–RQ-030 row was re-audited against both source specifications and
