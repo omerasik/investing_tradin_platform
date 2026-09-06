@@ -12,6 +12,46 @@ it does not imply a production or live-trading approval. All other work is
 intentionally shown as incomplete until its end-to-end acceptance evidence
 exists.
 
+## North star (recorded 2026-09-06, Module 3G.0)
+
+The platform is treated from this point forward as a **Professional
+Multi-Asset, Multi-Account Investment & Trading Intelligence Terminal**. The
+final system must support, in addition to everything already tracked in the
+RQ matrix below:
+
+- Active long-term portfolio management.
+- Medium-term/tactical investing.
+- Swing trading.
+- Systematic short-term trading.
+- Personal broker accounts.
+- Prop-firm accounts.
+- Separate capital/risk policies per account (investment and trading
+  capital, policy and execution authority remain separated even where
+  data/intelligence is shared — see
+  [RISK_MANAGEMENT_POLICY.md](RISK_MANAGEMENT_POLICY.md)).
+- Robust historical backtesting and a professional Strategy Lab: long
+  historical windows, corporate-action correctness, delisted securities,
+  survivorship-bias handling, point-in-time correctness, immutable source
+  capture, reproducible sealed datasets, multi-timeframe research, and
+  transaction-cost/slippage-aware backtesting.
+- Strategy research and strategy comparison.
+- Global opportunity ranking/discovery across markets and horizons.
+- Macro/regime intelligence.
+- Fundamental/valuation intelligence.
+- Deterministic, independent risk (unchanged authority boundary from every
+  prior module).
+- A paper → broker sandbox → shadow → separately-authorized live
+  progression, with live trading remaining disabled until each stage is
+  independently earned.
+
+This section records scope, not new status claims: every RQ row below keeps
+its own evidence-gated status, and nothing here promotes any capability to
+`VERIFIED`. See
+[MODULE_3G0_PROVIDER_SELECTION_AND_LICENSING_PREFLIGHT.md](MODULE_3G0_PROVIDER_SELECTION_AND_LICENSING_PREFLIGHT.md)
+for the first concrete step toward the real-data portion of this north star
+(a research/documentation-only provider recommendation, pending owner
+approval — no provider is activated).
+
 ## 2026-08-19 Cycle 209 roadmap synchronization
 
 Every RQ-001–RQ-030 row was re-audited against both source specifications and
