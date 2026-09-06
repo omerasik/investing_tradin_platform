@@ -89,11 +89,29 @@ manifests, OMS reconstruction, broker cursor, risk reservation, kill switch,
 promotion and reconciliation checks all pass. A corrupt or incomplete dump is
 a failed deployment.
 
-Operational job policies and terminal run evidence do not deploy or authorize a
-scheduler. A deployment-owned scheduler may only invoke separately approved job
-entry points and must append terminal evidence with a unique idempotency key.
-The monitor evaluates durable evidence and may open/recover local overdue alerts;
-it never executes due work.
+Operational job policies and terminal run evidence do not, by themselves, authorize
+a scheduler to run arbitrary code. Module 3E's deployment-owned scheduler
+(`trade_platform.scheduler`, served by `trade_platform.worker_app`) is exactly the
+"deployment-owned scheduler" this paragraph anticipated: it invokes only the
+separately approved job entry points named in `scheduler.default_job_registry()`
+(currently `operational_job_monitor`, `postgres_dependency_probe`, and
+`retention_evaluation_sweep` — see `docs/MODULE_3E_STAGING_DEPLOYMENT_AND_SCHEDULER.md`),
+and every execution appends terminal evidence with a unique idempotency key via the
+existing `PostgresOperationalJobStore.append_run`. A due job policy whose name has no
+registered runner is still monitored for overdue alerts but is never executed.
+Register job policies for a new environment with
+`scripts/seed_operational_job_policies.py --postgres-dsn ... --approved-by ...`
+(idempotent when re-run with the same `--version`/`--approved-at`) before starting
+the worker.
+
+For a Docker Compose staging deployment, see `docker-compose.staging.yml` and
+`docs/MODULE_3E_STAGING_DEPLOYMENT_AND_SCHEDULER.md`: it runs `postgres`, a one-shot
+`migrate` step (a separate, disposable image — `Dockerfile.migrate` — that does not
+share the hardened research-API image's dependency set), then `api`, `worker`, and
+the `web` dashboard as four independently built and deployed services. Copy
+`.env.staging.example` to `.env`, fill in real secrets, and run
+`docker compose -f docker-compose.staging.yml up -d --build`. A successful staging
+deployment is not, and must never be represented as, live-trading readiness.
 
 Alert routing currently ends at immutable `LOCAL_OUTBOX` rows whose status is
 `PENDING_EXTERNAL_DELIVERY`. Destination references are opaque allowlisted names,

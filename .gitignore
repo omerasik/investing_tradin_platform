@@ -17,6 +17,11 @@ web/playwright-report/
 .env
 .env.*
 !.env.example
+!.env.staging.example
+secrets/*
+!secrets/empty/
+!secrets/empty/.gitkeep
+!secrets/README.md
 web/dashboard.config.json
 web/dashboard.e2e.token
 *.local.json

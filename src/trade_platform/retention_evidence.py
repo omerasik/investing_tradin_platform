@@ -345,6 +345,36 @@ class PostgresRetentionEvidenceStore:
         except Exception as error:
             raise PersistenceError("retention_evaluation_persistence_uncertain") from error
 
+    def manifests_due_for_evaluation(self, as_of: datetime, *, limit: int = 100) -> tuple[UUID, ...]:
+        """Manifests with no evaluation yet, or whose retained window may have just elapsed.
+
+        Used by the scheduler/worker's retention-evaluation job (Module 3E) to find
+        which already-recorded manifests need a fresh :meth:`evaluate` call -- this
+        never itself evaluates or deletes anything.
+        """
+        _aware(as_of, "retention_sweep_time_must_be_timezone_aware")
+        if not 1 <= limit <= 1000:
+            raise RetentionEvidenceError("retention_sweep_limit_invalid")
+        try:
+            with self._database.transaction() as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT m.manifest_id FROM object_evidence_manifests m "
+                    "LEFT JOIN LATERAL ("
+                    "SELECT retain_until, disposition FROM retention_evaluations e "
+                    "WHERE e.manifest_id = m.manifest_id "
+                    "ORDER BY evaluated_at DESC, evaluation_id DESC LIMIT 1"
+                    ") latest ON TRUE "
+                    "WHERE latest.retain_until IS NULL "
+                    "OR (latest.disposition = 'RETAIN' AND latest.retain_until <= %s) "
+                    "ORDER BY m.captured_at ASC, m.manifest_id ASC LIMIT %s",
+                    (as_of, limit),
+                )
+                return tuple(UUID(str(row[0])) for row in cursor.fetchall())
+        except (RetentionEvidenceError, PersistenceError):
+            raise
+        except Exception as error:
+            raise PersistenceError("retention_sweep_read_uncertain") from error
+
     def get_manifest(self, manifest_id: UUID) -> ObjectEvidenceManifest:
         try:
             with self._database.transaction() as connection, connection.cursor() as cursor:

@@ -1,0 +1,15 @@
+**
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!tsconfig.json
+!next.config.ts
+!next-env.d.ts
+!proxy.ts
+!eslint.config.mjs
+!app/
+!app/**
+!public/
+!public/**
+!scripts/
+!scripts/**
