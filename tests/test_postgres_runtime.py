@@ -120,6 +120,9 @@ class PostgresRuntimeCompositionTests(unittest.TestCase):
         self.assertIsInstance(core.instruments, PostgresInstrumentStore)
         self.assertIsInstance(core.signals, PostgresSignalStore)
         self.assertIsInstance(core.models, PostgresModelRegistry)
+        from trade_platform.postgres_market_data import PostgresHistoricalBarStore
+
+        self.assertIsInstance(core.bars, PostgresHistoricalBarStore)
         self.assertFalse(core.submission_ready)
         authorities = (
             core.oms,
@@ -142,6 +145,7 @@ class PostgresRuntimeCompositionTests(unittest.TestCase):
             core.instruments,
             core.signals,
             core.models,
+            core.bars,
         )
         self.assertFalse(any(type(value).__name__.startswith("SQLite") for value in authorities))
         core.close()

@@ -90,7 +90,9 @@ class WorkerRuntimePostgresTests(unittest.TestCase):
         command.upgrade(config, "head")
 
     def test_worker_runtime_composes_and_reports_readiness_after_a_tick(self) -> None:
+        from trade_platform.data_health import PostgresDataHealthStore
         from trade_platform.domain import utc_now
+        from trade_platform.postgres_market_data import PostgresHistoricalBarStore
         from trade_platform.scheduler import JobContext, SchedulerWorker
 
         runtime = create_worker_runtime_from_environment(
@@ -98,6 +100,11 @@ class WorkerRuntimePostgresTests(unittest.TestCase):
         )
         self.assertIsInstance(runtime.worker, SchedulerWorker)
         self.assertIsInstance(runtime.worker.context, JobContext)
+        # The worker's context is Postgres-backed for Data Health -- no SQLite/in-memory
+        # fallback and no silent degradation (Module 3F requirement).
+        self.assertIsInstance(runtime.worker.context.bar_store, PostgresHistoricalBarStore)
+        self.assertIsInstance(runtime.worker.context.data_health_store, PostgresDataHealthStore)
+        self.assertIn("data_health_evaluation", runtime.worker.registry)
         self.assertFalse(runtime.is_ready(now=utc_now()))
         asyncio.run(self._run_one_tick(runtime))
         self.assertTrue(runtime.last_tick_ok)

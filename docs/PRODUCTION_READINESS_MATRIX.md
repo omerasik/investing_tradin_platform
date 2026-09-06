@@ -37,13 +37,29 @@ Companion to [MODULE_3A_PRODUCTION_READINESS_AUDIT.md](MODULE_3A_PRODUCTION_READ
 > updated accordingly; no identity, secret, audit, RBAC, CSRF, or risk control from
 > Module 3D was touched.
 
+> **Module 3F update (see [MODULE_3F_POSTGRES_HISTORICAL_BARS_AND_DATA_HEALTH_WORKER.md](MODULE_3F_POSTGRES_HISTORICAL_BARS_AND_DATA_HEALTH_WORKER.md)):**
+> `SQLiteBarStore` was the only concrete implementation of the provider-neutral
+> historical OHLCV bar authority (`market_data.py`), so the Module 3E worker
+> intentionally left Data Health unwired. Module 3F introduces a
+> `HistoricalBarStore` protocol boundary, a PostgreSQL-backed implementation
+> (`PostgresHistoricalBarStore`, `postgres_market_data.py`) with an immutable,
+> exact-`NUMERIC` schema and idempotent/conflict-rejecting ingestion, composes it
+> into `PostgresPaperCoreAuthorities` and the worker's `JobContext` with no SQLite
+> fallback, and registers a fourth scheduler job (`data_health_evaluation`) that
+> evaluates whatever the PostgreSQL bar authority actually holds — truthfully
+> reporting insufficient/blocking evidence when no external provider has been
+> activated, rather than fabricating a healthy result. No real market-data or
+> news/fundamental provider was activated by this module. The Historical
+> datasets, Data Health, and Scheduler/workers rows below are updated
+> accordingly.
+
 ## 1. Domain Authority Map
 
 | Domain | Authoritative store | Read authority | Write authority | Immutability | Environment | Current production fitness | Known limitation |
 |---|---|---|---|---|---|---|---|
 | Instruments | `PostgresInstrumentStore` (postgres_decision_authorities.py:38) | API, decision engines | Same store, admin ingestion | Mutable reference data | Prod-capable; `SQLiteInstrumentStore` (instruments.py:82) is dev/test default | ACCEPTABLE | Two parallel implementations must stay schema-consistent; no shared interface enforced in code |
-| Historical datasets | `PostgresHistoricalIngestionCheckpointStore` (provider_ingestion.py:135); bars via `SQLiteBarStore` (market_data.py:83) | Backtest/research engines | Ingestion pipeline | Append-only checkpoints | Checkpoint store is Postgres/prod; bar store has no Postgres equivalent | PARTIAL | Bar data has no confirmed prod-capable store |
-| Data Health | `PostgresDataHealthStore` (data_health.py:252) | Operator dashboard, gating checks | Data-health pipeline | Append-only evidence | Postgres-only, no SQLite dev variant | ACCEPTABLE | Cannot run checks against local SQLite dev DB |
+| Historical datasets | `PostgresHistoricalIngestionCheckpointStore` (provider_ingestion.py:135); bars via `SQLiteBarStore` (market_data.py:83) dev, `PostgresHistoricalBarStore` (postgres_market_data.py:39) prod | Backtest/research engines, Data Health worker job | Ingestion pipeline (`ingest_from_provider`, now store-protocol-neutral) | Append-only checkpoints; bars immutable per-revision (insert-only, conflict-rejecting) | Both checkpoint store and bar store are Postgres/prod-capable (Module 3F); LOCAL_RESEARCH keeps the SQLite bar store | ACCEPTABLE | Two implementations of `HistoricalBarStore` must stay behaviorally consistent; no shared interface enforcement beyond the `Protocol` |
+| Data Health | `PostgresDataHealthStore` (data_health.py:252) | Operator dashboard, gating checks, Data Health worker job (Module 3F) | Data-health pipeline | Append-only evidence | Postgres-only, no SQLite dev variant | ACCEPTABLE | Internal evaluation capability now exists (Module 3F); still no real external market-data provider, so evaluated datasets are typically empty/insufficient by design until Module 3G |
 | Fundamentals | `SQLiteFundamentalStore` (fundamentals.py:55) raw; `PostgresPitFundamentalStore` (pit_fundamentals.py:164) PIT | Research/backtest (PIT); ingestion (raw) | Ingestion / restatement recorder | PIT store append-only | PIT store prod-capable; raw store SQLite-only | PARTIAL | Ambiguous which store is authoritative for a given consumer |
 | Macro | `SQLiteMacroReleaseStore` (macro_data.py:44) raw; `PostgresPitMacroStore` (pit_macro.py:90) PIT | Research (PIT reads) | Ingestion | PIT append-only | Postgres PIT is prod path | PARTIAL | Same raw/PIT split as fundamentals |
 | Features | `SQLiteFeatureStore` (feature_platform.py:75) | Model training/backtest | Feature pipeline | Mutable/versioned | SQLite only — no Postgres implementation | MUST MIGRATE | Not prod-capable as-is |
@@ -101,8 +117,8 @@ Still a genuine gap — explicitly `None`/unavailable (HTTP 503) in the protecte
 | Backup / DR | PARTIAL | CI proves restore mechanics (`verify_postgres_restore.py`); no production RPO/RTO, offsite storage, or real drill — confirmed by the repo's own `DISASTER_RECOVERY.md` |
 | Deployment | PARTIAL | Module 3E adds a real staging topology (`docker-compose.staging.yml`): separately-built API/worker/dashboard/migration images, explicit migration-before-startup ordering, hardened runtime flags, verified end-to-end in CI. No container registry publication, release approval workflow, or IaC exists yet — images build locally from source, never pushed/pulled — see `docs/MODULE_3E_STAGING_DEPLOYMENT_AND_SCHEDULER.md` |
 | Observability | PARTIAL | In-process metrics counter + structured logging only; no export format, no tracing, no external alert delivery (`LOCAL_OUTBOX` only) |
-| Scheduler / workers | ACCEPTABLE (staging-shaped) | Module 3E adds a real scheduler/worker runtime (`scheduler.py`, `worker_app.py`) that executes three approved, internal-only job entry points on a cadence, restart-safe and concurrency-safe via PostgreSQL session-level advisory locks — no longer only recording due-state evidence. Data Health evaluation and reconciliation remain deliberately unwired (no Postgres-backed source data / no worker-shareable comparison state, respectively) — see `docs/MODULE_3E_STAGING_DEPLOYMENT_AND_SCHEDULER.md` §5 |
-| Market data | ARCHITECTURE READY | Adapter interface, raw capture, checkpointing, Data Health, PIT, sealing all exist; only a public unauthenticated CSV source is wired, no commercial vendor |
+| Scheduler / workers | ACCEPTABLE (staging-shaped) | Module 3E added a scheduler/worker runtime (`scheduler.py`, `worker_app.py`) executing three approved, internal-only job entry points, restart-safe and concurrency-safe via PostgreSQL session-level advisory locks. Module 3F adds a fourth: `data_health_evaluation`, unblocked by the new PostgreSQL bar authority — it reads whatever `PostgresHistoricalBarStore` holds, runs the existing Data Health detection logic, and persists evidence via `PostgresDataHealthStore`, using the same advisory-lock/idempotency/failure-alert model as every other job. Reconciliation remains deliberately unwired (no worker-shareable comparison state) — see `docs/MODULE_3F_POSTGRES_HISTORICAL_BARS_AND_DATA_HEALTH_WORKER.md` |
+| Market data | ARCHITECTURE READY | Adapter interface, raw capture, checkpointing, Data Health (now internally executable end-to-end via the worker, Module 3F), PIT, sealing all exist; only a public unauthenticated CSV source is wired, no commercial vendor activated |
 | Fundamentals | ARCHITECTURE READY | PIT store + auth/terms model exist; no raw capture, no checkpoint, no dedicated health checks |
 | Macro | ARCHITECTURE READY | Same shape as fundamentals; self-documented as fixture-backed |
 | News | ARCHITECTURE READY | Metadata store + license-approval gate exist; no content acquisition by design at this stage |

@@ -30,6 +30,7 @@ from .postgres_market_context import (
     PostgresPortfolioReturnStore,
     PostgresQuoteStore,
 )
+from .postgres_market_data import PostgresHistoricalBarStore
 from .postgres_paper_oms import PostgresBrokerEventStore, PostgresPaperOms
 from .postgres_pretrade import PostgresPolicyRegistry, PostgresPreTradeAssessmentStore
 from .postgres_quant_validation import PostgresPromotionLedger, PostgresQuantValidationStore
@@ -91,6 +92,7 @@ class PostgresPaperCoreAuthorities:
     operational_jobs: PostgresOperationalJobStore
     retention_evidence: PostgresRetentionEvidenceStore
     identity_security: PostgresIdentitySecurityStore
+    bars: PostgresHistoricalBarStore
 
     @property
     def submission_ready(self) -> bool:
@@ -194,6 +196,7 @@ def build_postgres_paper_core(
             operational_jobs=operational_jobs,
             retention_evidence=retention_evidence,
             identity_security=PostgresIdentitySecurityStore(database),
+            bars=PostgresHistoricalBarStore(database),
         )
     except Exception:
         database.close()

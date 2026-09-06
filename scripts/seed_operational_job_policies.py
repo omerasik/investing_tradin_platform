@@ -50,6 +50,12 @@ _JOB_DEFINITIONS: tuple[tuple[str, timedelta, timedelta, str], ...] = (
         timedelta(minutes=30),
         "runbook:retention-evaluation-sweep",
     ),
+    (
+        "data_health_evaluation",
+        timedelta(minutes=15),
+        timedelta(minutes=10),
+        "runbook:data-health-evaluation",
+    ),
 )
 
 

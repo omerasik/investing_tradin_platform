@@ -133,14 +133,17 @@ is an explicit, idempotent, separately-approved deployment step:
 Named in the task brief as candidates, and deliberately **not** wired in this
 module, with the specific reason:
 
-- **Data Health evaluation** (`detect_data_health`) — its input, `DataHealthObservation`
+- **Data Health evaluation** (`detect_data_health`) — ~~its input, `DataHealthObservation`
   records, come from an ingested bar/observation store. The confirmed prod-capable
   store for that data (`SQLiteBarStore`) is SQLite-only per `docs/PRODUCTION_READINESS_MATRIX.md`
   §2 — there is no PostgreSQL-backed source of observations for a protected runtime
-  to re-evaluate. Wiring this job today would mean either a permanent no-op or
-  inventing a new data path, which risks quietly implying a market-data-provider
-  activation this module must not do. Deferred pending a PostgreSQL bar-store
-  migration.
+  to re-evaluate.~~ **Resolved in Module 3F** (see
+  [MODULE_3F_POSTGRES_HISTORICAL_BARS_AND_DATA_HEALTH_WORKER.md](MODULE_3F_POSTGRES_HISTORICAL_BARS_AND_DATA_HEALTH_WORKER.md)):
+  a PostgreSQL-backed historical-bar authority (`PostgresHistoricalBarStore`) now
+  exists, and a fourth registered job, `data_health_evaluation`, reads it, runs the
+  existing detection logic, and persists evidence via `PostgresDataHealthStore` —
+  truthfully reporting insufficient/blocking evidence rather than fabricating a
+  healthy result while no external provider is activated.
 - **Reconciliation** (`paper_execution.reconcile`) — real reconciliation compares
   the OMS's internal ledger against a broker/paper-session's reported positions.
   That comparison already happens, per-request, inside the API's own OMS flow
@@ -225,7 +228,8 @@ full existing caveats this module does not change):
 - Everything already listed as a blocker in `docs/PRODUCTION_READINESS_MATRIX.md`
   before this module remains a blocker — this module does not touch identity,
   secrets, audit, RBAC, CSRF, or deterministic risk controls.
-- Data Health and reconciliation jobs remain unwired for the reasons in §5.
+- Data Health evaluation was unwired at the time this module shipped; it is wired
+  as of Module 3F (see §5). Reconciliation remains unwired for the reason in §5.
 - Backup/restore is a documented manual/CI procedure, not yet an automated,
   continuously-scheduled job or off-site retention system (`docs/DISASTER_RECOVERY.md`
   already says this and this module does not change it).
