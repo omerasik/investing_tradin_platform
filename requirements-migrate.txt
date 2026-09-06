@@ -15,7 +15,7 @@ fastapi==0.141.1
 h11==0.16.0
 idna==3.18
 psycopg==3.3.4
-psycopg-binary==3.3.4
+psycopg-binary==3.3.5
 pycparser==3.0
 pydantic==2.13.4
 pydantic-core==2.46.4
