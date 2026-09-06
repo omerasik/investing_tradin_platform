@@ -1,15 +1,18 @@
-"""Module 3G.1e: real PostgreSQL evidence for the source-backed pilot instrument universe.
+"""Module 3G.1e.1: real PostgreSQL evidence for the corrected pilot instrument universe.
 
 Companion to test_professional_instrument_master.py (the pre-existing fixture/demo
-coverage, left completely untouched). This proves the pilot's 16 real instruments
-register, resolve, and survive a restart through the exact same
-PostgresProfessionalInstrumentMaster authority -- no parallel instrument master.
+coverage, left completely untouched). Proves the two-clock (real effective time vs.
+system knowledge time) correction: every ProfessionalInstrument.registered_at and
+SymbolMapping/IdentifierMapping.ingested_at is the real onboarding timestamp, never a
+backdated historical fact date -- and that historical point-in-time resolution still
+works correctly through resolve_identifier_point_in_time()/resolve_symbol_point_in_time(),
+which take effective_at and known_at as two separate parameters for exactly this reason.
 One sequential test method, matching this suite's existing convention for this module.
 """
 
 import os
 import unittest
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 
 @unittest.skipUnless(os.environ.get("POSTGRES_TEST_DSN"), "POSTGRES_TEST_DSN not configured")
@@ -25,7 +28,7 @@ class PilotInstrumentOnboardingIntegrationTests(unittest.TestCase):
         )
         command.upgrade(config, "head")
 
-    def test_pilot_universe_identity_lifecycle_and_restart(self) -> None:
+    def test_pilot_universe_two_clock_identity_lineage_and_restart(self) -> None:
         from trade_platform.persistence import PostgresDatabase
         from trade_platform.pilot_instruments import (
             DATABENTO_RAW_SYMBOL_NAMESPACE,
@@ -46,71 +49,139 @@ class PilotInstrumentOnboardingIntegrationTests(unittest.TestCase):
 
         database = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
         master = PostgresProfessionalInstrumentMaster(database)
-        registered_at = datetime(2026, 9, 6, tzinfo=UTC)
+        # onboarded_at is the real wall-clock moment this backfill runs -- deliberately
+        # not equal to, and far later than, any of the historical dates below.
+        onboarded_at = datetime(2026, 9, 7, tzinfo=UTC)
 
         for spec in PILOT_INSTRUMENTS:
-            master.register(pilot_instrument(spec))
-        for mapping in pilot_symbol_mappings():
+            master.register(pilot_instrument(spec, onboarded_at))
+        symbol_mappings = pilot_symbol_mappings(onboarded_at)
+        for mapping in symbol_mappings:
             master.add_symbol_mapping(mapping)
-        for mapping in pilot_databento_identifier_mappings():
+        identifier_mappings = pilot_databento_identifier_mappings(onboarded_at)
+        for mapping in identifier_mappings:
             master.add_identifier_mapping(mapping)
         for instrument_id, effective_date, reason, _source in pilot_delistings():
             effective_at = datetime.combine(effective_date, datetime.min.time(), tzinfo=UTC)
-            master.delist(instrument_id, effective_at, effective_at, reason)
+            master.delist(instrument_id, effective_at, onboarded_at, reason)
 
         # -- Real listing dates are not the fixture 2000-01-01 placeholder. --
-        aapl = master.get_as_of("PILOT:AAPL", registered_at)
+        # get_as_of queries must be at/after onboarded_at now that registered_at is
+        # honestly the onboarding time, not a backdated historical fact.
+        aapl = master.get_as_of("PILOT:AAPL", onboarded_at)
         self.assertEqual(aapl.listing_date, date(1980, 12, 12))
         self.assertNotEqual(aapl.listing_date, date(2000, 1, 1))
-        twtr_ipo = master.get_as_of("PILOT:TWTR", datetime(2013, 11, 8, tzinfo=UTC))
-        self.assertEqual(twtr_ipo.listing_date, date(2013, 11, 7))
-        self.assertNotEqual(twtr_ipo.listing_date, date(2000, 1, 1))
+        twtr = master.get_as_of("PILOT:TWTR", onboarded_at)
+        self.assertEqual(twtr.listing_date, date(2013, 11, 7))
+        self.assertNotEqual(twtr.listing_date, date(2000, 1, 1))
 
-        # -- FB -> META historical symbol mapping is time-bounded, not back-projected. --
+        # -- D: no pilot mapping has ingested_at == valid_from; every one is onboarded_at. --
+        # None of this backfill has real contemporaneous ingestion evidence.
+        for mapping in (*symbol_mappings, *identifier_mappings):
+            self.assertEqual(mapping.ingested_at, onboarded_at)
+            self.assertNotEqual(mapping.ingested_at, mapping.valid_from)
+
+        # -- A: historical validity, via the two-clock resolver, not resolve_symbol(). --
         during_fb_era = datetime(2015, 6, 1, tzinfo=UTC)
         after_rename = datetime(2023, 1, 1, tzinfo=UTC)
-        self.assertEqual(master.resolve_symbol("FB", "XNAS", during_fb_era).instrument_id, "PILOT:META")
-        self.assertEqual(master.resolve_symbol("META", "XNAS", after_rename).instrument_id, "PILOT:META")
-        with self.assertRaises(InstrumentResolutionError):
-            master.resolve_symbol("META", "XNAS", during_fb_era)
-        with self.assertRaises(InstrumentResolutionError):
-            master.resolve_symbol("FB", "XNAS", after_rename)
-
-        # -- Databento-namespace PIT identifier resolution follows the same rename. --
-        # effective_at is the real historical moment being asked about; known_at is today
-        # (this onboarding's own run time) -- resolve_identifier_point_in_time is the one
-        # method in this master that correctly separates the two, unlike resolve_symbol().
-        resolved_old = master.resolve_identifier_point_in_time(
-            DATABENTO_RAW_SYMBOL_NAMESPACE, "FB", during_fb_era, registered_at
+        self.assertEqual(
+            master.resolve_symbol_point_in_time("FB", "XNAS", during_fb_era, onboarded_at).instrument_id,
+            "PILOT:META",
         )
-        resolved_new = master.resolve_identifier_point_in_time(
-            DATABENTO_RAW_SYMBOL_NAMESPACE, "META", after_rename, registered_at
+        self.assertEqual(
+            master.resolve_symbol_point_in_time("META", "XNAS", after_rename, onboarded_at).instrument_id,
+            "PILOT:META",
         )
-        self.assertEqual(resolved_old.instrument_id, "PILOT:META")
-        self.assertEqual(resolved_new.instrument_id, "PILOT:META")
+        # No back-projection: META must not resolve during the FB era, nor FB after the rename.
+        with self.assertRaises(InstrumentResolutionError):
+            master.resolve_symbol_point_in_time("META", "XNAS", during_fb_era, onboarded_at)
+        with self.assertRaises(InstrumentResolutionError):
+            master.resolve_symbol_point_in_time("FB", "XNAS", after_rename, onboarded_at)
+        # The identifier-namespace resolver proves the same history independently.
+        self.assertEqual(
+            master.resolve_identifier_point_in_time(
+                DATABENTO_RAW_SYMBOL_NAMESPACE, "FB", during_fb_era, onboarded_at
+            ).instrument_id,
+            "PILOT:META",
+        )
+        self.assertEqual(
+            master.resolve_identifier_point_in_time(
+                DATABENTO_RAW_SYMBOL_NAMESPACE, "META", after_rename, onboarded_at
+            ).instrument_id,
+            "PILOT:META",
+        )
 
-        # -- TWTR is active before, and delisted after, its real 2022-10-28 delisting date. --
-        before_delisting = datetime(2022, 10, 27, tzinfo=UTC)
+        # -- B: knowledge time -- a mapping onboarded at onboarded_at must NOT resolve --
+        # -- when known_at is before onboarded_at, even for a fully valid effective_at. --
+        before_onboarding = onboarded_at - timedelta(days=1)
+        with self.assertRaises(InstrumentResolutionError):
+            master.resolve_symbol_point_in_time("META", "XNAS", after_rename, before_onboarding)
+        with self.assertRaises(InstrumentResolutionError):
+            master.resolve_identifier_point_in_time(
+                DATABENTO_RAW_SYMBOL_NAMESPACE, "META", after_rename, before_onboarding
+            )
+
+        # -- C: backfill -- the same historical mapping resolves once known_at reaches --
+        # -- or passes the real onboarding timestamp (already proven by A above; --
+        # -- reconfirmed here at exactly onboarded_at, the earliest valid known_at). --
+        self.assertEqual(
+            master.resolve_symbol_point_in_time("FB", "XNAS", during_fb_era, onboarded_at).instrument_id,
+            "PILOT:META",
+        )
+
+        # -- E: TWTR -- real delisting effective_at, onboarding-time ingested_at, --
+        # -- historical resolution works with a post-onboarding known_at, and --
+        # -- post-delisting effective-time resolution fails appropriately. --
+        self.assertEqual(
+            master.get_as_of("PILOT:TWTR", onboarded_at).lifecycle_status, LifecycleStatus.DELISTED
+        )
+        pre_delisting_2021 = datetime(2021, 6, 1, tzinfo=UTC)
+        self.assertEqual(
+            master.resolve_symbol_point_in_time("TWTR", "XNYS", pre_delisting_2021, onboarded_at).instrument_id,
+            "PILOT:TWTR",
+        )
         after_delisting = datetime(2022, 10, 29, tzinfo=UTC)
-        self.assertEqual(
-            master.get_as_of("PILOT:TWTR", before_delisting).lifecycle_status, LifecycleStatus.ACTIVE
-        )
-        self.assertEqual(
-            master.get_as_of("PILOT:TWTR", after_delisting).lifecycle_status, LifecycleStatus.DELISTED
-        )
         with self.assertRaises(InstrumentResolutionError):
-            master.resolve_symbol("TWTR", "XNYS", after_delisting)
-        self.assertEqual(
-            master.resolve_symbol("TWTR", "XNYS", before_delisting).instrument_id, "PILOT:TWTR"
-        )
+            master.resolve_symbol_point_in_time("TWTR", "XNYS", after_delisting, onboarded_at)
 
-        # -- GOOGL is its own instrument, dated to the real 2014-04-03 reclassification, --
-        # -- never confused with GOOG (which does not exist in this universe at all). --
-        googl = master.get_as_of("PILOT:GOOGL", registered_at)
+        # -- GOOGL final lineage: continuous Class A security since its real 2004-08-19 --
+        # -- IPO under ticker GOOG, renamed to GOOGL in 2014 -- not the 2014 date itself, --
+        # -- and never confused with the separate, newly-created Class C (which now --
+        # -- holds the GOOG ticker and is not modeled in this pilot universe at all). --
+        googl = master.get_as_of("PILOT:GOOGL", onboarded_at)
         self.assertEqual(googl.canonical_symbol, "GOOGL")
-        self.assertEqual(googl.listing_date, date(2014, 4, 3))
+        self.assertEqual(googl.listing_date, date(2004, 8, 19))
         with self.assertRaises(InstrumentResolutionError):
-            master.get_as_of("PILOT:GOOG", registered_at)
+            master.get_as_of("PILOT:GOOG", onboarded_at)
+        during_goog_era = datetime(2010, 1, 1, tzinfo=UTC)
+        after_googl_rename = datetime(2020, 1, 1, tzinfo=UTC)
+        self.assertEqual(
+            master.resolve_symbol_point_in_time("GOOG", "XNAS", during_goog_era, onboarded_at).instrument_id,
+            "PILOT:GOOGL",
+        )
+        self.assertEqual(
+            master.resolve_symbol_point_in_time("GOOGL", "XNAS", after_googl_rename, onboarded_at).instrument_id,
+            "PILOT:GOOGL",
+        )
+        # GOOG must not resolve after the 2014 rename (that ticker now belongs to an
+        # unmodeled, economically distinct Class C security -- not this instrument).
+        with self.assertRaises(InstrumentResolutionError):
+            master.resolve_symbol_point_in_time("GOOG", "XNAS", after_googl_rename, onboarded_at)
+
+        # -- QQQ: fund inception (1999-03-10, AMEX) is the real listing_date; the current --
+        # -- XNAS/QQQ symbol mapping is deliberately scoped to the pilot window and must --
+        # -- NOT claim coverage before its disclosed 2015-01-01 scope boundary. --
+        qqq = master.get_as_of("PILOT:QQQ", onboarded_at)
+        self.assertEqual(qqq.listing_date, date(1999, 3, 10))
+        self.assertEqual(qqq.venue, "XNAS")
+        within_pilot_window = datetime(2021, 1, 1, tzinfo=UTC)
+        before_scope_boundary = datetime(2010, 1, 1, tzinfo=UTC)
+        self.assertEqual(
+            master.resolve_symbol_point_in_time("QQQ", "XNAS", within_pilot_window, onboarded_at).instrument_id,
+            "PILOT:QQQ",
+        )
+        with self.assertRaises(InstrumentResolutionError):
+            master.resolve_symbol_point_in_time("QQQ", "XNAS", before_scope_boundary, onboarded_at)
 
         # -- ETF venue resolution: NYSE Arca vs. Nasdaq-listed ETFs are correctly distinguished. --
         expected_venue = {
@@ -118,7 +189,7 @@ class PilotInstrumentOnboardingIntegrationTests(unittest.TestCase):
             "PILOT:QQQ": "XNAS",
         }
         for instrument_id, venue in expected_venue.items():
-            instrument = master.get_as_of(instrument_id, registered_at)
+            instrument = master.get_as_of(instrument_id, onboarded_at)
             self.assertEqual(instrument.venue, venue, instrument_id)
             self.assertEqual(instrument.asset_class.value, "ETF", instrument_id)
 
@@ -126,7 +197,7 @@ class PilotInstrumentOnboardingIntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(InstrumentMappingConflictError, "identifier_mapping_overlap_or_duplicate"):
             master.add_identifier_mapping(IdentifierMapping(
                 "PILOT:AAPL", IdentifierSourceKind.PROVIDER, DATABENTO_RAW_SYMBOL_NAMESPACE, "META",
-                datetime(2023, 1, 1, tzinfo=UTC), None, registered_at, "test://deliberately-conflicting",
+                after_rename, None, onboarded_at, "test://deliberately-conflicting",
             ))
 
         # -- Restart/persistence correctness: a fresh connection recovers the same 16 instruments. --
@@ -134,7 +205,9 @@ class PilotInstrumentOnboardingIntegrationTests(unittest.TestCase):
         restarted = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
         recovered = PostgresProfessionalInstrumentMaster(restarted)
         self.assertEqual(
-            recovered.resolve_symbol("AAPL", "XNAS", datetime(2026, 9, 7, tzinfo=UTC)).instrument_id,
+            recovered.resolve_symbol_point_in_time(
+                "AAPL", "XNAS", onboarded_at, onboarded_at + timedelta(days=1)
+            ).instrument_id,
             "PILOT:AAPL",
         )
         with restarted.transaction() as connection, connection.cursor() as cursor:

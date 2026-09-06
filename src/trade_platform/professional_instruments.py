@@ -311,8 +311,16 @@ class PostgresProfessionalInstrumentMaster:
         _require_aware(as_of, "as_of")
         try:
             with self._database.transaction() as connection, connection.cursor() as cursor:
+                # A qualifying DELISTED event always wins over the ACTIVE bootstrap
+                # recorded at registration -- never ordered by effective_at against it.
+                # This model has no re-listing state, and a backfilled instrument's
+                # ACTIVE bootstrap effective_at is registered_at (the honest onboarding
+                # time), which for a historical backfill is chronologically AFTER the
+                # real delisting's own effective_at -- an effective_at-DESC tiebreak
+                # would otherwise pick the bootstrap row and report ACTIVE for an
+                # instrument that is, in the real world, long since delisted.
                 cursor.execute(
-                    "SELECT p.*, COALESCE((SELECT status FROM professional_instrument_lifecycle_events e WHERE e.instrument_id=p.instrument_id AND e.effective_at<=%s AND e.ingested_at<=%s ORDER BY e.effective_at DESC,e.ingested_at DESC LIMIT 1),'ACTIVE') FROM professional_instruments p WHERE p.instrument_id=%s AND p.registered_at<=%s",
+                    "SELECT p.*, COALESCE((SELECT status FROM professional_instrument_lifecycle_events e WHERE e.instrument_id=p.instrument_id AND e.status='DELISTED' AND e.effective_at<=%s AND e.ingested_at<=%s LIMIT 1),'ACTIVE') FROM professional_instruments p WHERE p.instrument_id=%s AND p.registered_at<=%s",
                     (as_of, as_of, instrument_id, as_of),
                 )
                 row = cursor.fetchone()
@@ -413,6 +421,45 @@ class PostgresProfessionalInstrumentMaster:
             raise AmbiguousInstrumentMappingError(f"ambiguous_mapping:{namespace}:{value}")
         return self.get_as_of(str(rows[0][0]), known_at)
 
+    def resolve_symbol_point_in_time(
+        self, symbol: str, venue: str, effective_at: datetime, known_at: datetime
+    ) -> ProfessionalInstrument:
+        """Resolve historical ticker identity by its validity time and separate knowledge
+        time -- the ``SymbolMapping`` counterpart to ``resolve_identifier_point_in_time()``,
+        added because ``resolve_symbol()`` uses one timestamp for both real-world validity
+        and system-knowledge-time. That single-timestamp shape is correct for a live
+        lookup ("what does this ticker mean right now") but cannot correctly answer "what
+        did this ticker mean on some past date" once mapping rows carry honest (not
+        backdated) ``ingested_at`` values from a historical backfill.
+        """
+        _require_aware(effective_at, "effective_at")
+        _require_aware(known_at, "known_at")
+        if known_at < effective_at:
+            raise InstrumentResolutionError("symbol_known_before_effective")
+        statement = (
+            "SELECT instrument_id FROM professional_symbol_mappings "
+            "WHERE symbol=%s AND venue=%s AND valid_from<=%s "
+            "AND (valid_until IS NULL OR valid_until>%s) AND ingested_at<=%s "
+            "AND NOT EXISTS (SELECT 1 FROM professional_instrument_lifecycle_events e "
+            "WHERE e.instrument_id=professional_symbol_mappings.instrument_id "
+            "AND e.status='DELISTED' AND e.effective_at<=%s AND e.ingested_at<=%s) "
+            "ORDER BY valid_from DESC LIMIT 2"
+        )
+        try:
+            with self._database.transaction() as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    statement,
+                    (symbol, venue, effective_at, effective_at, known_at, effective_at, known_at),
+                )
+                rows = cursor.fetchall()
+        except Exception as error:
+            raise InstrumentResolutionError("instrument_mapping_read_failed") from error
+        if not rows:
+            raise InstrumentResolutionError(f"mapping_not_found:{venue}:{symbol}")
+        if len(rows) != 1:
+            raise AmbiguousInstrumentMappingError(f"ambiguous_mapping:{venue}:{symbol}")
+        return self.get_as_of(str(rows[0][0]), known_at)
+
     def _resolve(self, table: str, value_column: str, value: str, scope_column: str, scope: str,
                  as_of: datetime) -> ProfessionalInstrument:
         _require_aware(as_of, "as_of")
@@ -443,7 +490,17 @@ class PostgresProfessionalInstrumentMaster:
         _require_code(reason, "delisting_reason")
         if ingested_at < effective_at:
             raise InstrumentMasterError("delisting_ingested_before_effective")
-        self.get_as_of(instrument_id, effective_at)
+        # Existence is checked as of ingested_at (when we're recording this delisting),
+        # not effective_at (when it really happened) -- the two coincide for a live
+        # delisting recorded promptly, but a historical backfill legitimately records
+        # today (ingested_at) a real event from years ago (effective_at), and
+        # registered_at is honestly today's onboarding time, not the historical fact
+        # date. Checking effective_at here would make backfilling any real historical
+        # delisting structurally impossible. ingested_at >= effective_at is already
+        # enforced above, so this check is never weaker than the effective_at check for
+        # a live delisting, and is exactly what "does our system know this instrument
+        # yet" should mean at the moment we are actually writing this record.
+        self.get_as_of(instrument_id, ingested_at)
         try:
             with self._database.transaction() as connection, connection.cursor() as cursor:
                 cursor.execute(
