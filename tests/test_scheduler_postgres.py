@@ -1,6 +1,7 @@
 import os
 import unittest
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from uuid import uuid4
 
 
@@ -19,9 +20,11 @@ class SchedulerWorkerPostgresTests(unittest.TestCase):
         command.upgrade(config, "head")
 
     def setUp(self) -> None:
+        from trade_platform.data_health import PostgresDataHealthStore
         from trade_platform.operational_alerts import PostgresOperationalAlertStore
         from trade_platform.operational_jobs import PostgresOperationalJobStore
         from trade_platform.persistence import PostgresDatabase
+        from trade_platform.postgres_market_data import PostgresHistoricalBarStore
         from trade_platform.retention_evidence import PostgresRetentionEvidenceStore
         from trade_platform.scheduler import JobContext, SchedulerWorker, default_job_registry
 
@@ -32,11 +35,15 @@ class SchedulerWorkerPostgresTests(unittest.TestCase):
         self.alerts = PostgresOperationalAlertStore(self.database)
         self.job_store = PostgresOperationalJobStore(self.database, alerts=self.alerts)
         self.retention_store = PostgresRetentionEvidenceStore(self.database)
+        self.bar_store = PostgresHistoricalBarStore(self.database)
+        self.data_health_store = PostgresDataHealthStore(self.database)
         self.context = JobContext(
             database=self.database,
             job_store=self.job_store,
             alerts=self.alerts,
             retention_store=self.retention_store,
+            bar_store=self.bar_store,
+            data_health_store=self.data_health_store,
         )
         self.registry = dict(default_job_registry())
         self.worker = SchedulerWorker(context=self.context, registry=self.registry, clock=lambda: self.now)
@@ -215,6 +222,142 @@ class SchedulerWorkerPostgresTests(unittest.TestCase):
 
         evaluated = self.retention_store.manifests_due_for_evaluation(self.now)
         self.assertNotIn(manifest.manifest_id, evaluated)
+
+    def test_data_health_job_with_no_ingested_bars_persists_truthful_insufficient_evidence(self) -> None:
+        from dataclasses import replace as dc_replace
+
+        from trade_platform.data_health import DataHealthAssessment, DataHealthScope
+        from trade_platform.scheduler import SchedulerWorker, run_data_health_evaluation
+
+        # A GLOBAL blocking assessment, once persisted, blocks *every* signal
+        # validation across the whole shared test database from that evaluated_at
+        # onward -- and data_health_assessments is immutable/append-only, so it can
+        # never be cleaned up afterward. Both the bar store and the data-health store
+        # are stand-ins here (rather than self.bar_store/self.data_health_store) so
+        # this test proves the job's own logic without permanently poisoning every
+        # other test that shares this database.
+        class _EmptyBarStore:
+            def known_series(self) -> list[tuple[str, str]]:
+                return []
+
+        recorded: list[DataHealthAssessment] = []
+
+        class _RecordingDataHealthStore:
+            def persist(self, assessment: DataHealthAssessment) -> None:
+                recorded.append(assessment)
+
+        context = dc_replace(
+            self.context, bar_store=_EmptyBarStore(), data_health_store=_RecordingDataHealthStore()
+        )
+        worker = SchedulerWorker(context=context, registry=self.registry, clock=lambda: self.now)
+        policy = self._policy("data_health_evaluation")
+        self.registry[policy.job_name] = run_data_health_evaluation
+        completed = worker.run_tick(self.now)
+        self.assertEqual(len(completed), 1)
+        self.assertEqual(completed[0].status.value, "SUCCEEDED")
+        self.assertEqual(completed[0].summary["series_checked"], "0")
+        self.assertEqual(completed[0].summary["blocking_assessments"], "1")
+        self.assertEqual(len(recorded), 1)
+        self.assertEqual(recorded[0].scope_type, DataHealthScope.GLOBAL)
+        self.assertEqual(recorded[0].scope_value, "*")
+        self.assertTrue(recorded[0].blocking)
+        # detect_data_health's own empty-dataset findings (MISSING_BARS + INCOMPLETE_DATASET).
+        self.assertEqual(len(recorded[0].findings), 2)
+
+    def test_data_health_job_evaluates_ingested_bars_and_does_not_fabricate_health(self) -> None:
+        from dataclasses import replace as dc_replace
+
+        from trade_platform.domain import DataProcessingStatus, OHLCVBar
+        from trade_platform.scheduler import SchedulerWorker, run_data_health_evaluation
+
+        instrument_id = f"US:NYSE:HEALTH{self.suffix}"
+        event_at = self.now - timedelta(hours=1)
+        bar = OHLCVBar(
+            instrument_id=instrument_id, interval="1h", event_at=event_at,
+            effective_at=event_at, ingested_at=event_at,
+            open=Decimal("100"), high=Decimal("101"), low=Decimal("99"), close=Decimal("100.5"),
+            volume=Decimal("1000"), provider="fixture", source_identifier="fixture-1",
+            original_timezone="UTC", revision=0, data_version="v1",
+            quality_score=Decimal("1"), processing_status=DataProcessingStatus.RAW,
+        )
+        self.bar_store.ingest([bar])
+
+        # Scope this tick's evaluation to exactly this test's own series -- read_range
+        # still hits the real PostgreSQL bar store, but known_series() is not the
+        # shared table's full (order-dependent, ever-growing) contents.
+        class _ScopedBarStore:
+            def __init__(self, real_store: object, series: list[tuple[str, str]]) -> None:
+                self._real_store = real_store
+                self._series = series
+
+            def known_series(self) -> list[tuple[str, str]]:
+                return self._series
+
+            def read_range(self, instrument_id: str, interval: str, start, end):
+                return self._real_store.read_range(instrument_id, interval, start, end)
+
+        context = dc_replace(
+            self.context, bar_store=_ScopedBarStore(self.bar_store, [(instrument_id, "1h")])
+        )
+        worker = SchedulerWorker(context=context, registry=self.registry, clock=lambda: self.now)
+        policy = self._policy("data_health_evaluation")
+        self.registry[policy.job_name] = run_data_health_evaluation
+        completed = worker.run_tick(self.now)
+        self.assertEqual(len(completed), 1)
+        self.assertEqual(completed[0].status.value, "SUCCEEDED")
+        self.assertEqual(completed[0].summary["series_checked"], "1")
+        # A single, isolated bar is still an incomplete dataset relative to the
+        # evaluation window -- it must not be reported as healthy.
+        self.assertEqual(completed[0].summary["blocking_assessments"], "1")
+
+    def test_concurrent_worker_does_not_double_execute_data_health_evaluation(self) -> None:
+        from dataclasses import replace as dc_replace
+
+        from trade_platform.data_health import DataHealthAssessment
+        from trade_platform.persistence import PostgresDatabase
+        from trade_platform.scheduler import (
+            SchedulerWorker,
+            _release,
+            _try_claim,
+            run_data_health_evaluation,
+        )
+
+        # Whether the real bar store's known_series() is empty here depends on test
+        # execution order across the whole shared database -- pin it to a harmless
+        # stand-in (rather than self.bar_store/self.data_health_store) so this test
+        # exercises only the advisory-lock mechanism, deterministically, regardless
+        # of what other tests have or have not ingested yet.
+        class _EmptyBarStore:
+            def known_series(self) -> list[tuple[str, str]]:
+                return []
+
+        class _DiscardingDataHealthStore:
+            def persist(self, assessment: DataHealthAssessment) -> None:
+                pass
+
+        context = dc_replace(
+            self.context, bar_store=_EmptyBarStore(), data_health_store=_DiscardingDataHealthStore()
+        )
+        worker = SchedulerWorker(context=context, registry=self.registry, clock=lambda: self.now)
+        policy = self._policy("data_health_evaluation")
+        self.registry[policy.job_name] = run_data_health_evaluation
+        due_at = next(
+            state.due_at
+            for state in self.job_store.due_jobs(self.now)
+            if state.policy.policy_id == policy.policy_id
+        )
+        lock_key = f"trade_platform:operational_job_run:{policy.job_name}:{due_at.isoformat()}"
+
+        other_connection = PostgresDatabase(self.dsn)
+        try:
+            self.assertTrue(_try_claim(other_connection, lock_key))
+            self.assertEqual(worker.run_tick(due_at), ())
+            _release(other_connection, lock_key)
+        finally:
+            other_connection.close()
+
+        completed = worker.run_tick(due_at)
+        self.assertEqual(len(completed), 1)
 
 
 @unittest.skipUnless(os.environ.get("POSTGRES_TEST_DSN"), "POSTGRES_TEST_DSN not configured")

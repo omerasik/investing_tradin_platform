@@ -27,10 +27,19 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
+from decimal import Decimal
 from uuid import UUID
 
-from .domain import utc_now
+from .data_health import (
+    DataHealthObservation,
+    DataHealthPolicy,
+    DataHealthScope,
+    PostgresDataHealthStore,
+    build_assessment,
+)
+from .domain import OHLCVBar, utc_now
+from .market_data import HistoricalBarStore
 from .operational_alerts import AlertSeverity, AlertStatus, PostgresOperationalAlertStore
 from .operational_jobs import (
     OperationalJobRun,
@@ -46,10 +55,18 @@ __all__ = [
     "JobRunner",
     "SchedulerWorker",
     "default_job_registry",
+    "run_data_health_evaluation",
     "run_operational_job_monitor",
     "run_postgres_dependency_probe",
     "run_retention_evaluation_sweep",
 ]
+
+_DATA_HEALTH_WINDOW = timedelta(hours=24)
+_DATA_HEALTH_STALE_AFTER = timedelta(hours=6)
+_DATA_HEALTH_DISAGREEMENT_TOLERANCE = Decimal("0.02")
+_DATA_HEALTH_MINIMUM_OBSERVATIONS = 1
+_DATA_HEALTH_POLICY_VERSION = "internal-v1"
+_INTERVAL_UNITS = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +77,8 @@ class JobContext:
     job_store: PostgresOperationalJobStore
     alerts: PostgresOperationalAlertStore
     retention_store: PostgresRetentionEvidenceStore
+    bar_store: HistoricalBarStore
+    data_health_store: PostgresDataHealthStore
 
 
 JobRunner = Callable[[JobContext, datetime], Mapping[str, str]]
@@ -133,6 +152,84 @@ def run_retention_evaluation_sweep(context: JobContext, as_of: datetime) -> Mapp
     }
 
 
+def _parse_interval(interval: str) -> timedelta:
+    """Best-effort expected-gap parser for interval strings like ``"1m"``/``"1d"``.
+
+    Falls back to a conservative one-day expectation for an unrecognized shape rather
+    than raising -- an unparsed interval must still produce a truthful (if generic)
+    gap/staleness assessment, never block the whole evaluation from running.
+    """
+    unit = interval[-1:] if interval else ""
+    magnitude = interval[:-1] if interval else ""
+    if unit not in _INTERVAL_UNITS or not magnitude.isdigit():
+        return timedelta(days=1)
+    return timedelta(**{_INTERVAL_UNITS[unit]: int(magnitude)})
+
+
+def _to_observation(bar: OHLCVBar) -> DataHealthObservation:
+    # No independent trading-calendar/session authority is wired to this internal
+    # evaluation yet (that requires a real, authorized market-data provider -- see
+    # Module 3F's scope boundary) -- treating the bar's own recorded timezone as
+    # "expected" and its session as valid is honest about that limitation: this
+    # check simply contributes no information here rather than fabricating a mismatch.
+    return DataHealthObservation(
+        provider=bar.provider, instrument_id=bar.instrument_id, event_at=bar.event_at,
+        ingested_at=bar.ingested_at, revision=bar.revision, open=bar.open, high=bar.high,
+        low=bar.low, close=bar.close, volume=bar.volume, original_timezone=bar.original_timezone,
+        expected_timezone=bar.original_timezone, session_valid=True,
+    )
+
+
+def run_data_health_evaluation(context: JobContext, as_of: datetime) -> Mapping[str, str]:
+    """Evaluate Data Health against whatever the PostgreSQL bar authority actually holds.
+
+    Safe with zero ingested data (no external provider activated yet, per Module 3F's
+    scope boundary): a single GLOBAL assessment over an empty observation set is still
+    persisted, and :func:`~trade_platform.data_health.detect_data_health` already
+    classifies an empty dataset as blocking/insufficient -- this job never fabricates a
+    healthy result. When one or more (instrument, interval) series have been ingested,
+    each is evaluated and persisted individually as an INSTRUMENT-scoped assessment.
+    """
+    window_start = as_of - _DATA_HEALTH_WINDOW
+    series = context.bar_store.known_series()
+    if not series:
+        policy = DataHealthPolicy(
+            version=_DATA_HEALTH_POLICY_VERSION, expected_start=window_start, expected_end=as_of,
+            expected_interval=timedelta(hours=1), stale_after=_DATA_HEALTH_STALE_AFTER,
+            provider_disagreement_tolerance=_DATA_HEALTH_DISAGREEMENT_TOLERANCE,
+            minimum_observations=_DATA_HEALTH_MINIMUM_OBSERVATIONS,
+        )
+        assessment = build_assessment(
+            [], policy, scope_type=DataHealthScope.GLOBAL, scope_value="*", evaluated_at=as_of
+        )
+        context.data_health_store.persist(assessment)
+        return {
+            "series_checked": "0", "assessments_persisted": "1",
+            "blocking_assessments": "1" if assessment.blocking else "0",
+        }
+
+    blocking_count = 0
+    for instrument_id, interval in series:
+        bars = context.bar_store.read_range(instrument_id, interval, window_start, as_of)
+        policy = DataHealthPolicy(
+            version=_DATA_HEALTH_POLICY_VERSION, expected_start=window_start, expected_end=as_of,
+            expected_interval=_parse_interval(interval), stale_after=_DATA_HEALTH_STALE_AFTER,
+            provider_disagreement_tolerance=_DATA_HEALTH_DISAGREEMENT_TOLERANCE,
+            minimum_observations=_DATA_HEALTH_MINIMUM_OBSERVATIONS,
+        )
+        assessment = build_assessment(
+            [_to_observation(bar) for bar in bars], policy,
+            scope_type=DataHealthScope.INSTRUMENT, scope_value=instrument_id, evaluated_at=as_of,
+        )
+        context.data_health_store.persist(assessment)
+        if assessment.blocking:
+            blocking_count += 1
+    return {
+        "series_checked": str(len(series)), "assessments_persisted": str(len(series)),
+        "blocking_assessments": str(blocking_count),
+    }
+
+
 def default_job_registry() -> dict[str, JobRunner]:
     """The job entry points this deployment approves the worker to invoke.
 
@@ -146,6 +243,7 @@ def default_job_registry() -> dict[str, JobRunner]:
         "operational_job_monitor": run_operational_job_monitor,
         "postgres_dependency_probe": run_postgres_dependency_probe,
         "retention_evaluation_sweep": run_retention_evaluation_sweep,
+        "data_health_evaluation": run_data_health_evaluation,
     }
 
 

@@ -28,10 +28,12 @@ from datetime import datetime
 
 from fastapi import FastAPI, HTTPException
 
+from .data_health import PostgresDataHealthStore
 from .domain import utc_now
 from .operational_alerts import PostgresOperationalAlertStore
 from .operational_jobs import PostgresOperationalJobStore
 from .persistence import PersistenceError, PostgresDatabase
+from .postgres_market_data import PostgresHistoricalBarStore
 from .retention_evidence import PostgresRetentionEvidenceStore
 from .runtime_app import RuntimeCompositionError
 from .scheduler import JobContext, SchedulerWorker, default_job_registry
@@ -132,6 +134,8 @@ def create_worker_runtime_from_environment(
             job_store=PostgresOperationalJobStore(database, alerts=alerts),
             alerts=alerts,
             retention_store=PostgresRetentionEvidenceStore(database),
+            bar_store=PostgresHistoricalBarStore(database),
+            data_health_store=PostgresDataHealthStore(database),
         )
         worker = SchedulerWorker(context=context, registry=default_job_registry())
     except Exception:

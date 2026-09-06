@@ -23,6 +23,25 @@ class HistoricalBarProvider(Protocol):
     def fetch_bars(self, instrument_id: str, interval: str, start: datetime, end: datetime) -> list[OHLCVBar]: ...
 
 
+class HistoricalBarStore(Protocol):
+    """Provider-neutral historical OHLCV bar authority boundary.
+
+    Both :class:`SQLiteBarStore` (local/demo/test) and the PostgreSQL-backed
+    ``PostgresHistoricalBarStore`` (``postgres_market_data.py``, production/staging)
+    satisfy this structurally -- callers such as :func:`ingest_from_provider` and the
+    Data Health worker job depend on this boundary rather than on either concrete
+    implementation.
+    """
+
+    def ingest(self, bars: list[OHLCVBar]) -> str: ...
+
+    def available_as_of(self, instrument_id: str, interval: str, decision_at: datetime) -> list[OHLCVBar]: ...
+
+    def read_range(self, instrument_id: str, interval: str, start: datetime, end: datetime) -> list[OHLCVBar]: ...
+
+    def known_series(self) -> list[tuple[str, str]]: ...
+
+
 class FixtureBarProvider:
     """Deterministic test adapter; production providers must implement the same narrow contract."""
 
@@ -39,7 +58,7 @@ class FixtureBarProvider:
 
 
 def ingest_from_provider(
-    provider: HistoricalBarProvider, store: "SQLiteBarStore", instrument_id: str, interval: str, start: datetime, end: datetime
+    provider: HistoricalBarProvider, store: HistoricalBarStore, instrument_id: str, interval: str, start: datetime, end: datetime
 ) -> str:
     bars = provider.fetch_bars(instrument_id, interval, start, end)
     permitted_provenance = getattr(provider, "provenance_names", frozenset({provider.name}))
@@ -80,6 +99,15 @@ def assess_bars(bars: list[OHLCVBar]) -> list[OHLCVBar]:
     return assessed
 
 
+def batch_digest(bars: list[OHLCVBar]) -> str:
+    """A single deterministic version stamp for an assessed batch, shared by every store."""
+    digest = hashlib.sha256()
+    for bar in bars:
+        normalized = "|".join((bar.instrument_id, bar.interval, bar.event_at.isoformat(), str(bar.revision), bar.provider, bar.source_identifier))
+        digest.update(normalized.encode())
+    return digest.hexdigest()
+
+
 class SQLiteBarStore:
     def __init__(self, database_path: str | Path = ":memory:") -> None:
         self._connection = sqlite3.connect(str(database_path), check_same_thread=False)
@@ -97,10 +125,7 @@ class SQLiteBarStore:
         rejected = [bar for bar in assessed if bar.processing_status is DataProcessingStatus.REJECTED]
         if rejected:
             raise DataQualityError("batch contains rejected data-quality records")
-        digest = hashlib.sha256()
         for bar in assessed:
-            normalized = "|".join((bar.instrument_id, bar.interval, bar.event_at.isoformat(), str(bar.revision), bar.provider, bar.source_identifier))
-            digest.update(normalized.encode())
             self._connection.execute(
                 "INSERT INTO bars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (bar.instrument_id, bar.interval, bar.event_at.isoformat(), bar.effective_at.isoformat(),
@@ -109,7 +134,7 @@ class SQLiteBarStore:
                  bar.data_version, str(bar.quality_score), bar.processing_status.value),
             )
         self._connection.commit()
-        return digest.hexdigest()
+        return batch_digest(assessed)
 
     def available_as_of(self, instrument_id: str, interval: str, decision_at: datetime) -> list[OHLCVBar]:
         """Only return records known and effective at the historical decision timestamp."""
@@ -125,3 +150,24 @@ class SQLiteBarStore:
                      Decimal(row[15]), DataProcessingStatus(row[16]))
             for row in rows
         ]
+
+    def read_range(self, instrument_id: str, interval: str, start: datetime, end: datetime) -> list[OHLCVBar]:
+        """All stored revisions in an event-time window, for Data Health and research reads."""
+        rows = self._connection.execute(
+            "SELECT * FROM bars WHERE instrument_id = ? AND interval = ? "
+            "AND event_at >= ? AND event_at <= ? ORDER BY event_at, revision",
+            (instrument_id, interval, start.isoformat(), end.isoformat()),
+        ).fetchall()
+        return [
+            OHLCVBar(row[0], row[1], datetime.fromisoformat(row[2]), datetime.fromisoformat(row[3]),
+                     datetime.fromisoformat(row[4]), Decimal(row[5]), Decimal(row[6]), Decimal(row[7]),
+                     Decimal(row[8]), Decimal(row[9]), row[10], row[11], row[12], row[13], row[14],
+                     Decimal(row[15]), DataProcessingStatus(row[16]))
+            for row in rows
+        ]
+
+    def known_series(self) -> list[tuple[str, str]]:
+        rows = self._connection.execute(
+            "SELECT DISTINCT instrument_id, interval FROM bars ORDER BY instrument_id, interval"
+        ).fetchall()
+        return [(row[0], row[1]) for row in rows]

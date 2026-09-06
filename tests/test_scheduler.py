@@ -7,14 +7,18 @@ including concurrency, in tests/test_scheduler_postgres.py instead.
 
 import unittest
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 from uuid import uuid4
 
+from trade_platform.data_health import DataHealthScope
+from trade_platform.domain import DataProcessingStatus, OHLCVBar
 from trade_platform.operational_alerts import AlertSeverity, AlertStatus
 from trade_platform.retention_evidence import RetentionDisposition
 from trade_platform.scheduler import (
     JobContext,
+    run_data_health_evaluation,
     run_operational_job_monitor,
     run_postgres_dependency_probe,
     run_retention_evaluation_sweep,
@@ -97,12 +101,35 @@ class FakeRetentionStore:
         return self.evaluations[manifest_id]
 
 
+class FakeBarStore:
+    def __init__(self, series_bars: dict[tuple[str, str], list[OHLCVBar]] | None = None) -> None:
+        self._series_bars = series_bars or {}
+        self.read_range_calls: list[tuple[str, str, datetime, datetime]] = []
+
+    def known_series(self) -> list[tuple[str, str]]:
+        return list(self._series_bars)
+
+    def read_range(self, instrument_id: str, interval: str, start: datetime, end: datetime) -> list[OHLCVBar]:
+        self.read_range_calls.append((instrument_id, interval, start, end))
+        return self._series_bars.get((instrument_id, interval), [])
+
+
+class FakeDataHealthStore:
+    def __init__(self) -> None:
+        self.persisted: list[object] = []
+
+    def persist(self, assessment: object) -> None:
+        self.persisted.append(assessment)
+
+
 def _context(**overrides: object) -> JobContext:
     defaults = {
         "database": FakeDatabase(),
         "job_store": FakeJobStore(),
         "alerts": FakeAlertStore(),
         "retention_store": FakeRetentionStore((), {}),
+        "bar_store": FakeBarStore(),
+        "data_health_store": FakeDataHealthStore(),
     }
     defaults.update(overrides)
     return JobContext(**defaults)  # type: ignore[arg-type]
@@ -170,6 +197,67 @@ class RetentionEvaluationSweepRunnerTests(unittest.TestCase):
         context = _context(retention_store=FakeRetentionStore((), {}))
         summary = run_retention_evaluation_sweep(context, _NOW)
         self.assertEqual(summary, {"manifests_evaluated": "0", "eligible_for_review": "0"})
+
+
+def _bar(**changes: object) -> OHLCVBar:
+    values: dict[str, object] = {
+        "instrument_id": "US:NYSE:SPY", "interval": "1h", "event_at": _NOW - timedelta(hours=1),
+        "effective_at": _NOW - timedelta(hours=1), "ingested_at": _NOW - timedelta(hours=1),
+        "open": Decimal("100"), "high": Decimal("101"), "low": Decimal("99"), "close": Decimal("100.5"),
+        "volume": Decimal("1000"), "provider": "fixture", "source_identifier": "bar-1",
+        "original_timezone": "UTC", "revision": 0, "data_version": "v1",
+        "quality_score": Decimal("1"), "processing_status": DataProcessingStatus.RAW,
+    }
+    values.update(changes)
+    return OHLCVBar(**values)
+
+
+class DataHealthEvaluationRunnerTests(unittest.TestCase):
+    def test_no_series_persists_a_single_truthful_global_blocking_assessment(self) -> None:
+        data_health_store = FakeDataHealthStore()
+        context = _context(bar_store=FakeBarStore(), data_health_store=data_health_store)
+        summary = run_data_health_evaluation(context, _NOW)
+        self.assertEqual(summary["series_checked"], "0")
+        self.assertEqual(summary["assessments_persisted"], "1")
+        self.assertEqual(summary["blocking_assessments"], "1")
+        self.assertEqual(len(data_health_store.persisted), 1)
+        [assessment] = data_health_store.persisted
+        self.assertEqual(assessment.scope_type, DataHealthScope.GLOBAL)
+        self.assertEqual(assessment.scope_value, "*")
+        self.assertTrue(assessment.blocking)
+
+    def test_never_fabricates_health_for_a_single_isolated_bar(self) -> None:
+        bar = _bar()
+        bar_store = FakeBarStore({(bar.instrument_id, bar.interval): [bar]})
+        data_health_store = FakeDataHealthStore()
+        context = _context(bar_store=bar_store, data_health_store=data_health_store)
+        summary = run_data_health_evaluation(context, _NOW)
+        self.assertEqual(summary["series_checked"], "1")
+        self.assertEqual(summary["assessments_persisted"], "1")
+        # A single bar cannot satisfy the expected evaluation window -- must not
+        # be reported as healthy just because some data exists.
+        self.assertEqual(summary["blocking_assessments"], "1")
+        [assessment] = data_health_store.persisted
+        self.assertEqual(assessment.scope_type, DataHealthScope.INSTRUMENT)
+        self.assertEqual(assessment.scope_value, bar.instrument_id)
+        self.assertTrue(assessment.blocking)
+
+    def test_reads_each_known_series_over_the_trailing_evaluation_window(self) -> None:
+        bar = _bar(instrument_id="US:NYSE:AAA", interval="5m")
+        bar_store = FakeBarStore({(bar.instrument_id, bar.interval): [bar]})
+        context = _context(bar_store=bar_store)
+        run_data_health_evaluation(context, _NOW)
+        [(instrument_id, interval, start, end)] = bar_store.read_range_calls
+        self.assertEqual((instrument_id, interval), (bar.instrument_id, bar.interval))
+        self.assertEqual(end, _NOW)
+        self.assertEqual(_NOW - start, timedelta(hours=24))
+
+    def test_unparseable_interval_falls_back_to_a_conservative_daily_expectation_without_raising(self) -> None:
+        bar = _bar(interval="weird")
+        bar_store = FakeBarStore({(bar.instrument_id, "weird"): [bar]})
+        context = _context(bar_store=bar_store)
+        summary = run_data_health_evaluation(context, _NOW)
+        self.assertEqual(summary["series_checked"], "1")
 
 
 if __name__ == "__main__":
