@@ -27,6 +27,16 @@ Companion to [MODULE_3A_PRODUCTION_READINESS_AUDIT.md](MODULE_3A_PRODUCTION_READ
 > secrets behavior is unchanged; the Authentication, Authorization/RBAC, Secrets, and
 > Audit rows below are updated to distinguish paper (unchanged) from production (new).
 
+> **Module 3E update (see [MODULE_3E_STAGING_DEPLOYMENT_AND_SCHEDULER.md](MODULE_3E_STAGING_DEPLOYMENT_AND_SCHEDULER.md)):**
+> Deployment and Scheduler/workers were both `NOT STARTED`. Module 3E adds a real
+> staging Compose topology (separate API/worker/dashboard/migration images) and a
+> scheduler/worker runtime (`scheduler.py`, `worker_app.py`) that actually executes
+> three approved internal-only job entry points, restart- and concurrency-safe via
+> PostgreSQL advisory locks — the `operational_jobs.py` monitor no longer only
+> records due-state evidence. The Deployment and Scheduler/workers rows below are
+> updated accordingly; no identity, secret, audit, RBAC, CSRF, or risk control from
+> Module 3D was touched.
+
 ## 1. Domain Authority Map
 
 | Domain | Authoritative store | Read authority | Write authority | Immutability | Environment | Current production fitness | Known limitation |
@@ -89,9 +99,9 @@ Still a genuine gap — explicitly `None`/unavailable (HTTP 503) in the protecte
 | Secrets | PARTIAL (paper) / ACCEPTABLE (production, when configured) | Paper still resolves secrets from environment variables. Module 3D adds a real secret-management boundary (`secrets_manager.py`) with a production-capable `FileSecretProvider` (one file per secret, POSIX-permission-enforced) speaking the on-disk contract mainstream secret managers already populate; production composition never accepts the environment-variable provider |
 | Database | PARTIAL | Postgres schema mature (37+ migrations). Module 3C wired the served application's Paper OMS, alert and operator-dashboard authorities to PostgreSQL for protected runtimes with no SQLite fallback; risk-decision, promotion-ledger and return-history read routes remain explicitly unavailable pending additional Postgres query methods (see §3 above) |
 | Backup / DR | PARTIAL | CI proves restore mechanics (`verify_postgres_restore.py`); no production RPO/RTO, offsite storage, or real drill — confirmed by the repo's own `DISASTER_RECOVERY.md` |
-| Deployment | NOT STARTED | No Kubernetes/Terraform/Railway/Procfile/systemd found anywhere; CI-built container image is never pushed or deployed |
+| Deployment | PARTIAL | Module 3E adds a real staging topology (`docker-compose.staging.yml`): separately-built API/worker/dashboard/migration images, explicit migration-before-startup ordering, hardened runtime flags, verified end-to-end in CI. No container registry publication, release approval workflow, or IaC exists yet — images build locally from source, never pushed/pulled — see `docs/MODULE_3E_STAGING_DEPLOYMENT_AND_SCHEDULER.md` |
 | Observability | PARTIAL | In-process metrics counter + structured logging only; no export format, no tracing, no external alert delivery (`LOCAL_OUTBOX` only) |
-| Scheduler / workers | NOT STARTED | Job policy/evidence model exists (`operational_jobs.py`) but nothing executes it on a cadence; confirmed human/CI-script dependency |
+| Scheduler / workers | ACCEPTABLE (staging-shaped) | Module 3E adds a real scheduler/worker runtime (`scheduler.py`, `worker_app.py`) that executes three approved, internal-only job entry points on a cadence, restart-safe and concurrency-safe via PostgreSQL session-level advisory locks — no longer only recording due-state evidence. Data Health evaluation and reconciliation remain deliberately unwired (no Postgres-backed source data / no worker-shareable comparison state, respectively) — see `docs/MODULE_3E_STAGING_DEPLOYMENT_AND_SCHEDULER.md` §5 |
 | Market data | ARCHITECTURE READY | Adapter interface, raw capture, checkpointing, Data Health, PIT, sealing all exist; only a public unauthenticated CSV source is wired, no commercial vendor |
 | Fundamentals | ARCHITECTURE READY | PIT store + auth/terms model exist; no raw capture, no checkpoint, no dedicated health checks |
 | Macro | ARCHITECTURE READY | Same shape as fundamentals; self-documented as fixture-backed |

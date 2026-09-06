@@ -1,0 +1,140 @@
+# Staging deployment topology (Module 3E). Four separately owned services: a
+# PostgreSQL authority, the FastAPI research API, the scheduler/worker, and the
+# Next.js dashboard. See docs/MODULE_3E_STAGING_DEPLOYMENT_AND_SCHEDULER.md.
+#
+# This is intentionally the simplest production-shaped topology for this workload:
+# a handful of internal maintenance jobs on multi-minute-or-slower intervals need
+# no message broker, cache, or orchestrator beyond what PostgreSQL's own advisory
+# locks already provide (see src/trade_platform/scheduler.py) -- Kubernetes, Kafka,
+# Redis and Celery are all deliberately absent.
+#
+# Database migration is an explicit, separately-imaged deployment step: the one-shot
+# `migrate` service below runs `alembic upgrade head` and exits, and `api`/`worker`
+# will not start until it completes successfully. It deliberately uses a different,
+# disposable image (Dockerfile.migrate) rather than the hardened research-API image
+# (Dockerfile) -- that artifact intentionally does not bundle alembic/sqlalchemy at
+# all (see requirements-runtime.txt): a narrower attack surface, a smaller image, and
+# a hard guarantee that migrations can never run as a side effect of starting the API
+# or worker process. See docs/DEPLOYMENT_RUNBOOK.md for the non-Compose equivalent
+# (running `alembic upgrade head` directly, e.g. from CI) if you are not using Compose.
+#
+# `api` is the sole owner of the research-API image's `build:` section -- `worker`
+# below intentionally omits its own `build:` and just references the same `image:`
+# tag (and `migrate` builds its own, differently-tagged image). Giving multiple
+# services an identical `build:` block would make `docker compose up --build` build
+# that one tag more than once concurrently, which fails ("image ... already exists")
+# because BuildKit's parallel builds race on it.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: trade_platform
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - trade-platform-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d trade_platform"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: trade-platform-research:${IMAGE_TAG:-staging}
+    command:
+      ["python", "-m", "uvicorn", "trade_platform.runtime_app:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
+    environment:
+      TRADE_PLATFORM_ENVIRONMENT: ${TRADE_PLATFORM_ENVIRONMENT:-paper}
+      POSTGRES_DSN: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/trade_platform
+      TRADE_PLATFORM_OPERATOR_TOKEN: ${TRADE_PLATFORM_OPERATOR_TOKEN:-}
+      TRADE_PLATFORM_OPERATOR_ROLE: ${TRADE_PLATFORM_OPERATOR_ROLE:-viewer}
+      # production only -- see docs/MODULE_3D_PRODUCTION_IDENTITY_SECRETS_AUDIT.md.
+      TRADE_PLATFORM_OIDC_ISSUER: ${TRADE_PLATFORM_OIDC_ISSUER:-}
+      TRADE_PLATFORM_OIDC_AUDIENCE: ${TRADE_PLATFORM_OIDC_AUDIENCE:-}
+      TRADE_PLATFORM_OIDC_JWKS_URL: ${TRADE_PLATFORM_OIDC_JWKS_URL:-}
+      TRADE_PLATFORM_IDENTITY_POLICY_NAME: ${TRADE_PLATFORM_IDENTITY_POLICY_NAME:-}
+      TRADE_PLATFORM_SECRETS_DIR: /run/secrets/trade-platform
+    volumes:
+      - ${TRADE_PLATFORM_SECRETS_DIR_HOST:-./secrets/empty}:/run/secrets/trade-platform:ro
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.migrate
+    image: trade-platform-migrate:${IMAGE_TAG:-staging}
+    environment:
+      POSTGRES_DSN: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/trade_platform
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  worker:
+    image: trade-platform-research:${IMAGE_TAG:-staging}
+    command:
+      ["python", "-m", "uvicorn", "trade_platform.worker_app:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
+    environment:
+      POSTGRES_DSN: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/trade_platform
+      TRADE_PLATFORM_WORKER_POLL_SECONDS: ${TRADE_PLATFORM_WORKER_POLL_SECONDS:-30}
+    ports:
+      - "${WORKER_PORT:-8001}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    image: trade-platform-dashboard:${IMAGE_TAG:-staging}
+    environment:
+      TRADE_PLATFORM_DASHBOARD_VIEW_TOKEN: ${TRADE_PLATFORM_DASHBOARD_VIEW_TOKEN:?TRADE_PLATFORM_DASHBOARD_VIEW_TOKEN is required}
+      TRADE_PLATFORM_SESSION_SECRET: ${TRADE_PLATFORM_SESSION_SECRET:?TRADE_PLATFORM_SESSION_SECRET is required}
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    restart: unless-stopped
+
+volumes:
+  trade-platform-postgres-data:

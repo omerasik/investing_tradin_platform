@@ -1,0 +1,7 @@
+**
+!requirements-migrate.txt
+!alembic.ini
+!migrations/
+!migrations/**
+!src/
+!src/**
