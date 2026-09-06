@@ -597,20 +597,38 @@ def mvp_instrument_universe(registered_at: datetime) -> tuple[ProfessionalInstru
     )
 
 
+#: The three US equity/ETF listing venues this platform's pilot universe actually
+#: uses (NYSE Arca, Nasdaq, NYSE). All three observe the same core continuous
+#: trading session under Reg NMS -- 9:30am-4:00pm America/New_York, Monday-Friday
+#: -- per each exchange's own published trading-hours pages (NYSE: 9:30am-4:00pm ET;
+#: Nasdaq: 9:30am-4:00pm ET). This is a real, uncontroversial market-structure fact,
+#: not an instrument-specific fixture, so it is added here as a convention on par
+#: with the pre-existing ARCX entry -- not duplicated per pilot/fixture universe.
+_US_EQUITY_VENUES = ("ARCX", "XNAS", "XNYS")
+
+
 def standard_calendars(ingested_at: datetime) -> tuple[
     tuple[CalendarDefinition, tuple[WeeklySession, ...]], ...
 ]:
     """Versioned convention fixtures; holidays/early closes are separate source evidence."""
     _require_aware(ingested_at, "ingested_at")
     start = date(2000, 1, 1)
-    equity_id = uuid5(_MVP_NAMESPACE, "calendar:US_EQUITY:v1")
     fx_id = uuid5(_MVP_NAMESPACE, "calendar:FX_24X5:v1")
     crypto_id = uuid5(_MVP_NAMESPACE, "calendar:CRYPTO_24X7:v1")
-    equity = CalendarDefinition(equity_id, "ARCX", SessionType.US_EQUITY,
-        "America/New_York", start, None, ingested_at, "fixture://us-equity-calendar-v1")
-    equity_sessions = tuple(
-        WeeklySession(equity_id, weekday, time(9, 30), time(16), 0, ingested_at)
-        for weekday in range(5)
+    equity_calendars = tuple(
+        (
+            CalendarDefinition(
+                uuid5(_MVP_NAMESPACE, f"calendar:US_EQUITY:{venue}:v1"), venue, SessionType.US_EQUITY,
+                "America/New_York", start, None, ingested_at, f"fixture://us-equity-calendar-{venue.lower()}-v1",
+            ),
+            tuple(
+                WeeklySession(
+                    uuid5(_MVP_NAMESPACE, f"calendar:US_EQUITY:{venue}:v1"), weekday, time(9, 30), time(16), 0, ingested_at
+                )
+                for weekday in range(5)
+            ),
+        )
+        for venue in _US_EQUITY_VENUES
     )
     fx = CalendarDefinition(fx_id, "FX", SessionType.FX_24X5, "America/New_York",
         start, None, ingested_at, "fixture://fx-24x5-convention-v1", time(17))
@@ -625,4 +643,4 @@ def standard_calendars(ingested_at: datetime) -> tuple[
         WeeklySession(crypto_id, weekday, time(0), time(0), 1, ingested_at)
         for weekday in range(7)
     )
-    return ((equity, equity_sessions), (fx, fx_sessions), (crypto, crypto_sessions))
+    return (*equity_calendars, (fx, fx_sessions), (crypto, crypto_sessions))
