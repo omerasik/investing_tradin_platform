@@ -154,12 +154,13 @@ class DatabentoBarBridgePostgresTests(unittest.TestCase):
         # PIT: available only from normalization time, not the earlier raw capture time.
         self.assertEqual(daily_stored[0].ingested_at, normalized_at)
 
-        # Consumable by the existing, unmodified Data Health authority -- scoped to
-        # exactly this test's own series (a single interval; see
-        # test_a_bridged_bar_series_is_consumable_by_the_existing_data_health_authority
-        # for why this test does not also evaluate both intervals of the same
-        # instrument in one run_data_health_evaluation call) so it never persists a
-        # shared GLOBAL block.
+        # Consumable by the existing Data Health authority -- BOTH intervals of the
+        # SAME instrument evaluated in ONE run_data_health_evaluation tick, scoped to
+        # exactly this test's own series so it never persists a shared GLOBAL block.
+        # Module 3G.1b originally discovered that this collided (scheduler.py scoped
+        # each persisted assessment by instrument_id alone); that gap is now fixed by
+        # the interval-scope remediation (data_health.py / scheduler.py / migration
+        # 20260906_0039) -- this is the test that proves the fix, not a workaround.
         class _ScopedBarStore:
             def __init__(self, real_store: object, series: list[tuple[str, str]]) -> None:
                 self._real_store = real_store
@@ -172,76 +173,17 @@ class DatabentoBarBridgePostgresTests(unittest.TestCase):
                 return self._real_store.read_range(instrument_id, interval, start, end)
 
         scoped_context = dc_replace(
-            self.context, bar_store=_ScopedBarStore(self.bar_store, [(instrument.instrument_id, "1d")]),
+            self.context,
+            bar_store=_ScopedBarStore(self.bar_store, [(instrument.instrument_id, "1d"), (instrument.instrument_id, "1m")]),
         )
         summary = run_data_health_evaluation(scoped_context, normalized_at + timedelta(hours=1))
-        self.assertEqual(summary["series_checked"], "1")
-        self.assertEqual(summary["assessments_persisted"], "1")
-        # A single bar is INCOMPLETE_DATASET (too few observations for the window)
-        # but never a fabricated pass and never a provider-specific bypass -- exactly
-        # the same outcome any provider's bars would produce under the unmodified
-        # detect_data_health policy.
-        self.assertEqual(summary["blocking_assessments"], "1")
-
-    def test_a_bridged_bar_series_is_consumable_by_the_existing_data_health_authority(self) -> None:
-        """Documents a pre-existing, out-of-scope gap discovered while writing this test.
-
-        ``scheduler.run_data_health_evaluation`` scopes each persisted assessment by
-        ``instrument_id`` alone (``DataHealthScope.INSTRUMENT, scope_value=instrument_id``),
-        not by ``(instrument_id, interval)``. If ``known_series()`` ever returns two
-        different intervals for the SAME instrument evaluated in the SAME tick, the
-        second ``INSTRUMENT``-scoped persist collides with the immutable
-        ``data_health_assessments`` table's ``(scope_type, scope_value, evaluated_at)``
-        uniqueness and raises ``DataHealthError``. This module (3G.1b) reproduces that
-        only when it is actually exercised -- it is a Module 3E/3F scheduler concern,
-        not a bar-bridge defect, and is deliberately NOT fixed here (out of scope: "do
-        not redesign unrelated modules"). This test instead evaluates one interval at a
-        time, exactly like the test above, and flags the gap here for a follow-up.
-        """
-        from trade_platform.historical_bar_bridge import normalized_ohlcv_to_bar
-        from trade_platform.historical_market_data import (
-            AdjustmentStatus,
-            ObservationKind,
-            RawHistoricalObservation,
-        )
-        from trade_platform.market_data import PrecomputedBarProvider, ingest_from_provider
-        from trade_platform.scheduler import run_data_health_evaluation
-
-        instrument, namespace = self._register_aapl_like_instrument()
-        source = self._register_source(namespace)
-        event = datetime(2025, 1, 20, tzinfo=UTC)
-        raw = RawHistoricalObservation(
-            source.source_id, ObservationKind.OHLCV, "101", "AAPL", "CONSOLIDATED_TAPE",
-            event, event, event + timedelta(minutes=5), AdjustmentStatus.RAW, 0,
-            "databento://batch/ohlcv-1m",
-            {"interval": "1m", "open": "50", "high": "51", "low": "49.5", "close": "50.5", "volume": "2000"},
-        )
-        raw_id, = self.pipeline.capture_raw([raw])
-        normalized_at = event + timedelta(minutes=6)
-        normalized = self.pipeline.normalize(raw_id, "databento-normalizer-v1", normalized_at)
-        bar = normalized_ohlcv_to_bar(normalized, raw, "databento")
-        ingest_from_provider(
-            PrecomputedBarProvider("databento", [bar]), self.bar_store,
-            bar.instrument_id, bar.interval, event - timedelta(hours=1), event + timedelta(hours=1),
-        )
-
-        class _ScopedBarStore:
-            def __init__(self, real_store: object, series: list[tuple[str, str]]) -> None:
-                self._real_store = real_store
-                self._series = series
-
-            def known_series(self) -> list[tuple[str, str]]:
-                return self._series
-
-            def read_range(self, instrument_id: str, interval: str, start: datetime, end: datetime):
-                return self._real_store.read_range(instrument_id, interval, start, end)
-
-        scoped_context = dc_replace(
-            self.context, bar_store=_ScopedBarStore(self.bar_store, [(instrument.instrument_id, "1m")]),
-        )
-        summary = run_data_health_evaluation(scoped_context, normalized_at + timedelta(minutes=1))
-        self.assertEqual(summary["series_checked"], "1")
-        self.assertEqual(summary["assessments_persisted"], "1")
+        self.assertEqual(summary["series_checked"], "2")
+        self.assertEqual(summary["assessments_persisted"], "2")
+        # A single bar each is INCOMPLETE_DATASET (too few observations for the
+        # window) but never a fabricated pass and never a provider-specific bypass --
+        # exactly the same outcome any provider's bars would produce under the
+        # unmodified detect_data_health policy.
+        self.assertEqual(summary["blocking_assessments"], "2")
 
     def test_consolidated_tape_exchange_validates_against_the_resolved_instruments_own_venue(self) -> None:
         from trade_platform.historical_market_data import (

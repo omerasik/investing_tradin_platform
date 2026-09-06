@@ -141,6 +141,14 @@ class DataHealthAssessment:
     blocking: bool
     findings: tuple[DataHealthFinding, ...]
     content_hash: str
+    interval: str = ""
+    """Empty for scopes with no per-series dimension (GLOBAL/STRATEGY/ASSET_CLASS, or an
+    INSTRUMENT-wide assessment not tied to one series). Non-empty for a specific
+    (instrument, interval) series -- this is what lets the SAME instrument have
+    independently-tracked, coexisting assessments for e.g. "1d" and "1m" without one
+    colliding with or masking the other. See ``DataHealthScope.INSTRUMENT`` usage in
+    ``scheduler.run_data_health_evaluation``.
+    """
 
 
 def _finding(
@@ -220,8 +228,18 @@ def detect_data_health(
 def build_assessment(
     observations: list[DataHealthObservation], policy: DataHealthPolicy, *,
     scope_type: DataHealthScope, scope_value: str, evaluated_at: datetime,
-    dataset_version_id: UUID | None = None,
+    dataset_version_id: UUID | None = None, interval: str = "",
 ) -> DataHealthAssessment:
+    """Build one immutable assessment.
+
+    ``interval`` is part of this assessment's identity alongside
+    ``(scope_type, scope_value, evaluated_at)`` -- pass the series' own interval
+    (e.g. ``"1d"``, ``"1m"``) for a per-series INSTRUMENT assessment so it coexists
+    with, rather than collides with or masks, other intervals of the same
+    instrument evaluated at the same timestamp. Leave it empty for scopes with no
+    per-series dimension (GLOBAL/STRATEGY/ASSET_CLASS) or a genuinely
+    instrument-wide (not series-specific) assessment.
+    """
     _aware(evaluated_at, "evaluated_at")
     if not scope_value.strip() or (scope_type is DataHealthScope.GLOBAL and scope_value != "*"):
         raise DataHealthError("invalid_data_health_scope")
@@ -230,7 +248,7 @@ def build_assessment(
     canonical = json.dumps(
         {
             "dataset_version_id": None if dataset_version_id is None else str(dataset_version_id),
-            "scope_type": scope_type.value, "scope_value": scope_value,
+            "scope_type": scope_type.value, "scope_value": scope_value, "interval": interval,
             "policy_version": policy.version, "evaluated_at": evaluated_at.isoformat(),
             "findings": [
                 {"check": item.check_type.value, "action": item.action.value,
@@ -245,7 +263,7 @@ def build_assessment(
         uuid4(), dataset_version_id, scope_type, scope_value, policy.version,
         evaluated_at, policy.expected_start, policy.expected_end, max_action,
         max_action in _BLOCKING_ACTIONS, findings,
-        hashlib.sha256(canonical.encode()).hexdigest(),
+        hashlib.sha256(canonical.encode()).hexdigest(), interval,
     )
 
 
@@ -261,13 +279,13 @@ class PostgresDataHealthStore:
         try:
             with self._database.transaction() as connection, connection.cursor() as cursor:
                 cursor.execute(
-                    "INSERT INTO data_health_assessments VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)",
+                    "INSERT INTO data_health_assessments VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)",
                     (assessment.assessment_id, assessment.dataset_version_id,
                      assessment.scope_type.value, assessment.scope_value,
                      assessment.policy_version, assessment.evaluated_at,
                      assessment.expected_start, assessment.expected_end,
                      assessment.max_action.value, assessment.blocking,
-                     assessment.content_hash, summary),
+                     assessment.content_hash, summary, assessment.interval),
                 )
                 for sequence, finding in enumerate(assessment.findings):
                     detail = json.dumps(finding.detail, sort_keys=True, separators=(",", ":"))
@@ -283,21 +301,31 @@ class PostgresDataHealthStore:
 
     def active_blocks(
         self, instrument_id: str, strategy_version: str, asset_class: str, as_of: datetime,
-    ) -> tuple[tuple[DataHealthScope, str, DataHealthAction], ...]:
+    ) -> tuple[tuple[DataHealthScope, str, str, DataHealthAction], ...]:
+        """Every currently-blocking scope relevant to this instrument/strategy/asset class.
+
+        Partitions the "latest as of ``as_of``" lookup by ``interval`` as well as
+        ``(scope_type, scope_value)``: an INSTRUMENT scope with independently-evaluated
+        series (e.g. "1d" and "1m") is blocked if *any* of its series' own latest
+        assessment is blocking -- a healthy daily series can never mask a blocked
+        minute series, or vice versa. GLOBAL/STRATEGY/ASSET_CLASS assessments carry no
+        interval (always ``""``), so this partitioning is a no-op for them and their
+        prior single-latest-row behaviour is unchanged.
+        """
         _aware(as_of, "data_health_as_of")
         with self._database.transaction() as connection, connection.cursor() as cursor:
             cursor.execute(
-                "SELECT scope_type,scope_value,max_action FROM ("
-                "SELECT DISTINCT ON (scope_type,scope_value) scope_type,scope_value,max_action,blocking "
+                "SELECT scope_type,scope_value,interval,max_action FROM ("
+                "SELECT DISTINCT ON (scope_type,scope_value,interval) scope_type,scope_value,interval,max_action,blocking "
                 "FROM data_health_assessments WHERE evaluated_at<=%s AND ((scope_type='GLOBAL' AND scope_value='*') OR "
                 "(scope_type='ASSET_CLASS' AND scope_value=%s) OR (scope_type='STRATEGY' AND scope_value=%s) OR "
-                "(scope_type='INSTRUMENT' AND scope_value=%s)) ORDER BY scope_type,scope_value,evaluated_at DESC"
-                ") latest WHERE blocking ORDER BY scope_type,scope_value",
+                "(scope_type='INSTRUMENT' AND scope_value=%s)) ORDER BY scope_type,scope_value,interval,evaluated_at DESC"
+                ") latest WHERE blocking ORDER BY scope_type,scope_value,interval",
                 (as_of, asset_class, strategy_version, instrument_id),
             )
             rows = cursor.fetchall()
         return tuple(
-            (DataHealthScope(str(row[0])), str(row[1]), DataHealthAction(str(row[2])))
+            (DataHealthScope(str(row[0])), str(row[1]), str(row[2]), DataHealthAction(str(row[3])))
             for row in rows
         )
 
@@ -306,7 +334,10 @@ class PostgresDataHealthStore:
     ) -> None:
         blocks = self.active_blocks(instrument_id, strategy_version, asset_class, as_of)
         if blocks:
-            detail = ",".join(f"{scope.value}:{value}:{action.value}" for scope, value, action in blocks)
+            detail = ",".join(
+                f"{scope.value}:{value}:{interval or '-'}:{action.value}"
+                for scope, value, interval, action in blocks
+            )
             raise DataHealthBlockedError(f"signal_validation_blocked_by_data_health:{detail}")
 
     def get(self, assessment_id: UUID) -> DataHealthAssessment:
@@ -329,5 +360,5 @@ class PostgresDataHealthStore:
             UUID(str(row[0])), None if row[1] is None else UUID(str(row[1])),
             DataHealthScope(str(row[2])), str(row[3]), str(row[4]), cast(datetime, row[5]),
             cast(datetime, row[6]), cast(datetime, row[7]), DataHealthAction(str(row[8])),
-            bool(row[9]), findings, str(row[10]),
+            bool(row[9]), findings, str(row[10]), str(row[12]),
         )

@@ -81,7 +81,7 @@ export type DataHealthFinding = {
 };
 export type DataHealthAssessment = {
   assessment_id: string; dataset_version_id: string | null; dataset_version: string | null;
-  scope_type: string; scope_value: string; policy_version: string; evaluated_at: string;
+  scope_type: string; scope_value: string; interval: string; policy_version: string; evaluated_at: string;
   expected_start: string; expected_end: string; max_action: string; blocking: boolean;
   content_hash: string; summary: Record<string, unknown>; findings: DataHealthFinding[];
   synthetic_demo: boolean;

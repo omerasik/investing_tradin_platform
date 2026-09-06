@@ -189,6 +189,7 @@ class DataHealthAssessmentView(BaseModel):
     dataset_version: str | None
     scope_type: str
     scope_value: str
+    interval: str = ""
     policy_version: str
     evaluated_at: datetime
     expected_start: datetime
@@ -1160,7 +1161,7 @@ class PostgresOperatorDashboardQueries:
 
             cursor.execute(
                 "SELECT a.assessment_id, a.dataset_version_id, h.version, a.scope_type, a.scope_value, "
-                "a.policy_version, a.evaluated_at, a.expected_start, a.expected_end, a.max_action, "
+                "a.interval, a.policy_version, a.evaluated_at, a.expected_start, a.expected_end, a.max_action, "
                 "a.blocking, a.content_hash, a.summary, "
                 "(a.policy_version LIKE '%%demo%%' OR a.policy_version LIKE '%%module1b%%') "
                 "FROM data_health_assessments a "
@@ -1189,10 +1190,11 @@ class PostgresOperatorDashboardQueries:
                 items.append(DataHealthAssessmentView(
                     assessment_id=row[0], dataset_version_id=row[1],
                     dataset_version=None if row[2] is None else str(row[2]),
-                    scope_type=str(row[3]), scope_value=str(row[4]), policy_version=str(row[5]),
-                    evaluated_at=row[6], expected_start=row[7], expected_end=row[8], max_action=str(row[9]),
-                    blocking=bool(row[10]), content_hash=str(row[11]), summary=_mapping(row[12]),
-                    findings=findings, synthetic_demo=bool(row[13]),
+                    scope_type=str(row[3]), scope_value=str(row[4]), interval=str(row[5]),
+                    policy_version=str(row[6]),
+                    evaluated_at=row[7], expected_start=row[8], expected_end=row[9], max_action=str(row[10]),
+                    blocking=bool(row[11]), content_hash=str(row[12]), summary=_mapping(row[13]),
+                    findings=findings, synthetic_demo=bool(row[14]),
                 ))
             overall = "BLOCKING" if blocking_count > 0 else ("HEALTHY" if total_count > 0 else "AVAILABLE")
             return DataHealthAssessmentPage(
@@ -1207,7 +1209,7 @@ class PostgresOperatorDashboardQueries:
         def operation(cursor: _Cursor) -> DataHealthAssessmentView:
             cursor.execute(
                 "SELECT a.assessment_id, a.dataset_version_id, h.version, a.scope_type, a.scope_value, "
-                "a.policy_version, a.evaluated_at, a.expected_start, a.expected_end, a.max_action, "
+                "a.interval, a.policy_version, a.evaluated_at, a.expected_start, a.expected_end, a.max_action, "
                 "a.blocking, a.content_hash, a.summary, "
                 "(a.policy_version LIKE '%%demo%%' OR a.policy_version LIKE '%%module1b%%') "
                 "FROM data_health_assessments a "
@@ -1231,10 +1233,11 @@ class PostgresOperatorDashboardQueries:
             return DataHealthAssessmentView(
                 assessment_id=row[0], dataset_version_id=row[1],
                 dataset_version=None if row[2] is None else str(row[2]),
-                scope_type=str(row[3]), scope_value=str(row[4]), policy_version=str(row[5]),
-                evaluated_at=row[6], expected_start=row[7], expected_end=row[8], max_action=str(row[9]),
-                blocking=bool(row[10]), content_hash=str(row[11]), summary=_mapping(row[12]),
-                findings=findings, synthetic_demo=bool(row[13]),
+                scope_type=str(row[3]), scope_value=str(row[4]), interval=str(row[5]),
+                policy_version=str(row[6]),
+                evaluated_at=row[7], expected_start=row[8], expected_end=row[9], max_action=str(row[10]),
+                blocking=bool(row[11]), content_hash=str(row[12]), summary=_mapping(row[13]),
+                findings=findings, synthetic_demo=bool(row[14]),
             )
         return self._read(operation)
 
