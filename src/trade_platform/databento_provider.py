@@ -53,13 +53,14 @@ Module 3G.1d real pilot -- see ``docs/MODULE_3G0_PROVIDER_SELECTION_AND_LICENSIN
   this module targets, a resubmission's cost is negligible; this is a
   disclosed gap, not a silent one, and would need addressing before this
   adapter is extended to large-scale backfills.
-* The consolidated ``EQUS.SUMMARY``/``EQUS.MINI`` datasets span multiple NMS
-  exchanges/ATSs per row, so this adapter records a fixed
-  ``"CONSOLIDATED_NMS"`` placeholder as ``RawHistoricalObservation.exchange``
-  rather than a single per-row venue code. Whether
-  ``historical_market_data.normalize()``'s ``exchange_instrument_mismatch``
-  check tolerates that against the professional instrument master is a
-  Module 3G.1b integration question, not resolved here.
+* Resolved in Module 3G.1b: the consolidated ``EQUS.SUMMARY``/``EQUS.MINI``
+  datasets span multiple NMS exchanges/ATSs per row, so this adapter records
+  ``historical_market_data.CONSOLIDATED_TAPE_EXCHANGE`` -- a real,
+  provider-neutral sentinel for CTA/UTP consolidated-tape data, not a fake
+  exchange or a Databento-specific bypass -- as
+  ``RawHistoricalObservation.exchange``. ``normalize()`` validates it against
+  the resolved instrument's own registered venue rather than skipping
+  validation.
 
 Hard gate: nothing in this module makes a real request unless a caller
 supplies a ``ProviderConfiguration`` with ``terms_accepted=True`` and a
@@ -90,7 +91,12 @@ from .data_providers import (
     ProviderError,
     RetryPolicy,
 )
-from .historical_market_data import AdjustmentStatus, ObservationKind, RawHistoricalObservation
+from .historical_market_data import (
+    CONSOLIDATED_TAPE_EXCHANGE,
+    AdjustmentStatus,
+    ObservationKind,
+    RawHistoricalObservation,
+)
 from .provider_ingestion import RawHistoricalPage
 
 DATABENTO_MAXIMUM_SYMBOLS_PER_REQUEST = 2000
@@ -355,7 +361,7 @@ class DatabentoHistoricalAdapter:
             raise ProviderError(f"databento_csv_missing_expected_column:{error}") from error
         ingested_at = self._now()
         return RawHistoricalObservation(
-            source_id, ObservationKind.OHLCV, instrument_id, symbol, "CONSOLIDATED_NMS",
+            source_id, ObservationKind.OHLCV, instrument_id, symbol, CONSOLIDATED_TAPE_EXCHANGE,
             event_at, event_at, ingested_at, AdjustmentStatus.RAW, 0,
             f"databento://batch/{schema}",
             payload,

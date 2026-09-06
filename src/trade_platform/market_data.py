@@ -57,6 +57,31 @@ class FixtureBarProvider:
         ]
 
 
+class PrecomputedBarProvider:
+    """``HistoricalBarProvider`` over bars already produced by a real, named source.
+
+    For providers whose bars are derived from an already-validated upstream pipeline
+    (e.g. ``historical_market_data.py``'s raw-capture/normalize path) rather than
+    fetched live -- the pipeline computes the bars once, then hands them to
+    :func:`ingest_from_provider` through this adapter so the existing provenance check
+    (``bar.provider`` must be in ``provenance_names``) still runs unchanged. Unlike
+    :class:`FixtureBarProvider`, ``name`` reflects the real upstream provider, not a
+    fixed test literal.
+    """
+
+    def __init__(self, name: str, bars: list[OHLCVBar]) -> None:
+        if not name.strip():
+            raise DataQualityError("precomputed_bar_provider_requires_a_name")
+        self.name = name
+        self._bars = tuple(bars)
+
+    def fetch_bars(self, instrument_id: str, interval: str, start: datetime, end: datetime) -> list[OHLCVBar]:
+        return [
+            bar for bar in self._bars
+            if bar.instrument_id == instrument_id and bar.interval == interval and start <= bar.event_at <= end
+        ]
+
+
 def ingest_from_provider(
     provider: HistoricalBarProvider, store: HistoricalBarStore, instrument_id: str, interval: str, start: datetime, end: datetime
 ) -> str:
