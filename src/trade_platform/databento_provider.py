@@ -76,6 +76,7 @@ import json
 import time
 import urllib.parse
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Protocol
@@ -100,7 +101,7 @@ from .historical_market_data import (
 from .provider_ingestion import RawHistoricalPage
 
 DATABENTO_MAXIMUM_SYMBOLS_PER_REQUEST = 2000
-_SUPPORTED_SCHEMAS = {"ohlcv-1d": "1d", "ohlcv-1m": "1m"}
+SUPPORTED_SCHEMAS = {"ohlcv-1d": "1d", "ohlcv-1m": "1m"}
 _USER_AGENT = "trade-platform-paper-research/0.1"
 
 
@@ -185,7 +186,7 @@ def _parse_scope(scope: dict[str, object]) -> tuple[str, str, tuple[str, ...], d
     dataset, schema, symbols = scope.get("dataset"), scope.get("schema"), scope.get("symbols")
     if not isinstance(dataset, str) or not dataset.strip():
         raise ProviderConfigurationError("invalid_databento_scope_dataset")
-    if schema not in _SUPPORTED_SCHEMAS:
+    if schema not in SUPPORTED_SCHEMAS:
         raise ProviderConfigurationError("unsupported_databento_schema")
     if (
         not isinstance(symbols, (list, tuple))
@@ -205,6 +206,27 @@ def _parse_scope(scope: dict[str, object]) -> tuple[str, str, tuple[str, ...], d
     return dataset, str(schema), tuple(symbols), start_date, end_date
 
 
+def plan_chunks(start: date, end: date, chunk_size: timedelta) -> tuple[tuple[date, date], ...]:
+    """The exact sequence of date-range chunks a real ingestion of ``[start, end)``
+    would submit as separate Databento batch jobs -- pure, no I/O. Used both by
+    :meth:`DatabentoHistoricalAdapter.fetch_raw_page` (one chunk per call, driven by
+    its cursor) and by Module 3G.1c's pilot-readiness dry run (the whole plan, so an
+    operator can see exactly how many jobs/requests a pilot would make before any of
+    them are ever submitted).
+    """
+    if end <= start:
+        raise ProviderConfigurationError("invalid_databento_scope_date_range")
+    if chunk_size <= timedelta(0):
+        raise ProviderConfigurationError("invalid_databento_polling_configuration")
+    chunks: list[tuple[date, date]] = []
+    cursor = start
+    while cursor < end:
+        chunk_end = min(cursor + chunk_size, end)
+        chunks.append((cursor, chunk_end))
+        cursor = chunk_end
+    return tuple(chunks)
+
+
 def _parse_databento_timestamp(value: str) -> datetime:
     try:
         parsed = datetime.fromisoformat(value)
@@ -215,6 +237,27 @@ def _parse_databento_timestamp(value: str) -> datetime:
         return datetime.fromtimestamp(int(value) / 1_000_000_000, tz=timezone.utc)
     except (ValueError, OverflowError, OSError) as error:
         raise ProviderError(f"databento_unparseable_timestamp:{value}") from error
+
+
+@dataclass(frozen=True, slots=True)
+class DatabentoPreflight:
+    """Everything ``fetch_raw_page`` validates before its first network call.
+
+    Returned so a caller (e.g. Module 3G.1c's pilot-readiness dry run) can prove a
+    configuration would pass every pre-network check -- terms acceptance, scope
+    shape, resumability, and secret *resolvability* -- without ever seeing the
+    resolved secret value itself (deliberately not a field here) and without
+    submitting anything.
+    """
+
+    dataset: str
+    schema: str
+    symbols: tuple[str, ...]
+    start: date
+    end: date
+    chunk_start: date
+    chunk_end: date
+    next_cursor: str | None
 
 
 class DatabentoHistoricalAdapter:
@@ -249,7 +292,17 @@ class DatabentoHistoricalAdapter:
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._sleep = sleep
 
-    def fetch_raw_page(self, source_id: UUID, scope: dict[str, object], cursor: str | None) -> RawHistoricalPage:
+    def preflight(self, scope: dict[str, object], cursor: str | None) -> DatabentoPreflight:
+        """Validate everything up to, but never including, the first network call.
+
+        Terms acceptance, scope shape (dataset/schema/symbols/date range), cursor
+        resumability, and secret *resolvability* (the resolved value is discarded
+        immediately, never returned or logged). Raises the same
+        ``ProviderConfigurationError``/``ProviderError`` a real ``fetch_raw_page``
+        call would raise for the same problem, at exactly the same point -- this
+        is not a separate, potentially-drifting validation path, it is the actual
+        prefix of ``fetch_raw_page`` factored out so it can be exercised on its own.
+        """
         if not self._configuration.terms_accepted:
             raise ProviderConfigurationError("provider_terms_not_accepted")
         dataset, schema, symbols, start, end = _parse_scope(scope)
@@ -257,16 +310,23 @@ class DatabentoHistoricalAdapter:
         if chunk_start < start or chunk_start >= end:
             raise ProviderConfigurationError("invalid_databento_resume_cursor")
         chunk_end = min(chunk_start + self._chunk_size, end)
+        self._resolve_api_key()  # raises if unresolvable; the value itself is discarded here
+        next_cursor = chunk_end.isoformat() if chunk_end < end else None
+        return DatabentoPreflight(dataset, schema, symbols, start, end, chunk_start, chunk_end, next_cursor)
 
+    def fetch_raw_page(self, source_id: UUID, scope: dict[str, object], cursor: str | None) -> RawHistoricalPage:
+        preflight = self.preflight(scope, cursor)
         api_key = self._resolve_api_key()
-        job_id = self._submit_job(dataset, schema, symbols, chunk_start, chunk_end, api_key)
+        job_id = self._submit_job(
+            preflight.dataset, preflight.schema, preflight.symbols,
+            preflight.chunk_start, preflight.chunk_end, api_key,
+        )
         state = self._poll_until_terminal(job_id, api_key)
         if state is DatabentoJobState.EXPIRED:
             raise ProviderError("databento_batch_job_expired")
         rows = self._download_csv(job_id, api_key)
-        records = tuple(self._to_observation(source_id, schema, row) for row in rows)
-        next_cursor = chunk_end.isoformat() if chunk_end < end else None
-        return RawHistoricalPage(records, next_cursor, f"databento-batch-csv-{schema}-v1", self._now())
+        records = tuple(self._to_observation(source_id, preflight.schema, row) for row in rows)
+        return RawHistoricalPage(records, preflight.next_cursor, f"databento-batch-csv-{preflight.schema}-v1", self._now())
 
     def _resolve_api_key(self) -> str:
         if self._configuration.secret_reference is None:
@@ -353,7 +413,7 @@ class DatabentoHistoricalAdapter:
             event_at = _parse_databento_timestamp(row["ts_event"])
             symbol, instrument_id = row["symbol"], row["instrument_id"]
             payload: dict[str, object] = {
-                "interval": _SUPPORTED_SCHEMAS[schema],
+                "interval": SUPPORTED_SCHEMAS[schema],
                 "open": row["open"], "high": row["high"], "low": row["low"], "close": row["close"],
                 "volume": row.get("volume", "0"),
             }
