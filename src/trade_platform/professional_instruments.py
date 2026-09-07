@@ -53,6 +53,10 @@ class SessionType(StrEnum):
     US_EQUITY = "US_EQUITY"
     FX_24X5 = "FX_24X5"
     CRYPTO_24X7 = "CRYPTO_24X7"
+    # Module 3H.1: a CME-style near-continuous weekday session. Distinct from
+    # FX_24X5 because a futures venue observes exchange holidays and daily
+    # settlement/maintenance breaks that the OTC FX week does not.
+    FUTURES_23X5 = "FUTURES_23X5"
 
 
 class RepresentationKind(StrEnum):
