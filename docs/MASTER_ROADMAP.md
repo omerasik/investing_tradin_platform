@@ -117,6 +117,20 @@ introduced in 3G.1f.2 (renaming fixtures so they sort last) with an enforced
 omitted from the unfiltered discovery page while remaining fully searchable and
 readable in detail.
 
+Exact merged-main run `34116111609` verifies Module 3H.2 on commit
+`0a59f95faf6fe2d3cee4b7b830e6ca3129ce432a`: migration head `20260907_0042`
+applied, all **816 tests without skips**, all **151 restore-critical tables**
+reconciled after a fresh `pg_restore`, the **117/117** mypy ratchet, the
+zero-error mypy slice now including `crypto_instruments.py`, and every
+configured security, supply-chain, container, attestation, frontend, smoke and
+browser gate. This verifies the engineering authority only — no venue was
+contacted, every crypto instrument, asset, venue and rule remains fixture data,
+and it grants no data or trading authority.
+
+NEXT-02 (Multi-Asset Instrument Authority V2) is engineering-complete across
+3H.1 and 3H.2. **NEXT-03** (Multi-Asset Market Data Authority) has not started
+and is pending an architecture review before implementation.
+
 Exact merged-main run `34109237857` verifies Module 3H.1 on commit
 `b50cceee694757b886bf86478f64fc131ea3e9a6`: migration head `20260907_0041`
 applied, all **779 tests without skips**, all **148 restore-critical tables**
