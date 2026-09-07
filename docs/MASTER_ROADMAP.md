@@ -128,8 +128,38 @@ contacted, every crypto instrument, asset, venue and rule remains fixture data,
 and it grants no data or trading authority.
 
 NEXT-02 (Multi-Asset Instrument Authority V2) is engineering-complete across
-3H.1 and 3H.2. **NEXT-03** (Multi-Asset Market Data Authority) has not started
-and is pending an architecture review before implementation.
+3H.1 and 3H.2.
+
+## Multi-asset market data authority (NEXT-03)
+
+The NEXT-03 architecture was reviewed and approved on 2026-09-07 and proceeds
+incrementally, one independently reviewable authority layer per PR: **3I.1**
+futures settlement + open interest, **3I.2** crypto funding + mark/index +
+crypto open interest, **3I.3** deterministic futures term-structure derivation.
+**3I.4** (top-of-book quotes) is planned but not authorized. **3I.5**
+(trade-by-trade and L2 order book) is explicitly deferred pending a separate
+storage-tier architecture decision — object storage/Parquet, partitioned
+catalogue, hot/cold tiers, checksummed manifests and a replay interface — and
+must not be forced into the current low-cardinality immutable evidence tables.
+
+**3I.1** ([futures settlement and open-interest
+authority](MODULE_3I1_FUTURES_SETTLEMENT_OPEN_INTEREST.md)) extends the
+existing pipeline in place (migration `20260907_0043`): no second source
+registry, dataset registry, Data Health system or observation envelope. Two new
+observation kinds carry their canonical normalized value in typed payload
+tables, with `normalized_value` holding only a non-financial pointer marker,
+dataset sealing hashing the canonical typed values, and the backward-compatible
+JSON projection synthesized at read time — one durable authority per value, and
+envelope/payload kept one-to-one by a deferred constraint trigger in one
+direction and a primary-key foreign key in the other. Source authorization
+becomes fail-closed on two axes (`AssetScope` enum plus per-observation-kind
+capabilities enforced by a composite foreign key), so OHLCV authority never
+implies settlement authority. Settlement stays distinct from close/last
+trade/mark; open interest always carries an explicit unit and is never
+converted between units. Settlement and open interest resolve only to real
+3H.1 contracts, never to a synthetic continuous series, and no
+open-interest-driven roll policy is enabled. All values are fixture data; no
+exchange or provider was contacted.
 
 Exact merged-main run `34109237857` verifies Module 3H.1 on commit
 `b50cceee694757b886bf86478f64fc131ea3e9a6`: migration head `20260907_0041`
@@ -159,7 +189,7 @@ local DSN and are not substituted for the no-skip hosted evidence.
 | RQ-001 | Platform §§1–3: separated active trading and investment systems; capital preservation, auditability, paper-only live gate | PARTIAL | `domain.py`, `config.py`, `risk.py`, `investments.py`, `postgres_runtime.py`; `test_config.py`, `test_risk.py`, `test_investments.py`, `test_postgres_runtime.py` | P0's paper-only, fail-closed execution/risk/audit boundary is VERIFIED by the fifteen-invariant audit and no-skip PostgreSQL CI. Active trading and investment records remain separated, but multi-account capital policies, complete investment approvals and production identity controls are incomplete. Live trading remains disabled. |
 | RQ-002 | Platform §4: modular event-driven architecture, FastAPI schemas, storage, queues/workflows, Docker/IaC/CI | PARTIAL | `persistence.py`, `postgres_schema.py`, `migrations/`, `Dockerfile`, `.github/workflows/verify.yml` | Cycles 219–221 verify a hardened local-research image, retained CVE/SBOM evidence and a checksum-bound archive with Sigstore-signed SLSA/CycloneDX attestations. PostgreSQL schema/backfill/restore gates remain verified. The image is not the PostgreSQL deployment: queue/cache/actual object storage, registry-native OCI signing/publication, IaC, orchestration and production deployment remain incomplete. |
 | RQ-003 | Platform §5.1: complete instrument master, calendars, identifiers, delistings, actions, mappings | PARTIAL | `professional_instruments.py`, migration `0008`, `test_professional_instruments.py` | Cycle 10's provider-neutral PostgreSQL instrument/calendar authority is VERIFIED in CI: time-bounded identifiers and symbol history, lifecycle/delisting, US/DST/holiday/early-close, FX 24x5 and crypto 24x7 conventions survive restart. It is not an authorized exchange feed. Module 3H.1 extends it with sibling futures tables (migration `20260907_0041`, `futures_contracts.py`): series/root identity, database-enforced `tick_value = tick_size × contract_multiplier`, settlement semantics, full contract date lifecycle, two-clock exchange margin and content-hashed versioned continuous-series roll policies with immutable non-overlapping members. All futures data is fixture data; no exchange was contacted. Module 3H.2 adds crypto SPOT/PERPETUAL/DATED_FUTURE semantics (migration `20260907_0042`, `crypto_instruments.py`): venue-scoped identity, base/quote/settlement asset separation, linear/inverse/quanto coherence, two-clock funding conventions and venue trading rules, with funding/mark/index/OI observations deferred to NEXT-03 and margin/leverage deferred to the account-risk layer. All crypto data is fixture data; no exchange was contacted. Base-currency/contract-size catalogue, broader exchanges, BIST, crypto options, open-interest-driven rolls, continuous price adjustment and corporate-action provider linkage remain incomplete. |
-| RQ-004 | Platform §§5.2, 6–8: multi-asset historical/streaming market data, provider architecture, quality, provenance | PARTIAL | `historical_market_data.py`, `data_providers.py`, `data_health.py`, migrations `0009`–`0010`; `test_historical_market_data.py`, `test_data_health.py` | Cycles 11–12 VERIFIED the provider-neutral PostgreSQL raw-capture, authorization, normalization, corporate-action provenance, sealed-dataset/PIT-query and mandatory Data Health gate. Fixture transport, capability/retry/rate-limit/pagination/fallback contracts remain tested. Authorized real ingestion, streaming, quote/trade/book/funding/OI data and a licensed multi-provider activation remain EXTERNAL_BLOCKED; fixture data is not real-market proof. |
+| RQ-004 | Platform §§5.2, 6–8: multi-asset historical/streaming market data, provider architecture, quality, provenance | PARTIAL | `historical_market_data.py`, `data_providers.py`, `data_health.py`, migrations `0009`–`0010`; `test_historical_market_data.py`, `test_data_health.py` | Cycles 11–12 VERIFIED the provider-neutral PostgreSQL raw-capture, authorization, normalization, corporate-action provenance, sealed-dataset/PIT-query and mandatory Data Health gate. Fixture transport, capability/retry/rate-limit/pagination/fallback contracts remain tested. Module 3I.1 extends the same pipeline with futures settlement-price and open-interest observation kinds (migration `20260907_0043`, `futures_market_observations.py`): typed canonical payload tables as the single normalized authority, per-observation-kind source capability authorization enforced by a composite foreign key, explicit open-interest units that are never converted, settlement kept distinct from close/last trade, resolution restricted to real 3H.1 contracts, and Data Health gaining observation-kind and source identity dimensions. Authorized real ingestion, streaming, quote/trade/book/funding/mark/index data and a licensed multi-provider activation remain EXTERNAL_BLOCKED; fixture data is not real-market proof. |
 | RQ-005 | Platform §5.3: point-in-time fundamental service | PARTIAL | `pit_fundamentals.py`, migration `0011`, `fundamentals.py`, `investments.py`; `test_pit_fundamentals.py`, `test_fundamentals.py`, `test_investments.py` | Cycle 14 VERIFIED the provider-neutral PostgreSQL filing/fact authority: filing/effective/ingestion timestamps, as-reported and standardized values, revision history, PIT visibility, formula provenance and restart/restore coverage. Actual SEC retrieval is EXTERNAL_BLOCKED pending operator-approved terms and identifying configuration; no real filing has been claimed. Estimates, guidance, insider/ownership catalogues and wider feature integration remain incomplete. |
 | RQ-006 | Platform §5.4: versioned macro service with release/revision timing | PARTIAL | `pit_macro.py`, migration `0012`, `macro_data.py`; `test_pit_macro.py`, `test_macro_data.py` | Cycle 15 VERIFIED the provider-neutral PostgreSQL macro catalogue and immutable release/revision/ingestion semantics, including policy rate, CPI, employment, GDP, curve and liquidity-credit series. Authoritative FRED/ECB or other source activation and licensed expectations remain EXTERNAL_BLOCKED; fixture observations are not real macro evidence. Macro feature integration remains incomplete. |
 | RQ-007 | Platform §5.5: news/events intelligence | PARTIAL | `market_intelligence.py`, `news_event_intelligence.py`, migration `0020`; news/event tests | Exact-merge run `31923127659` verifies a PostgreSQL-native, correction-aware, rights-gated research evidence authority with deterministic dedupe/clustering, professional-instrument links, event taxonomy, credibility/uncertainty, point-in-time replacement and confidence withdrawal. No provider is activated. |
