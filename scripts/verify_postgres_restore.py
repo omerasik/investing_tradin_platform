@@ -98,7 +98,12 @@ CRITICAL_TABLES = (
     "crypto_venue_trading_rules",
     "historical_source_capabilities",
     "futures_settlement_observations",
-    "futures_open_interest_observations",
+    # Module 3I.2 renamed futures_open_interest_observations to this one
+    # cross-asset authority; its canonical payload identity in sealed dataset
+    # hashes is deliberately unchanged.
+    "open_interest_observations",
+    "crypto_funding_observations",
+    "crypto_reference_price_observations",
     "historical_data_sources",
     "historical_raw_observations",
     "historical_normalized_observations",

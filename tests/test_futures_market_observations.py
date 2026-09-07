@@ -16,14 +16,17 @@ from trade_platform.data_health import (
     detect_futures_series_health,
 )
 from trade_platform.futures_market_observations import (
-    FUTURES_SUPPORTED_OPEN_INTEREST_UNITS,
-    OPEN_INTEREST_PAYLOAD_TABLE,
     SETTLEMENT_PAYLOAD_TABLE,
-    OpenInterestUnit,
     SettlementFinality,
+    parse_settlement_payload,
+)
+from trade_platform.market_observation_payloads import (
+    FUTURES_SUPPORTED_OPEN_INTEREST_UNITS,
+    OPEN_INTEREST_CANONICAL_PAYLOAD_IDENTITY,
+    OPEN_INTEREST_PAYLOAD_TABLE,
+    OpenInterestUnit,
     canonical_payload_marker,
     parse_open_interest_payload,
-    parse_settlement_payload,
 )
 
 EFFECTIVE = datetime(2025, 6, 20, 18, 0, tzinfo=UTC)
@@ -217,6 +220,35 @@ class CanonicalMarkerTests(unittest.TestCase):
             self.assertEqual(marker, {"canonical_payload_table": table})
             self.assertNotIn("settlement_price", marker)
             self.assertNotIn("open_interest", marker)
+
+    def test_open_interest_canonical_identity_survived_the_3i2_rename(self) -> None:
+        """Invariant 26: generalizing a physical table name changed no dataset identity.
+
+        Module 3I.2 renamed the storage table so it would stop claiming to be
+        futures-specific while holding crypto rows. The canonical serialization
+        token is frozen at its pre-rename value precisely so that every dataset
+        sealed under 3I.1 still reconstructs to the same content hash.
+        """
+        self.assertEqual(
+            OPEN_INTEREST_CANONICAL_PAYLOAD_IDENTITY, "futures_open_interest_observations"
+        )
+        self.assertEqual(OPEN_INTEREST_PAYLOAD_TABLE, "open_interest_observations")
+        self.assertNotEqual(OPEN_INTEREST_CANONICAL_PAYLOAD_IDENTITY, OPEN_INTEREST_PAYLOAD_TABLE)
+        parsed, _ = parse_open_interest_payload(
+            open_interest_payload(), supported_units=ALL_UNITS
+        )
+        assert parsed is not None
+        # The exact tuple a 3I.1 dataset hashed, element for element.
+        self.assertEqual(
+            parsed.canonical_tuple(),
+            (
+                "futures_open_interest_observations",
+                "412500",
+                "CONTRACTS",
+                "2025-06-20T18:00:00+00:00",
+                "",
+            ),
+        )
 
 
 class FuturesSeriesDataHealthTests(unittest.TestCase):

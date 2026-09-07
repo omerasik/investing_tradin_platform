@@ -8,20 +8,44 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
-from typing import cast
+from typing import TypeAlias, cast
 from uuid import UUID, uuid4
 
+from .crypto_instruments import (
+    CryptoInstrumentError,
+    CryptoInstrumentSpecification,
+    PostgresCryptoInstrumentAuthority,
+)
+from .crypto_market_observations import (
+    FUNDING_ELIGIBLE_CRYPTO_KINDS,
+    FUNDING_PAYLOAD_TABLE,
+    REFERENCE_PRICE_PAYLOAD_TABLE,
+    CryptoFundingPayload,
+    CryptoReferencePricePayload,
+    FundingObservationKind,
+    ReferencePriceKind,
+    parse_funding_payload,
+    parse_reference_price_payload,
+    validate_crypto_funding,
+    validate_crypto_open_interest,
+    validate_crypto_reference_price,
+)
 from .domain import AssetClass
 from .futures_market_observations import (
-    OPEN_INTEREST_PAYLOAD_TABLE,
     SETTLEMENT_PAYLOAD_TABLE,
-    FuturesOpenInterestPayload,
     FuturesSettlementPayload,
-    OpenInterestUnit,
     SettlementFinality,
+    parse_settlement_payload,
+)
+from .market_observation_payloads import (
+    CRYPTO_SUPPORTED_OPEN_INTEREST_UNITS,
+    FUTURES_SUPPORTED_OPEN_INTEREST_UNITS,
+    OPEN_INTEREST_CANONICAL_PAYLOAD_IDENTITY,
+    OPEN_INTEREST_PAYLOAD_TABLE,
+    OpenInterestPayload,
+    OpenInterestUnit,
     canonical_payload_marker,
     parse_open_interest_payload,
-    parse_settlement_payload,
 )
 from .persistence import PostgresDatabase
 from .professional_instruments import (
@@ -58,6 +82,16 @@ class ObservationKind(StrEnum):
     # payload table, never in normalized_value -- see TYPED_PAYLOAD_KINDS.
     SETTLEMENT_PRICE = "SETTLEMENT_PRICE"
     OPEN_INTEREST = "OPEN_INTEREST"
+    # Module 3I.2. Realized and indicative funding are deliberately two kinds,
+    # not one kind with a status column: what a venue applied and what it
+    # estimated it would apply are different evidence, and nothing may
+    # substitute one for the other. MARK_PRICE and INDEX_PRICE are likewise
+    # distinct from each other and from SETTLEMENT_PRICE, OHLCV and any last
+    # trade -- there is no fallback between reference prices anywhere.
+    FUNDING_RATE_REALIZED = "FUNDING_RATE_REALIZED"
+    FUNDING_RATE_INDICATIVE = "FUNDING_RATE_INDICATIVE"
+    MARK_PRICE = "MARK_PRICE"
+    INDEX_PRICE = "INDEX_PRICE"
 
 
 class AssetScope(StrEnum):
@@ -65,13 +99,46 @@ class AssetScope(StrEnum):
 
     US_EQUITIES_ETFS = "US_EQUITIES_ETFS"
     FUTURES = "FUTURES"
+    CRYPTO = "CRYPTO"
 
 
 #: Kinds whose canonical normalized payload lives in a typed table rather than
 #: in ``historical_normalized_observations.normalized_value``.
 TYPED_PAYLOAD_KINDS: frozenset[ObservationKind] = frozenset(
-    {ObservationKind.SETTLEMENT_PRICE, ObservationKind.OPEN_INTEREST}
+    {
+        ObservationKind.SETTLEMENT_PRICE,
+        ObservationKind.OPEN_INTEREST,
+        ObservationKind.FUNDING_RATE_REALIZED,
+        ObservationKind.FUNDING_RATE_INDICATIVE,
+        ObservationKind.MARK_PRICE,
+        ObservationKind.INDEX_PRICE,
+    }
 )
+
+#: The Module 3I.2 crypto observation family. Each requires a 3H.2 crypto
+#: instrument specification and is judged against that instrument's own
+#: semantics; none of them may describe a futures or equity instrument.
+CRYPTO_OBSERVATION_KINDS: frozenset[ObservationKind] = frozenset(
+    {
+        ObservationKind.FUNDING_RATE_REALIZED,
+        ObservationKind.FUNDING_RATE_INDICATIVE,
+        ObservationKind.MARK_PRICE,
+        ObservationKind.INDEX_PRICE,
+    }
+)
+
+#: Which funding evidence each funding kind is. The envelope kind is the single
+#: authority; the typed table stores no discriminator that could disagree.
+_FUNDING_KINDS: dict[ObservationKind, FundingObservationKind] = {
+    ObservationKind.FUNDING_RATE_REALIZED: FundingObservationKind.REALIZED,
+    ObservationKind.FUNDING_RATE_INDICATIVE: FundingObservationKind.INDICATIVE,
+}
+
+#: Likewise for the shared mark/index typed table.
+_REFERENCE_PRICE_KINDS: dict[ObservationKind, ReferencePriceKind] = {
+    ObservationKind.MARK_PRICE: ReferencePriceKind.MARK,
+    ObservationKind.INDEX_PRICE: ReferencePriceKind.INDEX,
+}
 
 #: The equity corporate-action family that predates Module 3I.1.
 _EQUITY_KINDS: frozenset[ObservationKind] = frozenset(
@@ -91,6 +158,21 @@ SCOPE_ELIGIBLE_KINDS: dict[AssetScope, frozenset[ObservationKind]] = {
     AssetScope.US_EQUITIES_ETFS: _EQUITY_KINDS,
     AssetScope.FUTURES: frozenset(
         {ObservationKind.OHLCV, ObservationKind.SETTLEMENT_PRICE, ObservationKind.OPEN_INTEREST}
+    ),
+    # OPEN_INTEREST appears under both derivative scopes because there is one
+    # open-interest semantic authority, not a futures one and a crypto one.
+    # Scope still binds: a FUTURES source may not write open interest for a
+    # crypto instrument, which _require_source_scope_matches_instrument
+    # enforces against the resolved instrument itself.
+    AssetScope.CRYPTO: frozenset(
+        {
+            ObservationKind.OHLCV,
+            ObservationKind.OPEN_INTEREST,
+            ObservationKind.FUNDING_RATE_REALIZED,
+            ObservationKind.FUNDING_RATE_INDICATIVE,
+            ObservationKind.MARK_PRICE,
+            ObservationKind.INDEX_PRICE,
+        }
     ),
 }
 
@@ -116,47 +198,137 @@ TYPED_KIND_ADJUSTMENT_STATUSES: frozenset[AdjustmentStatus] = frozenset(
     {AdjustmentStatus.RAW, AdjustmentStatus.AS_REPORTED}
 )
 
-#: Which typed table is canonical for each typed kind.
+#: Which physical typed table is canonical for each typed kind. Funding shares
+#: one table across its two kinds and mark/index share another: the financial
+#: shape is identical, while the envelope kind stays the sole authority for
+#: meaning and database constraint triggers refuse a payload attached to an
+#: envelope outside its own kind set.
 _TYPED_PAYLOAD_TABLES: dict[ObservationKind, str] = {
     ObservationKind.SETTLEMENT_PRICE: SETTLEMENT_PAYLOAD_TABLE,
     ObservationKind.OPEN_INTEREST: OPEN_INTEREST_PAYLOAD_TABLE,
+    ObservationKind.FUNDING_RATE_REALIZED: FUNDING_PAYLOAD_TABLE,
+    ObservationKind.FUNDING_RATE_INDICATIVE: FUNDING_PAYLOAD_TABLE,
+    ObservationKind.MARK_PRICE: REFERENCE_PRICE_PAYLOAD_TABLE,
+    ObservationKind.INDEX_PRICE: REFERENCE_PRICE_PAYLOAD_TABLE,
 }
 
-#: Open-interest units a FUTURES source may supply in Module 3I.1. The other
-#: units exist in the enum so the dimension is honest, but are reserved for
-#: 3I.2 crypto venues and fail closed here rather than being converted.
-_FUTURES_OPEN_INTEREST_UNITS: frozenset[OpenInterestUnit] = frozenset(
-    {OpenInterestUnit.CONTRACTS}
+#: The canonical payload identity token written into ``normalized_value`` and
+#: folded into sealed dataset hashes. It equals the physical table name for
+#: every kind except OPEN_INTEREST, whose token is frozen at its pre-3I.2 value
+#: so that renaming the physical table did not change the identity of any
+#: already-sealed dataset. See ``market_observation_payloads``.
+_CANONICAL_PAYLOAD_IDENTITIES: dict[ObservationKind, str] = {
+    **_TYPED_PAYLOAD_TABLES,
+    ObservationKind.OPEN_INTEREST: OPEN_INTEREST_CANONICAL_PAYLOAD_IDENTITY,
+}
+
+#: Instrument-master types that a CRYPTO-scoped source may describe. Module 3H.2
+#: keeps these distinct from ``FUTURE`` precisely so a crypto perpetual can never
+#: satisfy a futures contract's required metadata, and vice versa.
+_CRYPTO_INSTRUMENT_TYPES: frozenset[InstrumentType] = frozenset(
+    {
+        InstrumentType.SPOT_CRYPTO,
+        InstrumentType.CRYPTO_PERPETUAL,
+        InstrumentType.CRYPTO_DATED_FUTURE,
+    }
 )
 
+#: Which open-interest units each asset scope's instruments may declare. Units
+#: outside the set fail closed; nothing is ever converted into another unit.
+_SCOPE_OPEN_INTEREST_UNITS: dict[AssetScope, frozenset[OpenInterestUnit]] = {
+    AssetScope.FUTURES: FUTURES_SUPPORTED_OPEN_INTEREST_UNITS,
+    AssetScope.CRYPTO: CRYPTO_SUPPORTED_OPEN_INTEREST_UNITS,
+}
 
-def _parse_typed_payload(
-    kind: ObservationKind, payload: dict[str, object]
-) -> tuple[FuturesSettlementPayload | FuturesOpenInterestPayload | None, tuple[str, ...]]:
-    if kind is ObservationKind.SETTLEMENT_PRICE:
-        return parse_settlement_payload(payload)
-    return parse_open_interest_payload(payload, supported_units=_FUTURES_OPEN_INTEREST_UNITS)
+#: Every canonical typed payload the pipeline can hold. Each has the same three
+#: obligations: a stable ``canonical_tuple`` folded into sealed dataset hashes,
+#: an ``as_normalized_projection`` synthesized for research readers, and exactly
+#: one durable row that the envelope cannot exist without.
+TypedPayload: TypeAlias = (
+    FuturesSettlementPayload
+    | OpenInterestPayload
+    | CryptoFundingPayload
+    | CryptoReferencePricePayload
+)
+
+#: Column offsets of each typed payload block inside the joined rows read by
+#: :meth:`PostgresHistoricalMarketDataPipeline.seal_dataset` and
+#: :meth:`~PostgresHistoricalMarketDataPipeline.research_query`, relative to the
+#: first typed column. Both queries select ``_TYPED_PAYLOAD_COLUMNS`` in this
+#: order, so one hydration function serves both.
+_SETTLEMENT_OFFSET = 0
+_OPEN_INTEREST_OFFSET = 6
+_FUNDING_OFFSET = 10
+_REFERENCE_PRICE_OFFSET = 16
+
+_TYPED_PAYLOAD_COLUMNS = (
+    "st.settlement_price,st.price_currency,st.settlement_date,st.settlement_effective_at,"
+    "st.finality,st.quote_unit,"
+    "oi.open_interest,oi.unit,oi.observed_at,oi.unit_asset,"
+    "fu.funding_rate,fu.target_funding_at,fu.published_at,fu.settlement_asset,"
+    "fu.convention_id,fu.convention_version,"
+    "rp.price,rp.price_asset,rp.observed_at,rp.methodology_reference"
+)
+
+_TYPED_PAYLOAD_JOINS = (
+    f"LEFT JOIN {SETTLEMENT_PAYLOAD_TABLE} st "
+    "ON st.normalized_observation_id=n.normalized_observation_id "
+    f"LEFT JOIN {OPEN_INTEREST_PAYLOAD_TABLE} oi "
+    "ON oi.normalized_observation_id=n.normalized_observation_id "
+    f"LEFT JOIN {FUNDING_PAYLOAD_TABLE} fu "
+    "ON fu.normalized_observation_id=n.normalized_observation_id "
+    f"LEFT JOIN {REFERENCE_PRICE_PAYLOAD_TABLE} rp "
+    "ON rp.normalized_observation_id=n.normalized_observation_id"
+)
 
 
 def _typed_payload_from_row(
     kind: ObservationKind, row: tuple[object, ...], offset: int
-) -> FuturesSettlementPayload | FuturesOpenInterestPayload | None:
+) -> TypedPayload | None:
     """Rebuild the canonical payload from its typed columns at read time."""
-    if kind is ObservationKind.SETTLEMENT_PRICE and row[offset] is not None:
+    if kind is ObservationKind.SETTLEMENT_PRICE:
+        base = offset + _SETTLEMENT_OFFSET
+        if row[base] is None:
+            return None
         return FuturesSettlementPayload(
-            settlement_price=Decimal(str(row[offset])),
-            price_currency=str(row[offset + 1]),
-            settlement_date=cast(date, row[offset + 2]),
-            settlement_effective_at=cast(datetime, row[offset + 3]),
-            finality=SettlementFinality(str(row[offset + 4])),
-            quote_unit=str(row[offset + 5]),
+            settlement_price=Decimal(str(row[base])),
+            price_currency=str(row[base + 1]),
+            settlement_date=cast(date, row[base + 2]),
+            settlement_effective_at=cast(datetime, row[base + 3]),
+            finality=SettlementFinality(str(row[base + 4])),
+            quote_unit=str(row[base + 5]),
         )
-    if kind is ObservationKind.OPEN_INTEREST and row[offset + 6] is not None:
-        return FuturesOpenInterestPayload(
-            open_interest=Decimal(str(row[offset + 6])),
-            unit=OpenInterestUnit(str(row[offset + 7])),
-            observed_at=cast(datetime, row[offset + 8]),
-            unit_asset=None if row[offset + 9] is None else str(row[offset + 9]),
+    if kind is ObservationKind.OPEN_INTEREST:
+        base = offset + _OPEN_INTEREST_OFFSET
+        if row[base] is None:
+            return None
+        return OpenInterestPayload(
+            open_interest=Decimal(str(row[base])),
+            unit=OpenInterestUnit(str(row[base + 1])),
+            observed_at=cast(datetime, row[base + 2]),
+            unit_asset=None if row[base + 3] is None else str(row[base + 3]),
+        )
+    if kind in _FUNDING_KINDS:
+        base = offset + _FUNDING_OFFSET
+        if row[base] is None:
+            return None
+        return CryptoFundingPayload(
+            funding_rate=Decimal(str(row[base])),
+            target_funding_at=cast(datetime, row[base + 1]),
+            published_at=cast(datetime, row[base + 2]),
+            settlement_asset=str(row[base + 3]),
+            convention_id=None if row[base + 4] is None else UUID(str(row[base + 4])),
+            convention_version=None if row[base + 5] is None else int(str(row[base + 5])),
+        )
+    if kind in _REFERENCE_PRICE_KINDS:
+        base = offset + _REFERENCE_PRICE_OFFSET
+        if row[base] is None:
+            return None
+        return CryptoReferencePricePayload(
+            price=Decimal(str(row[base])),
+            price_asset=str(row[base + 1]),
+            observed_at=cast(datetime, row[base + 2]),
+            methodology_reference=None if row[base + 3] is None else str(row[base + 3]),
         )
     return None
 
@@ -440,6 +612,9 @@ class PostgresHistoricalMarketDataPipeline:
     def __init__(self, database: PostgresDatabase) -> None:
         self._database = database
         self._instruments = PostgresProfessionalInstrumentMaster(database)
+        # The 3H.2 authority is read, never duplicated: crypto specifications and
+        # funding conventions have exactly one home and this pipeline consults it.
+        self._crypto = PostgresCryptoInstrumentAuthority(database)
 
     def register_source(self, source: AuthorizedHistoricalSource) -> None:
         source.validate()
@@ -515,7 +690,7 @@ class PostgresHistoricalMarketDataPipeline:
         _aware(normalized_at, "normalized_at")
         with self._database.transaction() as connection, connection.cursor() as cursor:
             cursor.execute(
-                "SELECT r.source_id,r.observation_kind,r.provider_identifier,r.exchange,r.event_at,r.ingested_at,r.raw_payload,s.provider_identifier_namespace "
+                "SELECT r.source_id,r.observation_kind,r.provider_identifier,r.exchange,r.event_at,r.ingested_at,r.raw_payload,s.provider_identifier_namespace,s.asset_scope "
                 "FROM historical_raw_observations r JOIN historical_data_sources s ON s.source_id=r.source_id WHERE r.raw_observation_id=%s",
                 (raw_observation_id,),
             )
@@ -532,7 +707,18 @@ class PostgresHistoricalMarketDataPipeline:
         except InstrumentResolutionError as error:
             raise HistoricalDataResolutionError("historical_instrument_resolution_failed") from error
         kind = ObservationKind(str(row[1]))
+        try:
+            scope = AssetScope(str(row[8]))
+        except ValueError as error:
+            raise HistoricalDataAuthorizationError(
+                f"unsupported_asset_scope:{row[8]}"
+            ) from error
+        # Kind eligibility first, so the most specific refusal is the one
+        # reported; scope then catches the cases a kind cannot, such as a
+        # futures-authorized source writing open interest -- a kind both
+        # derivative scopes share -- for a crypto perpetual.
         self._require_instrument_eligible_for_kind(kind, instrument)
+        self._require_source_scope_matches_instrument(scope, instrument)
         issues: list[str] = []
         raw_exchange = str(row[3])
         if raw_exchange == CONSOLIDATED_TAPE_EXCHANGE:
@@ -542,13 +728,16 @@ class PostgresHistoricalMarketDataPipeline:
             issues.append("exchange_instrument_mismatch")
         payload = cast(dict[str, object], row[6])
 
-        typed: FuturesSettlementPayload | FuturesOpenInterestPayload | None = None
+        typed: TypedPayload | None = None
         if kind in TYPED_PAYLOAD_KINDS:
-            typed, typed_issues = _parse_typed_payload(kind, payload)
+            typed, typed_issues = self._parse_typed_payload(
+                kind, payload, scope=scope, instrument_id=instrument.instrument_id,
+                event_at=event_at, ingested_at=ingested_at,
+            )
             issues.extend(typed_issues)
             # The canonical financial value lives in the typed table, so the
             # envelope stores a pointer marker rather than a second copy.
-            normalized = canonical_payload_marker(_TYPED_PAYLOAD_TABLES[kind])
+            normalized = canonical_payload_marker(_CANONICAL_PAYLOAD_IDENTITIES[kind])
         else:
             normalized, payload_issues = normalize_payload(kind, payload)
             issues.extend(payload_issues)
@@ -558,11 +747,14 @@ class PostgresHistoricalMarketDataPipeline:
             normalized, QualityStatus.REJECTED if issues else QualityStatus.VALIDATED,
             tuple(dict.fromkeys(issues)), normalized_at,
         )
-        if kind in TYPED_PAYLOAD_KINDS and typed is None:
-            # A rejected typed observation has no canonical payload to persist,
-            # and the deferred constraint trigger would refuse the envelope
-            # alone. Reporting the quality failure is the honest outcome; no
-            # partial or guessed row is written.
+        if kind in TYPED_PAYLOAD_KINDS and issues:
+            # The typed table is the single canonical authority for this value,
+            # so a record judged invalid is not written there at all: a stored
+            # row would look canonical while being evidence of nothing. When the
+            # payload could not even be parsed there is nothing to persist, and
+            # the deferred constraint trigger would refuse the envelope alone.
+            # Reporting the quality failure is the honest outcome; no partial or
+            # guessed row is written.
             raise HistoricalDataQualityError(
                 "typed_observation_rejected:" + ",".join(result.quality_issues)
             )
@@ -577,20 +769,123 @@ class PostgresHistoricalMarketDataPipeline:
                 )
                 if isinstance(typed, FuturesSettlementPayload):
                     cursor.execute(
-                        "INSERT INTO futures_settlement_observations VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                        f"INSERT INTO {SETTLEMENT_PAYLOAD_TABLE} "  # nosec B608 - fixed constant
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s)",
                         (result.normalized_observation_id, typed.settlement_price,
                          typed.price_currency, typed.settlement_date,
                          typed.settlement_effective_at, typed.finality.value, typed.quote_unit),
                     )
-                elif isinstance(typed, FuturesOpenInterestPayload):
+                elif isinstance(typed, OpenInterestPayload):
                     cursor.execute(
-                        "INSERT INTO futures_open_interest_observations VALUES (%s,%s,%s,%s,%s)",
+                        f"INSERT INTO {OPEN_INTEREST_PAYLOAD_TABLE} "  # nosec B608 - fixed constant
+                        "VALUES (%s,%s,%s,%s,%s)",
                         (result.normalized_observation_id, typed.open_interest,
                          typed.unit.value, typed.unit_asset, typed.observed_at),
+                    )
+                elif isinstance(typed, CryptoFundingPayload):
+                    cursor.execute(
+                        f"INSERT INTO {FUNDING_PAYLOAD_TABLE} "  # nosec B608 - fixed constant
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                        (result.normalized_observation_id, typed.funding_rate,
+                         typed.target_funding_at, typed.published_at, typed.settlement_asset,
+                         typed.convention_id, typed.convention_version),
+                    )
+                elif isinstance(typed, CryptoReferencePricePayload):
+                    cursor.execute(
+                        f"INSERT INTO {REFERENCE_PRICE_PAYLOAD_TABLE} "  # nosec B608 - fixed constant
+                        "VALUES (%s,%s,%s,%s,%s)",
+                        (result.normalized_observation_id, typed.price, typed.price_asset,
+                         typed.observed_at, typed.methodology_reference),
                     )
         except Exception as error:
             raise HistoricalMarketDataError("historical_normalization_persistence_failed") from error
         return result
+
+    def _parse_typed_payload(
+        self, kind: ObservationKind, payload: dict[str, object], *, scope: AssetScope,
+        instrument_id: str, event_at: datetime, ingested_at: datetime,
+    ) -> tuple[TypedPayload | None, tuple[str, ...]]:
+        """Parse a typed payload and judge it against the instrument's own semantics."""
+        if kind is ObservationKind.SETTLEMENT_PRICE:
+            return parse_settlement_payload(payload)
+        if kind is ObservationKind.OPEN_INTEREST:
+            units = _SCOPE_OPEN_INTEREST_UNITS.get(
+                scope, FUTURES_SUPPORTED_OPEN_INTEREST_UNITS
+            )
+            open_interest, issues = parse_open_interest_payload(payload, supported_units=units)
+            if open_interest is None or scope is not AssetScope.CRYPTO:
+                return open_interest, issues
+            specification = self._crypto_specification(instrument_id, ingested_at)
+            return open_interest, validate_crypto_open_interest(
+                open_interest, specification=specification
+            )
+        specification = self._crypto_specification(instrument_id, ingested_at)
+        if kind in _REFERENCE_PRICE_KINDS:
+            reference, issues = parse_reference_price_payload(payload)
+            if reference is None:
+                return None, issues
+            return reference, validate_crypto_reference_price(
+                reference, kind=_REFERENCE_PRICE_KINDS[kind],
+                specification=specification, event_at=event_at,
+            )
+        funding, issues = parse_funding_payload(payload)
+        if funding is None:
+            return None, issues
+        if specification.kind not in FUNDING_ELIGIBLE_CRYPTO_KINDS:
+            # Reported before the convention lookup so the refusal names the real
+            # problem: a spot pair or dated future is not subject to funding at
+            # all, and therefore legitimately has no funding schedule to miss.
+            return funding, (f"funding_requires_perpetual:{specification.kind.value}",)
+        # Two clocks, both taken from this observation and never from later
+        # knowledge: the schedule in force at the funding instant being reported,
+        # as this platform knew it when the record was ingested. A venue that
+        # announces a new schedule afterwards cannot reach back into this replay.
+        try:
+            convention = self._crypto.funding_convention_point_in_time(
+                instrument_id, effective_at=funding.target_funding_at, known_at=ingested_at
+            )
+        except CryptoInstrumentError:
+            return funding, ("funding_convention_not_known_at_observation_knowledge_time",)
+        return funding.bound_to(convention), validate_crypto_funding(
+            funding, kind=_FUNDING_KINDS[kind], specification=specification,
+            convention=convention, event_at=event_at, ingested_at=ingested_at,
+        )
+
+    def _crypto_specification(
+        self, instrument_id: str, known_at: datetime
+    ) -> CryptoInstrumentSpecification:
+        try:
+            return self._crypto.get_specification(instrument_id, known_at=known_at)
+        except CryptoInstrumentError as error:
+            raise HistoricalDataResolutionError(
+                f"instrument_has_no_crypto_specification:{instrument_id}"
+            ) from error
+
+    @staticmethod
+    def _require_source_scope_matches_instrument(
+        scope: AssetScope, instrument: ProfessionalInstrument
+    ) -> None:
+        """A source's asset scope binds to the instrument it actually resolved to.
+
+        Module 3I.2. ``OPEN_INTEREST`` is deliberately eligible under both the
+        FUTURES and CRYPTO scopes -- there is one open-interest authority, not
+        two -- so without this rule a futures-authorized source could write open
+        interest for a crypto perpetual. Scope is checked against the resolved
+        instrument rather than against the kind alone.
+        """
+        if scope is AssetScope.US_EQUITIES_ETFS:
+            if instrument.asset_class not in {AssetClass.EQUITY, AssetClass.ETF}:
+                raise HistoricalDataResolutionError("historical_source_asset_out_of_scope")
+            return
+        if scope is AssetScope.FUTURES:
+            if instrument.instrument_type is not InstrumentType.FUTURE:
+                raise HistoricalDataResolutionError("historical_source_asset_out_of_scope")
+            return
+        if (
+            instrument.asset_class is not AssetClass.CRYPTO
+            or instrument.instrument_type not in _CRYPTO_INSTRUMENT_TYPES
+        ):
+            raise HistoricalDataResolutionError("historical_source_asset_out_of_scope")
 
     def _require_instrument_eligible_for_kind(
         self, kind: ObservationKind, instrument: ProfessionalInstrument
@@ -600,31 +895,46 @@ class PostgresHistoricalMarketDataPipeline:
             if instrument.asset_class not in {AssetClass.EQUITY, AssetClass.ETF}:
                 raise HistoricalDataResolutionError("historical_source_asset_out_of_scope")
             return
-        if kind not in TYPED_PAYLOAD_KINDS:
-            if instrument.asset_class not in {AssetClass.EQUITY, AssetClass.ETF}:
-                raise HistoricalDataResolutionError("historical_source_asset_out_of_scope")
-            return
-        if instrument.instrument_type is not InstrumentType.FUTURE:
-            raise HistoricalDataResolutionError(
-                f"kind_requires_futures_instrument:{kind.value}:{instrument.instrument_type.value}"
-            )
-        if instrument.continuous_parent_id is not None:
-            # A continuous series is a derived research view over real
-            # contracts (Module 3H.1). Attaching an exchange-published
-            # settlement or open-interest record to it would invent a
-            # measurement no exchange ever published.
-            raise HistoricalDataResolutionError(
-                "continuous_series_cannot_carry_contract_observations"
-            )
-        with self._database.transaction() as connection, connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT 1 FROM futures_contract_specifications WHERE instrument_id=%s",
-                (instrument.instrument_id,),
-            )
-            if cursor.fetchone() is None:
+        if kind in CRYPTO_OBSERVATION_KINDS:
+            if instrument.instrument_type not in _CRYPTO_INSTRUMENT_TYPES:
                 raise HistoricalDataResolutionError(
-                    f"instrument_has_no_futures_contract_specification:{instrument.instrument_id}"
+                    f"kind_requires_crypto_instrument:{kind.value}:"
+                    f"{instrument.instrument_type.value}"
                 )
+            return
+        if kind in TYPED_PAYLOAD_KINDS:
+            # SETTLEMENT_PRICE and OPEN_INTEREST reach here. Open interest is
+            # cross-asset, so a crypto instrument is legitimate for it and its
+            # own eligibility (derivative only, correct unit asset) is judged by
+            # validate_crypto_open_interest against the 3H.2 specification.
+            if (
+                kind is ObservationKind.OPEN_INTEREST
+                and instrument.instrument_type in _CRYPTO_INSTRUMENT_TYPES
+            ):
+                return
+            if instrument.instrument_type is not InstrumentType.FUTURE:
+                raise HistoricalDataResolutionError(
+                    f"kind_requires_futures_instrument:{kind.value}:"
+                    f"{instrument.instrument_type.value}"
+                )
+            if instrument.continuous_parent_id is not None:
+                # A continuous series is a derived research view over real
+                # contracts (Module 3H.1). Attaching an exchange-published
+                # settlement or open-interest record to it would invent a
+                # measurement no exchange ever published.
+                raise HistoricalDataResolutionError(
+                    "continuous_series_cannot_carry_contract_observations"
+                )
+            with self._database.transaction() as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT 1 FROM futures_contract_specifications WHERE instrument_id=%s",
+                    (instrument.instrument_id,),
+                )
+                if cursor.fetchone() is None:
+                    raise HistoricalDataResolutionError(
+                        f"instrument_has_no_futures_contract_specification:"
+                        f"{instrument.instrument_id}"
+                    )
 
     def seal_dataset(
         self, source_id: UUID, version: str, normalization_version: str,
@@ -646,16 +956,11 @@ class PostgresHistoricalMarketDataPipeline:
                 "SELECT n.normalized_observation_id,n.normalization_version,n.quality_status,"
                 "n.normalized_value,n.normalized_at,r.source_id,r.event_at,r.ingested_at,"
                 "r.raw_payload_sha256,r.observation_kind,"
-                "s.settlement_price,s.price_currency,s.settlement_date,s.settlement_effective_at,"
-                "s.finality,s.quote_unit,"
-                "o.open_interest,o.unit,o.observed_at,o.unit_asset "
+                f"{_TYPED_PAYLOAD_COLUMNS} "
                 "FROM historical_normalized_observations n "
                 "JOIN historical_raw_observations r ON r.raw_observation_id=n.raw_observation_id "
-                "LEFT JOIN futures_settlement_observations s "
-                "ON s.normalized_observation_id=n.normalized_observation_id "
-                "LEFT JOIN futures_open_interest_observations o "
-                "ON o.normalized_observation_id=n.normalized_observation_id "
-                f"WHERE n.normalized_observation_id IN ({placeholders})",  # nosec B608 - placeholders only
+                f"{_TYPED_PAYLOAD_JOINS} "
+                f"WHERE n.normalized_observation_id IN ({placeholders})",  # nosec B608 - fixed fragments and placeholders only
                 normalized_ids,
             )
             rows = cursor.fetchall()
@@ -716,9 +1021,7 @@ class PostgresHistoricalMarketDataPipeline:
             "WITH ranked AS (SELECT n.instrument_id,r.observation_kind,s.provider,r.provider_identifier," 
             "r.provider_symbol,r.exchange,r.event_at,r.effective_at,r.ingested_at,r.adjustment_status," 
             "r.revision,r.provenance_uri,r.raw_payload_sha256,n.normalized_value,d.version,"
-            "st.settlement_price,st.price_currency,st.settlement_date,st.settlement_effective_at,"
-            "st.finality,st.quote_unit,"
-            "oi.open_interest,oi.unit,oi.observed_at,oi.unit_asset,"
+            f"{_TYPED_PAYLOAD_COLUMNS},"
             "ROW_NUMBER() OVER (PARTITION BY r.source_id,r.provider_identifier,r.observation_kind,r.event_at "
             "ORDER BY r.revision DESC,r.ingested_at DESC) AS rank "
             "FROM historical_dataset_members m "
@@ -726,11 +1029,8 @@ class PostgresHistoricalMarketDataPipeline:
             "JOIN historical_normalized_observations n ON n.normalized_observation_id=m.normalized_observation_id "
             "JOIN historical_raw_observations r ON r.raw_observation_id=n.raw_observation_id "
             "JOIN historical_data_sources s ON s.source_id=r.source_id "
-            "LEFT JOIN futures_settlement_observations st "
-            "ON st.normalized_observation_id=n.normalized_observation_id "
-            "LEFT JOIN futures_open_interest_observations oi "
-            "ON oi.normalized_observation_id=n.normalized_observation_id "
-            "WHERE d.dataset_version_id=%s AND d.status='SEALED' AND d.created_at<=%s " 
+            f"{_TYPED_PAYLOAD_JOINS} "
+            "WHERE d.dataset_version_id=%s AND d.status='SEALED' AND d.created_at<=%s "
             "AND n.instrument_id=%s AND n.quality_status='VALIDATED' AND n.normalized_at<=%s " 
             "AND r.event_at BETWEEN %s AND %s AND r.event_at<=%s AND r.ingested_at<=%s "
             f"{latest_filter}) SELECT * FROM ranked WHERE rank=1 ORDER BY event_at,observation_kind"  # nosec B608 - fixed policy fragment
