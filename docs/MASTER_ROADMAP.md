@@ -92,8 +92,30 @@ semantics, the full contract date lifecycle, two-clock exchange margin, and
 content-hashed versioned continuous-series roll policies whose materialized
 members are immutable and non-overlapping. Open-interest-driven rolls fail
 closed pending NEXT-03. All contract data is fixture data; no exchange was
-contacted. **3H.2** (crypto SPOT / PERPETUAL / DATED_FUTURE semantics, funding
-and mark/index prices) has not started.
+contacted.
+
+**3H.2** ([crypto instrument, funding-convention and venue-rule
+authority](MODULE_3H2_CRYPTO_INSTRUMENT_AUTHORITY.md)) completes NEXT-02 with
+three further sibling tables (migration `20260907_0042`): first-class SPOT /
+PERPETUAL / DATED_FUTURE semantics, venue as part of instrument identity,
+base/quote/settlement asset separation, linear/inverse/quanto coherence
+enforced in Python and by database CHECK, and a separated static-identity
+versus venue-revised-state boundary (tick size, quantity step, minimum
+quantity/notional live in a two-clock versioned rules table, not in static
+metadata). The migration widens the currency columns from `CHAR(3)` to
+`VARCHAR(12)` so `USDT`-style assets are expressible, while Python validation
+stays strictly ISO-4217 three-letter for every non-crypto asset class. Funding
+*conventions* are modelled; funding *rates*, mark and index prices and open
+interest are explicitly deferred to NEXT-03. Margin and leverage are
+deliberately excluded as account/risk-layer state (NEXT-10/NEXT-11). All venue,
+asset and contract data is fixture data; no exchange was contacted and no
+provider is activated.
+
+3H.2 also replaces the shared-database instrument-discovery workaround
+introduced in 3G.1f.2 (renaming fixtures so they sort last) with an enforced
+`operator_dashboard.RESERVED_TEST_FIXTURE_PREFIX`: test-fixture instruments are
+omitted from the unfiltered discovery page while remaining fully searchable and
+readable in detail.
 
 Exact merged-main run `34109237857` verifies Module 3H.1 on commit
 `b50cceee694757b886bf86478f64fc131ea3e9a6`: migration head `20260907_0041`
@@ -122,7 +144,7 @@ local DSN and are not substituted for the no-skip hosted evidence.
 |---|---|---|---|---|
 | RQ-001 | Platform §§1–3: separated active trading and investment systems; capital preservation, auditability, paper-only live gate | PARTIAL | `domain.py`, `config.py`, `risk.py`, `investments.py`, `postgres_runtime.py`; `test_config.py`, `test_risk.py`, `test_investments.py`, `test_postgres_runtime.py` | P0's paper-only, fail-closed execution/risk/audit boundary is VERIFIED by the fifteen-invariant audit and no-skip PostgreSQL CI. Active trading and investment records remain separated, but multi-account capital policies, complete investment approvals and production identity controls are incomplete. Live trading remains disabled. |
 | RQ-002 | Platform §4: modular event-driven architecture, FastAPI schemas, storage, queues/workflows, Docker/IaC/CI | PARTIAL | `persistence.py`, `postgres_schema.py`, `migrations/`, `Dockerfile`, `.github/workflows/verify.yml` | Cycles 219–221 verify a hardened local-research image, retained CVE/SBOM evidence and a checksum-bound archive with Sigstore-signed SLSA/CycloneDX attestations. PostgreSQL schema/backfill/restore gates remain verified. The image is not the PostgreSQL deployment: queue/cache/actual object storage, registry-native OCI signing/publication, IaC, orchestration and production deployment remain incomplete. |
-| RQ-003 | Platform §5.1: complete instrument master, calendars, identifiers, delistings, actions, mappings | PARTIAL | `professional_instruments.py`, migration `0008`, `test_professional_instruments.py` | Cycle 10's provider-neutral PostgreSQL instrument/calendar authority is VERIFIED in CI: time-bounded identifiers and symbol history, lifecycle/delisting, US/DST/holiday/early-close, FX 24x5 and crypto 24x7 conventions survive restart. It is not an authorized exchange feed. Module 3H.1 extends it with sibling futures tables (migration `20260907_0041`, `futures_contracts.py`): series/root identity, database-enforced `tick_value = tick_size × contract_multiplier`, settlement semantics, full contract date lifecycle, two-clock exchange margin and content-hashed versioned continuous-series roll policies with immutable non-overlapping members. All futures data is fixture data; no exchange was contacted. Base-currency/contract-size catalogue, broader exchanges, BIST, crypto derivative types, open-interest-driven rolls, continuous price adjustment and corporate-action provider linkage remain incomplete. |
+| RQ-003 | Platform §5.1: complete instrument master, calendars, identifiers, delistings, actions, mappings | PARTIAL | `professional_instruments.py`, migration `0008`, `test_professional_instruments.py` | Cycle 10's provider-neutral PostgreSQL instrument/calendar authority is VERIFIED in CI: time-bounded identifiers and symbol history, lifecycle/delisting, US/DST/holiday/early-close, FX 24x5 and crypto 24x7 conventions survive restart. It is not an authorized exchange feed. Module 3H.1 extends it with sibling futures tables (migration `20260907_0041`, `futures_contracts.py`): series/root identity, database-enforced `tick_value = tick_size × contract_multiplier`, settlement semantics, full contract date lifecycle, two-clock exchange margin and content-hashed versioned continuous-series roll policies with immutable non-overlapping members. All futures data is fixture data; no exchange was contacted. Module 3H.2 adds crypto SPOT/PERPETUAL/DATED_FUTURE semantics (migration `20260907_0042`, `crypto_instruments.py`): venue-scoped identity, base/quote/settlement asset separation, linear/inverse/quanto coherence, two-clock funding conventions and venue trading rules, with funding/mark/index/OI observations deferred to NEXT-03 and margin/leverage deferred to the account-risk layer. All crypto data is fixture data; no exchange was contacted. Base-currency/contract-size catalogue, broader exchanges, BIST, crypto options, open-interest-driven rolls, continuous price adjustment and corporate-action provider linkage remain incomplete. |
 | RQ-004 | Platform §§5.2, 6–8: multi-asset historical/streaming market data, provider architecture, quality, provenance | PARTIAL | `historical_market_data.py`, `data_providers.py`, `data_health.py`, migrations `0009`–`0010`; `test_historical_market_data.py`, `test_data_health.py` | Cycles 11–12 VERIFIED the provider-neutral PostgreSQL raw-capture, authorization, normalization, corporate-action provenance, sealed-dataset/PIT-query and mandatory Data Health gate. Fixture transport, capability/retry/rate-limit/pagination/fallback contracts remain tested. Authorized real ingestion, streaming, quote/trade/book/funding/OI data and a licensed multi-provider activation remain EXTERNAL_BLOCKED; fixture data is not real-market proof. |
 | RQ-005 | Platform §5.3: point-in-time fundamental service | PARTIAL | `pit_fundamentals.py`, migration `0011`, `fundamentals.py`, `investments.py`; `test_pit_fundamentals.py`, `test_fundamentals.py`, `test_investments.py` | Cycle 14 VERIFIED the provider-neutral PostgreSQL filing/fact authority: filing/effective/ingestion timestamps, as-reported and standardized values, revision history, PIT visibility, formula provenance and restart/restore coverage. Actual SEC retrieval is EXTERNAL_BLOCKED pending operator-approved terms and identifying configuration; no real filing has been claimed. Estimates, guidance, insider/ownership catalogues and wider feature integration remain incomplete. |
 | RQ-006 | Platform §5.4: versioned macro service with release/revision timing | PARTIAL | `pit_macro.py`, migration `0012`, `macro_data.py`; `test_pit_macro.py`, `test_macro_data.py` | Cycle 15 VERIFIED the provider-neutral PostgreSQL macro catalogue and immutable release/revision/ingestion semantics, including policy rate, CPI, employment, GDP, curve and liquidity-credit series. Authoritative FRED/ECB or other source activation and licensed expectations remain EXTERNAL_BLOCKED; fixture observations are not real macro evidence. Macro feature integration remains incomplete. |

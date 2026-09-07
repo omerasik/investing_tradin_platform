@@ -29,6 +29,26 @@ class DashboardObjectNotFound(DashboardQueryError):
     pass
 
 
+#: Instrument-id prefix reserved for integration-test fixtures.
+#:
+#: Every PostgreSQL integration test in this repository writes permanently into
+#: one shared database for a whole CI run -- the tables are immutable by
+#: trigger, so no test can clean up after itself. Instrument discovery is
+#: paginated with ``ORDER BY canonical_symbol``, so any fixture instrument whose
+#: symbol happens to sort early silently displaces real instruments from the
+#: operator's first page. Module 3G.1f.2 hit exactly that and worked around it
+#: by renaming fixtures to sort last ("ZAAPL"), which only holds for as long as
+#: every future author remembers the trick.
+#:
+#: This makes the distinction explicit instead: a test fixture is not a platform
+#: instrument, so it does not appear on the unfiltered discovery page. It is
+#: deliberately still returned by an explicit search and by the instrument
+#: detail read, so the rule can never hide a record from an auditor -- and it is
+#: matched on ``instrument_id`` only, never on a symbol, so no real instrument
+#: can be caught by it accidentally.
+RESERVED_TEST_FIXTURE_PREFIX = "TESTFIXTURE:"
+
+
 class PageInfo(BaseModel):
     limit: int
     offset: int
@@ -993,7 +1013,13 @@ class PostgresOperatorDashboardQueries:
         self, *, query: str | None = None, asset_class: str | None = None,
         lifecycle_status: str | None = None, limit: int = 50, offset: int = 0,
     ) -> InstrumentDiscoveryPage:
-        """List canonical instruments with optional bounded filtering."""
+        """List canonical instruments with optional bounded filtering.
+
+        Instruments under ``RESERVED_TEST_FIXTURE_PREFIX`` are omitted from the
+        *unfiltered* page only. They remain fully readable through an explicit
+        search and through :meth:`instrument`, so nothing becomes invisible or
+        unauditable -- see that constant for why the distinction exists.
+        """
         def operation(cursor: _Cursor) -> InstrumentDiscoveryPage:
             search_param = f"%{query.strip()}%" if query and query.strip() else None
             cursor.execute(
@@ -1014,8 +1040,9 @@ class PostgresOperatorDashboardQueries:
                 "WHERE (CAST(%s AS text) IS NULL OR p.canonical_symbol ILIKE %s OR p.instrument_id ILIKE %s) "
                 "AND (CAST(%s AS text) IS NULL OR p.asset_class=%s) "
                 "AND (CAST(%s AS text) IS NULL OR COALESCE((SELECT e.status FROM professional_instrument_lifecycle_events e WHERE e.instrument_id=p.instrument_id ORDER BY e.effective_at DESC,e.event_id DESC LIMIT 1),'ACTIVE')=%s) "
+                "AND (CAST(%s AS text) IS NOT NULL OR NOT STARTS_WITH(p.instrument_id, %s)) "
                 "ORDER BY p.canonical_symbol,p.instrument_id LIMIT %s OFFSET %s",
-                (search_param, search_param, search_param, asset_class, asset_class, lifecycle_status, lifecycle_status, limit + 1, offset),
+                (search_param, search_param, search_param, asset_class, asset_class, lifecycle_status, lifecycle_status, search_param, RESERVED_TEST_FIXTURE_PREFIX, limit + 1, offset),
             )
             rows, page = _page(cursor.fetchall(), limit, offset)
             return InstrumentDiscoveryPage(
