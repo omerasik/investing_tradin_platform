@@ -116,9 +116,17 @@ class PitFundamentalsPostgresTests(unittest.TestCase):
 
         database = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
         registered = datetime(2023, 1, 1, tzinfo=UTC)
+        # Canonical symbol deliberately sorts after "DEMO_EQ_A" (not "CYCLE...") --
+        # the operator dashboard's instrument panel is a plain alphabetically
+        # sorted, LIMIT-paginated, unscoped listing (see operator_dashboard.py's
+        # list_instruments ORDER BY canonical_symbol LIMIT ...), and the shared
+        # test suite already has enough "before D" fixture instruments across
+        # files that one more risks pushing the Module 1B demo's synthetic
+        # "DEMO_EQ_A" instrument off that page in test_module1b_demo_acceptance.py's
+        # E2E assertion, sharing this same database within a CI run.
         instrument = replace(
-            mvp_instrument_universe(registered)[0], instrument_id="US:XNAS:CYCLE14_SEC_TWOCLOCK",
-            canonical_symbol="CYCLE14_SEC_TWOCLOCK",
+            mvp_instrument_universe(registered)[0], instrument_id="US:XNAS:ZCYCLE14_SEC_TWOCLOCK",
+            canonical_symbol="ZCYCLE14_SEC_TWOCLOCK",
         )
         PostgresProfessionalInstrumentMaster(database).register(instrument)
         store = PostgresPitFundamentalStore(database)

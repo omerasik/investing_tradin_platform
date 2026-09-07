@@ -85,7 +85,17 @@ class SecEdgarPostgresTests(unittest.TestCase):
                 lifecycle_status=LifecycleStatus.ACTIVE,
             )
 
-        target = build("SECTEST:XNAS:AAPL", "XNAS", "AAPL")
+        # Canonical symbol deliberately sorts after "DEMO_EQ_A" (not "AAPL") -- the
+        # operator dashboard's instrument panel is a plain alphabetically sorted,
+        # LIMIT-paginated, unscoped listing (operator_dashboard.py's list_instruments,
+        # ORDER BY canonical_symbol LIMIT ...), and the shared test suite already has
+        # enough "before D" fixture instruments across files that one more risks
+        # pushing the Module 1B demo's synthetic "DEMO_EQ_A" instrument off that page
+        # in its own E2E assertion, sharing this same database within a CI run. The
+        # instrument_id and CIK fixture data still represent the real Apple Inc.
+        # accession numbers/CIK this module's design is based on; only the display
+        # symbol used for this test fixture is renamed.
+        target = build("SECTEST:XNAS:ZAAPL", "XNAS", "ZAAPL")
         companion = build("SECTEST:ARCX:METAFIX", "ARCX", "FB")
         master.register(target)
         master.register(companion)
