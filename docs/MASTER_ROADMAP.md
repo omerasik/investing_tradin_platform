@@ -161,6 +161,19 @@ converted between units. Settlement and open interest resolve only to real
 open-interest-driven roll policy is enabled. All values are fixture data; no
 exchange or provider was contacted.
 
+Exact merged-main run `34125596414` verifies Module 3I.1 on commit
+`179422a7893d7450c3b87bb39a30df6e1084ffe3`: migration head `20260907_0043`
+applied, all **841 tests without skips**, all **154 restore-critical tables**
+reconciled after a fresh `pg_restore`, the **117/117** mypy ratchet, the
+zero-error mypy slice now including `futures_market_observations.py`, and every
+configured security, supply-chain, container, attestation, frontend, smoke and
+browser gate. This verifies the engineering authority only — every settlement
+price, open-interest figure and contract date remains fixture data, no exchange
+or provider was contacted, and it grants no data or trading authority.
+
+**3I.2** (crypto funding + mark/index + crypto open interest) has not started
+and is pending review of the 3I.1 report.
+
 Exact merged-main run `34109237857` verifies Module 3H.1 on commit
 `b50cceee694757b886bf86478f64fc131ea3e9a6`: migration head `20260907_0041`
 applied, all **779 tests without skips**, all **148 restore-critical tables**
