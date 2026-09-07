@@ -5,17 +5,30 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import cast
 from uuid import UUID, uuid4
 
 from .domain import AssetClass
+from .futures_market_observations import (
+    OPEN_INTEREST_PAYLOAD_TABLE,
+    SETTLEMENT_PAYLOAD_TABLE,
+    FuturesOpenInterestPayload,
+    FuturesSettlementPayload,
+    OpenInterestUnit,
+    SettlementFinality,
+    canonical_payload_marker,
+    parse_open_interest_payload,
+    parse_settlement_payload,
+)
 from .persistence import PostgresDatabase
 from .professional_instruments import (
     InstrumentResolutionError,
+    InstrumentType,
     PostgresProfessionalInstrumentMaster,
+    ProfessionalInstrument,
 )
 
 
@@ -41,6 +54,46 @@ class ObservationKind(StrEnum):
     SPLIT = "SPLIT"
     SYMBOL_CHANGE = "SYMBOL_CHANGE"
     DELISTING = "DELISTING"
+    # Module 3I.1. Both carry their financial value in a typed canonical
+    # payload table, never in normalized_value -- see TYPED_PAYLOAD_KINDS.
+    SETTLEMENT_PRICE = "SETTLEMENT_PRICE"
+    OPEN_INTEREST = "OPEN_INTEREST"
+
+
+class AssetScope(StrEnum):
+    """What an authorized source is permitted to supply, fail-closed by value."""
+
+    US_EQUITIES_ETFS = "US_EQUITIES_ETFS"
+    FUTURES = "FUTURES"
+
+
+#: Kinds whose canonical normalized payload lives in a typed table rather than
+#: in ``historical_normalized_observations.normalized_value``.
+TYPED_PAYLOAD_KINDS: frozenset[ObservationKind] = frozenset(
+    {ObservationKind.SETTLEMENT_PRICE, ObservationKind.OPEN_INTEREST}
+)
+
+#: The equity corporate-action family that predates Module 3I.1.
+_EQUITY_KINDS: frozenset[ObservationKind] = frozenset(
+    {
+        ObservationKind.OHLCV,
+        ObservationKind.DIVIDEND,
+        ObservationKind.SPLIT,
+        ObservationKind.SYMBOL_CHANGE,
+        ObservationKind.DELISTING,
+    }
+)
+
+#: Which kinds each asset scope may authorize at all. A capability outside its
+#: scope is rejected at source registration, so scope and capability cannot
+#: disagree.
+SCOPE_ELIGIBLE_KINDS: dict[AssetScope, frozenset[ObservationKind]] = {
+    AssetScope.US_EQUITIES_ETFS: _EQUITY_KINDS,
+    AssetScope.FUTURES: frozenset(
+        {ObservationKind.OHLCV, ObservationKind.SETTLEMENT_PRICE, ObservationKind.OPEN_INTEREST}
+    ),
+}
+
 
 
 class AdjustmentStatus(StrEnum):
@@ -53,6 +106,72 @@ class AdjustmentStatus(StrEnum):
 class QualityStatus(StrEnum):
     VALIDATED = "VALIDATED"
     REJECTED = "REJECTED"
+
+
+#: Adjustment statuses that carry defined meaning for the typed kinds. A
+#: settlement price and an open-interest count are not corporate-action
+#: adjusted, so the equity-oriented adjusted statuses are rejected rather than
+#: silently acquiring an undefined meaning for them.
+TYPED_KIND_ADJUSTMENT_STATUSES: frozenset[AdjustmentStatus] = frozenset(
+    {AdjustmentStatus.RAW, AdjustmentStatus.AS_REPORTED}
+)
+
+#: Which typed table is canonical for each typed kind.
+_TYPED_PAYLOAD_TABLES: dict[ObservationKind, str] = {
+    ObservationKind.SETTLEMENT_PRICE: SETTLEMENT_PAYLOAD_TABLE,
+    ObservationKind.OPEN_INTEREST: OPEN_INTEREST_PAYLOAD_TABLE,
+}
+
+#: Open-interest units a FUTURES source may supply in Module 3I.1. The other
+#: units exist in the enum so the dimension is honest, but are reserved for
+#: 3I.2 crypto venues and fail closed here rather than being converted.
+_FUTURES_OPEN_INTEREST_UNITS: frozenset[OpenInterestUnit] = frozenset(
+    {OpenInterestUnit.CONTRACTS}
+)
+
+
+def _parse_typed_payload(
+    kind: ObservationKind, payload: dict[str, object]
+) -> tuple[FuturesSettlementPayload | FuturesOpenInterestPayload | None, tuple[str, ...]]:
+    if kind is ObservationKind.SETTLEMENT_PRICE:
+        return parse_settlement_payload(payload)
+    return parse_open_interest_payload(payload, supported_units=_FUTURES_OPEN_INTEREST_UNITS)
+
+
+def _typed_payload_from_row(
+    kind: ObservationKind, row: tuple[object, ...], offset: int
+) -> FuturesSettlementPayload | FuturesOpenInterestPayload | None:
+    """Rebuild the canonical payload from its typed columns at read time."""
+    if kind is ObservationKind.SETTLEMENT_PRICE and row[offset] is not None:
+        return FuturesSettlementPayload(
+            settlement_price=Decimal(str(row[offset])),
+            price_currency=str(row[offset + 1]),
+            settlement_date=cast(date, row[offset + 2]),
+            settlement_effective_at=cast(datetime, row[offset + 3]),
+            finality=SettlementFinality(str(row[offset + 4])),
+            quote_unit=str(row[offset + 5]),
+        )
+    if kind is ObservationKind.OPEN_INTEREST and row[offset + 6] is not None:
+        return FuturesOpenInterestPayload(
+            open_interest=Decimal(str(row[offset + 6])),
+            unit=OpenInterestUnit(str(row[offset + 7])),
+            observed_at=cast(datetime, row[offset + 8]),
+            unit_asset=None if row[offset + 9] is None else str(row[offset + 9]),
+        )
+    return None
+
+
+def _sealed_typed_components(row: tuple[object, ...]) -> tuple[str, ...]:
+    """Canonical typed values contributed to a sealed dataset's content hash."""
+    kind = ObservationKind(str(row[9]))
+    if kind not in TYPED_PAYLOAD_KINDS:
+        return ()
+    payload = _typed_payload_from_row(kind, row, 10)
+    if payload is None:
+        raise HistoricalMarketDataError(
+            f"sealed_typed_observation_missing_canonical_payload:{row[0]}"
+        )
+    return payload.canonical_tuple()
 
 
 CONSOLIDATED_TAPE_EXCHANGE = "CONSOLIDATED_TAPE"
@@ -104,8 +223,17 @@ class AuthorizedHistoricalSource:
     authorization_reference: str
     authorized_at: datetime
     created_at: datetime
-    asset_scope: str = "US_EQUITIES_ETFS"
+    asset_scope: str = AssetScope.US_EQUITIES_ETFS.value
     source_id: UUID = field(default_factory=uuid4)
+    authorized_observation_kinds: frozenset[ObservationKind] | None = None
+    """Exactly which observation kinds this source may write.
+
+    ``None`` keeps the pre-3I.1 behaviour for ``US_EQUITIES_ETFS`` only, where
+    it resolves to the five equity corporate-action kinds those sources already
+    wrote. Every other scope must state its kinds explicitly, so no source can
+    acquire SETTLEMENT_PRICE or OPEN_INTEREST authority merely by being
+    authorized for the same asset class as an OHLCV feed.
+    """
 
     def validate(self) -> None:
         if not self.authorization_reference.strip():
@@ -119,8 +247,38 @@ class AuthorizedHistoricalSource:
             _text(text_value, name)
         _aware(self.authorized_at, "authorized_at")
         _aware(self.created_at, "created_at")
-        if self.asset_scope != "US_EQUITIES_ETFS" or self.created_at < self.authorized_at:
+        if self.created_at < self.authorized_at:
             raise HistoricalDataAuthorizationError("invalid_historical_source_authorization")
+        self.resolved_capabilities()
+
+    def scope(self) -> AssetScope:
+        try:
+            return AssetScope(self.asset_scope)
+        except ValueError as error:
+            raise HistoricalDataAuthorizationError(
+                f"unsupported_asset_scope:{self.asset_scope}"
+            ) from error
+
+    def resolved_capabilities(self) -> frozenset[ObservationKind]:
+        """The kinds this source may write, fail-closed against its asset scope."""
+        scope = self.scope()
+        eligible = SCOPE_ELIGIBLE_KINDS[scope]
+        declared = self.authorized_observation_kinds
+        if declared is None:
+            if scope is not AssetScope.US_EQUITIES_ETFS:
+                raise HistoricalDataAuthorizationError(
+                    f"asset_scope_requires_explicit_observation_kinds:{scope.value}"
+                )
+            return eligible
+        if not declared:
+            raise HistoricalDataAuthorizationError("source_authorizes_no_observation_kind")
+        outside = declared - eligible
+        if outside:
+            raise HistoricalDataAuthorizationError(
+                "observation_kind_outside_asset_scope:"
+                + ",".join(sorted(kind.value for kind in outside))
+            )
+        return frozenset(declared)
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +315,14 @@ class RawHistoricalObservation:
             raise HistoricalMarketDataError("invalid_historical_observation_timestamps")
         if self.revision < 0:
             raise HistoricalMarketDataError("invalid_historical_observation_revision")
+        if (
+            self.observation_kind in TYPED_PAYLOAD_KINDS
+            and self.adjustment_status not in TYPED_KIND_ADJUSTMENT_STATUSES
+        ):
+            raise HistoricalMarketDataError(
+                f"adjustment_status_undefined_for_kind:"
+                f"{self.observation_kind.value}:{self.adjustment_status.value}"
+            )
         _canonical(self.raw_payload)
 
 
@@ -277,6 +443,7 @@ class PostgresHistoricalMarketDataPipeline:
 
     def register_source(self, source: AuthorizedHistoricalSource) -> None:
         source.validate()
+        capabilities = source.resolved_capabilities()
         try:
             with self._database.transaction() as connection, connection.cursor() as cursor:
                 cursor.execute(
@@ -286,6 +453,14 @@ class PostgresHistoricalMarketDataPipeline:
                      source.authorization_reference, source.authorized_at, source.asset_scope,
                      source.created_at),
                 )
+                # The database enforces this through a composite foreign key on
+                # historical_raw_observations, so an unauthorized kind cannot be
+                # captured even by a caller that bypasses this class.
+                for kind in sorted(capabilities, key=lambda item: item.value):
+                    cursor.execute(
+                        "INSERT INTO historical_source_capabilities VALUES (%s,%s,%s)",
+                        (source.source_id, kind.value, source.authorized_at),
+                    )
         except Exception as error:
             raise HistoricalDataAuthorizationError("historical_source_registration_failed") from error
 
@@ -356,8 +531,8 @@ class PostgresHistoricalMarketDataPipeline:
             )
         except InstrumentResolutionError as error:
             raise HistoricalDataResolutionError("historical_instrument_resolution_failed") from error
-        if instrument.asset_class not in {AssetClass.EQUITY, AssetClass.ETF}:
-            raise HistoricalDataResolutionError("historical_source_asset_out_of_scope")
+        kind = ObservationKind(str(row[1]))
+        self._require_instrument_eligible_for_kind(kind, instrument)
         issues: list[str] = []
         raw_exchange = str(row[3])
         if raw_exchange == CONSOLIDATED_TAPE_EXCHANGE:
@@ -366,13 +541,31 @@ class PostgresHistoricalMarketDataPipeline:
         elif raw_exchange not in {instrument.venue, instrument.mic}:
             issues.append("exchange_instrument_mismatch")
         payload = cast(dict[str, object], row[6])
-        normalized, payload_issues = normalize_payload(ObservationKind(str(row[1])), payload)
-        issues.extend(payload_issues)
+
+        typed: FuturesSettlementPayload | FuturesOpenInterestPayload | None = None
+        if kind in TYPED_PAYLOAD_KINDS:
+            typed, typed_issues = _parse_typed_payload(kind, payload)
+            issues.extend(typed_issues)
+            # The canonical financial value lives in the typed table, so the
+            # envelope stores a pointer marker rather than a second copy.
+            normalized = canonical_payload_marker(_TYPED_PAYLOAD_TABLES[kind])
+        else:
+            normalized, payload_issues = normalize_payload(kind, payload)
+            issues.extend(payload_issues)
+
         result = NormalizedHistoricalObservation(
             uuid4(), raw_observation_id, instrument.instrument_id, normalization_version,
             normalized, QualityStatus.REJECTED if issues else QualityStatus.VALIDATED,
             tuple(dict.fromkeys(issues)), normalized_at,
         )
+        if kind in TYPED_PAYLOAD_KINDS and typed is None:
+            # A rejected typed observation has no canonical payload to persist,
+            # and the deferred constraint trigger would refuse the envelope
+            # alone. Reporting the quality failure is the honest outcome; no
+            # partial or guessed row is written.
+            raise HistoricalDataQualityError(
+                "typed_observation_rejected:" + ",".join(result.quality_issues)
+            )
         try:
             with self._database.transaction() as connection, connection.cursor() as cursor:
                 cursor.execute(
@@ -382,9 +575,56 @@ class PostgresHistoricalMarketDataPipeline:
                      _canonical(result.normalized_value), result.quality_status.value,
                      json.dumps(result.quality_issues), result.normalized_at),
                 )
+                if isinstance(typed, FuturesSettlementPayload):
+                    cursor.execute(
+                        "INSERT INTO futures_settlement_observations VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                        (result.normalized_observation_id, typed.settlement_price,
+                         typed.price_currency, typed.settlement_date,
+                         typed.settlement_effective_at, typed.finality.value, typed.quote_unit),
+                    )
+                elif isinstance(typed, FuturesOpenInterestPayload):
+                    cursor.execute(
+                        "INSERT INTO futures_open_interest_observations VALUES (%s,%s,%s,%s,%s)",
+                        (result.normalized_observation_id, typed.open_interest,
+                         typed.unit.value, typed.unit_asset, typed.observed_at),
+                    )
         except Exception as error:
             raise HistoricalMarketDataError("historical_normalization_persistence_failed") from error
         return result
+
+    def _require_instrument_eligible_for_kind(
+        self, kind: ObservationKind, instrument: ProfessionalInstrument
+    ) -> None:
+        """Which instruments a given observation kind may legitimately describe."""
+        if kind in _EQUITY_KINDS and kind is not ObservationKind.OHLCV:
+            if instrument.asset_class not in {AssetClass.EQUITY, AssetClass.ETF}:
+                raise HistoricalDataResolutionError("historical_source_asset_out_of_scope")
+            return
+        if kind not in TYPED_PAYLOAD_KINDS:
+            if instrument.asset_class not in {AssetClass.EQUITY, AssetClass.ETF}:
+                raise HistoricalDataResolutionError("historical_source_asset_out_of_scope")
+            return
+        if instrument.instrument_type is not InstrumentType.FUTURE:
+            raise HistoricalDataResolutionError(
+                f"kind_requires_futures_instrument:{kind.value}:{instrument.instrument_type.value}"
+            )
+        if instrument.continuous_parent_id is not None:
+            # A continuous series is a derived research view over real
+            # contracts (Module 3H.1). Attaching an exchange-published
+            # settlement or open-interest record to it would invent a
+            # measurement no exchange ever published.
+            raise HistoricalDataResolutionError(
+                "continuous_series_cannot_carry_contract_observations"
+            )
+        with self._database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM futures_contract_specifications WHERE instrument_id=%s",
+                (instrument.instrument_id,),
+            )
+            if cursor.fetchone() is None:
+                raise HistoricalDataResolutionError(
+                    f"instrument_has_no_futures_contract_specification:{instrument.instrument_id}"
+                )
 
     def seal_dataset(
         self, source_id: UUID, version: str, normalization_version: str,
@@ -398,8 +638,24 @@ class PostgresHistoricalMarketDataPipeline:
         placeholders = ",".join(["%s"] * len(normalized_ids))
         with self._database.transaction() as connection, connection.cursor() as cursor:
             cursor.execute(
-                "SELECT n.normalized_observation_id,n.normalization_version,n.quality_status,n.normalized_value,n.normalized_at,r.source_id,r.event_at,r.ingested_at,r.raw_payload_sha256 "
-                f"FROM historical_normalized_observations n JOIN historical_raw_observations r ON r.raw_observation_id=n.raw_observation_id WHERE n.normalized_observation_id IN ({placeholders})",  # nosec B608 - placeholders only
+                # The typed payload columns are joined in so the sealed content
+                # hash covers the canonical financial value itself. Hashing
+                # normalized_value alone would hash only the pointer marker for
+                # typed kinds, and a settlement price could then change without
+                # changing dataset identity.
+                "SELECT n.normalized_observation_id,n.normalization_version,n.quality_status,"
+                "n.normalized_value,n.normalized_at,r.source_id,r.event_at,r.ingested_at,"
+                "r.raw_payload_sha256,r.observation_kind,"
+                "s.settlement_price,s.price_currency,s.settlement_date,s.settlement_effective_at,"
+                "s.finality,s.quote_unit,"
+                "o.open_interest,o.unit,o.observed_at,o.unit_asset "
+                "FROM historical_normalized_observations n "
+                "JOIN historical_raw_observations r ON r.raw_observation_id=n.raw_observation_id "
+                "LEFT JOIN futures_settlement_observations s "
+                "ON s.normalized_observation_id=n.normalized_observation_id "
+                "LEFT JOIN futures_open_interest_observations o "
+                "ON o.normalized_observation_id=n.normalized_observation_id "
+                f"WHERE n.normalized_observation_id IN ({placeholders})",  # nosec B608 - placeholders only
                 normalized_ids,
             )
             rows = cursor.fetchall()
@@ -415,7 +671,16 @@ class PostgresHistoricalMarketDataPipeline:
             raise HistoricalMarketDataError("dataset_created_before_member_available")
         digest = hashlib.sha256()
         for row in sorted(rows, key=lambda item: str(item[0])):
-            digest.update(f"{row[0]}|{row[8]}|{_canonical(cast(dict[str, object], row[3]))}".encode())
+            canonical = "|".join(
+                (
+                    str(row[0]),
+                    str(row[8]),
+                    str(row[9]),
+                    _canonical(cast(dict[str, object], row[3])),
+                    *_sealed_typed_components(row),
+                )
+            )
+            digest.update(canonical.encode())
         result = HistoricalDatasetVersion(
             uuid4(), source_id, version, normalization_version, digest.hexdigest(),
             min(cast(datetime, row[6]) for row in rows),
@@ -450,14 +715,21 @@ class PostgresHistoricalMarketDataPipeline:
         statement = (
             "WITH ranked AS (SELECT n.instrument_id,r.observation_kind,s.provider,r.provider_identifier," 
             "r.provider_symbol,r.exchange,r.event_at,r.effective_at,r.ingested_at,r.adjustment_status," 
-            "r.revision,r.provenance_uri,r.raw_payload_sha256,n.normalized_value,d.version," 
-            "ROW_NUMBER() OVER (PARTITION BY r.source_id,r.provider_identifier,r.observation_kind,r.event_at " 
-            "ORDER BY r.revision DESC,r.ingested_at DESC) AS rank " 
-            "FROM historical_dataset_members m " 
-            "JOIN historical_dataset_versions d ON d.dataset_version_id=m.dataset_version_id " 
-            "JOIN historical_normalized_observations n ON n.normalized_observation_id=m.normalized_observation_id " 
-            "JOIN historical_raw_observations r ON r.raw_observation_id=n.raw_observation_id " 
-            "JOIN historical_data_sources s ON s.source_id=r.source_id " 
+            "r.revision,r.provenance_uri,r.raw_payload_sha256,n.normalized_value,d.version,"
+            "st.settlement_price,st.price_currency,st.settlement_date,st.settlement_effective_at,"
+            "st.finality,st.quote_unit,"
+            "oi.open_interest,oi.unit,oi.observed_at,oi.unit_asset,"
+            "ROW_NUMBER() OVER (PARTITION BY r.source_id,r.provider_identifier,r.observation_kind,r.event_at "
+            "ORDER BY r.revision DESC,r.ingested_at DESC) AS rank "
+            "FROM historical_dataset_members m "
+            "JOIN historical_dataset_versions d ON d.dataset_version_id=m.dataset_version_id "
+            "JOIN historical_normalized_observations n ON n.normalized_observation_id=m.normalized_observation_id "
+            "JOIN historical_raw_observations r ON r.raw_observation_id=n.raw_observation_id "
+            "JOIN historical_data_sources s ON s.source_id=r.source_id "
+            "LEFT JOIN futures_settlement_observations st "
+            "ON st.normalized_observation_id=n.normalized_observation_id "
+            "LEFT JOIN futures_open_interest_observations oi "
+            "ON oi.normalized_observation_id=n.normalized_observation_id "
             "WHERE d.dataset_version_id=%s AND d.status='SEALED' AND d.created_at<=%s " 
             "AND n.instrument_id=%s AND n.quality_status='VALIDATED' AND n.normalized_at<=%s " 
             "AND r.event_at BETWEEN %s AND %s AND r.event_at<=%s AND r.ingested_at<=%s "
@@ -470,15 +742,30 @@ class PostgresHistoricalMarketDataPipeline:
                  start, end, knowledge_at, knowledge_at),
             )
             rows = cursor.fetchall()
-        return tuple(
-            HistoricalResearchObservation(
-                instrument_id=str(row[0]), observation_kind=ObservationKind(str(row[1])),
-                provider=str(row[2]), provider_identifier=str(row[3]), provider_symbol=str(row[4]),
-                exchange=str(row[5]), event_at=cast(datetime, row[6]),
-                effective_at=cast(datetime, row[7]), ingested_at=cast(datetime, row[8]),
-                adjustment_status=AdjustmentStatus(str(row[9])), revision=int(str(row[10])),
-                provenance_uri=str(row[11]), raw_payload_sha256=str(row[12]),
-                normalized_value=cast(dict[str, object], row[13]), data_version=str(row[14]),
+        return tuple(self._research_observation(row) for row in rows)
+
+    @staticmethod
+    def _research_observation(row: tuple[object, ...]) -> HistoricalResearchObservation:
+        kind = ObservationKind(str(row[1]))
+        typed = _typed_payload_from_row(kind, row, 15)
+        if kind in TYPED_PAYLOAD_KINDS and typed is None:
+            raise HistoricalMarketDataError(
+                f"typed_observation_missing_canonical_payload:{row[3]}"
             )
-            for row in rows
+        # For typed kinds the value is synthesized from the canonical row, so
+        # research callers see one authority projected -- never a stored second
+        # copy that could have drifted from it.
+        normalized_value = (
+            typed.as_normalized_projection()
+            if typed is not None
+            else cast("dict[str, object]", row[13])
+        )
+        return HistoricalResearchObservation(
+            instrument_id=str(row[0]), observation_kind=kind,
+            provider=str(row[2]), provider_identifier=str(row[3]), provider_symbol=str(row[4]),
+            exchange=str(row[5]), event_at=cast(datetime, row[6]),
+            effective_at=cast(datetime, row[7]), ingested_at=cast(datetime, row[8]),
+            adjustment_status=AdjustmentStatus(str(row[9])), revision=int(str(row[10])),
+            provenance_uri=str(row[11]), raw_payload_sha256=str(row[12]),
+            normalized_value=normalized_value, data_version=str(row[14]),
         )

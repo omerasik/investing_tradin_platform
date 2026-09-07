@@ -162,6 +162,10 @@ def _seed_research_chain(database: PostgresDatabase, core: dict[str, UUID]) -> d
         _insert(cursor, "INSERT INTO datasets(dataset_id,name,provider,terms_version,created_at) VALUES (%s,%s,%s,%s,%s) ON CONFLICT (dataset_id) DO NOTHING", (ids["dataset"], "Module 1B synthetic OHLCV", DEMO_SOURCE, DEMO_SEED_VERSION, DEMO_AT))
         _insert(cursor, "INSERT INTO dataset_versions(dataset_version_id,dataset_id,version,content_hash,valid_from,valid_to,created_at) VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (dataset_version_id) DO NOTHING", (ids["dataset-version"], ids["dataset"], DEMO_SEED_VERSION, dataset_hash, DEMO_AT - timedelta(days=10), DEMO_AT, DEMO_AT))
         _insert(cursor, "INSERT INTO historical_data_sources VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (source_id) DO NOTHING", (ids["historical-source"], DEMO_SOURCE, "module1b-demo-ohlcv", "DEMO:INSTRUMENT", DEMO_SEED_VERSION, f"demo://{DEMO_SEED_VERSION}/terms", DEMO_AT, "US_EQUITIES_ETFS", DEMO_AT))
+        # Module 3I.1 binds every raw observation to an explicitly authorized
+        # (source, observation_kind) capability. This demo source supplies only
+        # OHLCV, so that is the only capability it gets.
+        _insert(cursor, "INSERT INTO historical_source_capabilities VALUES (%s,'OHLCV',%s) ON CONFLICT DO NOTHING", (ids["historical-source"], DEMO_AT))
         for raw_id, normalized_id, instrument_id, event_at, payload in historical_members:
             payload_hash = digest(payload)
             symbol = instrument_id.rsplit(":", 1)[1]

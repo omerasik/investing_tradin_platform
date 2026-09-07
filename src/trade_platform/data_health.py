@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from itertools import pairwise
@@ -24,6 +24,12 @@ class DataHealthBlockedError(DataHealthError):
 
 
 class DataHealthCheck(StrEnum):
+    # Module 3I.1 additions for the futures settlement / open-interest families.
+    MISSING_EXPECTED_SESSIONS = "MISSING_EXPECTED_SESSIONS"
+    NON_POSITIVE_SETTLEMENT = "NON_POSITIVE_SETTLEMENT"
+    NEGATIVE_OPEN_INTEREST = "NEGATIVE_OPEN_INTEREST"
+    OPEN_INTEREST_UNIT_INCONSISTENCY = "OPEN_INTEREST_UNIT_INCONSISTENCY"
+    SETTLEMENT_FINALITY_REGRESSION = "SETTLEMENT_FINALITY_REGRESSION"
     MISSING_BARS = "MISSING_BARS"
     DUPLICATE_BARS = "DUPLICATE_BARS"
     TIMESTAMP_REGRESSION = "TIMESTAMP_REGRESSION"
@@ -53,6 +59,37 @@ class DataHealthScope(StrEnum):
     ASSET_CLASS = "ASSET_CLASS"
     GLOBAL = "GLOBAL"
 
+
+#: Checks the OHLCV bar detector (:func:`detect_data_health`) can raise.
+OHLCV_DATA_HEALTH_CHECKS: frozenset[DataHealthCheck] = frozenset(
+    {
+        DataHealthCheck.MISSING_BARS,
+        DataHealthCheck.DUPLICATE_BARS,
+        DataHealthCheck.TIMESTAMP_REGRESSION,
+        DataHealthCheck.IMPOSSIBLE_OHLC,
+        DataHealthCheck.INVALID_VOLUME,
+        DataHealthCheck.STALE_OBSERVATIONS,
+        DataHealthCheck.GAPS,
+        DataHealthCheck.CORPORATE_ACTION_MISMATCH,
+        DataHealthCheck.PROVIDER_DISAGREEMENT,
+        DataHealthCheck.TIMEZONE_SESSION_MISMATCH,
+        DataHealthCheck.INCOMPLETE_DATASET,
+    }
+)
+
+#: Checks the futures settlement / open-interest detector can raise
+#: (:func:`detect_futures_series_health`).
+FUTURES_SERIES_DATA_HEALTH_CHECKS: frozenset[DataHealthCheck] = frozenset(
+    {
+        DataHealthCheck.MISSING_EXPECTED_SESSIONS,
+        DataHealthCheck.NON_POSITIVE_SETTLEMENT,
+        DataHealthCheck.NEGATIVE_OPEN_INTEREST,
+        DataHealthCheck.OPEN_INTEREST_UNIT_INCONSISTENCY,
+        DataHealthCheck.SETTLEMENT_FINALITY_REGRESSION,
+        DataHealthCheck.TIMESTAMP_REGRESSION,
+        DataHealthCheck.STALE_OBSERVATIONS,
+    }
+)
 
 _ACTION_RANK = {action: rank for rank, action in enumerate(DataHealthAction)}
 _BLOCKING_ACTIONS = frozenset(
@@ -148,6 +185,24 @@ class DataHealthAssessment:
     independently-tracked, coexisting assessments for e.g. "1d" and "1m" without one
     colliding with or masking the other. See ``DataHealthScope.INSTRUMENT`` usage in
     ``scheduler.run_data_health_evaluation``.
+    """
+    observation_kind: str = ""
+    """Module 3I.1: which observation family this assessment covers.
+
+    Empty preserves the pre-3I.1 meaning (an OHLCV bar-series assessment, or a
+    scope with no series dimension at all). Non-empty names the kind -- e.g.
+    ``SETTLEMENT_PRICE`` or ``OPEN_INTEREST`` -- so one futures contract can
+    carry independent, coexisting health for its bars, its settlement series and
+    its open-interest series. Without this dimension they would collide on the
+    assessment uniqueness constraint exactly as "1d" and "1m" did before
+    migration 0039 added [[interval]].
+    """
+    source_id: UUID | None = None
+    """The authorized source this assessment evaluated, when it is source-specific.
+
+    ``None`` for assessments that are not attributable to one source. Recording
+    it lets two providers of the same series be judged separately rather than
+    one provider's outage silently condemning the instrument.
     """
 
 
@@ -267,6 +322,116 @@ def build_assessment(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class FuturesSeriesObservation:
+    """One settlement or open-interest record, as Data Health sees it."""
+
+    source_id: UUID
+    instrument_id: str
+    observation_kind: str
+    event_at: datetime
+    ingested_at: datetime
+    revision: int
+    #: Settlement price, or ``None`` for an open-interest record.
+    settlement_price: Decimal | None = None
+    finality: str | None = None
+    #: Open interest, or ``None`` for a settlement record.
+    open_interest: Decimal | None = None
+    open_interest_unit: str | None = None
+
+
+def detect_futures_series_health(
+    observations: list[FuturesSeriesObservation],
+    *,
+    expected_sessions: tuple[date, ...] | None = None,
+    stale_after: timedelta | None = None,
+    evaluated_at: datetime | None = None,
+) -> tuple[DataHealthFinding, ...]:
+    """Health checks for the futures settlement / open-interest families.
+
+    ``expected_sessions`` is **never inferred**. Settlement and open interest
+    have no universal cadence -- an exchange publishes them on its own session
+    calendar, some contracts settle daily and some do not publish open interest
+    at all -- so completeness is only evaluated when a caller supplies the
+    sessions it actually expects from explicit contract or source semantics.
+    Passing ``None`` reports every other check and simply makes no completeness
+    claim, which is the honest outcome when the cadence is unknown.
+    """
+    findings: list[DataHealthFinding] = []
+    ordered = sorted(observations, key=lambda item: (item.event_at, item.revision))
+
+    previous_event: datetime | None = None
+    latest_finality: dict[tuple[str, datetime], tuple[int, str]] = {}
+    units: dict[str, set[str]] = {}
+    for observation in ordered:
+        if observation.settlement_price is not None and observation.settlement_price <= 0:
+            findings.append(_finding(
+                DataHealthCheck.NON_POSITIVE_SETTLEMENT, DataHealthAction.BLOCK_INSTRUMENT,
+                observation.event_at, instrument_id=observation.instrument_id,
+                settlement_price=str(observation.settlement_price),
+            ))
+        if observation.open_interest is not None and observation.open_interest < 0:
+            findings.append(_finding(
+                DataHealthCheck.NEGATIVE_OPEN_INTEREST, DataHealthAction.BLOCK_INSTRUMENT,
+                observation.event_at, instrument_id=observation.instrument_id,
+                open_interest=str(observation.open_interest),
+            ))
+        if observation.open_interest_unit is not None:
+            units.setdefault(observation.instrument_id, set()).add(observation.open_interest_unit)
+        if previous_event is not None and observation.event_at < previous_event:
+            findings.append(_finding(
+                DataHealthCheck.TIMESTAMP_REGRESSION, DataHealthAction.BLOCK_INSTRUMENT,
+                observation.event_at, previous_event=previous_event.isoformat(),
+            ))
+        previous_event = observation.event_at
+
+        if observation.finality is not None:
+            key = (observation.instrument_id, observation.event_at)
+            seen = latest_finality.get(key)
+            if seen is not None and seen[1] == "FINAL" and observation.finality == "PRELIMINARY":
+                # A later revision may restate a final settlement, but it may
+                # not demote it back to preliminary -- that would mean the
+                # provider's own finality contract is not being honoured.
+                findings.append(_finding(
+                    DataHealthCheck.SETTLEMENT_FINALITY_REGRESSION,
+                    DataHealthAction.DEGRADE_CONFIDENCE, observation.event_at,
+                    instrument_id=observation.instrument_id,
+                    previous_revision=seen[0], revision=observation.revision,
+                ))
+            if seen is None or observation.revision >= seen[0]:
+                latest_finality[key] = (observation.revision, observation.finality)
+
+    for instrument_id, observed_units in sorted(units.items()):
+        if len(observed_units) > 1:
+            # Two different units in one series cannot be compared, and this
+            # module never converts between them.
+            findings.append(_finding(
+                DataHealthCheck.OPEN_INTEREST_UNIT_INCONSISTENCY,
+                DataHealthAction.BLOCK_INSTRUMENT, None,
+                instrument_id=instrument_id, units=sorted(observed_units),
+            ))
+
+    if expected_sessions is not None:
+        observed_dates = {item.event_at.date() for item in ordered}
+        missing = sorted(set(expected_sessions) - observed_dates)
+        if missing:
+            findings.append(_finding(
+                DataHealthCheck.MISSING_EXPECTED_SESSIONS, DataHealthAction.BLOCK_INSTRUMENT,
+                None, missing_sessions=[value.isoformat() for value in missing],
+                expected_session_count=len(expected_sessions),
+            ))
+
+    if stale_after is not None and evaluated_at is not None and ordered:
+        _aware(evaluated_at, "evaluated_at")
+        newest = max(item.event_at for item in ordered)
+        if evaluated_at - newest > stale_after:
+            findings.append(_finding(
+                DataHealthCheck.STALE_OBSERVATIONS, DataHealthAction.DEGRADE_CONFIDENCE,
+                newest, stale_after_seconds=stale_after.total_seconds(),
+            ))
+    return tuple(findings)
+
+
 class PostgresDataHealthStore:
     def __init__(self, database: PostgresDatabase) -> None:
         self._database = database
@@ -279,13 +444,15 @@ class PostgresDataHealthStore:
         try:
             with self._database.transaction() as connection, connection.cursor() as cursor:
                 cursor.execute(
-                    "INSERT INTO data_health_assessments VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)",
+                    "INSERT INTO data_health_assessments VALUES "
+                    "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s)",
                     (assessment.assessment_id, assessment.dataset_version_id,
                      assessment.scope_type.value, assessment.scope_value,
                      assessment.policy_version, assessment.evaluated_at,
                      assessment.expected_start, assessment.expected_end,
                      assessment.max_action.value, assessment.blocking,
-                     assessment.content_hash, summary, assessment.interval),
+                     assessment.content_hash, summary, assessment.interval,
+                     assessment.observation_kind, assessment.source_id),
                 )
                 for sequence, finding in enumerate(assessment.findings):
                     detail = json.dumps(finding.detail, sort_keys=True, separators=(",", ":"))
@@ -315,12 +482,18 @@ class PostgresDataHealthStore:
         _aware(as_of, "data_health_as_of")
         with self._database.transaction() as connection, connection.cursor() as cursor:
             cursor.execute(
+                # Partitioned by observation_kind as well as interval for the
+                # same reason interval was added: a healthy bar series must not
+                # mask a blocked settlement or open-interest series on the same
+                # instrument. Pre-3I.1 rows carry '' and are unaffected.
                 "SELECT scope_type,scope_value,interval,max_action FROM ("
-                "SELECT DISTINCT ON (scope_type,scope_value,interval) scope_type,scope_value,interval,max_action,blocking "
+                "SELECT DISTINCT ON (scope_type,scope_value,interval,observation_kind) "
+                "scope_type,scope_value,interval,observation_kind,max_action,blocking "
                 "FROM data_health_assessments WHERE evaluated_at<=%s AND ((scope_type='GLOBAL' AND scope_value='*') OR "
                 "(scope_type='ASSET_CLASS' AND scope_value=%s) OR (scope_type='STRATEGY' AND scope_value=%s) OR "
-                "(scope_type='INSTRUMENT' AND scope_value=%s)) ORDER BY scope_type,scope_value,interval,evaluated_at DESC"
-                ") latest WHERE blocking ORDER BY scope_type,scope_value,interval",
+                "(scope_type='INSTRUMENT' AND scope_value=%s)) "
+                "ORDER BY scope_type,scope_value,interval,observation_kind,evaluated_at DESC"
+                ") latest WHERE blocking ORDER BY scope_type,scope_value,interval,observation_kind",
                 (as_of, asset_class, strategy_version, instrument_id),
             )
             rows = cursor.fetchall()
@@ -360,5 +533,6 @@ class PostgresDataHealthStore:
             UUID(str(row[0])), None if row[1] is None else UUID(str(row[1])),
             DataHealthScope(str(row[2])), str(row[3]), str(row[4]), cast(datetime, row[5]),
             cast(datetime, row[6]), cast(datetime, row[7]), DataHealthAction(str(row[8])),
-            bool(row[9]), findings, str(row[10]), str(row[12]),
+            bool(row[9]), findings, str(row[10]), str(row[12]), str(row[13]),
+            None if row[14] is None else UUID(str(row[14])),
         )

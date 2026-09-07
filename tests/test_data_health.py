@@ -6,6 +6,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from trade_platform.data_health import (
+    FUTURES_SERIES_DATA_HEALTH_CHECKS,
+    OHLCV_DATA_HEALTH_CHECKS,
     DataHealthAction,
     DataHealthCheck,
     DataHealthObservation,
@@ -46,6 +48,12 @@ class DataHealthTests(unittest.TestCase):
         findings = detect_data_health(records, policy)
         self.assertEqual(
             {item.check_type for item in findings},
+            set(OHLCV_DATA_HEALTH_CHECKS),
+        )
+        # Every check must belong to a declared detector family, so a new check
+        # cannot be added without stating which detector raises it.
+        self.assertEqual(
+            OHLCV_DATA_HEALTH_CHECKS | FUTURES_SERIES_DATA_HEALTH_CHECKS,
             set(DataHealthCheck),
         )
         self.assertEqual(
