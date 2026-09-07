@@ -207,8 +207,17 @@ versioned funding convention; indicative funding, mark and index cadence are
 never invented. All values are fixture data; no crypto venue or data provider
 was contacted.
 
-Exact merged-main verification for 3I.2 is recorded below once the module is on
-`main`.
+Exact merged-main run `34151658044` verifies Module 3I.2 on commit
+`59a6e4931110d7c04a9dc7fdb94272e00dd8c335`: migration head `20260907_0044`
+applied, all **888 tests without skips**, all **156 restore-critical tables**
+reconciled after a fresh `pg_restore`, the **117/117** mypy ratchet, the
+zero-error mypy slice now including `market_observation_payloads.py` and
+`crypto_market_observations.py`, CodeQL run `34151658040`, and every configured
+security, supply-chain, container, attestation, frontend, smoke and browser
+gate. This verifies the engineering authority only — every funding rate, mark
+price, index price, open-interest figure, venue name and funding schedule
+remains fixture data, no crypto venue or data provider was contacted, and it
+grants no data or trading authority.
 
 **3I.3** (deterministic futures term-structure derivation) has not started and
 is pending review of the 3I.2 report.
