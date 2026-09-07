@@ -95,6 +95,15 @@ closed pending NEXT-03. All contract data is fixture data; no exchange was
 contacted. **3H.2** (crypto SPOT / PERPETUAL / DATED_FUTURE semantics, funding
 and mark/index prices) has not started.
 
+Exact merged-main run `34109237857` verifies Module 3H.1 on commit
+`b50cceee694757b886bf86478f64fc131ea3e9a6`: migration head `20260907_0041`
+applied, all **779 tests without skips**, all **148 restore-critical tables**
+reconciled after a fresh `pg_restore`, the **117/117** mypy ratchet, the
+zero-error mypy slice now including `futures_contracts.py`, and every
+configured security, supply-chain, container, attestation, frontend, smoke and
+browser gate. This verifies the engineering authority only — it is not
+exchange-verified reference data and grants no data or trading authority.
+
 ## 2026-08-19 Cycle 209 roadmap synchronization
 
 Every RQ-001–RQ-030 row was re-audited against both source specifications and
