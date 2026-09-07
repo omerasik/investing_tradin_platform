@@ -66,6 +66,8 @@ def fixture_facts() -> tuple[AvailableFilingFact, ...]:
         NOW - timedelta(days=29),
         "fixture://cycle203/filing",
         hashlib.sha256(b"cycle203-filing").hexdigest(),
+        NOW - timedelta(days=30),
+        "test-availability-v1",
         filing_id,
     )
     values = {
