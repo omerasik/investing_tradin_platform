@@ -297,6 +297,10 @@ class FuturesMarketObservationPostgresTests(unittest.TestCase):
             preliminary.normalized_value,
             {"canonical_payload_table": "futures_settlement_observations"},
         )
+        # Module 3I.2 renamed the physical table to open_interest_observations,
+        # but the canonical payload identity written into the envelope is frozen
+        # at its 3I.1 value. That is what keeps already-sealed dataset hashes
+        # stable across the rename, so this literal must never be "corrected".
         self.assertEqual(
             oi.normalized_value,
             {"canonical_payload_table": "futures_open_interest_observations"},
@@ -391,6 +395,22 @@ class FuturesMarketObservationPostgresTests(unittest.TestCase):
         )
         self.assertNotEqual(first.content_hash, second.content_hash)
 
+        # Invariant 28: a 3I.1 futures open-interest dataset stays reproducible
+        # after Module 3I.2 renamed the physical table to
+        # open_interest_observations. The expected digest is recomputed here by
+        # an independent re-implementation of the sealing formula with the
+        # canonical identity token written out as the 3I.1 literal -- so if that
+        # token were ever "corrected" to the new table name, this diverges and
+        # every pre-3I.2 sealed dataset would have silently changed identity.
+        open_interest_dataset = pipeline.seal_dataset(
+            full.source_id, "settle-open-interest-only", "settle-v1",
+            (oi.normalized_observation_id,), final_at,
+        )
+        self.assertEqual(
+            open_interest_dataset.content_hash,
+            _recomputed_3i1_open_interest_hash(database, (oi.normalized_observation_id,)),
+        )
+
         # ---- point-in-time revision visibility -------------------------------
         window_start = datetime(2025, 6, 20, tzinfo=UTC)
         window_end = datetime(2025, 6, 20, 23, tzinfo=UTC)
@@ -457,7 +477,7 @@ class FuturesMarketObservationPostgresTests(unittest.TestCase):
         # Invariant 20: the projection agrees with the canonical typed row.
         with database.transaction() as connection, connection.cursor() as cursor:
             cursor.execute(
-                "SELECT open_interest,unit FROM futures_open_interest_observations "
+                "SELECT open_interest,unit FROM open_interest_observations "
                 "WHERE normalized_observation_id=%s",
                 (oi.normalized_observation_id,),
             )
@@ -519,7 +539,7 @@ class FuturesMarketObservationPostgresTests(unittest.TestCase):
             connection.cursor() as cursor,
         ):
             cursor.execute(
-                "INSERT INTO futures_open_interest_observations VALUES (%s,%s,%s,%s,%s)",
+                "INSERT INTO open_interest_observations VALUES (%s,%s,%s,%s,%s)",
                 (variant.normalized_observation_id, Decimal("-1"), "CONTRACTS", None,
                  datetime(2025, 6, 20, 18, tzinfo=UTC)),
             )
@@ -536,7 +556,7 @@ class FuturesMarketObservationPostgresTests(unittest.TestCase):
                 connection.cursor() as cursor,
             ):
                 cursor.execute(
-                    "INSERT INTO futures_open_interest_observations VALUES (%s,%s,%s,%s,%s)",
+                    "INSERT INTO open_interest_observations VALUES (%s,%s,%s,%s,%s)",
                     (variant.normalized_observation_id, Decimal("1"), unit, asset,
                      datetime(2025, 6, 20, 18, tzinfo=UTC)),
                 )
@@ -562,7 +582,7 @@ class FuturesMarketObservationPostgresTests(unittest.TestCase):
         # Invariant 16: immutable evidence rejects UPDATE and DELETE.
         for table in (
             "futures_settlement_observations",
-            "futures_open_interest_observations",
+            "open_interest_observations",
             "historical_source_capabilities",
         ):
             with (
@@ -641,6 +661,49 @@ class FuturesMarketObservationPostgresTests(unittest.TestCase):
             InstrumentType.COMMON_STOCK,
         )
         self.assertGreater(final_at, preliminary_at + timedelta(0))
+
+
+def _recomputed_3i1_open_interest_hash(database: object, normalized_ids: tuple) -> str:
+    """The Module 3I.1 sealing digest, re-implemented independently of the pipeline.
+
+    Deliberately does not import ``seal_dataset``: the point is to detect any
+    change to the canonical open-interest serialization, above all a change to
+    the frozen identity token that Module 3I.2 preserved when it renamed
+    ``futures_open_interest_observations`` to ``open_interest_observations``.
+    """
+    import hashlib
+    import json
+
+    placeholders = ",".join(["%s"] * len(normalized_ids))
+    with database.transaction() as connection, connection.cursor() as cursor:  # type: ignore[attr-defined]
+        cursor.execute(
+            "SELECT n.normalized_observation_id,r.raw_payload_sha256,r.observation_kind,"
+            "n.normalized_value,o.open_interest,o.unit,o.observed_at,o.unit_asset "
+            "FROM historical_normalized_observations n "
+            "JOIN historical_raw_observations r ON r.raw_observation_id=n.raw_observation_id "
+            "JOIN open_interest_observations o "
+            "ON o.normalized_observation_id=n.normalized_observation_id "
+            f"WHERE n.normalized_observation_id IN ({placeholders})",  # nosec B608 - placeholders only
+            normalized_ids,
+        )
+        rows = cursor.fetchall()
+    digest = hashlib.sha256()
+    for row in sorted(rows, key=lambda item: str(item[0])):
+        canonical = "|".join(
+            (
+                str(row[0]),
+                str(row[1]),
+                str(row[2]),
+                json.dumps(row[3], sort_keys=True, separators=(",", ":"), allow_nan=False),
+                "futures_open_interest_observations",
+                str(Decimal(str(row[4]))),
+                str(row[5]),
+                row[6].isoformat(),
+                row[7] or "",
+            )
+        )
+        digest.update(canonical.encode())
+    return digest.hexdigest()
 
 
 if __name__ == "__main__":

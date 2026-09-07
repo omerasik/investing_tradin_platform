@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from trade_platform.data_health import (
+    CRYPTO_SERIES_DATA_HEALTH_CHECKS,
     FUTURES_SERIES_DATA_HEALTH_CHECKS,
     OHLCV_DATA_HEALTH_CHECKS,
     DataHealthAction,
@@ -53,7 +54,9 @@ class DataHealthTests(unittest.TestCase):
         # Every check must belong to a declared detector family, so a new check
         # cannot be added without stating which detector raises it.
         self.assertEqual(
-            OHLCV_DATA_HEALTH_CHECKS | FUTURES_SERIES_DATA_HEALTH_CHECKS,
+            OHLCV_DATA_HEALTH_CHECKS
+            | FUTURES_SERIES_DATA_HEALTH_CHECKS
+            | CRYPTO_SERIES_DATA_HEALTH_CHECKS,
             set(DataHealthCheck),
         )
         self.assertEqual(

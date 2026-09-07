@@ -24,6 +24,11 @@ class DataHealthBlockedError(DataHealthError):
 
 
 class DataHealthCheck(StrEnum):
+    # Module 3I.2 additions for the crypto funding / mark / index families.
+    MISSING_EXPECTED_FUNDING_EVENTS = "MISSING_EXPECTED_FUNDING_EVENTS"
+    DUPLICATE_FUNDING_SETTLEMENT = "DUPLICATE_FUNDING_SETTLEMENT"
+    FUNDING_RATE_OUTSIDE_CONVENTION_BOUNDS = "FUNDING_RATE_OUTSIDE_CONVENTION_BOUNDS"
+    NON_POSITIVE_REFERENCE_PRICE = "NON_POSITIVE_REFERENCE_PRICE"
     # Module 3I.1 additions for the futures settlement / open-interest families.
     MISSING_EXPECTED_SESSIONS = "MISSING_EXPECTED_SESSIONS"
     NON_POSITIVE_SETTLEMENT = "NON_POSITIVE_SETTLEMENT"
@@ -86,6 +91,21 @@ FUTURES_SERIES_DATA_HEALTH_CHECKS: frozenset[DataHealthCheck] = frozenset(
         DataHealthCheck.NEGATIVE_OPEN_INTEREST,
         DataHealthCheck.OPEN_INTEREST_UNIT_INCONSISTENCY,
         DataHealthCheck.SETTLEMENT_FINALITY_REGRESSION,
+        DataHealthCheck.TIMESTAMP_REGRESSION,
+        DataHealthCheck.STALE_OBSERVATIONS,
+    }
+)
+
+#: Checks the crypto funding / mark / index / open-interest detector can raise
+#: (:func:`detect_crypto_series_health`).
+CRYPTO_SERIES_DATA_HEALTH_CHECKS: frozenset[DataHealthCheck] = frozenset(
+    {
+        DataHealthCheck.MISSING_EXPECTED_FUNDING_EVENTS,
+        DataHealthCheck.DUPLICATE_FUNDING_SETTLEMENT,
+        DataHealthCheck.FUNDING_RATE_OUTSIDE_CONVENTION_BOUNDS,
+        DataHealthCheck.NON_POSITIVE_REFERENCE_PRICE,
+        DataHealthCheck.NEGATIVE_OPEN_INTEREST,
+        DataHealthCheck.OPEN_INTEREST_UNIT_INCONSISTENCY,
         DataHealthCheck.TIMESTAMP_REGRESSION,
         DataHealthCheck.STALE_OBSERVATIONS,
     }
@@ -430,6 +450,182 @@ def detect_futures_series_health(
                 newest, stale_after_seconds=stale_after.total_seconds(),
             ))
     return tuple(findings)
+
+
+@dataclass(frozen=True, slots=True)
+class CryptoSeriesObservation:
+    """One crypto funding, mark, index or open-interest record, as Data Health sees it.
+
+    ``observation_kind`` carries the envelope's own kind verbatim. Nothing in
+    this module ever treats an indicative funding record as a realized one:
+    completeness is evaluated over realized records only, and an indicative
+    series is never asked to account for a funding event.
+    """
+
+    source_id: UUID
+    instrument_id: str
+    observation_kind: str
+    event_at: datetime
+    ingested_at: datetime
+    revision: int
+    #: Funding rate, for either funding kind. ``None`` for other kinds.
+    funding_rate: Decimal | None = None
+    #: The funding instant this record concerns -- its own event instant when
+    #: realized, a future instant when indicative.
+    target_funding_at: datetime | None = None
+    #: Mark or index price. ``None`` for other kinds.
+    reference_price: Decimal | None = None
+    #: Open interest, or ``None``.
+    open_interest: Decimal | None = None
+    open_interest_unit: str | None = None
+
+
+REALIZED_FUNDING_KIND = "FUNDING_RATE_REALIZED"
+INDICATIVE_FUNDING_KIND = "FUNDING_RATE_INDICATIVE"
+
+
+def detect_crypto_series_health(
+    observations: list[CryptoSeriesObservation],
+    *,
+    expected_funding_instants: tuple[datetime, ...] | None = None,
+    funding_rate_floor: Decimal | None = None,
+    funding_rate_cap: Decimal | None = None,
+    stale_after: timedelta | None = None,
+    evaluated_at: datetime | None = None,
+) -> tuple[DataHealthFinding, ...]:
+    """Health checks for the crypto funding / mark / index / open-interest families.
+
+    Three cadences are deliberately **never invented**.
+
+    ``expected_funding_instants`` must come from
+    ``crypto_market_observations.expected_funding_instants`` applied to the
+    versioned funding convention that was actually in force -- it is the only
+    series here whose completeness is testable at all, and only because a
+    convention states the schedule as a recorded fact. Passing ``None`` makes no
+    completeness claim.
+
+    **Indicative funding has no expected count.** A venue may revise its estimate
+    for one funding instant any number of times, or not at all, so counting
+    revisions would manufacture a rule no venue published. Indicative records are
+    judged on freshness only, and only when a caller supplies an explicitly
+    sourced ``stale_after``.
+
+    **Mark and index prices have no assumed cadence either.** A venue publishes
+    them continuously or on its own schedule; absent explicitly sourced
+    semantics, this reports value-level problems and stays silent about gaps.
+    """
+    findings: list[DataHealthFinding] = []
+    ordered = sorted(observations, key=lambda item: (item.event_at, item.revision))
+
+    previous_event: datetime | None = None
+    units: dict[str, set[str]] = {}
+    realized_by_instant: dict[tuple[str, datetime], set[int]] = {}
+    for observation in ordered:
+        if observation.reference_price is not None and observation.reference_price <= 0:
+            findings.append(_finding(
+                DataHealthCheck.NON_POSITIVE_REFERENCE_PRICE, DataHealthAction.BLOCK_INSTRUMENT,
+                observation.event_at, instrument_id=observation.instrument_id,
+                observation_kind=observation.observation_kind,
+                reference_price=str(observation.reference_price),
+            ))
+        if observation.open_interest is not None and observation.open_interest < 0:
+            findings.append(_finding(
+                DataHealthCheck.NEGATIVE_OPEN_INTEREST, DataHealthAction.BLOCK_INSTRUMENT,
+                observation.event_at, instrument_id=observation.instrument_id,
+                open_interest=str(observation.open_interest),
+            ))
+        if observation.open_interest_unit is not None:
+            units.setdefault(observation.instrument_id, set()).add(observation.open_interest_unit)
+        if previous_event is not None and observation.event_at < previous_event:
+            findings.append(_finding(
+                DataHealthCheck.TIMESTAMP_REGRESSION, DataHealthAction.BLOCK_INSTRUMENT,
+                observation.event_at, previous_event=previous_event.isoformat(),
+            ))
+        previous_event = observation.event_at
+
+        if observation.funding_rate is not None:
+            below = funding_rate_floor is not None and observation.funding_rate < funding_rate_floor
+            above = funding_rate_cap is not None and observation.funding_rate > funding_rate_cap
+            if below or above:
+                # Bounds are only ever an explicit convention's own floor/cap.
+                # No default band is assumed for a venue that declares none.
+                findings.append(_finding(
+                    DataHealthCheck.FUNDING_RATE_OUTSIDE_CONVENTION_BOUNDS,
+                    DataHealthAction.BLOCK_INSTRUMENT, observation.event_at,
+                    instrument_id=observation.instrument_id,
+                    observation_kind=observation.observation_kind,
+                    funding_rate=str(observation.funding_rate),
+                ))
+        if (
+            observation.observation_kind == REALIZED_FUNDING_KIND
+            and observation.target_funding_at is not None
+        ):
+            key = (observation.instrument_id, observation.target_funding_at)
+            realized_by_instant.setdefault(key, set()).add(observation.revision)
+
+    for instrument_id, observed_units in sorted(units.items()):
+        if len(observed_units) > 1:
+            # Two different units in one series cannot be compared, and this
+            # module never converts between them.
+            findings.append(_finding(
+                DataHealthCheck.OPEN_INTEREST_UNIT_INCONSISTENCY,
+                DataHealthAction.BLOCK_INSTRUMENT, None,
+                instrument_id=instrument_id, units=sorted(observed_units),
+            ))
+
+    if expected_funding_instants is not None:
+        settled = {instant for _, instant in realized_by_instant}
+        missing = sorted(set(expected_funding_instants) - settled)
+        if missing:
+            findings.append(_finding(
+                DataHealthCheck.MISSING_EXPECTED_FUNDING_EVENTS,
+                DataHealthAction.BLOCK_INSTRUMENT, None,
+                missing_funding_instants=[value.isoformat() for value in missing],
+                expected_event_count=len(expected_funding_instants),
+            ))
+
+    # A venue may restate a realized funding rate, which arrives as a higher
+    # revision of the same event and is legitimate. Two records at the SAME
+    # revision for one funding instant instead mean the series cannot say what
+    # was actually applied, so only that is reported.
+    for (instrument_id, instant), revisions in sorted(
+        _duplicate_realized_revisions(ordered).items(), key=lambda item: (item[0][0], item[0][1])
+    ):
+        findings.append(_finding(
+            DataHealthCheck.DUPLICATE_FUNDING_SETTLEMENT, DataHealthAction.BLOCK_INSTRUMENT,
+            instant, instrument_id=instrument_id, revision=min(revisions),
+        ))
+
+    if stale_after is not None and evaluated_at is not None and ordered:
+        _aware(evaluated_at, "evaluated_at")
+        newest = max(item.event_at for item in ordered)
+        if evaluated_at - newest > stale_after:
+            findings.append(_finding(
+                DataHealthCheck.STALE_OBSERVATIONS, DataHealthAction.DEGRADE_CONFIDENCE,
+                newest, stale_after_seconds=stale_after.total_seconds(),
+            ))
+    return tuple(findings)
+
+
+def _duplicate_realized_revisions(
+    observations: list[CryptoSeriesObservation],
+) -> dict[tuple[str, datetime], set[int]]:
+    """Realized funding instants carrying more than one record at the same revision."""
+    seen: dict[tuple[str, datetime, int], int] = {}
+    duplicates: dict[tuple[str, datetime], set[int]] = {}
+    for observation in observations:
+        if (
+            observation.observation_kind != REALIZED_FUNDING_KIND
+            or observation.target_funding_at is None
+        ):
+            continue
+        key = (observation.instrument_id, observation.target_funding_at, observation.revision)
+        seen[key] = seen.get(key, 0) + 1
+        if seen[key] > 1:
+            duplicates.setdefault(
+                (observation.instrument_id, observation.target_funding_at), set()
+            ).add(observation.revision)
+    return duplicates
 
 
 class PostgresDataHealthStore:
