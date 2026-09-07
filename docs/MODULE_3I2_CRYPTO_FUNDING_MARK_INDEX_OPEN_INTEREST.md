@@ -261,8 +261,11 @@ restore-critical tables reconciled after a `pg_dump`/`pg_restore` drill, the
 `market_observation_payloads.py` and `crypto_market_observations.py`, ruff and
 bandit clean.
 
-Exact merged-main CI evidence is recorded in
-[MASTER_ROADMAP.md](MASTER_ROADMAP.md) once the module is on `main`.
+Exact merged-main run `34151658044` on commit
+`59a6e4931110d7c04a9dc7fdb94272e00dd8c335` reproduces all of it in CI —
+**888 tests without skips**, **156 restore-critical tables** reconciled, the
+**117/117** ratchet, CodeQL run `34151658040`, and every configured downstream
+gate. See [MASTER_ROADMAP.md](MASTER_ROADMAP.md).
 
 **This verifies the engineering authority only.** Every funding rate, mark
 price, index price, open-interest figure, venue name, funding schedule and
