@@ -2,10 +2,14 @@
 
 Every integration test file in this suite shares one PostgreSQL database for
 the whole CI run with no reset between files, so this file registers its own
-uniquely-namespaced fixture instruments (``FUTTEST:...``) rather than reusing
-``mvp_instrument_universe()`` -- the same isolation pattern
-``test_pilot_instruments.py`` and ``test_openfigi_identity_postgres.py``
-already established.
+uniquely-namespaced fixture instruments rather than reusing
+``mvp_instrument_universe()``.
+
+Those ids sit under ``operator_dashboard.RESERVED_TEST_FIXTURE_PREFIX``
+(``TESTFIXTURE:``), which keeps them off the operator's unfiltered instrument
+discovery page. Earlier modules relied on naming fixtures so they sorted last
+under ``ORDER BY canonical_symbol``; the reserved prefix replaces that
+convention with something the code enforces.
 
 Contract parameters are FIXTURES modelled on publicly documented COMEX/CME
 product specifications. Nothing here was retrieved from an exchange, and no
@@ -67,7 +71,7 @@ class FuturesContractAuthorityPostgresTests(unittest.TestCase):
         def register_future(
             suffix: str, symbol: str, *, multiplier: Decimal, tick_value: Decimal
         ) -> str:
-            instrument_id = f"FUTTEST:XCEC:{suffix}"
+            instrument_id = f"TESTFIXTURE:FUT:XCEC:{suffix}"
             master.register(
                 ProfessionalInstrument(
                     instrument_id=instrument_id,
@@ -104,8 +108,8 @@ class FuturesContractAuthorityPostgresTests(unittest.TestCase):
         # The FUTURES_23X5 session type is new in migration 0041; registering
         # at all proves the widened CHECK constraint took effect.
         series = FuturesContractSeries(
-            series_id="FUTTEST:XCEC:GC",
-            root_symbol="FUTTESTGC",
+            series_id="TESTFIXTURE:FUT:XCEC:GC",
+            root_symbol="TESTFIXGC",
             exchange_name="COMEX",
             venue="XCEC",
             mic="XCEC",
@@ -131,8 +135,8 @@ class FuturesContractAuthorityPostgresTests(unittest.TestCase):
 
         # ---- GC and MGC never collapse into one product -----------------------
         micro = FuturesContractSeries(
-            series_id="FUTTEST:XCEC:MGC",
-            root_symbol="FUTTESTMGC",
+            series_id="TESTFIXTURE:FUT:XCEC:MGC",
+            root_symbol="TESTFIXMGC",
             exchange_name="COMEX",
             venue="XCEC",
             mic="XCEC",
@@ -153,8 +157,8 @@ class FuturesContractAuthorityPostgresTests(unittest.TestCase):
         )
         authority.register_series(micro)
         self.assertNotEqual(
-            authority.get_series("FUTTEST:XCEC:GC").tick_value,
-            authority.get_series("FUTTEST:XCEC:MGC").tick_value,
+            authority.get_series("TESTFIXTURE:FUT:XCEC:GC").tick_value,
+            authority.get_series("TESTFIXTURE:FUT:XCEC:MGC").tick_value,
         )
 
         # The database itself, not just the Python contract, rejects a tick
@@ -163,7 +167,7 @@ class FuturesContractAuthorityPostgresTests(unittest.TestCase):
             cursor.execute(
                 "INSERT INTO futures_contract_series VALUES (" + ",".join(["%s"] * 19) + ")",
                 (
-                    "FUTTEST:XCEC:BROKEN", "FUTTESTBROKEN", "COMEX", "XCEC", "XCEC", "COMMODITY",
+                    "TESTFIXTURE:FUT:XCEC:BROKEN", "TESTFIXBROKEN", "COMEX", "XCEC", "XCEC", "COMMODITY",
                     "Gold", "USD", Decimal(10), "TROY_OUNCE", Decimal("0.10"), Decimal("10.00"),
                     2, 0, "PHYSICAL_DELIVERY", "America/New_York", "FUTURES_23X5", registered_at,
                     "fixture",
@@ -174,7 +178,7 @@ class FuturesContractAuthorityPostgresTests(unittest.TestCase):
         months = (2, 4, 6, 8, 12)
         instrument_ids = {
             month: register_future(
-                f"GC{month:02d}2025", f"FUTTESTGC{month:02d}25",
+                f"GC{month:02d}2025", f"TESTFIXGC{month:02d}25",
                 multiplier=Decimal(100), tick_value=Decimal("10.00"),
             )
             for month in months
@@ -183,8 +187,8 @@ class FuturesContractAuthorityPostgresTests(unittest.TestCase):
         def specification(month: int, **overrides: object) -> FuturesContractSpecification:
             fields: dict[str, object] = {
                 "instrument_id": instrument_ids[month],
-                "series_id": "FUTTEST:XCEC:GC",
-                "contract_code": f"FUTTESTGC{month:02d}25",
+                "series_id": "TESTFIXTURE:FUT:XCEC:GC",
+                "contract_code": f"TESTFIXGC{month:02d}25",
                 "contract_year": 2025,
                 "contract_month": month,
                 "first_trade_date": date(2023, month, 1),
@@ -204,20 +208,20 @@ class FuturesContractAuthorityPostgresTests(unittest.TestCase):
 
         with self.assertRaises(FuturesContractSpecificationError) as raised:
             authority.specify_contract(
-                specification(6, instrument_id="FUTTEST:XCEC:NEVER_REGISTERED")
+                specification(6, instrument_id="TESTFIXTURE:FUT:XCEC:NEVER_REGISTERED")
             )
         self.assertIn("contract_instrument_not_registered", str(raised.exception))
 
         # An equity instrument can never be given a futures contract spec.
         master.register(
             ProfessionalInstrument(
-                instrument_id="FUTTEST:XNAS:EQUITY",
+                instrument_id="TESTFIXTURE:FUT:XNAS:EQUITY",
                 asset_class=AssetClass.EQUITY,
                 instrument_type=InstrumentType.COMMON_STOCK,
                 exchange_name="NASDAQ",
                 venue="XNAS",
                 mic="XNAS",
-                canonical_symbol="FUTTESTEQ",
+                canonical_symbol="TESTFIXEQ",
                 listing_date=date(2020, 1, 2),
                 base_currency="USD",
                 quote_currency="USD",
@@ -236,7 +240,7 @@ class FuturesContractAuthorityPostgresTests(unittest.TestCase):
             )
         )
         with self.assertRaises(FuturesContractSpecificationError) as raised:
-            authority.specify_contract(specification(6, instrument_id="FUTTEST:XNAS:EQUITY"))
+            authority.specify_contract(specification(6, instrument_id="TESTFIXTURE:FUT:XNAS:EQUITY"))
         self.assertIn("instrument_is_not_a_future", str(raised.exception))
 
         for month in months:
@@ -244,14 +248,14 @@ class FuturesContractAuthorityPostgresTests(unittest.TestCase):
 
         # Two different delivery months of one series cannot share a month slot.
         duplicate_instrument = register_future(
-            "GC062025DUP", "FUTTESTGC0625D", multiplier=Decimal(100), tick_value=Decimal("10.00")
+            "GC062025DUP", "TESTFIXGC0625D", multiplier=Decimal(100), tick_value=Decimal("10.00")
         )
         with self.assertRaises(FuturesContractSpecificationError):
             authority.specify_contract(
-                specification(6, instrument_id=duplicate_instrument, contract_code="FUTTESTDUP")
+                specification(6, instrument_id=duplicate_instrument, contract_code="TESTFIXDUP")
             )
 
-        stored = authority.contracts_for_series("FUTTEST:XCEC:GC", known_at=registered_at)
+        stored = authority.contracts_for_series("TESTFIXTURE:FUT:XCEC:GC", known_at=registered_at)
         self.assertEqual(len(stored), len(months))
         self.assertEqual([contract.month_code for contract in stored], ["G", "J", "M", "Q", "Z"])
         self.assertEqual(stored[0].tick_value, Decimal("10.000000000000"))
@@ -261,7 +265,7 @@ class FuturesContractAuthorityPostgresTests(unittest.TestCase):
         effective_at = datetime(2025, 3, 10, tzinfo=UTC)
         authority.record_margin_requirement(
             FuturesMarginRequirement(
-                series_id="FUTTEST:XCEC:GC",
+                series_id="TESTFIXTURE:FUT:XCEC:GC",
                 tier=MarginTier.SPECULATIVE,
                 initial_margin=Decimal("12000.00"),
                 maintenance_margin=Decimal("11000.00"),
@@ -274,7 +278,7 @@ class FuturesContractAuthorityPostgresTests(unittest.TestCase):
         )
         authority.record_margin_requirement(
             FuturesMarginRequirement(
-                series_id="FUTTEST:XCEC:GC",
+                series_id="TESTFIXTURE:FUT:XCEC:GC",
                 tier=MarginTier.SPECULATIVE,
                 initial_margin=Decimal("15000.00"),
                 maintenance_margin=Decimal("13500.00"),
@@ -289,14 +293,14 @@ class FuturesContractAuthorityPostgresTests(unittest.TestCase):
         # Announced on 1 March, effective 10 March: on 5 March we already know
         # about it, but it is not yet in force.
         in_force = authority.margin_point_in_time(
-            "FUTTEST:XCEC:GC",
+            "TESTFIXTURE:FUT:XCEC:GC",
             MarginTier.SPECULATIVE,
             effective_at=datetime(2025, 3, 5, tzinfo=UTC),
             known_at=datetime(2025, 3, 5, tzinfo=UTC),
         )
         self.assertEqual(in_force.initial_margin, Decimal("12000.000000000000"))
         after = authority.margin_point_in_time(
-            "FUTTEST:XCEC:GC",
+            "TESTFIXTURE:FUT:XCEC:GC",
             MarginTier.SPECULATIVE,
             effective_at=datetime(2025, 3, 15, tzinfo=UTC),
             known_at=datetime(2025, 3, 15, tzinfo=UTC),
@@ -305,7 +309,7 @@ class FuturesContractAuthorityPostgresTests(unittest.TestCase):
         # And a replay that predates the announcement cannot see it at all,
         # even though the effective date has passed.
         unknown_yet = authority.margin_point_in_time(
-            "FUTTEST:XCEC:GC",
+            "TESTFIXTURE:FUT:XCEC:GC",
             MarginTier.SPECULATIVE,
             effective_at=datetime(2025, 3, 15, tzinfo=UTC),
             known_at=datetime(2025, 2, 1, tzinfo=UTC),
@@ -315,7 +319,7 @@ class FuturesContractAuthorityPostgresTests(unittest.TestCase):
         # A contract-level requirement outranks the series-level default.
         authority.record_margin_requirement(
             FuturesMarginRequirement(
-                series_id="FUTTEST:XCEC:GC",
+                series_id="TESTFIXTURE:FUT:XCEC:GC",
                 instrument_id=instrument_ids[6],
                 tier=MarginTier.SPECULATIVE,
                 initial_margin=Decimal("18000.00"),
@@ -328,7 +332,7 @@ class FuturesContractAuthorityPostgresTests(unittest.TestCase):
             )
         )
         contract_level = authority.margin_point_in_time(
-            "FUTTEST:XCEC:GC",
+            "TESTFIXTURE:FUT:XCEC:GC",
             MarginTier.SPECULATIVE,
             effective_at=datetime(2025, 3, 20, tzinfo=UTC),
             known_at=datetime(2025, 3, 20, tzinfo=UTC),
@@ -338,7 +342,7 @@ class FuturesContractAuthorityPostgresTests(unittest.TestCase):
         self.assertEqual(contract_level.instrument_id, instrument_ids[6])
         # A sibling contract still gets the series-level number.
         sibling = authority.margin_point_in_time(
-            "FUTTEST:XCEC:GC",
+            "TESTFIXTURE:FUT:XCEC:GC",
             MarginTier.SPECULATIVE,
             effective_at=datetime(2025, 3, 20, tzinfo=UTC),
             known_at=datetime(2025, 3, 20, tzinfo=UTC),
@@ -350,7 +354,7 @@ class FuturesContractAuthorityPostgresTests(unittest.TestCase):
         # to the speculative tier.
         with self.assertRaises(FuturesMarginError) as raised:
             authority.margin_point_in_time(
-                "FUTTEST:XCEC:GC",
+                "TESTFIXTURE:FUT:XCEC:GC",
                 MarginTier.HEDGER,
                 effective_at=datetime(2025, 3, 20, tzinfo=UTC),
                 known_at=datetime(2025, 3, 20, tzinfo=UTC),
@@ -359,7 +363,7 @@ class FuturesContractAuthorityPostgresTests(unittest.TestCase):
 
         # ---- continuous series is a versioned, materialized policy ------------
         policy = ContinuousSeriesPolicy(
-            series_id="FUTTEST:XCEC:GC",
+            series_id="TESTFIXTURE:FUT:XCEC:GC",
             policy_version=1,
             roll_trigger=RollTrigger.CALENDAR_DAYS_BEFORE_FIRST_NOTICE,
             roll_offset_days=5,
@@ -371,18 +375,18 @@ class FuturesContractAuthorityPostgresTests(unittest.TestCase):
         )
         authority.register_continuous_policy(policy)
         self.assertEqual(
-            authority.get_continuous_policy("FUTTEST:XCEC:GC", 1).content_hash(),
+            authority.get_continuous_policy("TESTFIXTURE:FUT:XCEC:GC", 1).content_hash(),
             policy.content_hash(),
         )
 
         materialization_known_at = datetime(2025, 1, 1, tzinfo=UTC)
         members = authority.materialize_continuous_series(
-            "FUTTEST:XCEC:GC", 1, known_at=materialization_known_at, depth=1
+            "TESTFIXTURE:FUT:XCEC:GC", 1, known_at=materialization_known_at, depth=1
         )
         self.assertEqual(len(members), len(months))
 
         resolved = authority.resolve_continuous_contract(
-            "FUTTEST:XCEC:GC",
+            "TESTFIXTURE:FUT:XCEC:GC",
             1,
             effective_at=datetime(2025, 3, 1, tzinfo=UTC),
             known_at=datetime(2025, 3, 1, tzinfo=UTC),
@@ -393,7 +397,7 @@ class FuturesContractAuthorityPostgresTests(unittest.TestCase):
         # non-overlap constraint rather than silently duplicating history.
         with self.assertRaises(ContinuousSeriesPolicyError) as raised:
             authority.materialize_continuous_series(
-                "FUTTEST:XCEC:GC", 1, known_at=materialization_known_at, depth=1
+                "TESTFIXTURE:FUT:XCEC:GC", 1, known_at=materialization_known_at, depth=1
             )
         self.assertIn("continuous_member_overlap_or_duplicate", str(raised.exception))
 
@@ -401,7 +405,7 @@ class FuturesContractAuthorityPostgresTests(unittest.TestCase):
         # time gates the derived series exactly as it gates raw evidence.
         with self.assertRaises(ContinuousSeriesResolutionError) as raised:
             authority.resolve_continuous_contract(
-                "FUTTEST:XCEC:GC",
+                "TESTFIXTURE:FUT:XCEC:GC",
                 1,
                 effective_at=datetime(2025, 3, 1, tzinfo=UTC),
                 known_at=datetime(2024, 6, 1, tzinfo=UTC),
@@ -411,7 +415,7 @@ class FuturesContractAuthorityPostgresTests(unittest.TestCase):
         # Past the final known roll the series stops rather than extrapolating.
         with self.assertRaises(ContinuousSeriesResolutionError):
             authority.resolve_continuous_contract(
-                "FUTTEST:XCEC:GC",
+                "TESTFIXTURE:FUT:XCEC:GC",
                 1,
                 effective_at=datetime(2026, 1, 1, tzinfo=UTC),
                 known_at=datetime(2026, 1, 1, tzinfo=UTC),
@@ -419,11 +423,11 @@ class FuturesContractAuthorityPostgresTests(unittest.TestCase):
 
         # Depth 2 coexists with depth 1 and names a different real contract.
         authority.materialize_continuous_series(
-            "FUTTEST:XCEC:GC", 1, known_at=materialization_known_at, depth=2
+            "TESTFIXTURE:FUT:XCEC:GC", 1, known_at=materialization_known_at, depth=2
         )
         self.assertEqual(
             authority.resolve_continuous_contract(
-                "FUTTEST:XCEC:GC",
+                "TESTFIXTURE:FUT:XCEC:GC",
                 1,
                 effective_at=datetime(2025, 3, 1, tzinfo=UTC),
                 known_at=datetime(2025, 3, 1, tzinfo=UTC),
@@ -448,7 +452,7 @@ class FuturesContractAuthorityPostgresTests(unittest.TestCase):
         restarted = PostgresFuturesContractAuthority(PostgresDatabase(dsn))
         self.assertEqual(
             restarted.resolve_continuous_contract(
-                "FUTTEST:XCEC:GC",
+                "TESTFIXTURE:FUT:XCEC:GC",
                 1,
                 effective_at=datetime(2025, 3, 1, tzinfo=UTC),
                 known_at=datetime(2025, 3, 1, tzinfo=UTC),
@@ -456,15 +460,15 @@ class FuturesContractAuthorityPostgresTests(unittest.TestCase):
             instrument_ids[4],
         )
         self.assertEqual(
-            restarted.get_series("FUTTEST:XCEC:GC").contract_multiplier,
+            restarted.get_series("TESTFIXTURE:FUT:XCEC:GC").contract_multiplier,
             Decimal("100.000000000000"),
         )
         self.assertEqual(
-            restarted.get_continuous_policy("FUTTEST:XCEC:GC", 1).roll_offset_days, 5
+            restarted.get_continuous_policy("TESTFIXTURE:FUT:XCEC:GC", 1).roll_offset_days, 5
         )
 
         # ---- the existing instrument authority is untouched --------------------
-        equity = master.get_as_of("FUTTEST:XNAS:EQUITY", datetime(2025, 1, 1, tzinfo=UTC))
+        equity = master.get_as_of("TESTFIXTURE:FUT:XNAS:EQUITY", datetime(2025, 1, 1, tzinfo=UTC))
         self.assertEqual(equity.instrument_type, InstrumentType.COMMON_STOCK)
         self.assertEqual(equity.market_session_type, SessionType.US_EQUITY)
 

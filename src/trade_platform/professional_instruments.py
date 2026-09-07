@@ -42,6 +42,11 @@ class InstrumentType(StrEnum):
     FUTURE = "FUTURE"
     OPTION = "OPTION"
     FIXED_INCOME = "FIXED_INCOME"
+    # Module 3H.2. Kept distinct from FUTURE because a perpetual has no expiry
+    # and a crypto dated future has no delivery-notice or roll-rule lifecycle,
+    # so neither can satisfy FUTURE's required contract metadata below.
+    CRYPTO_PERPETUAL = "CRYPTO_PERPETUAL"
+    CRYPTO_DATED_FUTURE = "CRYPTO_DATED_FUTURE"
 
 
 class LifecycleStatus(StrEnum):
@@ -64,6 +69,9 @@ class RepresentationKind(StrEnum):
     ETF_PROXY = "ETF_PROXY"
     SPOT = "SPOT"
     FUTURE = "FUTURE"
+    # Module 3H.2: a perpetual swap tracks spot via funding rather than
+    # converging to it at an expiry, so it is neither SPOT nor FUTURE.
+    PERPETUAL = "PERPETUAL"
 
 
 class IdentifierSourceKind(StrEnum):
@@ -84,6 +92,24 @@ def _require_aware(value: datetime, name: str) -> None:
 
 def _require_code(value: str, name: str, *, length: int | None = None) -> None:
     if not value.strip() or (length is not None and len(value) != length):
+        raise InstrumentMasterError(f"invalid_{name}")
+
+
+#: Longest asset code accepted for a CRYPTO instrument. ISO 4217 does not cover
+#: crypto assets, so a three-character rule cannot express USDT, USDC or most
+#: token tickers. Non-crypto asset classes keep the strict ISO-4217 three-letter
+#: rule unchanged -- this widening is deliberately scoped to AssetClass.CRYPTO
+#: so a typo like "USDD" still fails immediately on an equity or FX instrument.
+MAX_CRYPTO_ASSET_CODE_LENGTH = 12
+
+
+def _require_asset_code(value: str, name: str, asset_class: AssetClass) -> None:
+    if asset_class is not AssetClass.CRYPTO:
+        _require_code(value, name, length=3)
+        return
+    if not 2 <= len(value) <= MAX_CRYPTO_ASSET_CODE_LENGTH or not value.isalnum():
+        raise InstrumentMasterError(f"invalid_{name}")
+    if value != value.upper():
         raise InstrumentMasterError(f"invalid_{name}")
 
 
@@ -135,7 +161,7 @@ class ProfessionalInstrument:
             (self.quote_currency, "quote_currency"),
             (self.settlement_currency, "settlement_currency"),
         ):
-            _require_code(value, name, length=3)
+            _require_asset_code(value, name, self.asset_class)
         if min(self.contract_multiplier, self.contract_size, self.tick_size, self.lot_size) <= 0:
             raise InstrumentMasterError("invalid_instrument_units")
         if not 0 <= self.price_precision <= 18 or not 0 <= self.quantity_precision <= 18:
