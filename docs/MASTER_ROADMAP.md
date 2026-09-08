@@ -289,6 +289,20 @@ dropped outright so exactly one uniqueness authority exists. All values are
 fixture data; no exchange or data provider was contacted, and no strategy,
 signal, opportunity, order or risk authority is granted.
 
+Exact merged-main run `34249496551` verifies Module 3J.0 on commit
+`73c44e909f2bea63cdd2580b61f86f80d3d4422f`: migration head `20260908_0046`
+applied, all **917 tests without skips**, all **159 restore-critical tables**
+reconciled after a fresh `pg_restore`, the **117/117** mypy ratchet, CodeQL run
+`34249496851`, and every configured security, supply-chain, container,
+attestation, frontend, smoke and browser gate. (The first attempt at this run
+failed only on the final, non-functional `actions/upload-artifact` retention
+step with a transient GitHub Actions blob-storage `403 Forbidden`; every
+functional/security/quality gate had already passed, and `gh run rerun
+--failed` reproduced a clean, fully green run at the same commit.) This
+verifies the engineering authority only — every value remains fixture data, no
+exchange or data provider was contacted, and it grants no strategy, signal,
+opportunity, order or risk authority.
+
 Exact merged-main run `34109237857` verifies Module 3H.1 on commit
 `b50cceee694757b886bf86478f64fc131ea3e9a6`: migration head `20260907_0041`
 applied, all **779 tests without skips**, all **148 restore-critical tables**
