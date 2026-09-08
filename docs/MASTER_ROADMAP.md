@@ -245,6 +245,17 @@ expiration identity rather than symbol text, and declares its own finality and
 same-session/staleness policy explicitly rather than inheriting an implicit
 one. All values are fixture data; no exchange was contacted.
 
+Exact merged-main run `34188635516` verifies Module 3I.3 on commit
+`05c8f427a68392299a756a5e8146d0fcc2cf0c88`: migration head `20260908_0045`
+applied, all **907 tests without skips**, all **159 restore-critical tables**
+reconciled after a fresh `pg_restore`, the **117/117** mypy ratchet, the
+zero-error mypy slice now including `futures_term_structure.py`, CodeQL run
+`34188635570`, and every configured security, supply-chain, container,
+attestation, frontend, smoke and browser gate. This verifies the engineering
+authority only — every settlement price, contract date and derived curve
+value remains fixture data, no exchange or data provider was contacted, and
+it grants no data or trading authority.
+
 Exact merged-main run `34109237857` verifies Module 3H.1 on commit
 `b50cceee694757b886bf86478f64fc131ea3e9a6`: migration head `20260907_0041`
 applied, all **779 tests without skips**, all **148 restore-critical tables**
