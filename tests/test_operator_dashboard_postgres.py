@@ -111,10 +111,15 @@ class OperatorDashboardPostgresTests(unittest.TestCase):
                 (ids["feature_new"], now - timedelta(hours=1), "0.02", "raw:revision"),
             ):
                 cursor.execute(
-                    "INSERT INTO feature_materializations VALUES (%s,%s,%s,'cycle208-v1',%s,%s,%s,%s,%s::jsonb,%s,'VALIDATED',%s)",
+                    "INSERT INTO feature_materializations "
+                    "(materialization_id,feature_id,instrument_id,dataset_version,event_at,"
+                    "effective_at,knowledge_at,computed_at,source_observation_manifest,value,"
+                    "quality_status,content_hash,subject_type,subject_id,hash_version) VALUES "
+                    "(%s,%s,%s,'cycle208-v1',%s,%s,%s,%s,%s::jsonb,%s,'VALIDATED',%s,"
+                    "'INSTRUMENT',%s,'V1')",
                     (materialization_id, ids["feature"], instrument.instrument_id, now - timedelta(days=1),
                      now - timedelta(days=1), knowledge_at, knowledge_at, json.dumps([source]), value,
-                     digest(str(materialization_id))),
+                     digest(str(materialization_id)), instrument.instrument_id),
                 )
             cursor.execute("INSERT INTO strategy_definitions VALUES (%s,'TREND','cycle208 fixture',%s)", (ids["strategy"], now - timedelta(days=2)))
             cursor.execute(
@@ -321,7 +326,7 @@ class OperatorDashboardPostgresTests(unittest.TestCase):
             feature_plan = " ".join(str(row[0]) for row in cursor.fetchall())
             cursor.execute("EXPLAIN (COSTS OFF) SELECT * FROM news_document_revisions WHERE root_source_item_id='item-1' AND published_at<=%s ORDER BY published_at DESC LIMIT 10", (now,))
             news_plan = " ".join(str(row[0]) for row in cursor.fetchall())
-        self.assertIn("feature_materializations_asof_idx", feature_plan)
+        self.assertIn("feature_materializations_subject_asof_idx", feature_plan)
         self.assertIn("news_document_pit_idx", news_plan)
         database.close()
 
