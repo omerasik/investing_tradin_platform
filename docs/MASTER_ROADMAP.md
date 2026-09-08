@@ -219,8 +219,31 @@ price, index price, open-interest figure, venue name and funding schedule
 remains fixture data, no crypto venue or data provider was contacted, and it
 grants no data or trading authority.
 
-**3I.3** (deterministic futures term-structure derivation) has not started and
-is pending review of the 3I.2 report.
+**3I.3** ([deterministic futures term-structure
+derivation](MODULE_3I3_FUTURES_TERM_STRUCTURE.md)) is FUTURES ONLY: crypto has
+`MARK_PRICE`/`INDEX_PRICE` but no first-class settlement-price authority, so a
+crypto curve remains a later, separately reviewed module rather than a silent
+extension. A term structure is derived evidence, not raw market data — no new
+`ObservationKind`, no write into `historical_raw_observations`, no second
+market-data source registry, and no mutation of the sealed `SETTLEMENT_PRICE`
+observations 3I.1 already produced. Three new tables (migration `20260908_0045`)
+form a separate derived-artifact authority: a versioned, content-hashed
+`futures_term_structure_methods` registry whose schema makes an undeclared
+classification threshold or carry day-count convention structurally impossible
+(not merely application-refused); one immutable `futures_term_structure_curves`
+row per exact PIT snapshot (series, sealed dataset, method, `as_of`,
+`knowledge_at`), idempotent on identical replay and conflicting only on a
+genuine hash mismatch; and one `futures_term_structure_points` row per real
+3H.1 contract, whose `instrument_id` foreign key into
+`futures_contract_specifications` makes a continuous synthetic series, an
+equity or a crypto instrument mechanically impossible as a point, and whose
+deferred constraint trigger proves at COMMIT that the point's frozen settlement
+snapshot and its contract's series both match the canonical evidence they were
+taken from. The base method reads only `SETTLEMENT_PRICE` (no OHLCV/mark/index
+fallback), performs no interpolation or extrapolation, orders points by 3H.1
+expiration identity rather than symbol text, and declares its own finality and
+same-session/staleness policy explicitly rather than inheriting an implicit
+one. All values are fixture data; no exchange was contacted.
 
 Exact merged-main run `34109237857` verifies Module 3H.1 on commit
 `b50cceee694757b886bf86478f64fc131ea3e9a6`: migration head `20260907_0041`
