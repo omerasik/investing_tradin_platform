@@ -135,12 +135,15 @@ NEXT-02 (Multi-Asset Instrument Authority V2) is engineering-complete across
 The NEXT-03 architecture was reviewed and approved on 2026-09-07 and proceeds
 incrementally, one independently reviewable authority layer per PR: **3I.1**
 futures settlement + open interest, **3I.2** crypto funding + mark/index +
-crypto open interest, **3I.3** deterministic futures term-structure derivation.
-**3I.4** (top-of-book quotes) is planned but not authorized. **3I.5**
-(trade-by-trade and L2 order book) is explicitly deferred pending a separate
-storage-tier architecture decision — object storage/Parquet, partitioned
-catalogue, hot/cold tiers, checksummed manifests and a replay interface — and
-must not be forced into the current low-cardinality immutable evidence tables.
+crypto open interest, **3I.3** deterministic futures term-structure derivation,
+**3J.0** generalized Feature Authority subject identity (a prerequisite for
+connecting 3I.1–3I.3 evidence to the Feature Authority; not a market-data
+module itself). **3I.4** (top-of-book quotes) remains planned but not
+authorized — this status is unchanged by 3J.0. **3I.5** (trade-by-trade and L2
+order book) is explicitly deferred pending a separate storage-tier
+architecture decision — object storage/Parquet, partitioned catalogue,
+hot/cold tiers, checksummed manifests and a replay interface — and must not be
+forced into the current low-cardinality immutable evidence tables.
 
 **3I.1** ([futures settlement and open-interest
 authority](MODULE_3I1_FUTURES_SETTLEMENT_OPEN_INTEREST.md)) extends the
@@ -255,6 +258,36 @@ attestation, frontend, smoke and browser gate. This verifies the engineering
 authority only — every settlement price, contract date and derived curve
 value remains fixture data, no exchange or data provider was contacted, and
 it grants no data or trading authority.
+
+**3J.0** ([generalized Feature Authority subject
+identity](MODULE_3J0_FEATURE_SUBJECT_IDENTITY.md), migration `20260908_0046`)
+is **identity infrastructure only** — no derivative feature (curve slope,
+carry, curvature, contango/backwardation, roll yield, funding basis,
+open-interest change) is computed here. The durable Feature Authority
+(`feature_authority.py`) generalizes in place from an instrument-only
+`FeatureMaterialization.instrument_id` to an explicit `(subject_type,
+subject_id)` pair supporting `INSTRUMENT` (resolved against
+`professional_instruments`) and `FUTURES_SERIES` (resolved against the
+existing 3H.1 `futures_contract_series`); no second feature-materialization
+table, store or subject registry is created. Every existing row backfills to
+`subject_type='INSTRUMENT'`, `subject_id=instrument_id` without recomputing
+any value or content hash, and a retained legacy `instrument_id` column is
+kept permanently coherent with the canonical subject pair by a CHECK
+constraint rather than left as a second, independently-disagreeable identity.
+A `hash_version` column separates the untouched pre-3J.0 content-hash formula
+(`V1`, produced by the unchanged `materialize()`/`latest_as_of()` instrument
+convenience wrapper) from the new subject-aware formula (`V2`, produced by the
+new `materialize_subject()`/`latest_as_of_subject()` generalized API) — the
+two are structurally distinct payloads, so a V2 row can never collide with a
+V1 row for the same textual identifier. A deferred constraint trigger proves
+at COMMIT that a `V2` row's subject actually exists in its canonical authority
+(intentionally not applied to `V1` rows, which predate any such check and
+which several already-established Postgres suites rely on continuing to
+accept unregistered fixture instrument identifiers). Uniqueness moved from an
+instrument-keyed constraint to a subject-keyed one, with the old constraint
+dropped outright so exactly one uniqueness authority exists. All values are
+fixture data; no exchange or data provider was contacted, and no strategy,
+signal, opportunity, order or risk authority is granted.
 
 Exact merged-main run `34109237857` verifies Module 3H.1 on commit
 `b50cceee694757b886bf86478f64fc131ea3e9a6`: migration head `20260907_0041`

@@ -40,6 +40,40 @@ class FeatureQualityStatus(StrEnum):
     REJECTED = "REJECTED"
 
 
+class FeatureSubjectType(StrEnum):
+    """What a feature materialization is *about*. Module 3J.0.
+
+    ``INSTRUMENT`` resolves against the existing canonical instrument
+    authority (``professional_instruments``); ``FUTURES_SERIES`` resolves
+    against the existing 3H.1 futures-series/root authority
+    (``futures_contract_series``). No other subject kind is supported yet --
+    an account, portfolio, strategy, market or sector subject fails closed
+    rather than being silently accepted as text.
+    """
+
+    INSTRUMENT = "INSTRUMENT"
+    FUTURES_SERIES = "FUTURES_SERIES"
+
+
+class FeatureHashVersion(StrEnum):
+    """Which content-hash formula produced a stored materialization's hash.
+
+    ``V1`` is the pre-3J.0 formula (keyed on ``instrument_id``), produced by
+    the unchanged :meth:`PostgresFeatureAuthority.materialize` /
+    :meth:`FeatureMaterialization.create` path and never recomputed.  ``V2``
+    is the generalized subject-aware formula (keyed on ``subject_type`` and
+    ``subject_id`` explicitly), produced only by
+    :meth:`PostgresFeatureAuthority.materialize_subject` /
+    :meth:`FeatureMaterializationV2.create`. The two are structurally
+    distinct payload shapes, not merely different field values, so a V2
+    ``INSTRUMENT`` row can never collide with a V1 row for the same
+    instrument.
+    """
+
+    V1 = "V1"
+    V2 = "V2"
+
+
 @dataclass(frozen=True, slots=True)
 class TransparentMarketWindow:
     """Offline, ordered market inputs used only for deterministic calculation."""
@@ -265,6 +299,78 @@ class FeatureMaterialization:
             raise FeatureAuthorityError("validated_feature_requires_value")
 
 
+@dataclass(frozen=True, slots=True)
+class FeatureMaterializationV2:
+    """The generalized subject-aware materialization. Module 3J.0.
+
+    Identical PIT/immutability contract to :class:`FeatureMaterialization`,
+    but identified by the canonical ``(subject_type, subject_id)`` pair
+    instead of a bare ``instrument_id`` -- so the same shape covers an
+    instrument feature and a futures-series feature (e.g. the 3I.3 term
+    structure) without a second authority or a fabricated instrument.
+    """
+
+    feature_id: UUID
+    subject_type: FeatureSubjectType
+    subject_id: str
+    dataset_version: str
+    event_at: datetime
+    effective_at: datetime
+    knowledge_at: datetime
+    computed_at: datetime
+    source_observation_manifest: tuple[str, ...]
+    value: Decimal | None
+    quality_status: FeatureQualityStatus
+    content_hash: str
+    materialization_id: UUID = field(default_factory=uuid4)
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        feature_id: UUID,
+        subject_type: FeatureSubjectType,
+        subject_id: str,
+        dataset_version: str,
+        event_at: datetime,
+        effective_at: datetime,
+        knowledge_at: datetime,
+        computed_at: datetime,
+        source_observation_manifest: tuple[str, ...],
+        value: Decimal | None,
+        quality_status: FeatureQualityStatus,
+    ) -> FeatureMaterializationV2:
+        payload = {
+            "hash_version": FeatureHashVersion.V2.value,
+            "feature_id": str(feature_id), "subject_type": subject_type.value,
+            "subject_id": subject_id, "dataset_version": dataset_version,
+            "event_at": event_at.isoformat(), "effective_at": effective_at.isoformat(),
+            "knowledge_at": knowledge_at.isoformat(), "computed_at": computed_at.isoformat(),
+            "source_observation_manifest": source_observation_manifest,
+            "value": None if value is None else str(value),
+            "quality_status": quality_status.value,
+        }
+        return cls(
+            feature_id, subject_type, subject_id, dataset_version, event_at, effective_at,
+            knowledge_at, computed_at, source_observation_manifest, value, quality_status,
+            hashlib.sha256(_canonical(payload).encode()).hexdigest(),
+        )
+
+    def validate(self) -> None:
+        if not self.subject_id.strip() or not self.dataset_version.strip():
+            raise FeatureAuthorityError("feature_materialization_identity_missing")
+        if len(self.content_hash) != 64 or not self.source_observation_manifest:
+            raise FeatureAuthorityError("feature_materialization_provenance_missing")
+        for timestamp in (self.event_at, self.effective_at, self.knowledge_at, self.computed_at):
+            _aware(timestamp)
+        if self.effective_at < self.event_at or self.knowledge_at < self.effective_at:
+            raise FeatureAuthorityError("feature_materialization_invalid_temporal_order")
+        if self.computed_at < self.knowledge_at:
+            raise FeatureAuthorityError("feature_computed_before_knowledge")
+        if self.quality_status is FeatureQualityStatus.VALIDATED and self.value is None:
+            raise FeatureAuthorityError("validated_feature_requires_value")
+
+
 class PostgresFeatureAuthority:
     """Append-only definition/value authority with strict decision-time reads."""
 
@@ -294,12 +400,25 @@ class PostgresFeatureAuthority:
             raise FeatureAuthorityError("feature_definition_registration_failed") from error
 
     def materialize(self, value: FeatureMaterialization) -> None:
+        """The unchanged INSTRUMENT convenience wrapper -- V1 identity, forever.
+
+        Every row this writes is ``subject_type='INSTRUMENT'``,
+        ``subject_id=instrument_id``, ``hash_version='V1'``, and its
+        ``content_hash`` is exactly the pre-3J.0 formula computed by
+        :meth:`FeatureMaterialization.create`. Callers written against this
+        method need no change: the subject columns are populated internally.
+        """
         value.validate()
         try:
             with self._database.transaction() as connection, connection.cursor() as cursor:
                 cursor.execute(
-                    "INSERT INTO feature_materializations VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
-                    "ON CONFLICT (feature_id,instrument_id,dataset_version,event_at,effective_at,knowledge_at) DO NOTHING "
+                    "INSERT INTO feature_materializations "
+                    "(materialization_id,feature_id,instrument_id,dataset_version,event_at,"
+                    "effective_at,knowledge_at,computed_at,source_observation_manifest,value,"
+                    "quality_status,content_hash,subject_type,subject_id,hash_version) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                    "ON CONFLICT (feature_id,subject_type,subject_id,dataset_version,event_at,"
+                    "effective_at,knowledge_at) DO NOTHING "
                     "RETURNING content_hash",
                     (
                         value.materialization_id, value.feature_id, value.instrument_id,
@@ -307,16 +426,71 @@ class PostgresFeatureAuthority:
                         value.knowledge_at, value.computed_at,
                         json.dumps(value.source_observation_manifest), value.value,
                         value.quality_status.value, value.content_hash,
+                        FeatureSubjectType.INSTRUMENT.value, value.instrument_id,
+                        FeatureHashVersion.V1.value,
                     ),
                 )
                 inserted = cursor.fetchone()
                 if inserted is None:
                     cursor.execute(
                         "SELECT content_hash FROM feature_materializations WHERE "
-                        "feature_id=%s AND instrument_id=%s AND dataset_version=%s "
+                        "feature_id=%s AND subject_type=%s AND subject_id=%s AND dataset_version=%s "
                         "AND event_at=%s AND effective_at=%s AND knowledge_at=%s",
-                        (value.feature_id, value.instrument_id, value.dataset_version,
-                         value.event_at, value.effective_at, value.knowledge_at),
+                        (value.feature_id, FeatureSubjectType.INSTRUMENT.value, value.instrument_id,
+                         value.dataset_version, value.event_at, value.effective_at, value.knowledge_at),
+                    )
+                    existing = cursor.fetchone()
+                    if existing is None or str(existing[0]) != value.content_hash:
+                        raise FeatureAuthorityError("feature_materialization_conflict")
+        except FeatureAuthorityError:
+            raise
+        except Exception as error:
+            raise FeatureAuthorityError("feature_materialization_failed") from error
+
+    def materialize_subject(self, value: FeatureMaterializationV2) -> None:
+        """The canonical generalized write path -- any supported subject type.
+
+        Writes ``hash_version='V2'``, which is what makes
+        ``require_valid_feature_subject`` (migration ``20260908_0046``) prove
+        at COMMIT that the subject actually exists: an ``INSTRUMENT`` in
+        ``professional_instruments``, or a ``FUTURES_SERIES`` in
+        ``futures_contract_series``. An ``INSTRUMENT`` row also populates the
+        legacy ``instrument_id`` column (kept coherent by a CHECK); a
+        ``FUTURES_SERIES`` row leaves it ``NULL``.
+        """
+        value.validate()
+        instrument_id = (
+            value.subject_id if value.subject_type is FeatureSubjectType.INSTRUMENT else None
+        )
+        try:
+            with self._database.transaction() as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "INSERT INTO feature_materializations "
+                    "(materialization_id,feature_id,instrument_id,dataset_version,event_at,"
+                    "effective_at,knowledge_at,computed_at,source_observation_manifest,value,"
+                    "quality_status,content_hash,subject_type,subject_id,hash_version) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                    "ON CONFLICT (feature_id,subject_type,subject_id,dataset_version,event_at,"
+                    "effective_at,knowledge_at) DO NOTHING "
+                    "RETURNING content_hash",
+                    (
+                        value.materialization_id, value.feature_id, instrument_id,
+                        value.dataset_version, value.event_at, value.effective_at,
+                        value.knowledge_at, value.computed_at,
+                        json.dumps(value.source_observation_manifest), value.value,
+                        value.quality_status.value, value.content_hash,
+                        value.subject_type.value, value.subject_id, FeatureHashVersion.V2.value,
+                    ),
+                )
+                inserted = cursor.fetchone()
+                if inserted is None:
+                    cursor.execute(
+                        "SELECT content_hash FROM feature_materializations WHERE "
+                        "feature_id=%s AND subject_type=%s AND subject_id=%s AND dataset_version=%s "
+                        "AND event_at=%s AND effective_at=%s AND knowledge_at=%s",
+                        (value.feature_id, value.subject_type.value, value.subject_id,
+                         value.dataset_version, value.event_at, value.effective_at,
+                         value.knowledge_at),
                     )
                     existing = cursor.fetchone()
                     if existing is None or str(existing[0]) != value.content_hash:
@@ -372,4 +546,51 @@ class PostgresFeatureAuthority:
             UUID(str(row[1])), str(row[2]), str(row[3]), row[4], row[5], row[6], row[7],
             tuple(str(item) for item in manifest), None if row[9] is None else Decimal(str(row[9])),
             FeatureQualityStatus(str(row[10])), str(row[11]), UUID(str(row[0])),
+        )
+
+    def latest_as_of_subject(
+        self,
+        feature_id: UUID,
+        subject_type: FeatureSubjectType,
+        subject_id: str,
+        dataset_version: str,
+        decision_at: datetime,
+    ) -> tuple[FeatureMaterializationV2, ...]:
+        """The canonical generalized read API. Reads every stored row for the
+        subject regardless of which hash formula produced it -- ``hash_version``
+        marks how a row's own identity was computed, not which rows are
+        readable, so an ``INSTRUMENT`` subject materialized through either
+        :meth:`materialize` or :meth:`materialize_subject` is visible here.
+
+        Gating is identical to :meth:`latest_as_of`: no row whose ``event_at``,
+        ``effective_at``, ``knowledge_at`` or ``computed_at`` is after
+        ``decision_at`` can ever be returned.
+        """
+        _aware(decision_at)
+        with self._database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT materialization_id,feature_id,subject_type,subject_id,dataset_version,"
+                "event_at,effective_at,knowledge_at,computed_at,source_observation_manifest,value,"
+                "quality_status,content_hash FROM (SELECT m.*, ROW_NUMBER() OVER (PARTITION BY event_at "
+                "ORDER BY knowledge_at DESC, computed_at DESC) rank FROM feature_materializations m "
+                "WHERE feature_id=%s AND subject_type=%s AND subject_id=%s AND dataset_version=%s "
+                "AND event_at<=%s AND effective_at<=%s AND knowledge_at<=%s AND computed_at<=%s) x "
+                "WHERE rank=1 ORDER BY event_at",
+                (feature_id, subject_type.value, subject_id, dataset_version, decision_at,
+                 decision_at, decision_at, decision_at),
+            )
+            rows = cursor.fetchall()
+        return tuple(self._row_v2(row) for row in rows)
+
+    @staticmethod
+    def _row_v2(row: tuple[Any, ...]) -> FeatureMaterializationV2:
+        manifest = row[9] if isinstance(row[9], list) else json.loads(row[9])
+        return FeatureMaterializationV2(
+            feature_id=UUID(str(row[1])), subject_type=FeatureSubjectType(str(row[2])),
+            subject_id=str(row[3]), dataset_version=str(row[4]), event_at=row[5],
+            effective_at=row[6], knowledge_at=row[7], computed_at=row[8],
+            source_observation_manifest=tuple(str(item) for item in manifest),
+            value=None if row[10] is None else Decimal(str(row[10])),
+            quality_status=FeatureQualityStatus(str(row[11])), content_hash=str(row[12]),
+            materialization_id=UUID(str(row[0])),
         )
