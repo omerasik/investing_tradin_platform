@@ -7,6 +7,12 @@ evidence Modules 3H.1/3H.2, 3I.1, 3I.2, 3I.3 and 3J.0 actually established, so
 an owner can approve a concrete, bounded scope before any implementation PR
 is opened.
 
+**Revision 2 (owner-reviewed):** the general direction was approved, with
+four architecture decisions made explicit and several technical corrections
+applied. See §8 for the decision log; every item that was `REQUIRES REVIEW`
+in the first revision is now `OWNER DECIDED`. This revision recommends
+**seven** feature definitions, not six.
+
 ## 0. Precondition
 
 3J.0 (generalized Feature Authority subject identity — `INSTRUMENT` |
@@ -33,230 +39,362 @@ that review is what this document is.
 
 ## 2. Design principles for every candidate below
 
-These are non-negotiable given the instruction not to force every candidate
-in, and given what has already gone wrong once in this codebase (the 3I.3
-CHECK-on-NULL gap, the 3J.0 collision-on-textual-identity risk):
-
 1. **Curve-shaped features read the 3I.3 curve artifact, never raw settlement
    observations directly.** 3I.3 already did point selection (finality
    policy, staleness policy, no-fallback/no-interpolation, minimum point
    count) and froze it into an immutable, hash-identified curve. Re-deriving
-   spread/slope/curvature straight from `futures_settlement_observations`
-   would create a second, divergent selection policy — exactly the kind of
-   "second authority" both 3I.3 and 3J.0 were written to prevent.
+   spread/curvature straight from `futures_settlement_observations` would
+   create a second, divergent selection policy — exactly the kind of "second
+   authority" both 3I.3 and 3J.0 were written to prevent.
 2. **A feature must never diff or ratio two observations in different units,
-   unit assets, currencies, or quote assets.** This is the direct extension
-   of 3I.1 §6 and 3I.2 §7's "no conversion, ever" rule into feature space.
-3. **A feature must never blend two observations whose instants disagree**
-   without an explicit, declared matching rule (exact-match by default; a
-   tolerance window only if explicitly declared, mirroring 3I.3's
-   `max_staleness_days`). No feature invents interpolation.
+   unit assets, currencies, or quote assets.** Direct extension of 3I.1 §6
+   and 3I.2 §7's "no conversion, ever" rule into feature space.
+3. **A feature must never blend two independently-published observations
+   without an explicit, declared matching rule covering both time and
+   source.** Exact-instant match by default (a tolerance window only if
+   explicitly declared, mirroring 3I.3's `max_staleness_days`), **and** by
+   default the two observations must share the same authorized
+   source/dataset identity — matching timestamps alone is not sufficient,
+   since two different providers/venues can each publish a value at the same
+   instant using different methodologies. No feature invents interpolation.
 4. **PIT gating is per-input, not per-feature.** Every observation/curve read
    into a feature computation must independently satisfy
-   `knowledge_at <= decision_at` (or the feature's own `knowledge_at`); a
-   feature is not permitted to leak one input's future knowledge through
-   another input's earlier one.
+   `knowledge_at <= decision_at`; a feature's own `knowledge_at` must be at
+   least the maximum `knowledge_at` of every input it read, and a feature is
+   never permitted to leak one input's future knowledge through another
+   input's earlier one.
 5. **A feature about a whole futures series is a `FUTURES_SERIES` subject; a
    feature about one contract or one crypto instrument is an `INSTRUMENT`
    subject.** This is exactly the distinction 3J.0 built the subject model
-   for — no candidate below should collapse it back into a single type.
-6. **Annualization requires an explicit, declared day-count/periods
-   convention.** Never an implicit "assume calendar days" or "assume 8h
-   funding" default silently baked into the formula.
+   for — no candidate below collapses it back into a single type.
+6. **Annualization requires an explicit, declared day-count/year-fraction
+   convention, applied through a named `year_fraction(T1, T2, convention)`
+   function.** Never an implicit ACT/365 (or any other) assumption baked
+   silently into a formula.
+7. **A normalized quantity is not automatically dimensionless.** Dividing a
+   price-rate-of-change by a price removes the price dimension but not a time
+   dimension; units must be stated exactly, not asserted as "dimensionless"
+   for convenience.
 
-## 3. Candidate-by-candidate evaluation
+## 3. Recommended feature definitions (seven)
 
-### 3.1 Futures front/back normalized spread — **recommend**
+### 3.1 `futures_front_back_normalized_spread` — **include**
 
 `(P_back - P_front) / P_front` between the two nearest-expiration points on an
 already-derived 3I.3 curve for a given `(series_id, dataset_version_id,
 method_id, as_of, knowledge_at)`. Dimensionless, same-currency by
 construction (3I.3 curves already exclude mixed-currency evidence), no
-interpolation. Subject: `FUTURES_SERIES`. Manifest: the curve id plus the two
-point ids used. This is the simplest, lowest-risk candidate — it adds no new
-rigor requirement beyond what 3I.3 already enforces.
+interpolation. Subject: `FUTURES_SERIES`.
 
-### 3.2 Futures curve slope — **recommend, but must be defined as a single formula shared with §3.4 carry, not a second one**
-
-"Slope" and "annualized carry" are the same underlying calendar-spread
-formula at two different normalizations: raw price-per-unit-time vs.
-price-per-unit-time expressed as an annualized percentage. Recommending both
-as independently-designed features would let two features silently diverge
-on maturity-date handling or day-count. **3J.1 should define one shared
-primitive** — "annualized normalized calendar-spread rate," parameterized by
-an explicit day-count convention — and expose §3.1's raw spread and §3.4's
-annualized carry as two presentations of it, not two derivations.
-
-### 3.3 Futures three-point curvature — **recommend, with an explicit unequal-spacing formula requirement**
-
-Futures contract expirations are not evenly spaced (e.g. quarterly vs.
-monthly listings within the same series), so a naive second difference
-`P3 - 2*P2 + P1` conflates curvature with spacing irregularity. This must use
-the standard unequal-spacing three-point second-derivative estimator (weighted
-by the actual `expiration_date` gaps from 3H.1, not point index), and must
-only be computed when the curve has at least 3 surviving points after 3I.3's
-own selection policy — i.e., it is computed *conditionally*, never padded or
-approximated when only 2 points survive. Subject: `FUTURES_SERIES`.
-
-### 3.4 Futures annualized carry with explicit day-count convention — **recommend; highest-priority candidate**
+### 3.2 `futures_annualized_calendar_spread_rate` — **include, highest priority**
 
 This is the one candidate 3I.3 explicitly named as deferred and the direct
 reason 3J.0 exists (a series-level artifact needing a series-level subject).
-Uses the two nearest curve points' frozen settlement prices and their
-contracts' real `expiration_date` (from 3H.1, never symbol/ticker text) as
-`T1`/`T2`, and an explicit day-count convention. 3I.3's method registry
-*already reserves* a `carry_day_count_convention` field for exactly this —
-3J.1 would be the first thing that actually reads it. Subject:
-`FUTURES_SERIES`.
+**No independent `curve_slope` feature is registered.** §3.1 and this feature
+share one internal deterministic calendar-spread helper but remain two
+distinct feature definitions, because their output semantics and units
+differ — §3.1 is a point-in-time dimensionless spread, this is an annualized
+rate.
 
-### 3.5 Futures open-interest level/change, unit-consistent only — **recommend, scoped to per-contract only**
+Formula, using the method's own declared `carry_day_count_convention` (3I.3's
+method registry already reserves this field; 3J.1 is the first thing that
+reads it) and each contract's real `expiration_date` from 3H.1 (never
+symbol/ticker text):
 
-Per-contract OI level and OI change (`OI[t] - OI[t-1]`) are straightforward:
-`INSTRUMENT` subject, and the feature must refuse to diff two observations
-whose `unit` or (for asset-denominated units) `unit_asset` disagree — never
-convert. **Series-level aggregate OI (e.g. "front-month OI" or "total series
-OI") is explicitly excluded from this proposal's recommended scope**: 3I.1 §9
-already states no OI-based roll policy exists yet, so there is no reviewed
-definition of which contract is "front month" for aggregation purposes, and
-summing across contracts would need every summed contract to share a unit —
-an aggregation policy that has not been reviewed. Per-contract OI needs no
-such policy and is safe to recommend now; series-level OI should wait for the
-roll-policy decision 3I.1 deferred.
+```
+normalized_spread = (P_back - P_front) / P_front                    # from §3.1
+year_fraction     = year_fraction(T_front, T_back, declared_day_count_convention)
+annualized_rate   = normalized_spread / year_fraction
+```
 
-### 3.6 Crypto mark-index basis — **recommend, with an exact-timestamp-match rule (no tolerance window in v1)**
+No `periods_per_year` language and no implicit ACT/365 assumption —
+`year_fraction()` is a named function parameterized by the method's declared
+convention. Units: `1/year` (a rate per year of the declared convention).
+Subject: `FUTURES_SERIES`.
+
+### 3.3 `futures_curve_curvature` — **include, with corrected dimensional semantics**
+
+Computed only when the curve has at least 3 surviving points after 3I.3's own
+selection policy (finality/staleness/minimum-point-count) — never padded or
+approximated when only 2 points survive.
+
+Exact unequal-spacing three-point second-derivative estimator, using the
+declared day-count convention's `year_fraction()` for the two gaps (not raw
+calendar days, not point index):
+
+```
+h1 = year_fraction(T_front, T_mid, declared_day_count_convention)
+h2 = year_fraction(T_mid,  T_back, declared_day_count_convention)
+
+d2P_dT2 = (2 / (h1 + h2)) * ( (P_back - P_mid) / h2 - (P_mid - P_front) / h1 )
+
+curvature = d2P_dT2 / P_front
+```
+
+**Corrected units:** `d2P_dT2` has units of `price / year²`. Dividing by
+`P_front` (a price) removes the price dimension but **not** the time
+dimension — the result has units of `year^-2`, not "dimensionless." The
+proposal's first revision incorrectly called this dimensionless; that is
+fixed here. No arbitrary extra scaling is introduced to force a dimensionless
+result. Subject: `FUTURES_SERIES`.
+
+### 3.4 `open_interest_change` — **include, one cross-asset definition, per-instrument only**
+
+One definition, callable against any `INSTRUMENT` (futures contract or crypto
+perpetual/dated future), because 3I.1/3I.2 intentionally created one
+canonical open-interest authority (`open_interest_observations`, one kind,
+one payload shape) — a `futures_oi_change` and a `crypto_oi_change` would
+duplicate that authority in feature space for no reason.
+
+**Only the change is registered, not the raw level.** `FeatureMaterialization`
+represents one value with one semantic definition; open-interest *level* is
+already canonical market evidence directly queryable from
+`open_interest_observations` / `research_query()`, and mirroring it into
+Feature Authority as a second read path is not justified without a concrete
+downstream consumer that specifically needs it through the Feature Authority
+API. If that need arises later, a `open_interest_level` feature can be
+proposed on its own.
+
+`OI[t] - OI[t-1]` requires, all four, or the pair is not eligible and no
+value is produced:
+
+1. same instrument (same `subject_id`);
+2. same OI `unit`;
+3. same `unit_asset` (for asset-denominated units — never converted);
+4. same authorized source/dataset identity by default (never diffed across
+   two providers whose OI methodology could differ).
+
+`OI[t-1]` selection must be deterministic and PIT-safe: the most recent
+eligible prior observation (by the above four criteria) whose own
+`knowledge_at <= decision_at`, ranked identically to how 3I.1/3I.2 already
+rank revisions (`revision DESC, ingested_at DESC`) — never "any" prior
+observation. Subject: `INSTRUMENT`.
+
+### 3.5 `crypto_mark_index_basis` — **include, exact-timestamp match plus source consistency**
 
 `(mark_price - index_price) / index_price` for one crypto instrument. 3I.2
 already guarantees both observations' price asset equals the instrument's own
-quote asset, so the dimensional risk is smaller than the futures candidates.
-The remaining risk is temporal: mark and index are independently published
-and not guaranteed to share a timestamp. **Recommend exact `event_at` match
-only for the first version** (a basis value is computed only when a mark and
-an index observation share the identical instant); a declared tolerance
-window, if ever added, should follow 3I.3's staleness-tolerance precedent
-explicitly rather than being assumed. Subject: `INSTRUMENT`.
+quote asset. Two conditions must both hold, or no value is produced:
 
-### 3.7 Crypto realized-funding annualized rate — **recommend**
+1. **Exact `event_at` match** — v1 has no tolerance/staleness window. A
+   source-specific tolerance window can be considered later, but only after
+   empirical real-provider timing evidence exists; it is not designed here.
+2. **Source consistency** — the `MARK_PRICE` and `INDEX_PRICE` observations
+   must, by default, share the same authorized source/dataset identity.
+   Provider A's mark must never be paired with Provider B's index merely
+   because their timestamps coincide, unless the 3I.2 authority is found (at
+   implementation time) to already define a stronger canonical pairing
+   relation between a venue's mark and its own index than "same source" —
+   see §9 for this residual check.
+
+Subject: `INSTRUMENT`.
+
+### 3.6 `crypto_realized_funding_annualized` — **include**
 
 Annualizes a realized funding rate using the funding interval already
 recorded on the resolved 3H.2 convention (`periods_per_year = seconds_per_year
-/ interval_seconds`). 3I.2 already computes "unknown cadence" fail-closed when
-an interval is not a whole number of seconds (non-deterministic-cadence
-conventions) — the feature must inherit that same fail-closed behavior rather
-than guessing a periods-per-year figure. Subject: `INSTRUMENT`.
+/ interval_seconds`). 3I.2 already fails closed ("unknown cadence") when an
+interval is not a whole number of seconds — this feature must inherit that
+same fail-closed behavior rather than guessing a periods-per-year figure.
+The `seconds_per_year` constant used for the annualization must itself be
+declared explicitly (e.g. on the convention or the feature definition), not
+hard-coded as an implicit 365-day assumption, mirroring principle 6/7 above.
+Subject: `INSTRUMENT`.
 
-### 3.8 Crypto indicative-vs-realized funding delta, where temporally meaningful — **recommend, with an explicit "most recent prior estimate" selection rule**
+### 3.7 `crypto_funding_forecast_error` — **include, renamed and re-scoped from "indicative-vs-realized delta"**
 
-Compares a realized funding rate against the most recent `INDICATIVE`
-estimate for the *same* `target_funding_at`, published strictly before that
-instant — never "any" indicative estimate, since 3I.2 preserves every
-successive revision. Each side's own `knowledge_at`/`event_at` gates the PIT
-read independently (this is a backward-looking accuracy feature computed
-*after* the realized event is known, which is legitimate — the requirement is
-that a decision-time read at `decision_at` must not see this feature before
-both the qualifying indicative estimate and the realized settlement were
-themselves individually knowable by `decision_at`). Subject: `INSTRUMENT`.
+Renamed from the first revision's "indicative-vs-realized funding delta" to
+make explicit that this is a **forecast-error / estimate-error** feature, not
+a pre-event funding prediction: it only becomes knowable *after* the realized
+funding observation exists, and it must never appear in a training/backtest
+row whose decision time precedes that realized observation.
 
-### 3.9 Crypto open-interest change, identical unit/unit_asset only — **recommend — unify with §3.5, not a separate feature**
+`realized_rate - indicative_rate`, where `indicative_rate` is the most recent
+eligible `FUNDING_RATE_INDICATIVE` observation for the same
+`target_funding_at`, published strictly before it. Eligibility requires all
+of:
 
-Crypto and futures open interest already share one physical table, one kind,
-and one payload shape (3I.2 §3). There is no reason for "futures OI change"
-and "crypto OI change" to be two feature definitions with two formulas; they
-should be **one** `INSTRUMENT`-subject OI-change feature definition, callable
-for any instrument type, with the same unit/unit_asset-consistency guard as
-§3.5. Recommending them separately would recreate the exact kind of
-duplicate-authority problem 3I.2 avoided by renaming rather than forking the
-OI table.
+1. same instrument;
+2. same target funding instant (`target_funding_at`);
+3. compatible source/venue identity between the realized and indicative
+   observations;
+4. the same applicable funding-convention identity and version resolved for
+   both sides (not two different convention versions);
+5. the indicative observation is the most recent one published strictly
+   before the target funding instant — never "any" indicative estimate,
+   since 3I.2 preserves every successive revision.
+
+`feature.knowledge_at` must be at least the maximum `knowledge_at` of both
+the qualifying indicative observation and the realized observation; a
+decision-time read at `decision_at` must not see this feature before both
+were themselves individually knowable by `decision_at`. Subject:
+`INSTRUMENT`.
 
 ### Summary
 
-| # | Candidate | Verdict |
+| # | Feature | Verdict |
 |---|---|---|
-| 3.1 | Futures front/back spread | Recommend |
-| 3.2 | Futures curve slope | Recommend, merged with 3.4 as one shared formula |
-| 3.3 | Futures 3-point curvature | Recommend, with unequal-spacing estimator |
-| 3.4 | Futures annualized carry | Recommend — highest priority |
-| 3.5 | Futures OI level/change | Recommend, per-contract (`INSTRUMENT`) only |
-| 3.6 | Crypto mark-index basis | Recommend, exact-timestamp match only |
-| 3.7 | Crypto realized-funding annualized rate | Recommend |
-| 3.8 | Crypto indicative-vs-realized funding delta | Recommend, explicit prior-estimate selection rule |
-| 3.9 | Crypto OI change | Recommend, unified with 3.5 as one definition |
+| 3.1 | `futures_front_back_normalized_spread` | Include |
+| 3.2 | `futures_annualized_calendar_spread_rate` | Include — highest priority |
+| 3.3 | `futures_curve_curvature` | Include, corrected units (`year^-2`, not dimensionless) |
+| 3.4 | `open_interest_change` | Include — one cross-asset, per-instrument definition; level not mirrored |
+| 3.5 | `crypto_mark_index_basis` | Include — exact-match + source consistency |
+| 3.6 | `crypto_realized_funding_annualized` | Include |
+| 3.7 | `crypto_funding_forecast_error` | Include — renamed/re-scoped |
+
+No independent `curve_slope` feature, no `futures_oi_change` /
+`crypto_oi_change` split, and no raw `open_interest_level` feature are
+recommended — each was folded into, or deliberately excluded from, the seven
+above.
 
 ### Implementation recommendation table
 
-Six feature definitions (after merging 3.2 into 3.4 and 3.9 into 3.5) would
-be registered if this proposal is approved:
+Seven feature definitions would be registered if this proposal is approved:
 
 | Feature | Subject type | Canonical input authority | Formula | Units | PIT semantics | Decision |
 |---|---|---|---|---|---|---|
-| Front/back normalized spread | `FUTURES_SERIES` | 3I.3 `futures_term_structure_curves`/`_points` (read-only) | `(P_back - P_front) / P_front` over the two nearest-expiration surviving curve points | Dimensionless | Inherits the curve's own `(as_of, knowledge_at)`; no independent PIT read | **Include** |
-| Annualized calendar-spread rate (slope + carry, one primitive) | `FUTURES_SERIES` | 3I.3 curve points + 3H.1 `expiration_date` | `((P_back - P_front) / P_front) / ((T_back - T_front) / periods_per_year)` using the method's `carry_day_count_convention` | %/year (dimensionless × 1/time) | Same as above; day-count convention is part of the method's content hash | **Include** — highest priority |
-| Three-point curvature | `FUTURES_SERIES` | 3I.3 curve points (≥3 surviving) | Unequal-spacing three-point second-derivative estimator weighted by real `expiration_date` gaps | Price / time² (normalize by `P_front` for a dimensionless form) | Computed only when ≥3 points survive 3I.3's own selection policy; absent otherwise, never approximated | **Include** |
-| Per-instrument open-interest level/change | `INSTRUMENT` | 3I.1/3I.2 `open_interest_observations` (shared kind, both asset classes) | Level: raw value; Change: `OI[t] - OI[t-1]` | As stored (`CONTRACTS` / `BASE_ASSET` / `QUOTE_NOTIONAL`) — never converted; change refused if `unit`/`unit_asset` differ between the two reads | Each side of a change independently gated by its own `knowledge_at <= decision_at` | **Include** — per-contract only; series-level aggregate **deferred** (blocked on 3I.1's undecided roll policy) |
-| Crypto mark-index basis | `INSTRUMENT` | 3I.2 `crypto_reference_price_observations` | `(mark_price - index_price) / index_price` | Dimensionless | Computed only when a `MARK_PRICE` and `INDEX_PRICE` row share the identical `event_at` (exact match, no tolerance window in v1) | **Include** |
-| Crypto realized-funding annualized rate | `INSTRUMENT` | 3I.2 `crypto_funding_observations` (`FUNDING_RATE_REALIZED`) + 3H.2 funding convention | `rate * (seconds_per_year / interval_seconds)` | %/year | Uses the convention resolved at the funding instant (existing two-clock resolution); fails closed (no feature value) if the interval is not a whole number of seconds | **Include** |
-| Crypto indicative-vs-realized funding delta | `INSTRUMENT` | 3I.2 `crypto_funding_observations` (both kinds) | `realized_rate - indicative_rate`, where `indicative_rate` is the most recent `FUNDING_RATE_INDICATIVE` for the same `target_funding_at` published strictly before it | Rate (same units as funding rate, dimensionless) | Each side's own `knowledge_at` independently gates when the delta itself becomes visible at a given `decision_at` | **Include** |
+| `futures_front_back_normalized_spread` | `FUTURES_SERIES` | 3I.3 `futures_term_structure_curves`/`_points` (read-only) | `(P_back - P_front) / P_front` over the two nearest-expiration surviving curve points | Dimensionless | Inherits the curve's own `(as_of, knowledge_at)`; no independent PIT read | **Include** |
+| `futures_annualized_calendar_spread_rate` | `FUTURES_SERIES` | 3I.3 curve points + 3H.1 `expiration_date` | `normalized_spread / year_fraction(T_front, T_back, declared_day_count_convention)` | `1/year` (per the declared convention) | Same as above; day-count convention is part of the method's content hash | **Include** — highest priority |
+| `futures_curve_curvature` | `FUTURES_SERIES` | 3I.3 curve points (≥3 surviving) | `(2/(h1+h2)) * ((P_back-P_mid)/h2 - (P_mid-P_front)/h1) / P_front`, `h1,h2` via `year_fraction()` | `year^-2` (not dimensionless) | Computed only when ≥3 points survive 3I.3's own selection policy; absent otherwise, never approximated | **Include** |
+| `open_interest_change` | `INSTRUMENT` | 3I.1/3I.2 `open_interest_observations` (shared kind, both asset classes) | `OI[t] - OI[t-1]`, deterministic PIT-safe prior selection | As stored (`CONTRACTS`/`BASE_ASSET`/`QUOTE_NOTIONAL`) — never converted; refused if `unit`/`unit_asset`/source identity differ | Both sides independently gated by `knowledge_at <= decision_at` | **Include** — per-instrument only; level, and series-level aggregate, **deferred** |
+| `crypto_mark_index_basis` | `INSTRUMENT` | 3I.2 `crypto_reference_price_observations` | `(mark_price - index_price) / index_price` | Dimensionless | Only when `MARK_PRICE`/`INDEX_PRICE` share identical `event_at` **and** source identity | **Include** |
+| `crypto_realized_funding_annualized` | `INSTRUMENT` | 3I.2 `crypto_funding_observations` (`FUNDING_RATE_REALIZED`) + 3H.2 funding convention | `rate * (seconds_per_year / interval_seconds)`, `seconds_per_year` declared explicitly | `1/year` | Uses convention resolved at the funding instant; fails closed if interval isn't a whole number of seconds | **Include** |
+| `crypto_funding_forecast_error` | `INSTRUMENT` | 3I.2 `crypto_funding_observations` (both kinds) | `realized_rate - indicative_rate`, indicative = most recent eligible estimate for the same `target_funding_at` published strictly before it | Rate (dimensionless) | `feature.knowledge_at >= max(knowledge_at)` of both inputs; never visible before both are individually knowable | **Include** |
 
-Series-level aggregate open interest, a mark-index tolerance window, and
-crypto term structure are the three explicitly **deferred** items (§4), not
-included in the six above.
-
-No candidate is rejected outright; three (curve slope, futures OI, crypto OI)
-are recommended only after collapsing an apparent duplicate into a single
-rigorous definition rather than shipping two.
+Deferred (not among the seven): series-level/front-month/roll-selected
+aggregate open interest, any OI-weighted continuous-series feature, a
+mark-index tolerance window, and crypto term structure.
 
 ## 4. What this proposal explicitly excludes from 3J.1's scope
 
-- **Series-level aggregate open interest** (front-month or total-series) —
-  blocked on the roll-policy decision 3I.1 §9 deferred.
+- **Total-series OI, front-month aggregate OI, roll-selected OI, and any
+  OI-weighted continuous-series feature** — blocked on the separately
+  reviewed roll/aggregation policy that 3I.1 §9 already deferred. Feature
+  Authority must not manufacture a "front month" definition of its own.
+- **Raw open-interest level as a Feature Authority feature** — remains
+  canonical market evidence, read directly, unless a concrete downstream
+  consumer justifies mirroring it later.
 - **Any interpolation, extrapolation, or cross-unit conversion** anywhere —
   consistent with 3I.1/3I.2/3I.3's existing no-fallback rule.
 - **Mark-index basis with a staleness/tolerance window** — v1 is exact-match
-  only; a tolerance window is a separate, later decision.
+  (time and source) only; a tolerance window is a separate, later decision
+  pending real-provider timing evidence.
 - **Crypto term structure** — 3I.3 is futures-only by instruction; crypto has
   no settlement-price authority yet, so no crypto curve exists to build a
-  crypto slope/carry/curvature feature on.
+  crypto spread/rate/curvature feature on.
 - **Options, quotes, trades, or L2** — no authority exists for any of these
   (3I.4/3I.5 remain planned-not-authorized).
 - **Any ML-forecast or internally-modelled funding/price input** — every
-  candidate above reads only already-authorized, provider/venue-published
+  feature above reads only already-authorized, provider/venue-published
   market-data or already-derived 3I.3 evidence.
 
-## 5. What 3J.1 would need from the definition contract (not built here)
+## 5. `FeatureFamily`: one new stable member, `DERIVATIVES`
 
-- `FeatureDefinitionVersion.required_dataset_types` already accepts free-form
-  strings (no schema change): `FUTURES_TERM_STRUCTURE` (pointing at a 3I.3
-  curve, not a raw `ObservationKind`), `SETTLEMENT_PRICE`, `OPEN_INTEREST`,
-  `FUNDING_RATE_REALIZED`, `FUNDING_RATE_INDICATIVE`, `MARK_PRICE`,
-  `INDEX_PRICE`.
-- `FeatureFamily` (a closed `StrEnum`) has no derivatives-shaped member.
-  3J.1 implementation would need to add at least one — a plausible name is
-  `DERIVATIVES_TERM_STRUCTURE` covering §3.1–3.4, with open-interest and
-  funding features possibly warranting their own member(s) (e.g.
-  `OPEN_INTEREST`, `FUNDING`) rather than overloading one label across
-  dimensionally unrelated feature shapes. This is a design question for the
-  implementation PR, not resolved here, per the instruction not to broaden
-  `FeatureFamily` speculatively ahead of need.
-- Each feature's `source_observation_manifest` needs a per-family convention:
-  curve-based features cite the curve id and the specific point ids used;
-  direct-observation features (OI, funding, mark/index) cite the raw
-  normalized observation ids read. This should be designed once, in the
-  implementation PR, and applied consistently across all nine.
+**Owner decision:** 3J.1 adds exactly one new `FeatureFamily` member,
+`DERIVATIVES`, for all seven features above. `DERIVATIVES_TERM_STRUCTURE`,
+`DERIVATIVES_FUNDING`, `DERIVATIVES_POSITIONING`, or any other multi-member
+taxonomy split is explicitly **not** introduced in 3J.1.
 
-## 6. Open questions for the owner before any implementation PR
+Rationale: `FeatureFamily` is a broad taxonomy, not a feature's complete
+semantic identity — the immutable feature name, definition version, required
+inputs, parameters, units, and calculation version already carry the
+fine-grained meaning (this is exactly why `futures_curve_curvature` and
+`crypto_funding_forecast_error` are unambiguous as *names* without needing a
+matching family split). A single `DERIVATIVES` family avoids prematurely
+freezing multiple taxonomy names into durable, hard-to-rename definitions
+before real usage patterns are known.
 
-1. Confirm the `FeatureFamily` addition(s) named above (or an alternative
-   naming scheme) before implementation, since it is a closed enum and a
-   later rename would be a breaking change to stored definitions.
-2. Confirm per-contract-only OI scope (§3.5/§3.9) is acceptable, with
-   series-level aggregate OI explicitly deferred pending the 3I.1 roll-policy
-   decision.
-3. Confirm exact-timestamp-match-only is acceptable for mark-index basis v1
-   (§3.6), with a tolerance window deferred.
-4. Confirm the shared-formula merge for curve slope/carry (§3.2/§3.4) and for
-   futures/crypto OI change (§3.5/§3.9) rather than building four feature
-   definitions where two suffice.
+`FeatureDefinitionVersion.required_dataset_types` already accepts free-form
+strings (no schema change): `FUTURES_TERM_STRUCTURE` (pointing at a 3I.3
+curve, not a raw `ObservationKind`), `OPEN_INTEREST`, `FUNDING_RATE_REALIZED`,
+`FUNDING_RATE_INDICATIVE`, `MARK_PRICE`, `INDEX_PRICE`.
 
-## 7. No authority granted by this document
+## 6. Manifest/provenance contract
+
+Every `source_observation_manifest` entry must be a resolvable canonical id —
+never a human-readable label alone.
+
+**Curve-derived features** (`futures_front_back_normalized_spread`,
+`futures_annualized_calendar_spread_rate`, `futures_curve_curvature`) must
+manifest:
+
+- `curve_id` and the curve's own `content_hash`;
+- the method's id, version, and `content_hash`;
+- the sealed dataset's version id and `content_hash` (the same identity the
+  curve itself was derived against — see §7);
+- the exact ordered list of curve point ids actually used (front/mid/back as
+  applicable to the feature).
+
+**Observation-derived features** (`open_interest_change`,
+`crypto_mark_index_basis`, `crypto_realized_funding_annualized`,
+`crypto_funding_forecast_error`) must manifest:
+
+- the exact canonical normalized observation id(s) read (e.g. two OI
+  observation ids for a change; one mark and one index observation id; one
+  realized funding observation id; one realized plus one indicative
+  observation id for forecast error);
+- each observation's source/authorization identity (the id used for the
+  source-consistency check in §3.4/§3.5/§3.7);
+- for funding features, the resolved funding convention's id and version.
+
+## 7. Dataset identity (`FeatureMaterializationV2.dataset_version`)
+
+- **Curve-derived feature:** `dataset_version` is the **same** sealed
+  `HistoricalDatasetVersion` identity the consumed 3I.3 curve was itself
+  derived against — i.e. copy the curve row's own `dataset_version_id`
+  verbatim. The curve's `curve_id` and `content_hash` are carried separately
+  as manifest provenance (§6); a curve id or a curve's content hash must
+  never be substituted for the sealed dataset version.
+- **Observation-derived feature:** `dataset_version` is the sealed
+  `HistoricalDatasetVersion` version that the read normalized observation(s)
+  belong to via `historical_dataset_members`. Where a feature reads two
+  observations (OI change, mark-index basis, funding forecast error), the
+  ordinary case is both resolving to the same sealed dataset version; a
+  feature reading two observations that resolve to two *different* sealed
+  dataset versions is a case this proposal does not resolve — see §9.
+
+## 8. Decision log — all four `REQUIRES REVIEW` items are now `OWNER DECIDED`
+
+1. **`FeatureFamily` naming — OWNER DECIDED.** One new member, `DERIVATIVES`,
+   for all seven features (§5). No per-shape family split in 3J.1.
+2. **Open-interest scope — OWNER DECIDED.** Per-instrument/per-contract
+   `open_interest_change` only. Total-series OI, front-month aggregate OI,
+   roll-selected OI, and any OI-weighted continuous-series feature are
+   deferred until the separately reviewed roll/aggregation policy exists; no
+   "front month" definition is manufactured inside Feature Authority.
+3. **Mark/index matching — OWNER DECIDED.** Exact timestamp matching only for
+   v1, **plus** a same-authorized-source/dataset-identity requirement by
+   default (§3.5) — not timestamp matching alone. A tolerance window is
+   deferred pending real-provider timing evidence.
+4. **Duplicate formulas — OWNER DECIDED (revised).** No independent
+   `curve_slope` feature; `futures_front_back_normalized_spread` and
+   `futures_annualized_calendar_spread_rate` are two distinct feature
+   definitions sharing one internal calendar-spread helper, using
+   `year_fraction()` rather than `periods_per_year` language for
+   annualization. Futures and crypto open-interest change are one
+   cross-asset `open_interest_change` definition, but raw OI *level* is
+   **not** mirrored into Feature Authority as its own feature. Net scope:
+   **seven** feature definitions, not six.
+
+## 9. Remaining unresolved item for the implementation PR
+
+The exact database column(s) that define "authorized source/dataset
+identity" for the cross-provider consistency checks in §3.4 `open_interest_change`,
+§3.5 `crypto_mark_index_basis`, and §3.7 `crypto_funding_forecast_error` (a
+bare `source_id`, a `(source_id, venue)` composite, or the resolved
+`dataset_version_id`) has **not** been pinned to specific column names here.
+This proposal states the requirement (§2 principle 3) and recommends
+"same authorized source by default," but resolving it to an exact schema
+reference — and confirming whether 3I.2 already defines a stronger canonical
+mark/index pairing relation than "same source" — requires inspecting the
+exact 3I.1/3I.2 envelope schema at implementation time. This should be
+resolved and written into the implementation PR's design doc before any code
+is merged, not assumed here. Similarly, the two-observations-resolve-to-two-
+different-sealed-dataset-versions case noted in §7 needs an explicit rule at
+implementation time; no existing feature in this codebase has exercised that
+case.
+
+## 10. No authority granted by this document
 
 This is analysis and a recommendation only. No feature, migration, or API
 described here exists in the codebase. No strategy, signal, opportunity,
