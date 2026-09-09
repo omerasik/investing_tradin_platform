@@ -296,6 +296,41 @@ dropped outright so exactly one uniqueness authority exists. All values are
 fixture data; no exchange or data provider was contacted, and no strategy,
 signal, opportunity, order or risk authority is granted.
 
+Module 3J.1a (Derivatives Feature Foundation + Futures Curve Feature Pack)
+extends the Feature Authority in place with one new stable `FeatureFamily`
+member, `DERIVATIVES` (migration `20260909_0047`, a constraint-only widening
+of `feature_definition_versions`' family CHECK; zero new tables, no existing
+V1/V2 row or hash touched), and a new deterministic calculator/orchestrator
+module, `src/trade_platform/derivatives_features.py`, that registers and
+materializes three v1 `FUTURES_SERIES` feature definitions
+(`futures_front_back_normalized_spread`, `futures_annualized_calendar_spread_rate`,
+`futures_curve_curvature`) over already-derived, immutable 3I.3 futures
+term-structure curves — never independently re-selecting raw settlement
+observations — through the unmodified
+`PostgresFeatureAuthority.materialize_subject()`. `dataset_version` is always
+`str(curve.dataset_version_id)`; every materialization independently
+re-verifies subject/curve/dataset identity and PIT visibility before
+computing a value, and every failure path (insufficient points, missing or
+zero-length day-count year fraction, identity mismatch, unsealed/unknowable
+dataset) fails closed with no row written. Quality is `VALIDATED` only when
+every consumed curve point is `FINAL` and non-stale, `DEGRADED` when the
+upstream 3I.3 method explicitly permitted and a preliminary/stale point was
+actually consumed, and `REJECTED` is never produced. This is the bounded
+3J.1a scope only — `open_interest_change` (3J.1b) and the crypto mark/index/
+funding features (3J.1c) are explicitly out of scope for this module.
+
+Exact merged-main run `34364590663` (verify) / `34364590696` (CodeQL) verifies
+Module 3J.1a on commit `321738df710876bfc0d87b5b94fdcf446dddb99e`: migration
+head `20260909_0047` applied, all **934 tests without skips** (917 carried
+forward + 17 new), all **159 restore-critical tables** reconciled after a
+fresh `pg_restore` (unchanged from 3J.0 -- zero new tables), the **117/117**
+mypy ratchet, the zero-error mypy slice now including
+`derivatives_features.py`, and every configured security, supply-chain,
+container, attestation, frontend, smoke and browser gate. This verifies the
+engineering authority only -- every value remains fixture data, no exchange or
+data provider was contacted, and it grants no strategy, signal, opportunity,
+order or risk authority, and no alpha/performance claim.
+
 Exact merged-main run `34249496551` verifies Module 3J.0 on commit
 `73c44e909f2bea63cdd2580b61f86f80d3d4422f`: migration head `20260908_0046`
 applied, all **917 tests without skips**, all **159 restore-critical tables**
