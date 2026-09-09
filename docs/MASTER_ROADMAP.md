@@ -138,7 +138,14 @@ futures settlement + open interest, **3I.2** crypto funding + mark/index +
 crypto open interest, **3I.3** deterministic futures term-structure derivation,
 **3J.0** generalized Feature Authority subject identity (a prerequisite for
 connecting 3I.1–3I.3 evidence to the Feature Authority; not a market-data
-module itself). **3I.4** (top-of-book quotes) remains planned but not
+module itself). A concrete, unimplemented **3J.1** scope proposal ([Multi-Asset
+Derivatives Feature Pack](MODULE_3J1_PROPOSAL_MULTI_ASSET_DERIVATIVES_FEATURE_PACK.md))
+recommends seven concrete derivatives feature definitions against
+3I.1–3I.3/3J.0 evidence, with all five architecture decisions owner-decided
+(`FeatureFamily` naming, open-interest scope, mark/index matching, formula
+de-duplication, and the single-sealed-dataset identity rule) — pending only
+a separate implementation PR, not yet opened. **3I.4**
+(top-of-book quotes) remains planned but not
 authorized — this status is unchanged by 3J.0. **3I.5** (trade-by-trade and L2
 order book) is explicitly deferred pending a separate storage-tier
 architecture decision — object storage/Parquet, partitioned catalogue,
