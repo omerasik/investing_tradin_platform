@@ -7,11 +7,13 @@ evidence Modules 3H.1/3H.2, 3I.1, 3I.2, 3I.3 and 3J.0 actually established, so
 an owner can approve a concrete, bounded scope before any implementation PR
 is opened.
 
-**Revision 2 (owner-reviewed):** the general direction was approved, with
-four architecture decisions made explicit and several technical corrections
+**Revision 3 (owner-reviewed):** the general direction was approved, with
+five architecture decisions made explicit and several technical corrections
 applied. See §8 for the decision log; every item that was `REQUIRES REVIEW`
-in the first revision is now `OWNER DECIDED`. This revision recommends
-**seven** feature definitions, not six.
+is now `OWNER DECIDED`, including the dataset/source identity rule (§7) that
+was the one item left open after revision 2. **All architecture decisions
+required for the bounded 3J.1 v1 implementation are now resolved.** This
+revision recommends **seven** feature definitions, not six.
 
 ## 0. Precondition
 
@@ -52,11 +54,12 @@ that review is what this document is.
 3. **A feature must never blend two independently-published observations
    without an explicit, declared matching rule covering both time and
    source.** Exact-instant match by default (a tolerance window only if
-   explicitly declared, mirroring 3I.3's `max_staleness_days`), **and** by
-   default the two observations must share the same authorized
-   source/dataset identity — matching timestamps alone is not sufficient,
-   since two different providers/venues can each publish a value at the same
-   instant using different methodologies. No feature invents interpolation.
+   explicitly declared, mirroring 3I.3's `max_staleness_days`), **and** for
+   v1 the two observations must belong to the exact same sealed
+   `historical_dataset_versions.dataset_version_id` (§7) — matching
+   timestamps alone is not sufficient, since two different
+   providers/venues can each publish a value at the same instant using
+   different methodologies. No feature invents interpolation.
 4. **PIT gating is per-input, not per-feature.** Every observation/curve read
    into a feature computation must independently satisfy
    `knowledge_at <= decision_at`; a feature's own `knowledge_at` must be at
@@ -75,6 +78,15 @@ that review is what this document is.
    price-rate-of-change by a price removes the price dimension but not a time
    dimension; units must be stated exactly, not asserted as "dimensionless"
    for convenience.
+8. **Every 3J.1 v1 feature materialization derives from exactly one sealed
+   `historical_dataset_versions.dataset_version_id`.** No feature
+   materialization combines observations from two different sealed dataset
+   versions, two different sources, or an unsealed/ad-hoc observation set.
+   This is intentional v1 scope (§7), not a temporary shortcut — the
+   existing historical dataset authority already binds one sealed dataset to
+   one `source_id` and `seal_dataset()` already fails closed on a
+   cross-source member, so this reuses that authority rather than
+   introducing a new source-pairing registry.
 
 ## 3. Recommended feature definitions (seven)
 
@@ -155,51 +167,68 @@ downstream consumer that specifically needs it through the Feature Authority
 API. If that need arises later, a `open_interest_level` feature can be
 proposed on its own.
 
-`OI[t] - OI[t-1]` requires, all four, or the pair is not eligible and no
+`OI[t] - OI[t-1]` requires, all five, or the pair is not eligible and no
 value is produced:
 
 1. same instrument (same `subject_id`);
-2. same OI `unit`;
-3. same `unit_asset` (for asset-denominated units — never converted);
-4. same authorized source/dataset identity by default (never diffed across
-   two providers whose OI methodology could differ).
+2. both observations members of the exact same sealed
+   `dataset_version_id` (§7) — source consistency follows implicitly from
+   shared dataset membership; no cross-dataset OI delta in v1;
+3. same OI `unit`;
+4. same `unit_asset` (for asset-denominated units — never converted);
+5. each input individually PIT-visible (`knowledge_at <= decision_at`).
 
 `OI[t-1]` selection must be deterministic and PIT-safe: the most recent
-eligible prior observation (by the above four criteria) whose own
-`knowledge_at <= decision_at`, ranked identically to how 3I.1/3I.2 already
-rank revisions (`revision DESC, ingested_at DESC`) — never "any" prior
-observation. Subject: `INSTRUMENT`.
+eligible prior observation within that same sealed dataset (by the above
+criteria), ranked identically to how 3I.1/3I.2 already rank revisions
+(`revision DESC, ingested_at DESC`) — never "any" prior observation, and
+never fetched from a different dataset version even if an otherwise-eligible
+prior observation exists there. Subject: `INSTRUMENT`.
 
-### 3.5 `crypto_mark_index_basis` — **include, exact-timestamp match plus source consistency**
+### 3.5 `crypto_mark_index_basis` — **include, exact-timestamp match plus same-sealed-dataset consistency**
 
 `(mark_price - index_price) / index_price` for one crypto instrument. 3I.2
 already guarantees both observations' price asset equals the instrument's own
-quote asset. Two conditions must both hold, or no value is produced:
+quote asset. **Owner decision:** source consistency for v1 is defined as the
+`MARK_PRICE` and `INDEX_PRICE` observations belonging to the exact same
+sealed `dataset_version_id` — a sealed dataset already has exactly one
+source, so this is stronger and cleaner than comparing a bare `source_id`.
+`methodology_reference` (provenance metadata only, per 3I.2 §6) is never used
+as a pairing authority. All of the following are required, or no value is
+produced:
 
-1. **Exact `event_at` match** — v1 has no tolerance/staleness window. A
+1. same instrument;
+2. exact same `event_at` — v1 has no tolerance/staleness window; a
    source-specific tolerance window can be considered later, but only after
-   empirical real-provider timing evidence exists; it is not designed here.
-2. **Source consistency** — the `MARK_PRICE` and `INDEX_PRICE` observations
-   must, by default, share the same authorized source/dataset identity.
-   Provider A's mark must never be paired with Provider B's index merely
-   because their timestamps coincide, unless the 3I.2 authority is found (at
-   implementation time) to already define a stronger canonical pairing
-   relation between a venue's mark and its own index than "same source" —
-   see §9 for this residual check.
+   empirical real-provider timing evidence exists;
+3. same exact sealed `dataset_version_id` (§7) — no cross-provider mark/index
+   pair is allowed in v1;
+4. correct `MARK_PRICE` vs. `INDEX_PRICE` kinds (never a mark compared to a
+   mark, or an index to an index);
+5. both individually PIT-visible (`knowledge_at <= decision_at`).
 
 Subject: `INSTRUMENT`.
 
 ### 3.6 `crypto_realized_funding_annualized` — **include**
 
 Annualizes a realized funding rate using the funding interval already
-recorded on the resolved 3H.2 convention (`periods_per_year = seconds_per_year
-/ interval_seconds`). 3I.2 already fails closed ("unknown cadence") when an
-interval is not a whole number of seconds — this feature must inherit that
-same fail-closed behavior rather than guessing a periods-per-year figure.
-The `seconds_per_year` constant used for the annualization must itself be
-declared explicitly (e.g. on the convention or the feature definition), not
-hard-coded as an implicit 365-day assumption, mirroring principle 6/7 above.
-Subject: `INSTRUMENT`.
+recorded on the resolved 3H.2 convention. **Owner decision:** any ambiguous
+notion of `seconds_per_year` is removed. The annualization convention is
+instead an explicit, immutable parameter of the feature definition itself —
+a feature-method convention, not a claimed venue fact:
+
+```
+annualization_basis        = ACT_365_FIXED
+annualization_year_seconds = 365 * 24 * 60 * 60
+
+annualized_rate = funding_rate * annualization_year_seconds / interval_seconds
+```
+
+Changing the annualization basis later requires a new feature
+definition/version, never an in-place change to this one. 3I.2 already fails
+closed ("unknown cadence") when `interval_seconds` is not a whole number of
+seconds — this feature inherits that same fail-closed behavior rather than
+guessing a rate. Subject: `INSTRUMENT`.
 
 ### 3.7 `crypto_funding_forecast_error` — **include, renamed and re-scoped from "indicative-vs-realized delta"**
 
@@ -216,18 +245,23 @@ of:
 
 1. same instrument;
 2. same target funding instant (`target_funding_at`);
-3. compatible source/venue identity between the realized and indicative
-   observations;
-4. the same applicable funding-convention identity and version resolved for
-   both sides (not two different convention versions);
-5. the indicative observation is the most recent one published strictly
+3. both the realized and indicative observations members of the exact same
+   sealed `dataset_version_id` (§7) — source consistency follows implicitly
+   from shared dataset membership, not a separate venue-identity check;
+4. the same applicable funding-convention identity and version (`convention_id`,
+   `convention_version`) resolved for both sides (not two different
+   convention versions);
+5. the indicative observation is the latest eligible one published strictly
    before the target funding instant — never "any" indicative estimate,
-   since 3I.2 preserves every successive revision.
+   since 3I.2 preserves every successive revision;
+6. the realized observation is itself PIT-visible before the resulting
+   forecast-error feature becomes visible.
 
-`feature.knowledge_at` must be at least the maximum `knowledge_at` of both
-the qualifying indicative observation and the realized observation; a
-decision-time read at `decision_at` must not see this feature before both
-were themselves individually knowable by `decision_at`. Subject:
+`feature.knowledge_at` must equal or exceed the maximum
+knowledge/ingestion-visibility time of every input used; a decision-time read
+at `decision_at` must not see this feature before both inputs were
+themselves individually knowable by `decision_at`. This remains a
+post-event forecast-error feature, never a pre-event prediction. Subject:
 `INSTRUMENT`.
 
 ### Summary
@@ -238,7 +272,7 @@ were themselves individually knowable by `decision_at`. Subject:
 | 3.2 | `futures_annualized_calendar_spread_rate` | Include — highest priority |
 | 3.3 | `futures_curve_curvature` | Include, corrected units (`year^-2`, not dimensionless) |
 | 3.4 | `open_interest_change` | Include — one cross-asset, per-instrument definition; level not mirrored |
-| 3.5 | `crypto_mark_index_basis` | Include — exact-match + source consistency |
+| 3.5 | `crypto_mark_index_basis` | Include — exact-match + same-sealed-dataset consistency |
 | 3.6 | `crypto_realized_funding_annualized` | Include |
 | 3.7 | `crypto_funding_forecast_error` | Include — renamed/re-scoped |
 
@@ -256,14 +290,15 @@ Seven feature definitions would be registered if this proposal is approved:
 | `futures_front_back_normalized_spread` | `FUTURES_SERIES` | 3I.3 `futures_term_structure_curves`/`_points` (read-only) | `(P_back - P_front) / P_front` over the two nearest-expiration surviving curve points | Dimensionless | Inherits the curve's own `(as_of, knowledge_at)`; no independent PIT read | **Include** |
 | `futures_annualized_calendar_spread_rate` | `FUTURES_SERIES` | 3I.3 curve points + 3H.1 `expiration_date` | `normalized_spread / year_fraction(T_front, T_back, declared_day_count_convention)` | `1/year` (per the declared convention) | Same as above; day-count convention is part of the method's content hash | **Include** — highest priority |
 | `futures_curve_curvature` | `FUTURES_SERIES` | 3I.3 curve points (≥3 surviving) | `(2/(h1+h2)) * ((P_back-P_mid)/h2 - (P_mid-P_front)/h1) / P_front`, `h1,h2` via `year_fraction()` | `year^-2` (not dimensionless) | Computed only when ≥3 points survive 3I.3's own selection policy; absent otherwise, never approximated | **Include** |
-| `open_interest_change` | `INSTRUMENT` | 3I.1/3I.2 `open_interest_observations` (shared kind, both asset classes) | `OI[t] - OI[t-1]`, deterministic PIT-safe prior selection | As stored (`CONTRACTS`/`BASE_ASSET`/`QUOTE_NOTIONAL`) — never converted; refused if `unit`/`unit_asset`/source identity differ | Both sides independently gated by `knowledge_at <= decision_at` | **Include** — per-instrument only; level, and series-level aggregate, **deferred** |
-| `crypto_mark_index_basis` | `INSTRUMENT` | 3I.2 `crypto_reference_price_observations` | `(mark_price - index_price) / index_price` | Dimensionless | Only when `MARK_PRICE`/`INDEX_PRICE` share identical `event_at` **and** source identity | **Include** |
-| `crypto_realized_funding_annualized` | `INSTRUMENT` | 3I.2 `crypto_funding_observations` (`FUNDING_RATE_REALIZED`) + 3H.2 funding convention | `rate * (seconds_per_year / interval_seconds)`, `seconds_per_year` declared explicitly | `1/year` | Uses convention resolved at the funding instant; fails closed if interval isn't a whole number of seconds | **Include** |
-| `crypto_funding_forecast_error` | `INSTRUMENT` | 3I.2 `crypto_funding_observations` (both kinds) | `realized_rate - indicative_rate`, indicative = most recent eligible estimate for the same `target_funding_at` published strictly before it | Rate (dimensionless) | `feature.knowledge_at >= max(knowledge_at)` of both inputs; never visible before both are individually knowable | **Include** |
+| `open_interest_change` | `INSTRUMENT` | 3I.1/3I.2 `open_interest_observations` (shared kind, both asset classes) | `OI[t] - OI[t-1]`, deterministic PIT-safe prior selection | As stored (`CONTRACTS`/`BASE_ASSET`/`QUOTE_NOTIONAL`) — never converted; refused if `unit`/`unit_asset` differ or the two observations are not members of the same sealed `dataset_version_id` | Both sides individually gated by `knowledge_at <= decision_at`; no cross-dataset delta | **Include** — per-instrument only; level, and series-level aggregate, **deferred** |
+| `crypto_mark_index_basis` | `INSTRUMENT` | 3I.2 `crypto_reference_price_observations` | `(mark_price - index_price) / index_price` | Dimensionless | Only when `MARK_PRICE`/`INDEX_PRICE` share identical `event_at` **and** the exact same sealed `dataset_version_id` | **Include** |
+| `crypto_realized_funding_annualized` | `INSTRUMENT` | 3I.2 `crypto_funding_observations` (`FUNDING_RATE_REALIZED`) + 3H.2 funding convention | `funding_rate * annualization_year_seconds / interval_seconds`, with `annualization_basis = ACT_365_FIXED` (`annualization_year_seconds = 365*24*60*60`) declared on the immutable feature definition | `1/year` | Uses convention resolved at the funding instant; fails closed if interval isn't a whole number of seconds | **Include** |
+| `crypto_funding_forecast_error` | `INSTRUMENT` | 3I.2 `crypto_funding_observations` (both kinds) | `realized_rate - indicative_rate`, indicative = most recent eligible estimate for the same `target_funding_at` published strictly before it | Rate (dimensionless) | Both inputs members of the same sealed `dataset_version_id`; `feature.knowledge_at >= max(knowledge_at)` of both; never visible before both are individually knowable | **Include** |
 
 Deferred (not among the seven): series-level/front-month/roll-selected
 aggregate open interest, any OI-weighted continuous-series feature, a
-mark-index tolerance window, and crypto term structure.
+mark-index tolerance window, crypto term structure, and any feature
+combining multiple sealed dataset versions or sources (§9).
 
 ## 4. What this proposal explicitly excludes from 3J.1's scope
 
@@ -287,6 +322,12 @@ mark-index tolerance window, and crypto term structure.
 - **Any ML-forecast or internally-modelled funding/price input** — every
   feature above reads only already-authorized, provider/venue-published
   market-data or already-derived 3I.3 evidence.
+- **Any feature combining multiple sealed dataset versions, multiple
+  sources, or an unsealed/ad-hoc observation set** (multi-provider, macro +
+  market data, independent venue feeds) — deferred until a separately
+  reviewed composite evidence/dataset bundle authority exists (§9). 3J.1
+  does not overload the single `dataset_version` field, and does not hide
+  multiple datasets only inside a manifest, to work around that gap.
 
 ## 5. `FeatureFamily`: one new stable member, `DERIVATIVES`
 
@@ -316,44 +357,63 @@ never a human-readable label alone.
 
 **Curve-derived features** (`futures_front_back_normalized_spread`,
 `futures_annualized_calendar_spread_rate`, `futures_curve_curvature`) must
-manifest:
+manifest, at minimum:
 
+- the historical `dataset_version_id` and the historical dataset's own
+  `content_hash`;
+- the historical dataset's `source_id`;
 - `curve_id` and the curve's own `content_hash`;
-- the method's id, version, and `content_hash`;
-- the sealed dataset's version id and `content_hash` (the same identity the
-  curve itself was derived against — see §7);
-- the exact ordered list of curve point ids actually used (front/mid/back as
-  applicable to the feature).
+- the term-structure method's id, version, and `content_hash`;
+- the exact curve point ids actually used (front/mid/back as applicable to
+  the feature);
+- the exact normalized settlement observation ids referenced by those
+  points.
+
+A curve-derived feature must never independently reselect raw settlement
+observations — every settlement observation it cites must be the one already
+frozen into the curve point it reads (3I.3's own deferred trigger already
+guarantees the point's snapshot matches the canonical settlement row; this
+feature only cites that same id, it does not re-derive it).
 
 **Observation-derived features** (`open_interest_change`,
 `crypto_mark_index_basis`, `crypto_realized_funding_annualized`,
-`crypto_funding_forecast_error`) must manifest:
+`crypto_funding_forecast_error`) must manifest, at minimum:
 
+- the single sealed `dataset_version_id` every input observation belongs to
+  (§7), plus that dataset's `content_hash` and `source_id`;
 - the exact canonical normalized observation id(s) read (e.g. two OI
   observation ids for a change; one mark and one index observation id; one
   realized funding observation id; one realized plus one indicative
   observation id for forecast error);
-- each observation's source/authorization identity (the id used for the
-  source-consistency check in §3.4/§3.5/§3.7);
-- for funding features, the resolved funding convention's id and version.
+- for funding features, the resolved funding convention's `convention_id`
+  and `convention_version`.
 
-## 7. Dataset identity (`FeatureMaterializationV2.dataset_version`)
+## 7. Dataset identity (`FeatureMaterializationV2.dataset_version`) — OWNER DECIDED
 
-- **Curve-derived feature:** `dataset_version` is the **same** sealed
-  `HistoricalDatasetVersion` identity the consumed 3I.3 curve was itself
-  derived against — i.e. copy the curve row's own `dataset_version_id`
-  verbatim. The curve's `curve_id` and `content_hash` are carried separately
-  as manifest provenance (§6); a curve id or a curve's content hash must
-  never be substituted for the sealed dataset version.
-- **Observation-derived feature:** `dataset_version` is the sealed
-  `HistoricalDatasetVersion` version that the read normalized observation(s)
-  belong to via `historical_dataset_members`. Where a feature reads two
-  observations (OI change, mark-index basis, funding forecast error), the
-  ordinary case is both resolving to the same sealed dataset version; a
-  feature reading two observations that resolve to two *different* sealed
-  dataset versions is a case this proposal does not resolve — see §9.
+**Canonical rule:** every new 3J.1 V2 materialization populates the existing
+textual `dataset_version` field with `str(historical_dataset_versions.dataset_version_id)`
+— the canonical UUID identity of the sealed historical dataset. Never the
+human/version label, a `curve_id`, a source name, a provider dataset name, or
+an arbitrary concatenation of any of these. This avoids a collision between
+two sources that might each label a dataset `"v1"`.
 
-## 8. Decision log — all four `REQUIRES REVIEW` items are now `OWNER DECIDED`
+- **Curve-derived feature:** `dataset_version` is `curve.dataset_version_id`
+  from the consumed 3I.3 curve artifact. The curve is a derived provenance
+  artifact, not the dataset version itself — its `curve_id` and
+  `content_hash` are carried separately as manifest provenance (§6) and must
+  never be substituted for the sealed dataset identity.
+- **Observation-derived feature:** the caller chooses exactly one sealed
+  `dataset_version_id`, and every normalized observation the calculation
+  uses must be a member of that exact dataset. **If an otherwise-eligible
+  input exists only in a different dataset version, the feature fails
+  closed for v1** — it is never silently fetched from another dataset. This
+  gives both deterministic source consistency (a sealed dataset already has
+  exactly one `source_id`) and deterministic reproducibility, reusing the
+  existing historical dataset authority (`seal_dataset()` already fails
+  closed on a cross-source member) rather than introducing a new
+  source-pairing registry.
+
+## 8. Decision log — all five `REQUIRES REVIEW` items are now `OWNER DECIDED`
 
 1. **`FeatureFamily` naming — OWNER DECIDED.** One new member, `DERIVATIVES`,
    for all seven features (§5). No per-shape family split in 3J.1.
@@ -363,9 +423,9 @@ manifest:
    deferred until the separately reviewed roll/aggregation policy exists; no
    "front month" definition is manufactured inside Feature Authority.
 3. **Mark/index matching — OWNER DECIDED.** Exact timestamp matching only for
-   v1, **plus** a same-authorized-source/dataset-identity requirement by
-   default (§3.5) — not timestamp matching alone. A tolerance window is
-   deferred pending real-provider timing evidence.
+   v1, **plus** a same-exact-sealed-`dataset_version_id` requirement (§7) —
+   not timestamp matching alone, and not a bare `source_id` comparison. A
+   tolerance window is deferred pending real-provider timing evidence.
 4. **Duplicate formulas — OWNER DECIDED (revised).** No independent
    `curve_slope` feature; `futures_front_back_normalized_spread` and
    `futures_annualized_calendar_spread_rate` are two distinct feature
@@ -375,30 +435,32 @@ manifest:
    cross-asset `open_interest_change` definition, but raw OI *level* is
    **not** mirrored into Feature Authority as its own feature. Net scope:
    **seven** feature definitions, not six.
+5. **Dataset/source identity — OWNER DECIDED.** Every 3J.1 v1 feature
+   materialization derives from exactly one sealed `dataset_version_id`
+   (§2 principle 8, §7); `FeatureMaterializationV2.dataset_version` is always
+   `str(dataset_version_id)`, never a curve id, source name, provider
+   dataset name, or human/version label. No schema change is needed for
+   this decision, and it reuses the existing historical dataset authority
+   (`seal_dataset()`'s existing cross-source rejection) rather than
+   introducing a new source-pairing registry.
 
-## 9. Remaining unresolved item for the implementation PR
+## 9. Cross-dataset / cross-source features — explicitly deferred
 
-The exact database column(s) that define "authorized source/dataset
-identity" for the cross-provider consistency checks in §3.4 `open_interest_change`,
-§3.5 `crypto_mark_index_basis`, and §3.7 `crypto_funding_forecast_error` (a
-bare `source_id`, a `(source_id, venue)` composite, or the resolved
-`dataset_version_id`) has **not** been pinned to specific column names here.
-This proposal states the requirement (§2 principle 3) and recommends
-"same authorized source by default," but resolving it to an exact schema
-reference — and confirming whether 3I.2 already defines a stronger canonical
-mark/index pairing relation than "same source" — requires inspecting the
-exact 3I.1/3I.2 envelope schema at implementation time. This should be
-resolved and written into the implementation PR's design doc before any code
-is merged, not assumed here. Similarly, the two-observations-resolve-to-two-
-different-sealed-dataset-versions case noted in §7 needs an explicit rule at
-implementation time; no existing feature in this codebase has exercised that
-case.
+**All architecture decisions required for the bounded 3J.1 v1 implementation
+are now resolved** (§8); this section records what is deliberately left for
+later rather than an open question. If a future need arises for a feature
+combining multiple providers, multiple sealed datasets, macro and market
+data, or independent venue feeds, that should first receive a **separately
+reviewed composite evidence/dataset bundle authority** — 3J.1 must not
+overload the single `dataset_version` field to carry more than one dataset's
+identity, and must not hide a second dataset inside a manifest as a
+workaround. This is not built in 3J.1.
 
 ## 10. No authority granted by this document
 
 This is analysis and a recommendation only. No feature, migration, or API
 described here exists in the codebase. No strategy, signal, opportunity,
-order, or risk authority is implied. 3J.1 does not begin until the owner
-approves a scope from this document and a separate implementation PR is
-opened, reviewed, and merged following the same branch → PR → CI → merge →
-exact-main verification discipline as every prior module.
+order, or risk authority is implied. 3J.1 does not begin until a separate
+implementation PR is opened, reviewed, and merged following the same
+branch → PR → CI → merge → exact-main verification discipline as every prior
+module.
