@@ -32,6 +32,10 @@ class FeatureFamily(StrEnum):
     LIQUIDITY = "LIQUIDITY"
     FUNDAMENTAL = "FUNDAMENTAL"
     MACRO = "MACRO"
+    #: Module 3J.1. One family for every derivatives feature (futures curve,
+    #: open interest, crypto mark/index/funding) -- see the 3J.1 proposal
+    #: doc section 5/8 for why no per-shape family split is introduced.
+    DERIVATIVES = "DERIVATIVES"
 
 
 class FeatureQualityStatus(StrEnum):
