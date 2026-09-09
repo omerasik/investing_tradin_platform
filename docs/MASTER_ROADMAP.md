@@ -319,6 +319,48 @@ actually consumed, and `REJECTED` is never produced. This is the bounded
 3J.1a scope only — `open_interest_change` (3J.1b) and the crypto mark/index/
 funding features (3J.1c) are explicitly out of scope for this module.
 
+Module 3J.1b (Cross-Asset Open Interest Change Feature) adds exactly one new
+v1 `INSTRUMENT` feature definition to the `DERIVATIVES` family 3J.1a
+established -- `open_interest_change` (`OI[t] - OI[t-1]`) -- through a new
+sibling calculator module, `src/trade_platform/open_interest_features.py`,
+reusing the unmodified `PostgresFeatureAuthority.materialize_subject()`. No
+new table, feature store, dataset registry, subject registry or migration is
+introduced (3J.1a's own migration `20260909_0047` already widened the family
+CHECK). One cross-asset definition serves both a futures contract
+(`CONTRACTS`) and a crypto instrument (`CONTRACTS`/`BASE_ASSET`/`QUOTE_NOTIONAL`)
+via the single canonical `open_interest_observations` authority; raw OI level
+is never separately materialized. Both OI observations must be members of the
+exact same sealed `historical_dataset_versions.dataset_version_id`, share
+identical `unit` and `unit_asset` (never converted), and be independently
+PIT-visible (`decision_at`-gated); the prior observation is the most recent
+eligible one, ranked `revision DESC, ingested_at DESC` -- the same convention
+the existing historical authority already uses -- and an ambiguous pairing
+(two provider identifiers resolving to the same canonical instrument at the
+same event instant) fails closed rather than picking arbitrarily. No eligible
+prior observation means no materialization is written, not an error.
+`dataset_version` is always `str(dataset_version_id)`; `knowledge_at =
+max(current.normalized_at, prior.normalized_at, dataset.created_at)`; the
+native `NUMERIC(38,18)` delta is quantized to `feature_materializations.value`'s
+`NUMERIC(38,12)` scale before it enters the V2 content hash, reusing 3J.1a's
+own quantization convention. Quality is always `VALIDATED` when a value is
+produced; every fail-closed condition raises `OpenInterestFeatureError` or
+(for a genuinely missing prior) silently produces no row -- `REJECTED` is
+never persisted. This is the bounded 3J.1b scope only -- the crypto
+mark/index/funding features (3J.1c) remain out of scope.
+
+Exact merged-main run `34372983945` (verify) / `34372983807` (CodeQL) verifies
+Module 3J.1b on commit `227d429d419e0a31de86138c804fdc0556ec0df4`: no
+migration (schema unchanged since `20260909_0047`), all **944 tests without
+skips** (934 carried forward + 10 new), all **159 restore-critical tables**
+reconciled after a fresh `pg_restore` (unchanged -- zero new tables), the
+**117/117** mypy ratchet, the zero-error mypy slice now including
+`open_interest_features.py`, and every configured security, supply-chain,
+container, attestation, frontend, smoke and browser gate. This verifies the
+engineering authority only -- every open-interest figure, provider identifier
+and timestamp remains fixture data, no exchange or crypto venue was
+contacted, and it grants no strategy, signal, opportunity, order or risk
+authority, and no alpha/performance claim.
+
 Exact merged-main run `34364590663` (verify) / `34364590696` (CodeQL) verifies
 Module 3J.1a on commit `321738df710876bfc0d87b5b94fdcf446dddb99e`: migration
 head `20260909_0047` applied, all **934 tests without skips** (917 carried
