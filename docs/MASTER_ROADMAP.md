@@ -348,6 +348,53 @@ produced; every fail-closed condition raises `OpenInterestFeatureError` or
 never persisted. This is the bounded 3J.1b scope only -- the crypto
 mark/index/funding features (3J.1c) remain out of scope.
 
+Module 3J.1c (Crypto Basis & Funding Feature Pack) completes 3J.1, adding the
+three remaining approved `DERIVATIVES` feature definitions --
+`crypto_mark_index_basis`, `crypto_realized_funding_annualized` and
+`crypto_funding_forecast_error` -- through a new sibling calculator module,
+`src/trade_platform/crypto_derivatives_features.py`
+(`PostgresCryptoDerivativesFeatureCalculator`), again reusing the unmodified
+`PostgresFeatureAuthority.materialize_subject()`. No new table, feature store,
+dataset registry or convention authority is introduced, and no migration is
+included. `crypto_mark_index_basis` requires an exact `event_at` match
+between the `MARK_PRICE` and `INDEX_PRICE` observations (no tolerance
+window), the exact same sealed dataset, the exact same price asset, and a
+`MARK_AND_INDEX` instrument. `crypto_realized_funding_annualized` resolves
+*exactly* the 3H.2 funding convention already bound to the observation at
+ingestion -- never re-resolved "as of today" -- and declares
+`annualization_basis=ACT_365_FIXED` as an explicit, immutable feature
+parameter rather than an implicit assumption; it fails closed only when the
+resolved interval is non-positive or not a whole number of seconds (a branch
+`crypto_funding_conventions`' own `CHECK(interval_hours > 0)` makes
+unreachable through Postgres for the non-positive half, proven instead by a
+pure offline unit test against the extracted conversion function).
+`crypto_funding_forecast_error` selects the latest eligible
+`FUNDING_RATE_INDICATIVE` publication strictly before the target funding
+instant, requires the identical `(convention_id, convention_version)` on both
+sides, and can never become visible before the realized observation itself is
+knowable. All three rank revisions `revision DESC, ingested_at DESC` per kind
+and fail closed (raise) on ambiguous provider identity rather than choosing
+arbitrarily; every final value is quantized to
+`feature_materializations.value`'s `NUMERIC(38,12)` scale before it enters
+the V2 content hash. With 3J.1c merged, all seven 3J.1 derivatives features
+now exist: `futures_front_back_normalized_spread`,
+`futures_annualized_calendar_spread_rate`, `futures_curve_curvature`,
+`open_interest_change`, `crypto_mark_index_basis`,
+`crypto_realized_funding_annualized` and `crypto_funding_forecast_error`.
+
+Exact merged-main run `34440098376` (verify) / `34440098355` (CodeQL) verifies
+Module 3J.1c on commit `f2ae9931a5373e4cccab0b0034aeac9627d2cb71`: no
+migration (schema unchanged since `20260909_0047`), all **964 tests without
+skips** (944 carried forward + 20 new), all **159 restore-critical tables**
+reconciled after a fresh `pg_restore` (unchanged -- zero new tables), the
+**117/117** mypy ratchet, the zero-error mypy slice now including
+`crypto_derivatives_features.py`, and every configured security,
+supply-chain, container, attestation, frontend, smoke and browser gate. This
+verifies the engineering authority only -- every mark price, index price,
+funding rate, provider identifier and timestamp remains fixture data, no
+exchange or crypto venue was contacted, and it grants no strategy, signal,
+opportunity, order or risk authority, and no alpha/performance claim.
+
 Exact merged-main run `34372983945` (verify) / `34372983807` (CodeQL) verifies
 Module 3J.1b on commit `227d429d419e0a31de86138c804fdc0556ec0df4`: no
 migration (schema unchanged since `20260909_0047`), all **944 tests without
