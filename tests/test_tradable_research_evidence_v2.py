@@ -21,11 +21,13 @@ from trade_platform.strategy_feature_binding_v2 import (
     AuthoritativeFeatureSeriesV2,
     ResearchFeatureRequirementV2,
     ResearchQualityPolicyV2,
+    StrategyFeatureBindingV2Error,
     SubjectAwareResearchFeatureBundle,
 )
 from trade_platform.tradable_bar_evidence_v2 import (
     AuthoritativeTradableBarSeriesV2,
     AuthoritativeTradableBarV2,
+    TradableBarEvidenceV2Error,
 )
 from trade_platform.tradable_research_evidence_v2 import (
     SubjectAwareTradableResearchEvidenceV2,
@@ -81,13 +83,17 @@ def _bundle(
     )
 
 
-def _bar(dataset_version_id, instrument_id: str, bar_open_at: datetime) -> AuthoritativeTradableBarV2:
+def _bar(
+    dataset_version_id, instrument_id: str, bar_open_at: datetime, *,
+    dataset_content_hash: str = "e" * 64, raw_payload_sha256: str = "f" * 64,
+    open_price: Decimal = Decimal("100"),
+) -> AuthoritativeTradableBarV2:
     return AuthoritativeTradableBarV2(
-        dataset_version_id=dataset_version_id, dataset_content_hash="e" * 64, source_id=uuid4(),
-        normalized_observation_id=uuid4(), raw_observation_id=uuid4(), raw_payload_sha256="f" * 64,
+        dataset_version_id=dataset_version_id, dataset_content_hash=dataset_content_hash, source_id=uuid4(),
+        normalized_observation_id=uuid4(), raw_observation_id=uuid4(), raw_payload_sha256=raw_payload_sha256,
         instrument_id=instrument_id, interval="1m", bar_open_at=bar_open_at,
         bar_close_at=bar_open_at + timedelta(minutes=1), normalized_at=bar_open_at + timedelta(minutes=2),
-        revision=0, open=Decimal("100"), high=Decimal("101"), low=Decimal("99"), close=Decimal("100.5"),
+        revision=0, open=open_price, high=Decimal("101"), low=Decimal("99"), close=Decimal("100.5"),
         volume=Decimal("10"), provenance_uri="fixture://bar",
     )
 
@@ -155,6 +161,71 @@ class SubjectAwareTradableResearchEvidenceV2Tests(unittest.TestCase):
         base = SubjectAwareTradableResearchEvidenceV2.create(feature_bundle=_bundle(), bar_series=_bar_series())
         changed_bundle = _bundle()  # a fresh materialization_id/content_hash each call
         changed = SubjectAwareTradableResearchEvidenceV2.create(feature_bundle=changed_bundle, bar_series=_bar_series())
+        self.assertNotEqual(base.content_hash, changed.content_hash)
+
+    def test_malformed_bar_series_cannot_be_composed(self) -> None:
+        # Directly constructed, never passed through AuthoritativeTradableBarSeriesV2.validate()
+        # itself -- proves create() invokes the bar series's OWN authoritative
+        # validation rather than trusting a caller-supplied series merely
+        # because its dataset/instrument strings match.
+        bad_bar = _bar(DATASET_ID, INSTRUMENT, START, open_price=Decimal("0"))
+        malformed_series = AuthoritativeTradableBarSeriesV2(DATASET_ID, INSTRUMENT, "1m", (bad_bar,))
+        with self.assertRaisesRegex(TradableBarEvidenceV2Error, "non_positive_bar_price"):
+            SubjectAwareTradableResearchEvidenceV2.create(feature_bundle=_bundle(), bar_series=malformed_series)
+
+    def test_malformed_feature_bundle_cannot_be_composed(self) -> None:
+        # Directly constructed, bypassing SubjectAwareResearchFeatureBundle.create()
+        # (and its own validate() call): a blank subject_id would otherwise
+        # slip through if this module only compared dataset/instrument strings.
+        good = _bundle()
+        malformed_bundle = SubjectAwareResearchFeatureBundle(
+            dataset_version_id=good.dataset_version_id, subject_type=good.subject_type, subject_id="",
+            decision_at=good.decision_at, quality_policy=good.quality_policy,
+            feature_series=good.feature_series, content_hash=good.content_hash, bundle_id=good.bundle_id,
+        )
+        with self.assertRaisesRegex(StrategyFeatureBindingV2Error, "research_bundle_subject_missing"):
+            SubjectAwareTradableResearchEvidenceV2.create(
+                feature_bundle=malformed_bundle, bar_series=_bar_series()
+            )
+
+    def test_composition_fails_closed_before_content_hashing(self) -> None:
+        from unittest.mock import patch
+
+        bad_bar = _bar(DATASET_ID, INSTRUMENT, START, open_price=Decimal("-1"))
+        malformed_series = AuthoritativeTradableBarSeriesV2(DATASET_ID, INSTRUMENT, "1m", (bad_bar,))
+        bundle = _bundle()  # built before patching hashlib -- create() itself hashes internally too
+        with (
+            patch("trade_platform.tradable_research_evidence_v2.hashlib.sha256") as mock_sha256,
+            self.assertRaises(TradableBarEvidenceV2Error),
+        ):
+            SubjectAwareTradableResearchEvidenceV2.create(feature_bundle=bundle, bar_series=malformed_series)
+        mock_sha256.assert_not_called()
+
+    def test_changed_raw_payload_sha256_changes_composite_hash(self) -> None:
+        # Otherwise-identical bar identity/timing; only raw_payload_sha256 differs.
+        base_bar = _bar(DATASET_ID, INSTRUMENT, START, raw_payload_sha256="f" * 64)
+        base_series = AuthoritativeTradableBarSeriesV2(DATASET_ID, INSTRUMENT, "1m", (base_bar,))
+        base_series.validate()
+        changed_bar = _bar(DATASET_ID, INSTRUMENT, START, raw_payload_sha256="1" + "f" * 63)
+        changed_series = AuthoritativeTradableBarSeriesV2(DATASET_ID, INSTRUMENT, "1m", (changed_bar,))
+        changed_series.validate()
+
+        bundle = _bundle()
+        base = SubjectAwareTradableResearchEvidenceV2.create(feature_bundle=bundle, bar_series=base_series)
+        changed = SubjectAwareTradableResearchEvidenceV2.create(feature_bundle=bundle, bar_series=changed_series)
+        self.assertNotEqual(base.content_hash, changed.content_hash)
+
+    def test_changed_dataset_content_hash_changes_composite_hash(self) -> None:
+        base_bar = _bar(DATASET_ID, INSTRUMENT, START, dataset_content_hash="e" * 64)
+        base_series = AuthoritativeTradableBarSeriesV2(DATASET_ID, INSTRUMENT, "1m", (base_bar,))
+        base_series.validate()
+        changed_bar = _bar(DATASET_ID, INSTRUMENT, START, dataset_content_hash="2" + "e" * 63)
+        changed_series = AuthoritativeTradableBarSeriesV2(DATASET_ID, INSTRUMENT, "1m", (changed_bar,))
+        changed_series.validate()
+
+        bundle = _bundle()
+        base = SubjectAwareTradableResearchEvidenceV2.create(feature_bundle=bundle, bar_series=base_series)
+        changed = SubjectAwareTradableResearchEvidenceV2.create(feature_bundle=bundle, bar_series=changed_series)
         self.assertNotEqual(base.content_hash, changed.content_hash)
 
     def test_no_durable_composite_table(self) -> None:

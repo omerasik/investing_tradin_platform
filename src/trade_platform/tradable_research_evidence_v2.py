@@ -53,6 +53,14 @@ class SubjectAwareTradableResearchEvidenceV2:
         feature_bundle: SubjectAwareResearchFeatureBundle,
         bar_series: AuthoritativeTradableBarSeriesV2,
     ) -> SubjectAwareTradableResearchEvidenceV2:
+        # Re-invoke each upstream artifact's OWN authoritative validation
+        # first -- a directly-constructed, malformed bundle or series must not
+        # be composable merely because its dataset/instrument strings happen
+        # to match. This module never re-implements those checks; it only
+        # calls them, so a change to either authority's invariants is picked
+        # up here automatically.
+        feature_bundle.validate()
+        bar_series.validate()
         _validate_pairing(feature_bundle, bar_series)
         payload = {
             "feature_bundle_id": str(feature_bundle.bundle_id),
@@ -63,8 +71,17 @@ class SubjectAwareTradableResearchEvidenceV2:
             "interval": bar_series.interval,
             "bars": [
                 {
+                    # Canonical immutable provenance, not merely references:
+                    # dataset_content_hash/raw_payload_sha256 tie each bar to
+                    # the exact sealed evidence it was projected from, so the
+                    # composite hash commits to the underlying financial
+                    # content transitively (via the raw payload's own SHA-256)
+                    # without copying any OHLCV value into this payload.
+                    "dataset_content_hash": bar.dataset_content_hash,
+                    "source_id": str(bar.source_id),
                     "normalized_observation_id": str(bar.normalized_observation_id),
                     "raw_observation_id": str(bar.raw_observation_id),
+                    "raw_payload_sha256": bar.raw_payload_sha256,
                     "bar_open_at": bar.bar_open_at.isoformat(),
                     "bar_close_at": bar.bar_close_at.isoformat(),
                     "revision": bar.revision,
