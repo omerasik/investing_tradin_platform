@@ -138,15 +138,27 @@ futures settlement + open interest, **3I.2** crypto funding + mark/index +
 crypto open interest, **3I.3** deterministic futures term-structure derivation,
 **3J.0** generalized Feature Authority subject identity (a prerequisite for
 connecting 3I.1–3I.3 evidence to the Feature Authority; not a market-data
-module itself). A concrete, unimplemented **3J.1** scope proposal ([Multi-Asset
+module itself). The **3J.1** scope proposal ([Multi-Asset
 Derivatives Feature Pack](MODULE_3J1_PROPOSAL_MULTI_ASSET_DERIVATIVES_FEATURE_PACK.md))
-recommends seven concrete derivatives feature definitions against
+recommended seven concrete derivatives feature definitions against
 3I.1–3I.3/3J.0 evidence, with all five architecture decisions owner-decided
 (`FeatureFamily` naming, open-interest scope, mark/index matching, formula
-de-duplication, and the single-sealed-dataset identity rule) — pending only
-a separate implementation PR, not yet opened. **3I.4**
+de-duplication, and the single-sealed-dataset identity rule); **all seven are
+now implemented and exact-main verified** across Modules 3J.1a, 3J.1b and
+3J.1c (see below), and **3J.2a** (Subject-Aware Strategy Lab Feature Binding
+V2) is also implemented and exact-main verified, establishing the
+generalized research-input boundary between that feature evidence and the
+existing Strategy Lab research stack. A further **3J.2b** proposal ([First
+Deterministic Crypto Perpetual Strategy Research
+Architecture](MODULE_3J2B_PROPOSAL_CRYPTO_PERPETUAL_STRATEGY_RESEARCH.md)) —
+docs-only, not implemented — evaluates whether that path is actually
+research-complete end to end for a first crypto-perpetual strategy; see that
+document for the recommended hypothesis, the price-return-first accounting
+decision, and the REQUIRES REVIEW architecture gaps it identifies
+(signed-exposure support, crypto OHLCV/tradable-price evidence, and the
+composite-evidence dataset relationship). **3I.4**
 (top-of-book quotes) remains planned but not
-authorized — this status is unchanged by 3J.0. **3I.5** (trade-by-trade and L2
+authorized — this status is unchanged by 3J.0/3J.1/3J.2a/3J.2b. **3I.5** (trade-by-trade and L2
 order book) is explicitly deferred pending a separate storage-tier
 architecture decision — object storage/Parquet, partitioned catalogue,
 hot/cold tiers, checksummed manifests and a replay interface — and must not be
@@ -413,6 +425,29 @@ alignment only, and the feature series it aligns may remain
 irregular/event-driven. This is a research-input boundary only -- no
 derivatives trading strategy, alpha hypothesis, entry/exit rule, or
 strategy/signal/opportunity/order/risk authority is introduced.
+
+Module 3J.2b (Proposal: First Deterministic Crypto Perpetual Strategy
+Research Architecture) is a **docs-only architecture proposal — not
+implemented, not authorized, not started.** It evaluates whether the
+3J.1/3J.2a feature evidence is actually sufficient to run a genuinely
+PIT-safe, deterministic research path — sealed data →
+`FeatureMaterializationV2` → `SubjectAwareResearchFeatureBundle` → strategy
+decision → strictly later tradable entry → position/accounting → exit →
+returns → walk-forward/robustness/scorecard — for a first crypto `PERPETUAL`
+strategy. See [MODULE_3J2B_PROPOSAL_CRYPTO_PERPETUAL_STRATEGY_RESEARCH.md](MODULE_3J2B_PROPOSAL_CRYPTO_PERPETUAL_STRATEGY_RESEARCH.md)
+for the full evaluation: it recommends a minimal basis-mean-reversion
+hypothesis over `crypto_mark_index_basis`, a price-return-first accounting
+architecture (funding cashflows excluded from realized P&L; the existing
+backtest engines were inspected and confirmed to model price P&L plus
+turnover/spread/slippage costs only, never funding), and identifies three
+REQUIRES REVIEW gaps blocking implementation — the research stack's
+long/flat-only signed-exposure constraint, the absence of any crypto
+perpetual OHLCV/tradable-price evidence in the sealed historical authority,
+and the composite-evidence dataset relationship needed to bind that price
+evidence to the existing feature evidence under 3J.2a's one-bundle-one-dataset
+rule. No feature, strategy, migration, accounting primitive, or API
+described in that document exists in the codebase, and no strategy, signal,
+opportunity, order, or risk authority is granted by it.
 
 Exact merged-main run `34444477527` (verify) / `34444477591` (CodeQL)
 verifies Module 3J.2a on commit `31d38d18beb923ac1949120354a3dc17a83e5e06`
