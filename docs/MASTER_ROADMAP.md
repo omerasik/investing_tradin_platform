@@ -382,6 +382,55 @@ now exist: `futures_front_back_normalized_spread`,
 `open_interest_change`, `crypto_mark_index_basis`,
 `crypto_realized_funding_annualized` and `crypto_funding_forecast_error`.
 
+Module 3J.2a (Subject-Aware Strategy Lab Feature Binding V2) introduces
+`src/trade_platform/strategy_feature_binding_v2.py`: the generalized
+research-input boundary between the 3J.0/3J.1 subject-aware Feature Authority
+and the existing Strategy Lab research stack -- not a new Feature Authority,
+strategy, signal, opportunity, order or risk authority. It reads only through
+the `FeatureAuthorityReaderV2` protocol's `definition()` and
+`latest_as_of_subject()`, which `PostgresFeatureAuthority` already satisfies
+structurally with no adapter, and speaks only `FeatureMaterializationV2`
+identified by canonical `subject_type` + `subject_id`; `trend_strategy_v2.py`
+and `trend_research_v2.py` (`FeatureMaterialization` V1, `latest_as_of`) are
+untouched, and V1/V2 evidence is never coerced either direction.
+`ResearchFeatureRequirementV2` binds a feature_id/name/semantic_version to an
+*expected* `FeatureSubjectType` but no concrete `subject_id`, keeping one
+research hypothesis portable across every eligible instrument or series;
+`ResearchFeatureBundleRequestV2` binds the concrete subject and dataset, and
+`SubjectAwareResearchFeatureBundle.create()` produces a deterministic,
+content-hashed, in-memory-only research artifact -- no new table, no
+migration, no second copy of any financial value -- whose SHA-256 hash covers
+a payload of `dataset_version_id`, `subject_type`, `subject_id`, `decision_at`,
+`quality_policy`, and a feature list (sorted by `feature_id` for determinism)
+of `{feature_id, name, semantic_version, materializations: [{materialization_id,
+content_hash, quality_status}]}`. Exactly one `subject_type`/`subject_id` is
+enforced structurally per bundle, so a mixed `INSTRUMENT`/`FUTURES_SERIES`
+bundle, or one spanning two subjects, cannot be expressed. `VALIDATED_ONLY`
+is the only quality policy in v1: a `DEGRADED` or `REJECTED` materialization
+is excluded from the bundle outright, never substituted, forward-filled or
+nearest-matched; `align_exact_event_feature_matrix` performs exact-timestamp
+alignment only, and the feature series it aligns may remain
+irregular/event-driven. This is a research-input boundary only -- no
+derivatives trading strategy, alpha hypothesis, entry/exit rule, or
+strategy/signal/opportunity/order/risk authority is introduced.
+
+Exact merged-main run `34444477527` (verify) / `34444477591` (CodeQL)
+verifies Module 3J.2a on commit `31d38d18beb923ac1949120354a3dc17a83e5e06`
+(the two-parent merge commit GitHub created for PR #114, merging branch head
+`4432cc69d5b16db582acb7d2dc0f0fab1c67083b` into prior main
+`44179c23c9c8f60cad5ab9fa73bce22a45b0ed0d` -- not a fast-forward): no
+migration (schema unchanged since `20260909_0047`), all **999 tests without
+skips** (964 carried forward + 35 new: 34 pure-unit in
+`tests/test_strategy_feature_binding_v2.py` and 1 PostgreSQL-backed in
+`tests/test_strategy_feature_binding_v2_postgres.py`), all **159
+restore-critical tables** reconciled after a fresh `pg_restore` (unchanged --
+zero new tables), the **117/117** mypy ratchet, the zero-error mypy slice now
+including `strategy_feature_binding_v2.py`, and every configured security,
+supply-chain, container, attestation, frontend, smoke and browser gate. This
+verifies the engineering authority only -- every value remains fixture data,
+no exchange or data provider was contacted, and it grants no strategy,
+signal, opportunity, order or risk authority, and no alpha/performance claim.
+
 Exact merged-main run `34440098376` (verify) / `34440098355` (CodeQL) verifies
 Module 3J.1c on commit `f2ae9931a5373e4cccab0b0034aeac9627d2cb71`: no
 migration (schema unchanged since `20260909_0047`), all **964 tests without
