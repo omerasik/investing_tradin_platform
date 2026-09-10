@@ -469,6 +469,93 @@ signal, opportunity, order, or risk authority is granted by it; the
 recommended two-stage implementation (3J.2b.1, then 3J.2b.2) has not been
 opened as a separate PR.
 
+Module 3J.2b.1 (Signed Research Exposure + Dataset-Bound Tradable Price
+Evidence) implements exactly the four infrastructure capabilities the revised
+3J.2b proposal (Sec 16) authorized ahead of any strategy logic -- no basis
+threshold, no funding cashflow, no signal promotion, no paper order, no
+broker, no risk-policy change; 3J.2b.2 has not started.
+`src/trade_platform/signed_research_exposure_v2.py` introduces
+`SignedResearchSignalObservationV2`/`SignedResearchSignalSeriesV2`, a
+research-only `-cap <= exposure <= +cap` (`0 < cap <= 1`) signed-exposure
+abstraction structurally independent of `trend_strategy_v2.py` -- Trend V2's
+non-negative invariant is unchanged, and the new module grants no
+`OrderSide`/leverage/margin/portfolio/risk/execution authority.
+`src/trade_platform/tradable_bar_evidence_v2.py` introduces
+`TradableBarEvidenceReaderV2`/`PostgresTradableBarEvidenceReaderV2`, a
+read-only research boundary deriving OHLCV bars strictly through sealed
+dataset membership (`historical_dataset_versions` ->
+`historical_dataset_members` -> `historical_normalized_observations` ->
+`historical_raw_observations`), never through Module 3F's
+`PostgresHistoricalBarStore`; a bar is admitted only with an explicit
+`BAR_TIMESTAMP_SEMANTICS_MARKER_V1` raw-payload marker (`bar_open_at=event_at`,
+`bar_close_at=effective_at`) and fails closed on a missing/malformed marker,
+an impossible bar-timestamp relationship, or ambiguous provider identity
+surviving revision resolution -- never an arbitrary tie-break. v1 interval
+support is bounded to `1m`. `first_eligible_bar_after()` proves the canonical
+entry-bar primitive (`bar_open_at > decision_at`, never `>=`) without making
+any trade decision, reserved for 3J.2b.2.
+`src/trade_platform/tradable_research_evidence_v2.py` introduces
+`SubjectAwareTradableResearchEvidenceV2`, an in-memory bridge pairing exactly
+one `SubjectAwareResearchFeatureBundle` (3J.2a) with one
+`AuthoritativeTradableBarSeriesV2` under exact UUID identity
+(`dataset_version_id`, `subject_id`/`instrument_id`) -- `create()` re-invokes
+each upstream artifact's own `validate()` before pairing and before hashing,
+so a directly-constructed malformed bundle or series cannot be composed
+merely because its identity strings match; its content hash commits to both
+`feature_bundle.content_hash` and canonical tradable-bar provenance
+(`dataset_content_hash`, `source_id`, `raw_payload_sha256`,
+`normalized_observation_id`, `raw_observation_id`, `bar_open_at`,
+`bar_close_at`, `revision`) per bar, never a raw OHLCV value. No
+`FUTURES_SERIES` subject, no cross-dataset evidence, no durable table.
+`src/trade_platform/signed_price_return_v2.py` introduces
+`compute_signed_open_to_open_return()`, a funding-free `gross = exposure *
+(exit_open/entry_open - 1)`, `net = gross - entry_cost - exit_cost`
+decomposition over two `AuthoritativeTradableBarV2` bars from the same
+instrument/dataset, reusing the existing `CostModel`; it never calls
+`paper_execution.apply_funding()` and is never passed into
+`run_vectorized_backtest()`'s close-to-close contract. Fixture-only crypto
+`PERPETUAL` OHLCV is exercised end-to-end through the existing
+`PostgresHistoricalMarketDataPipeline`: `ObservationKind.OHLCV` was already
+`CRYPTO`-scope-eligible before this change, so only a fixture source's
+declared `authorized_observation_kinds` needed widening to `{OHLCV,
+MARK_PRICE, INDEX_PRICE}`; one such source seals into one
+`HistoricalDatasetVersion`, with `crypto_mark_index_basis` materializing off
+that exact same dataset UUID. No real venue/provider call, no Databento
+change, no migration, no new durable table -- confirmed by inspection that
+`seal_dataset()` still enforces only `source_id`/`normalization_version`
+identity, no instrument/kind homogeneity.
+
+Exact merged-main run `34501560545` (verify) / `34501560499` (CodeQL)
+verifies Module 3J.2b.1 on commit `7750e1f526d9ec91c16d6534813cacba31472590`
+-- the two-parent merge commit GitHub created for PR #118, merging branch
+head `e7438caa4426b930a02d25996093e1ee6954d900` into prior main
+`a24569d166a642fa8c420b0904fe3448aac00318` (itself the two-parent merge
+commit for PR #117, merging branch head
+`09acbde662332ebb705c0e04a0226b144b0d4269` into
+`b1b8ad9ad284f693716777c9146f865894e16780`) -- not a fast-forward: no
+migration (schema unchanged since `20260909_0047`), all **1067 tests without
+skips** (999 carried forward + 68 new: 26 pure-unit in
+`tests/test_signed_research_exposure_v2.py`, 18 pure-unit in
+`tests/test_signed_price_return_v2.py`, 13 pure-unit in
+`tests/test_tradable_research_evidence_v2.py` (8 from PR #117, then 5 more
+from PR #118's hardening), and 11 PostgreSQL-backed in
+`tests/test_tradable_bar_evidence_v2_postgres.py`), all **159
+restore-critical tables** reconciled after a fresh `pg_restore` (unchanged --
+zero new tables), the **117/117** mypy ratchet, the zero-error mypy slice now
+including `signed_research_exposure_v2.py`, `tradable_bar_evidence_v2.py`,
+`tradable_research_evidence_v2.py` and `signed_price_return_v2.py` (66 files
+total), and every configured security, supply-chain, container, attestation,
+frontend, smoke and browser gate. Per owner review, PR #118 hardened
+`SubjectAwareTradableResearchEvidenceV2.create()` to invoke
+`feature_bundle.validate()`/`bar_series.validate()` before pairing and
+hashing, and strengthened its content hash to commit to canonical
+tradable-bar provenance hashes (not only observation IDs and timing)
+alongside `feature_bundle.content_hash`. This verifies the engineering
+authority only -- every OHLCV bar, mark price, index price and provider
+identifier remains fixture data, no exchange or crypto venue was contacted,
+and it grants no strategy, signal, opportunity, order or risk authority, and
+no alpha/performance claim.
+
 Exact merged-main run `34444477527` (verify) / `34444477591` (CodeQL)
 verifies Module 3J.2a on commit `31d38d18beb923ac1949120354a3dc17a83e5e06`
 (the two-parent merge commit GitHub created for PR #114, merging branch head
