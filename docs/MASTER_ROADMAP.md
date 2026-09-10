@@ -138,15 +138,35 @@ futures settlement + open interest, **3I.2** crypto funding + mark/index +
 crypto open interest, **3I.3** deterministic futures term-structure derivation,
 **3J.0** generalized Feature Authority subject identity (a prerequisite for
 connecting 3I.1–3I.3 evidence to the Feature Authority; not a market-data
-module itself). A concrete, unimplemented **3J.1** scope proposal ([Multi-Asset
+module itself). The **3J.1** scope proposal ([Multi-Asset
 Derivatives Feature Pack](MODULE_3J1_PROPOSAL_MULTI_ASSET_DERIVATIVES_FEATURE_PACK.md))
-recommends seven concrete derivatives feature definitions against
+recommended seven concrete derivatives feature definitions against
 3I.1–3I.3/3J.0 evidence, with all five architecture decisions owner-decided
 (`FeatureFamily` naming, open-interest scope, mark/index matching, formula
-de-duplication, and the single-sealed-dataset identity rule) — pending only
-a separate implementation PR, not yet opened. **3I.4**
+de-duplication, and the single-sealed-dataset identity rule); **all seven are
+now implemented and exact-main verified** across Modules 3J.1a, 3J.1b and
+3J.1c (see below), and **3J.2a** (Subject-Aware Strategy Lab Feature Binding
+V2) is also implemented and exact-main verified, establishing the
+generalized research-input boundary between that feature evidence and the
+existing Strategy Lab research stack. A further **3J.2b** proposal ([First
+Deterministic Crypto Perpetual Strategy Research
+Architecture](MODULE_3J2B_PROPOSAL_CRYPTO_PERPETUAL_STRATEGY_RESEARCH.md)) —
+docs-only, approved/merged (PR #116), not yet implemented — evaluates
+whether that path is actually research-complete end to end for a first
+crypto-perpetual strategy. Following owner review, all previously open
+architecture items are **owner-decided**: pure basis mean reversion on
+`crypto_mark_index_basis` alone as the sole v1 signal feature; Architecture 1
+(price-return-only, funding cashflows excluded, funding sign convention
+deferred to a future Architecture 2); a single sealed dataset (Option A)
+spanning `MARK_PRICE`/`INDEX_PRICE`/`OHLCV` for the same instrument, read
+through a new dataset-bound tradable-bar research reader; fixture-only
+crypto perpetual OHLCV activation; and a new, independent, research-only
+signed-exposure abstraction (`SignedResearchSignalObservationV2`/
+`SignedResearchSignalSeriesV2`). See that document for the full revised
+architecture and the two-stage 3J.2b.1/3J.2b.2 implementation decomposition
+it recommends — no implementation PR has been opened yet. **3I.4**
 (top-of-book quotes) remains planned but not
-authorized — this status is unchanged by 3J.0. **3I.5** (trade-by-trade and L2
+authorized — this status is unchanged by 3J.0/3J.1/3J.2a/3J.2b. **3I.5** (trade-by-trade and L2
 order book) is explicitly deferred pending a separate storage-tier
 architecture decision — object storage/Parquet, partitioned catalogue,
 hot/cold tiers, checksummed manifests and a replay interface — and must not be
@@ -413,6 +433,41 @@ alignment only, and the feature series it aligns may remain
 irregular/event-driven. This is a research-input boundary only -- no
 derivatives trading strategy, alpha hypothesis, entry/exit rule, or
 strategy/signal/opportunity/order/risk authority is introduced.
+
+Module 3J.2b (Proposal: First Deterministic Crypto Perpetual Strategy
+Research Architecture) is a **docs-only architecture proposal — owner
+reviewed and approved (PR #116); not implemented, not started.** It
+evaluates whether the 3J.1/3J.2a feature evidence is actually sufficient to
+run a genuinely PIT-safe, deterministic research path — sealed data →
+`FeatureMaterializationV2` → `SubjectAwareResearchFeatureBundle` → strategy
+decision → strictly later tradable entry → position/accounting → exit →
+returns → walk-forward/robustness/scorecard — for a first crypto `PERPETUAL`
+strategy. See [MODULE_3J2B_PROPOSAL_CRYPTO_PERPETUAL_STRATEGY_RESEARCH.md](MODULE_3J2B_PROPOSAL_CRYPTO_PERPETUAL_STRATEGY_RESEARCH.md)
+for the full, owner-revised evaluation: **pure basis mean reversion** —
+`crypto_mark_index_basis` as the sole v1 signal feature (`open_interest_change`,
+`crypto_realized_funding_annualized`, and `crypto_funding_forecast_error`
+deferred to later preregistered extensions/ablation studies); **Architecture
+1 only** — price-return-first accounting, funding cashflows excluded from
+v1 in full (the existing backtest engines were inspected and confirmed to
+model price P&L plus turnover/spread/slippage costs only, never funding),
+with the funding sign-convention question explicitly deferred to a future,
+separately-owner-reviewed Architecture 2 proposal, not a blocker here;
+**dataset relationship Option A, decided** — one sealed dataset spanning
+`MARK_PRICE`/`INDEX_PRICE`/`OHLCV` for the same instrument under one source
+identity, read through a new dataset-bound tradable-bar research reader
+(`TradableBarEvidenceReaderV2`); **fixture-only crypto perpetual OHLCV
+activation authorized** for the implementation stage (no real venue/provider
+call, no paid data); **a new, independent, research-only signed-exposure
+abstraction approved** (`SignedResearchSignalObservationV2`/
+`SignedResearchSignalSeriesV2`, `-cap <= exposure <= +cap`,
+`0 < cap <= 1`); decisions are **feature-event-driven**, not bar-close-driven;
+and a tightened bar-open-timestamp entry/exit contract with deterministic,
+non-overlapping trade lifecycle semantics. No architecture item remains
+REQUIRES REVIEW. No feature, strategy, migration, accounting primitive, or
+API described in that document exists in the codebase, and no strategy,
+signal, opportunity, order, or risk authority is granted by it; the
+recommended two-stage implementation (3J.2b.1, then 3J.2b.2) has not been
+opened as a separate PR.
 
 Exact merged-main run `34444477527` (verify) / `34444477591` (CodeQL)
 verifies Module 3J.2a on commit `31d38d18beb923ac1949120354a3dc17a83e5e06`
