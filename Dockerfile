@@ -7,6 +7,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PYTHONPATH=/app/src
 
+# SEC-02: the pinned base image predates Debian's bookworm-security fix for
+# libpcre2-8-0 (CVE-2026-86145, CVE-2026-89161; fixed in 10.42-1+deb12u1) --
+# upstream python:3.12.14-slim-bookworm has not yet been rebuilt with it.
+# Pinning the exact patched version (never a broad `apt-get upgrade`) keeps
+# the base image itself as the reproducibility anchor while still failing
+# the build closed if that exact patched version ever becomes unavailable.
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends libpcre2-8-0=10.42-1+deb12u1 \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd --gid 10001 tradeplatform \
     && useradd --uid 10001 --gid 10001 --no-log-init --home-dir /app \
         --shell /usr/sbin/nologin tradeplatform
