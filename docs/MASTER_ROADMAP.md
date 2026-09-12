@@ -654,6 +654,31 @@ opportunity, paper, shadow or live-trading authority, and no
 alpha/performance claim; 3J.2b.2b (professional OOS/robustness validation
 orchestration) has not been started.
 
+Module 3J.2b.2b (Proposal: Professional Validation Semantics for OPEN→OPEN
+Basis Research) is a **docs-only architecture proposal — not yet owner
+reviewed, not implemented, not started.** See
+[MODULE_3J2B2B_PROPOSAL_OPEN_TO_OPEN_PROFESSIONAL_VALIDATION.md](MODULE_3J2B2B_PROPOSAL_OPEN_TO_OPEN_PROFESSIONAL_VALIDATION.md)
+for the full audit of every existing validation primitive
+(`run_purged_walk_forward`, `evaluate_capacity`,
+`evaluate_slippage_sensitivity`, `evaluate_latency_sensitivity`,
+`evaluate_bootstrap`, `evaluate_monte_carlo_trade_sequence`,
+`evaluate_stress`, `evaluate_parameter_stability`,
+`evaluate_multiple_testing`, `performance_metrics`, `tail_risk_metrics`,
+`complexity_components`, `StrategyScorecardV2`, `build_validation_package`,
+and the existing golden/vector reconciliation machinery) against
+3J.2b.2a's OPEN→OPEN, non-overlapping, event-driven trade-ledger semantics,
+the dual canonical-trade-return / `REALIZED_EXIT_DAILY_RETURN_SERIES_V1`
+return-series architecture it proposes, the chronological
+purge/embargo/holdout walk-forward design, the finding that the existing
+`backtest_overfitting_probability` and `deflated_sharpe_probability` fields
+are not canonical PBO/DSR and must not be relabeled as such, and the
+recommended 3J.2b.2b.1 (adapters + statistical evidence) /
+3J.2b.2b.2 (orchestration + scorecard + validation package) implementation
+split. No code, migration, parameter, or strategy change is introduced by
+this proposal; the scorecard status for this module remains `BLOCKED`
+regardless of any apparent synthetic performance, and several architecture
+items remain explicitly `REQUIRES REVIEW` pending owner decision.
+
 Exact merged-main run `34444477527` (verify) / `34444477591` (CodeQL)
 verifies Module 3J.2a on commit `31d38d18beb923ac1949120354a3dc17a83e5e06`
 (the two-parent merge commit GitHub created for PR #114, merging branch head
