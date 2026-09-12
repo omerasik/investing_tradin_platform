@@ -556,6 +556,104 @@ identifier remains fixture data, no exchange or crypto venue was contacted,
 and it grants no strategy, signal, opportunity, order or risk authority, and
 no alpha/performance claim.
 
+SEC-02 (Python Bookworm Base Image Security Refresh) is a container-image
+supply-chain security fix, not a numbered research module. It pins
+`libpcre2-8-0` in `Dockerfile` to the Debian `bookworm-security`-patched
+version `10.42-1+deb12u1`, remediating Trivy-flagged `CVE-2026-86145` and
+`CVE-2026-89161` (both HIGH) surfaced by PR #120's own `verify` run
+`34703275221` before this fix existed. Inspection confirmed the current
+upstream `python:3.12.14-slim-bookworm` official image (pulled fresh,
+`linux/amd64`, digest `sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254`)
+still ships the unpatched `10.42-1` -- Debian's own `bookworm-security` repo
+already carries the fix, but Docker Hub has not yet rebuilt the image with
+it -- so the preferred remediation (bump only the pinned base-image digest)
+was not available. Per owner direction, the exact patched package version is
+pinned via one explicit `apt-get install` layer immediately after `FROM`
+(never a broad `apt-get upgrade`), leaving the base image digest itself as
+the sole reproducibility anchor and failing the build closed if that exact
+patched version ever disappears from the security repo. Python `3.12.14`,
+Bookworm, non-root UID/GID `10001`, the runtime dependency lock, existing
+hardening, healthcheck and runtime composition root are all unchanged.
+
+Exact merged-main run `34708561476` (verify) / `34708561383` (CodeQL)
+verifies SEC-02 on commit `3de3633603a2ee2803ac41fb51a8896ac5f769e4` (the
+merge commit for PR #121, merging branch head
+`51618ad...` into prior main
+`02bf0a780936e15b8ad1be436d085b2e28c6424f`): `Dockerfile`-only diff, no
+migration, no test-count change, the **117/117** mypy ratchet unaffected,
+and every configured security, supply-chain, container, attestation,
+frontend, smoke and browser gate -- including the "Scan research API image
+and generate its SBOM" step (Trivy `0.73.0`, `--severity HIGH,CRITICAL
+--ignore-unfixed`), which had failed pre-fix and now reports zero
+vulnerabilities.
+
+Module 3J.2b.2a (Pure Basis Mean-Reversion Strategy Core + Deterministic
+Trade Ledger) implements Hypothesis A -- pure basis mean reversion -- the
+first tradable crypto-perpetual strategy, built entirely on 3J.2b.1's
+infrastructure and still strictly `RESEARCH_ONLY`.
+`src/trade_platform/crypto_basis_mean_reversion_v1.py` introduces
+`CryptoBasisMeanReversionDefinitionV1` (canonical name
+`crypto_basis_mean_reversion`, semantic version `1.0.0`, exactly three
+tunable parameters -- `basis_entry_threshold`, `holding_horizon_bars`,
+`maximum_absolute_exposure` -- with content-hashed identity; no fourth
+parameter, no optimization). Decisions are feature-event-driven over the
+sole required `crypto_mark_index_basis` v`1.0.0` materialization series:
+`decision_at = max(event_at, effective_at, knowledge_at, computed_at)` per
+materialization, structurally bounded by
+`SubjectAwareResearchFeatureBundle.validate()`'s own PIT gate; a bundle
+carrying any additional feature (`open_interest_change`, funding, or
+otherwise) fails the run closed rather than being silently ignored. Direction
+is a symmetric, non-fuzzy threshold rule (`basis > +threshold` -> SHORT,
+`basis < -threshold` -> LONG, otherwise FLAT; exact equality at either
+threshold is FLAT). Entry is
+`bar_series.first_eligible_bar_after(decision_at).open` (strictly after,
+never same-event/MARK/INDEX/basis price); exit is the exact bar at
+`entry.bar_open_at + holding_horizon_bars * 1m`, or
+`EXCLUDED_MISSING_EXIT` -- never a nearest-bar substitute or synthetic price.
+Lifecycle is strictly non-overlapping: a candidate is `IGNORED_ACTIVE_TRADE`
+unless `decision_at` is strictly after the previous executed trade's exit
+time -- no pyramiding, no scale-in/out. Return accounting reuses
+`compute_signed_open_to_open_return()` and `CostModel` unmodified; funding is
+excluded in full (Architecture 1) -- the module never imports
+`paper_execution` or calls `apply_funding()`. Every decision carries a
+deterministic evidence-content hash (strategy-definition hash + composite
+evidence hash + materialization id/hash + basis value + decision time +
+exposure) fed into a reused `SignedResearchSignalObservationV2`; the run's
+own content hash additionally commits to the dataset UUID, instrument,
+`CostModel` values, `cost_model_version`, and every decision outcome/trade,
+so identical inputs always replay to the same hash and any change to feature
+content, any parameter, the cost model, or its version changes it.
+`BasisMeanReversionResearchRunV1` exposes only raw `executed_trade_count` /
+`flat_decision_count` / `ignored_count` / `excluded_count` / ordered
+`trade_returns` -- no Sharpe, Sortino, Calmar, PBO, DSR, capacity or
+paper-eligibility claim; those are reserved for the separately-reviewed
+3J.2b.2b validation-orchestration module. In-memory, content-hashed evidence
+only -- no persistence, no new table.
+
+Exact merged-main run `34709515305` (verify) / `34709515325` (CodeQL)
+verifies Module 3J.2b.2a on commit
+`94bddf258baff3a024afc91bb3ee8475cc944fdd` (the merge commit for PR #120,
+merging branch head `b37f917...` -- the module's implementation commit,
+rebased onto SEC-02's patched main after PR #120's original `verify` run
+first surfaced the container CVE -- into prior main
+`3de3633603a2ee2803ac41fb51a8896ac5f769e4`): no migration (schema unchanged
+since `20260909_0047`), all **1116 tests without skips** (1067 carried
+forward + 49 new, entirely pure in-memory unit tests in
+`tests/test_crypto_basis_mean_reversion_v1.py` -- no PostgreSQL fixture
+needed since every input authority this module consumes is already an
+in-memory dataclass), all **159 restore-critical tables** reconciled after a
+fresh `pg_restore` (unchanged -- zero new tables), the **117/117** mypy
+ratchet, the zero-error mypy slice now including
+`crypto_basis_mean_reversion_v1.py` (67 files total), and every configured
+security, supply-chain, container, attestation, frontend, smoke and browser
+gate -- including the container-vulnerability-scan step, green under SEC-02's
+fix. This verifies the strategy-core engineering authority only -- every
+mark price, index price and OHLCV bar consumed remains fixture data (no real
+crypto venue or provider was contacted), and it grants no signal,
+opportunity, paper, shadow or live-trading authority, and no
+alpha/performance claim; 3J.2b.2b (professional OOS/robustness validation
+orchestration) has not been started.
+
 Exact merged-main run `34444477527` (verify) / `34444477591` (CodeQL)
 verifies Module 3J.2a on commit `31d38d18beb923ac1949120354a3dc17a83e5e06`
 (the two-parent merge commit GitHub created for PR #114, merging branch head
