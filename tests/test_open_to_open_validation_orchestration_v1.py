@@ -45,6 +45,7 @@ from trade_platform.open_to_open_validation_orchestration_v1 import (
     evaluate_open_to_open_pbo_orchestration_v1,
     run_open_to_open_professional_validation_v1,
     run_open_to_open_segment_research_v1,
+    slice_authoritative_bar_series_v1,
 )
 from trade_platform.open_to_open_validation_v1 import (
     CSCV_BLOCKS,
@@ -212,9 +213,53 @@ def _day_open(index: int, minute: int) -> Decimal:
 
 
 def _fixture_evidence(
-    *, span_days: int = SPAN_DAYS, value_overrides: dict[int, Decimal] | None = None
+    *,
+    span_days: int = SPAN_DAYS,
+    value_overrides: dict[int, Decimal] | None = None,
+    bar_overrides: dict[datetime, AuthoritativeTradableBarV2] | None = None,
 ) -> SubjectAwareTradableResearchEvidenceV2:
     overrides = {} if value_overrides is None else value_overrides
+    bar_overrides = {} if bar_overrides is None else bar_overrides
+    bars: list[AuthoritativeTradableBarV2] = []
+    materializations: list[FeatureMaterializationV2] = []
+    for index, day in enumerate(_active_days(span_days)):
+        day_start = START + timedelta(days=day)
+        for minute in range(BARS_PER_ACTIVE_DAY):
+            bar_open_at = day_start + timedelta(minutes=minute)
+            bars.append(bar_overrides.get(bar_open_at, _bar(bar_open_at, _day_open(index, minute))))
+        materializations.append(
+            _materialization(
+                event_at=day_start,
+                value=overrides.get(day, BASIS_CYCLE[index % len(BASIS_CYCLE)]),
+            )
+        )
+    tail_open_at = START + timedelta(days=span_days - 1, hours=23, minutes=59)
+    bars.append(bar_overrides.get(tail_open_at, _bar(tail_open_at, Decimal("100"))))
+    bundle = _bundle(tuple(materializations), decision_at=START + timedelta(days=span_days))
+    return SubjectAwareTradableResearchEvidenceV2.create(
+        feature_bundle=bundle, bar_series=_bar_series(tuple(bars))
+    )
+
+
+def _mutated_bar(bar_open_at: datetime, base_open: Decimal) -> AuthoritativeTradableBarV2:
+    base = _bar(bar_open_at, base_open)
+    return replace(
+        base,
+        open=base.open + Decimal("50"),
+        high=base.high + Decimal("50"),
+        low=base.low + Decimal("50"),
+        close=base.close + Decimal("50"),
+        raw_payload_sha256="a" * 64,
+        raw_observation_id=uuid5(NAMESPACE_URL, f"mutated-raw:{bar_open_at.isoformat()}"),
+        normalized_observation_id=uuid5(
+            NAMESPACE_URL, f"mutated-normalized:{bar_open_at.isoformat()}"
+        ),
+    )
+
+
+def _fixture_evidence_with_unused_future_evidence(
+    span_days: int = SPAN_DAYS,
+) -> SubjectAwareTradableResearchEvidenceV2:
     bars: list[AuthoritativeTradableBarV2] = []
     materializations: list[FeatureMaterializationV2] = []
     for index, day in enumerate(_active_days(span_days)):
@@ -222,13 +267,15 @@ def _fixture_evidence(
         for minute in range(BARS_PER_ACTIVE_DAY):
             bars.append(_bar(day_start + timedelta(minutes=minute), _day_open(index, minute)))
         materializations.append(
-            _materialization(
-                event_at=day_start,
-                value=overrides.get(day, BASIS_CYCLE[index % len(BASIS_CYCLE)]),
-            )
+            _materialization(event_at=day_start, value=BASIS_CYCLE[index % len(BASIS_CYCLE)])
         )
     bars.append(_bar(START + timedelta(days=span_days - 1, hours=23, minutes=59), Decimal("100")))
-    bundle = _bundle(tuple(materializations), decision_at=START + timedelta(days=span_days))
+    future_bar_open_at = START + timedelta(days=span_days, minutes=5)
+    bars.append(_bar(future_bar_open_at, Decimal("100")))
+    materializations.append(_materialization(event_at=future_bar_open_at, value=Decimal("0.0050")))
+    bundle = _bundle(
+        tuple(materializations), decision_at=START + timedelta(days=span_days, minutes=10)
+    )
     return SubjectAwareTradableResearchEvidenceV2.create(
         feature_bundle=bundle, bar_series=_bar_series(tuple(bars))
     )
@@ -612,16 +659,33 @@ class SegmentAdmissionTests(unittest.TestCase):
             purged_decision_count=0,
             embargo_excluded_decision_count=0,
         )
-        with self.assertRaises(OpenToOpenValidationOrchestrationV1Error) as error:
-            run_open_to_open_segment_research_v1(
-                evidence=evidence,
-                definition=BASELINE,
-                instrument_kind=CryptoInstrumentKind.PERPETUAL,
-                cost_model=COST_MODEL,
-                cost_model_version=COST_MODEL_VERSION,
-                admission=forced,
-            )
-        self.assertEqual(str(error.exception), "executed_trade_crosses_segment_boundary")
+        run = run_open_to_open_segment_research_v1(
+            evidence=evidence,
+            definition=BASELINE,
+            instrument_kind=CryptoInstrumentKind.PERPETUAL,
+            cost_model=COST_MODEL,
+            cost_model_version=COST_MODEL_VERSION,
+            admission=forced,
+        )
+        self.assertEqual(run.executed_trade_count, 0)
+        self.assertEqual(
+            [decision.outcome for decision in run.decisions],
+            [BasisMeanReversionOutcomeV1.EXCLUDED_MISSING_EXIT],
+        )
+        for trade in run.executed_trades:
+            self.assertGreaterEqual(trade.entry_time, forced.segment_start)
+            self.assertLess(trade.exit_time, forced.segment_end)
+
+    def test_segment_bar_slicing_excludes_bars_outside_the_window(self) -> None:
+        evidence = self._two_day_evidence(decision_minute=1438, value=Decimal("0.0020"))
+        sliced = slice_authoritative_bar_series_v1(
+            evidence.bar_series,
+            window_start=START,
+            window_end=START + timedelta(days=1),
+        )
+        self.assertTrue(all(bar.bar_open_at < START + timedelta(days=1) for bar in sliced.bars))
+        self.assertTrue(all(bar.bar_close_at <= START + timedelta(days=1) for bar in sliced.bars))
+        self.assertLess(len(sliced.bars), len(evidence.bar_series.bars))
 
     def test_embargo_excludes_decisions_at_the_test_window_start(self) -> None:
         evidence = _fixture_evidence()
@@ -1263,6 +1327,44 @@ class ChronologicalOrchestrationTests(unittest.TestCase):
         self.assertEqual(scorecard.knowledge_cutoff, START + timedelta(days=150))
         self.assertLessEqual(scorecard.knowledge_cutoff, scorecard.evaluated_at)
 
+    def test_scorecard_research_run_id_is_the_holdout_run_when_holdout_available(self) -> None:
+        expected = _holdout_baseline_run(self.evidence, self.result.span)
+        self.assertEqual(self.result.holdout.status, STATUS_AVAILABLE)
+        self.assertEqual(self.result.scorecard.research_run_id, expected.run_id)
+        self.assertNotEqual(
+            self.result.scorecard.research_run_id,
+            self.result.walk_forward_evidence.evidence_id,
+        )
+
+    def test_scorecard_evidence_manifest_binds_freeze_holdout_and_headline_source(self) -> None:
+        manifest = self.result.scorecard.evidence_manifest
+        self.assertEqual(manifest["methodology_freeze"], self.result.methodology_freeze.content_hash)
+        self.assertEqual(manifest["untouched_holdout"], self.result.holdout.content_hash)
+        self.assertEqual(manifest["headline_metric_source"], self.result.holdout.content_hash)
+        self.assertEqual(self.result.headline_metric_source, DIMENSION_UNTOUCHED_HOLDOUT)
+
+    def test_package_evidence_map_still_has_exactly_thirteen_categories(self) -> None:
+        package = self.result.validation_package
+        self.assertEqual(set(package.evidence_ids), set(REQUIRED_EVIDENCE))
+        self.assertEqual(len(package.evidence_ids), 13)
+        self.assertNotIn("methodology_freeze", package.evidence_ids)
+        self.assertNotIn("untouched_holdout", package.evidence_ids)
+        self.assertNotIn("headline_metric_source", package.evidence_ids)
+
+    def test_unused_future_bar_and_feature_do_not_change_knowledge_cutoff_or_identity(self) -> None:
+        extended_evidence = _fixture_evidence_with_unused_future_evidence()
+        extended = run_open_to_open_professional_validation_v1(_request(extended_evidence))
+        self.assertEqual(self.result.span.evaluation_end, extended.span.evaluation_end)
+        self.assertEqual(self.result.scorecard.knowledge_cutoff, self.result.span.evaluation_end)
+        self.assertEqual(
+            self.result.scorecard.knowledge_cutoff, extended.scorecard.knowledge_cutoff
+        )
+        self.assertEqual(self.result.scorecard.content_hash(), extended.scorecard.content_hash())
+        self.assertEqual(
+            self.result.methodology_freeze.content_hash, extended.methodology_freeze.content_hash
+        )
+        self.assertEqual(self.result.data_quality.bar_count, extended.data_quality.bar_count)
+
     def test_all_required_limitations_are_present(self) -> None:
         for limitation in REQUIRED_SCORECARD_LIMITATIONS:
             self.assertIn(limitation, self.result.scorecard.limitations)
@@ -1410,6 +1512,72 @@ class DeterminismAndIsolationTests(unittest.TestCase):
         self.assertEqual(baseline.bootstrap.identity.content_hash, mutated.bootstrap.identity.content_hash)
         self.assertNotEqual(baseline.holdout.content_hash, mutated.holdout.content_hash)
 
+    def test_holdout_bar_mutation_leaves_every_pre_holdout_identity_unchanged(self) -> None:
+        baseline_evidence = _fixture_evidence()
+        baseline = run_open_to_open_professional_validation_v1(_request(baseline_evidence))
+
+        holdout_day = 126
+        holdout_day_index = list(_active_days(SPAN_DAYS)).index(holdout_day)
+        entry_bar_open_at = START + timedelta(days=holdout_day, minutes=1)
+        self.assertGreaterEqual(entry_bar_open_at, baseline.span.holdout_start)
+        self.assertLess(entry_bar_open_at, baseline.span.evaluation_end)
+        mutated_entry_bar = _mutated_bar(
+            entry_bar_open_at, _day_open(holdout_day_index, 1)
+        )
+        mutated_evidence = _fixture_evidence(bar_overrides={entry_bar_open_at: mutated_entry_bar})
+        mutated = run_open_to_open_professional_validation_v1(_request(mutated_evidence))
+
+        expected_baseline_holdout_run = _holdout_baseline_run(baseline_evidence, baseline.span)
+        self.assertGreaterEqual(expected_baseline_holdout_run.executed_trade_count, 1)
+        self.assertTrue(
+            any(
+                trade.entry_bar.bar_open_at == entry_bar_open_at
+                for trade in expected_baseline_holdout_run.executed_trades
+            )
+        )
+
+        self.assertEqual(
+            baseline.methodology_freeze.content_hash, mutated.methodology_freeze.content_hash
+        )
+        self.assertEqual(
+            baseline.walk_forward_evidence.content_hash,
+            mutated.walk_forward_evidence.content_hash,
+        )
+        for earlier_fold, later_fold in zip(
+            baseline.walk_forward_evidence.folds, mutated.walk_forward_evidence.folds, strict=True
+        ):
+            self.assertEqual(earlier_fold.test_run_content_hash, later_fold.test_run_content_hash)
+        self.assertEqual(baseline.trial_ledger.content_hash, mutated.trial_ledger.content_hash)
+        self.assertEqual(
+            baseline.parameter_stability.identity.content_hash,
+            mutated.parameter_stability.identity.content_hash,
+        )
+        self.assertEqual(
+            baseline.pbo_orchestration.content_hash, mutated.pbo_orchestration.content_hash
+        )
+        self.assertEqual(
+            baseline.deflated_sharpe.content_hash, mutated.deflated_sharpe.content_hash
+        )
+        self.assertEqual(
+            baseline.multiple_testing.content_hash, mutated.multiple_testing.content_hash
+        )
+        self.assertEqual(
+            baseline.bootstrap.identity.content_hash, mutated.bootstrap.identity.content_hash
+        )
+        self.assertEqual(
+            baseline.reconciliation.content_hash, mutated.reconciliation.content_hash
+        )
+        self.assertEqual(
+            baseline.latency_sensitivity.content_hash, mutated.latency_sensitivity.content_hash
+        )
+        self.assertEqual(
+            [item.content_hash for item in baseline.null_controls],
+            [item.content_hash for item in mutated.null_controls],
+        )
+
+        self.assertNotEqual(baseline.holdout.content_hash, mutated.holdout.content_hash)
+        self.assertNotEqual(baseline.content_hash, mutated.content_hash)
+
     def test_semantic_input_change_changes_the_run_identity(self) -> None:
         evidence = _fixture_evidence()
         first = run_open_to_open_professional_validation_v1(_request(evidence))
@@ -1528,6 +1696,29 @@ class UnavailableHoldoutOrchestrationTests(unittest.TestCase):
         self.assertEqual(
             robustness["untouched_holdout_available"].dimensions, (DIMENSION_UNTOUCHED_HOLDOUT,)
         )
+
+    def test_scorecard_research_run_id_is_the_walk_forward_evidence_id_when_holdout_unavailable(
+        self,
+    ) -> None:
+        self.assertEqual(self.result.holdout.status, STATUS_UNAVAILABLE)
+        self.assertEqual(
+            self.result.scorecard.research_run_id, self.result.walk_forward_evidence.evidence_id
+        )
+        self.assertNotEqual(
+            self.result.scorecard.research_run_id,
+            uuid5(NAMESPACE_URL, "crypto-basis-mean-reversion-run-v1:not-a-real-run"),
+        )
+
+    def test_scorecard_evidence_manifest_headline_source_matches_walk_forward_evidence(
+        self,
+    ) -> None:
+        manifest = self.result.scorecard.evidence_manifest
+        self.assertEqual(manifest["methodology_freeze"], self.result.methodology_freeze.content_hash)
+        self.assertEqual(manifest["untouched_holdout"], self.result.holdout.content_hash)
+        self.assertEqual(
+            manifest["headline_metric_source"], self.result.walk_forward_evidence.content_hash
+        )
+        self.assertNotEqual(manifest["headline_metric_source"], self.result.holdout.content_hash)
 
 
 class RequestValidationTests(unittest.TestCase):

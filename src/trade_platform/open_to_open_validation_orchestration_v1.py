@@ -593,10 +593,34 @@ def admit_open_to_open_segment_decisions_v1(
     )
 
 
+def slice_authoritative_bar_series_v1(
+    bar_series: AuthoritativeTradableBarSeriesV2,
+    *,
+    window_start: datetime,
+    window_end: datetime,
+) -> AuthoritativeTradableBarSeriesV2:
+    _require_aware(window_start, "window_start")
+    _require_aware(window_end, "window_end")
+    if window_end <= window_start:
+        raise OpenToOpenValidationOrchestrationV1Error("window_end_must_be_after_window_start")
+    selected = tuple(
+        bar
+        for bar in bar_series.bars
+        if window_start <= bar.bar_open_at < window_end and bar.bar_close_at <= window_end
+    )
+    sliced = AuthoritativeTradableBarSeriesV2(
+        bar_series.dataset_version_id, bar_series.instrument_id, bar_series.interval, selected
+    )
+    sliced.validate()
+    return sliced
+
+
 def build_windowed_research_evidence_v1(
     *,
     evidence: SubjectAwareTradableResearchEvidenceV2,
     admitted_decision_at: Sequence[datetime],
+    window_start: datetime,
+    window_end: datetime,
 ) -> SubjectAwareTradableResearchEvidenceV2:
     series = _sole_basis_feature_series(evidence)
     admitted = frozenset(admitted_decision_at)
@@ -625,8 +649,11 @@ def build_windowed_research_evidence_v1(
         quality_policy=evidence.feature_bundle.quality_policy,
         feature_series=(windowed_series,),
     )
+    sliced_bar_series = slice_authoritative_bar_series_v1(
+        evidence.bar_series, window_start=window_start, window_end=window_end
+    )
     return SubjectAwareTradableResearchEvidenceV2.create(
-        feature_bundle=bundle, bar_series=evidence.bar_series
+        feature_bundle=bundle, bar_series=sliced_bar_series
     )
 
 
@@ -640,7 +667,10 @@ def run_open_to_open_segment_research_v1(
     admission: OpenToOpenSegmentAdmissionV1,
 ) -> BasisMeanReversionResearchRunV1:
     windowed = build_windowed_research_evidence_v1(
-        evidence=evidence, admitted_decision_at=admission.admitted_decision_at
+        evidence=evidence,
+        admitted_decision_at=admission.admitted_decision_at,
+        window_start=admission.segment_start,
+        window_end=admission.segment_end,
     )
     run = run_crypto_basis_mean_reversion_research(
         definition=definition,
@@ -1066,13 +1096,16 @@ class FixtureMarketDataQualityEvidenceV1:
 def build_fixture_market_data_quality_evidence_v1(
     *, bar_series: AuthoritativeTradableBarSeriesV2, span: OpenToOpenEvaluationSpanV1
 ) -> FixtureMarketDataQualityEvidenceV1:
+    scoped = slice_authoritative_bar_series_v1(
+        bar_series, window_start=span.evaluation_start, window_end=span.evaluation_end
+    )
     payload = {
         "status": STATUS_BLOCKED,
         "reason": DATA_QUALITY_BLOCKED_REASON,
         "dataset_version_id": bar_series.dataset_version_id,
         "instrument_id": bar_series.instrument_id,
         "interval": bar_series.interval,
-        "bar_count": len(bar_series.bars),
+        "bar_count": len(scoped.bars),
         "evaluation_start": span.evaluation_start,
         "evaluation_end": span.evaluation_end,
     }
@@ -1083,7 +1116,7 @@ def build_fixture_market_data_quality_evidence_v1(
         dataset_version_id=bar_series.dataset_version_id,
         instrument_id=bar_series.instrument_id,
         interval=bar_series.interval,
-        bar_count=len(bar_series.bars),
+        bar_count=len(scoped.bars),
         evaluation_start=span.evaluation_start,
         evaluation_end=span.evaluation_end,
         content_hash=content_hash,
@@ -1731,6 +1764,10 @@ def run_open_to_open_professional_validation_v1(
         selected_parameters=definition_parameter_tuple(baseline_definition),
     )
 
+    pre_holdout_bar_series = slice_authoritative_bar_series_v1(
+        bar_series, window_start=span.evaluation_start, window_end=span.holdout_start
+    )
+
     null_controls: list[CircularShiftNullControlEvidenceV1] = []
     primary_p_values: dict[str, Decimal | None] = {}
     primary_reasons: dict[str, tuple[str, ...]] = {}
@@ -1743,7 +1780,7 @@ def run_open_to_open_professional_validation_v1(
         )
         null_evidence = evaluate_circular_shift_null_control_v1(
             run=run,
-            bar_series=bar_series,
+            bar_series=pre_holdout_bar_series,
             base_cost_model=cost_model,
             window_start=span.evaluation_start,
             window_end=span.holdout_start,
@@ -1770,13 +1807,13 @@ def run_open_to_open_professional_validation_v1(
     )
 
     reconciliation = reconcile_open_to_open_trade_ledger_v1(
-        run=baseline_run, bar_series=bar_series, base_cost_model=cost_model
+        run=baseline_run, bar_series=pre_holdout_bar_series, base_cost_model=cost_model
     )
     cost_sensitivity = evaluate_open_to_open_cost_sensitivity_v1(
         run=baseline_run, base_cost_model=cost_model
     )
     latency_sensitivity = evaluate_open_to_open_latency_sensitivity_v1(
-        run=baseline_run, bar_series=bar_series, base_cost_model=cost_model
+        run=baseline_run, bar_series=pre_holdout_bar_series, base_cost_model=cost_model
     )
     adverse_exit_shock = evaluate_open_to_open_adverse_exit_shock_v1(
         run=baseline_run,
@@ -1785,7 +1822,7 @@ def run_open_to_open_professional_validation_v1(
     )
     missing_bar_stress = evaluate_open_to_open_missing_bar_stress_v1(
         run=baseline_run,
-        bar_series=bar_series,
+        bar_series=pre_holdout_bar_series,
         base_cost_model=cost_model,
         omitted_exit_bar_open_times=request.missing_exit_stress_bar_open_times,
     )
@@ -1857,6 +1894,7 @@ def run_open_to_open_professional_validation_v1(
         ),
     )
 
+    holdout_run: BasisMeanReversionResearchRunV1 | None = None
     if span.holdout_status == STATUS_AVAILABLE:
         holdout_admission = admit_open_to_open_segment_decisions_v1(
             evidence=evidence,
@@ -1956,20 +1994,28 @@ def run_open_to_open_professional_validation_v1(
         "multiple_testing": multiple_testing.content_hash,
     }
 
-    knowledge_cutoff = max(
-        evidence.feature_bundle.decision_at.astimezone(_UTC),
-        max(bar.bar_close_at for bar in bar_series.bars).astimezone(_UTC),
-    )
+    knowledge_cutoff = span.evaluation_end
     if knowledge_cutoff > request.evaluated_at:
         raise OpenToOpenValidationOrchestrationV1Error(
             "evaluated_at_precedes_required_knowledge_cutoff"
         )
 
+    scorecard_research_run_id = (
+        holdout_run.run_id if holdout_run is not None else walk_forward_evidence.evidence_id
+    )
+    headline_metric_source_content_hash = (
+        holdout.content_hash if holdout.status == STATUS_AVAILABLE else walk_forward_evidence.content_hash
+    )
+    scorecard_evidence_manifest = dict(evidence_hashes)
+    scorecard_evidence_manifest["methodology_freeze"] = methodology_freeze.content_hash
+    scorecard_evidence_manifest["untouched_holdout"] = holdout.content_hash
+    scorecard_evidence_manifest["headline_metric_source"] = headline_metric_source_content_hash
+
     scorecard = StrategyScorecardV2(
         scorecard_schema_version=CANONICAL_SCORECARD_SCHEMA_VERSION,
         strategy_id=CANONICAL_STRATEGY_ID,
         strategy_version=strategy_version,
-        research_run_id=baseline_run.run_id,
+        research_run_id=scorecard_research_run_id,
         dataset_version=dataset_version,
         feature_versions=CANONICAL_FEATURE_VERSIONS,
         cost_model_version=cost_model_version,
@@ -1981,7 +2027,7 @@ def run_open_to_open_professional_validation_v1(
         components=components,
         dataset_health_status=STATUS_BLOCKED,
         data_health_assessment_ids=(),
-        evidence_manifest=dict(evidence_hashes),
+        evidence_manifest=scorecard_evidence_manifest,
     )
     scorecard.validate()
     evidence_ids["scorecard"] = scorecard.scorecard_id
