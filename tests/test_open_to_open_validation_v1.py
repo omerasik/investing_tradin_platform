@@ -31,7 +31,6 @@ from trade_platform.open_to_open_validation_v1 import (
     ResearchTrialDispositionV1,
     ResearchTrialRoleV1,
     _midranks_ascending,
-    _ReplayTrade,
     _select_is_winner,
     _verify_zero_latency_reconciles_canonical_run,
     bias_corrected_pearson_kurtosis,
@@ -189,6 +188,7 @@ def _run(
     opens: dict[int, Decimal],
     horizon: int = 1,
     cost_model: CostModel = ZERO_COST,
+    cost_model_version: str = "cost-model-v1",
 ) -> BasisMeanReversionResearchRunV1:
     bundle = _bundle(offsets_values)
     bar_series = _bar_series(minutes=minutes, opens=opens)
@@ -198,7 +198,7 @@ def _run(
         evidence=evidence,
         instrument_kind=CryptoInstrumentKind.PERPETUAL,
         cost_model=cost_model,
-        cost_model_version="cost-model-v1",
+        cost_model_version=cost_model_version,
     )
 
 
@@ -386,36 +386,25 @@ class LatencySensitivityTests(unittest.TestCase):
         self.assertEqual(zero.latency_minutes, 0)
         self.assertEqual(zero.net_returns, run.trade_returns)
 
-    def test_zero_minute_helper_detects_mismatch(self) -> None:
-        run, _ = _two_trade_run()
-        canonical = run.executed_trades[0]
-        corrupted = _ReplayTrade(
-            exposure=canonical.exposure,
-            entry_time=canonical.entry_time,
-            exit_time=canonical.exit_time,
-            entry_open=canonical.entry_open,
-            exit_open=canonical.exit_open,
-            gross_return=Decimal("999"),
-            entry_cost=canonical.entry_cost,
-            exit_cost=canonical.exit_cost,
-            net_return=canonical.net_return,
-        )
-        rest = tuple(
-            _ReplayTrade(
-                exposure=trade.exposure,
-                entry_time=trade.entry_time,
-                exit_time=trade.exit_time,
-                entry_open=trade.entry_open,
-                exit_open=trade.exit_open,
-                gross_return=trade.gross_return,
-                entry_cost=trade.entry_cost,
-                exit_cost=trade.exit_cost,
-                net_return=trade.net_return,
-            )
-            for trade in run.executed_trades[1:]
-        )
+    def test_zero_minute_helper_detects_field_corruption(self) -> None:
+        run, bar_series = _two_trade_run()
+        _verify_zero_latency_reconciles_canonical_run(run, bar_series, ZERO_COST)
+        original_trade = run.executed_trades[0]
+        corrupted_trade = dataclasses.replace(original_trade, gross_return=Decimal("999"))
+        corrupted_decision = dataclasses.replace(run.decisions[0], trade=corrupted_trade)
+        corrupted_run = dataclasses.replace(run, decisions=(corrupted_decision,) + run.decisions[1:])
         with self.assertRaisesRegex(OpenToOpenValidationV1Error, "latency_zero_minute_does_not_reconcile_canonical_run"):
-            _verify_zero_latency_reconciles_canonical_run(run, (corrupted,) + rest, run.excluded_count)
+            _verify_zero_latency_reconciles_canonical_run(corrupted_run, bar_series, ZERO_COST)
+
+    def test_zero_latency_fails_closed_on_corrupted_canonical_exposure(self) -> None:
+        run, bar_series = _two_trade_run()
+        original_trade = run.executed_trades[0]
+        corrupted_trade = dataclasses.replace(original_trade, exposure=-original_trade.exposure)
+        corrupted_decision = dataclasses.replace(run.decisions[0], trade=corrupted_trade)
+        corrupted_run = dataclasses.replace(run, decisions=(corrupted_decision,) + run.decisions[1:])
+        self.assertEqual(run.decisions[0].basis_value, corrupted_run.decisions[0].basis_value)
+        with self.assertRaisesRegex(OpenToOpenValidationV1Error, "latency_zero_minute_does_not_reconcile_canonical_run"):
+            evaluate_open_to_open_latency_sensitivity_v1(run=corrupted_run, bar_series=bar_series, base_cost_model=ZERO_COST)
 
     def test_strict_delayed_entry_and_exact_delayed_exit(self) -> None:
         opens = {offset: Decimal("100") + Decimal(offset) for offset in range(20)}
@@ -508,20 +497,57 @@ class MissingBarStressTests(unittest.TestCase):
         self.assertEqual(run.trade_returns, (Decimal("0.05"),))
         self.assertEqual(evidence.net_returns, (Decimal("0.1"),))
 
-    def test_omitting_an_entry_bar_timestamp_does_not_shift_entry(self) -> None:
+    def test_entry_bar_only_omission_rejected(self) -> None:
         opens = {1: Decimal("105"), 11: Decimal("110")}
         run = _run(offsets_values=[(0, Decimal("-0.001"))], minutes=14, opens=opens, horizon=10)
         bar_series = _bar_series(minutes=14, opens=opens)
         baseline_trade = run.executed_trades[0]
         self.assertEqual(baseline_trade.entry_time, START + timedelta(minutes=1))
+        self.assertNotEqual(baseline_trade.exit_time, START + timedelta(minutes=1))
+        with self.assertRaisesRegex(OpenToOpenValidationV1Error, "omitted_exit_bar_timestamp_not_a_candidate_bar"):
+            evaluate_open_to_open_missing_bar_stress_v1(
+                run=run,
+                bar_series=bar_series,
+                base_cost_model=ZERO_COST,
+                omitted_exit_bar_open_times=(START + timedelta(minutes=1),),
+            )
+
+    def test_valid_exit_omission_accepted(self) -> None:
+        opens = {1: Decimal("105"), 11: Decimal("110")}
+        run = _run(offsets_values=[(0, Decimal("-0.001"))], minutes=14, opens=opens, horizon=10)
+        bar_series = _bar_series(minutes=14, opens=opens)
+        baseline_trade = run.executed_trades[0]
         evidence = evaluate_open_to_open_missing_bar_stress_v1(
             run=run,
             bar_series=bar_series,
             base_cost_model=ZERO_COST,
-            omitted_exit_bar_open_times=(START + timedelta(minutes=1),),
+            omitted_exit_bar_open_times=(baseline_trade.exit_time,),
+        )
+        self.assertEqual(evidence.baseline_executed_count, 1)
+        self.assertEqual(evidence.stressed_executed_count, 0)
+        self.assertEqual(evidence.stressed_excluded_count, evidence.baseline_excluded_count + 1)
+
+    def test_exit_omission_never_shifts_entry(self) -> None:
+        opens = {11: Decimal("105"), 12: Decimal("90")}
+        run = _run(
+            offsets_values=[(0, Decimal("-0.001")), (1, Decimal("0.001"))],
+            minutes=14,
+            opens=opens,
+            horizon=10,
+        )
+        bar_series = _bar_series(minutes=14, opens=opens)
+        isolated_second_decision_run = _run(
+            offsets_values=[(1, Decimal("0.001"))], minutes=14, opens=opens, horizon=10
+        )
+        isolated_trade = isolated_second_decision_run.executed_trades[0]
+        evidence = evaluate_open_to_open_missing_bar_stress_v1(
+            run=run,
+            bar_series=bar_series,
+            base_cost_model=ZERO_COST,
+            omitted_exit_bar_open_times=(START + timedelta(minutes=11),),
         )
         self.assertEqual(evidence.stressed_executed_count, 1)
-        self.assertEqual(evidence.net_returns, run.trade_returns)
+        self.assertEqual(evidence.net_returns, (isolated_trade.net_return,))
 
     def test_omissions_required(self) -> None:
         run, bar_series = _two_trade_run()
@@ -1319,6 +1345,47 @@ class CircularShiftNullControlTests(unittest.TestCase):
         self.assertEqual(base_result.observed_sharpe, extended_result.observed_sharpe)
         self.assertEqual(base_result.empirical_p_value, extended_result.empirical_p_value)
 
+    def test_carry_in_trade_before_window_start_rejected(self) -> None:
+        window_start = START + timedelta(days=1)
+        decision_offset = 1440 - 2
+        opens = {decision_offset + 1: Decimal("100"), decision_offset + 2: Decimal("110")}
+        run = _run(offsets_values=[(decision_offset, Decimal("-0.001"))], minutes=1442, opens=opens, horizon=1)
+        bar_series = _bar_series(minutes=1442, opens=opens)
+        trade = run.executed_trades[0]
+        self.assertLess(trade.decision_at, window_start)
+        self.assertGreaterEqual(trade.exit_time, window_start)
+        evidence = evaluate_circular_shift_null_control_v1(
+            run=run,
+            bar_series=bar_series,
+            base_cost_model=ZERO_COST,
+            window_start=window_start,
+            window_end=window_start + timedelta(days=1),
+            seed=1,
+            minimum_valid_shifts=1,
+        )
+        self.assertEqual(evidence.status, "UNAVAILABLE")
+        self.assertIn("evaluation_window_has_carry_in_trade", evidence.unavailable_reasons)
+
+
+class FullPermutationCarryInTests(unittest.TestCase):
+    def test_carry_in_trade_before_window_start_rejected(self) -> None:
+        window_start = START + timedelta(days=1)
+        decision_offset = 1440 - 2
+        opens = {decision_offset + 1: Decimal("100"), decision_offset + 2: Decimal("110")}
+        run = _run(offsets_values=[(decision_offset, Decimal("-0.001"))], minutes=1442, opens=opens, horizon=1)
+        bar_series = _bar_series(minutes=1442, opens=opens)
+        evidence = evaluate_full_permutation_null_diagnostic_v1(
+            run=run,
+            bar_series=bar_series,
+            base_cost_model=ZERO_COST,
+            window_start=window_start,
+            window_end=window_start + timedelta(days=1),
+            seed=1,
+            minimum_valid_permutations=1,
+        )
+        self.assertEqual(evidence.status, "UNAVAILABLE")
+        self.assertIn("evaluation_window_has_carry_in_trade", evidence.unavailable_reasons)
+
 
 class ReconciliationTests(unittest.TestCase):
     def test_clean_ledger_reconciles(self) -> None:
@@ -1402,6 +1469,95 @@ class ReconciliationTests(unittest.TestCase):
         )
         self.assertEqual(evidence.status, "BLOCKED")
         self.assertIn("outcome", evidence.checks[1].discrepancies)
+
+
+class FiniteValueHandlingTests(unittest.TestCase):
+    def test_daily_sharpe_rejects_non_finite_returns(self) -> None:
+        self.assertIsNone(non_annualized_daily_sharpe((Decimal("0.01"), Decimal("Infinity"))))
+        self.assertIsNone(non_annualized_daily_sharpe((Decimal("0.01"), Decimal("NaN"))))
+
+    def test_sample_standard_deviation_rejects_non_finite_returns(self) -> None:
+        self.assertIsNone(sample_standard_deviation((Decimal("0.01"), Decimal("-Infinity"))))
+
+    def test_skewness_and_kurtosis_reject_non_finite_returns(self) -> None:
+        returns = (Decimal("0.01"), Decimal("0.02"), Decimal("0.03"), Decimal("Infinity"))
+        self.assertIsNone(bias_corrected_sample_skewness(returns))
+        self.assertIsNone(bias_corrected_pearson_kurtosis(returns))
+
+    def test_trial_sharpe_mean_and_std_reject_non_finite_values(self) -> None:
+        self.assertIsNone(trial_sharpe_mean([1.0, float("nan"), 2.0]))
+        self.assertIsNone(trial_sharpe_mean([1.0, float("inf")]))
+        self.assertIsNone(trial_sharpe_standard_deviation([1.0, float("nan"), 2.0]))
+        self.assertIsNone(trial_sharpe_standard_deviation([1.0, float("inf")]))
+
+    def test_cscv_rejects_non_finite_daily_return(self) -> None:
+        trial_blocks, identities = _dominant_block_matrix()
+        corrupted = [list(blocks) for blocks in trial_blocks]
+        corrupted[0][0] = corrupted[0][0][:-1] + (Decimal("Infinity"),)
+        evidence = evaluate_canonical_cscv_pbo_v1(trial_blocks=corrupted, trial_identities=identities)
+        self.assertEqual(evidence.status, "UNAVAILABLE")
+        self.assertIn("non_finite_daily_return", evidence.unavailable_reasons)
+
+    def test_dsr_rejects_non_finite_selected_daily_return(self) -> None:
+        run = _fake_run(content_hash="e" * 64)
+        corrupted_returns = tuple(
+            (Decimal("0.02"), Decimal("-0.01"), Decimal("0.03"))[index % 3] for index in range(29)
+        ) + (Decimal("Infinity"),)
+        selected_series = _series(run, corrupted_returns, "5" * 64)
+        trials = [
+            build_research_trial_v1(
+                run=run, series=selected_series, trial_role=ResearchTrialRoleV1.BASELINE,
+                disposition=ResearchTrialDispositionV1.SELECTED,
+            )
+        ]
+        for index in range(1, 6):
+            returns = tuple(Decimal(str(0.01 * (((index * 3 + step) % 5) - 2 + 0.5))) for step in range(30))
+            series = _series(run, returns, f"{index + 400:064d}")
+            trials.append(
+                build_research_trial_v1(
+                    run=run, series=series, trial_role=ResearchTrialRoleV1.NEIGHBOR,
+                    disposition=ResearchTrialDispositionV1.INSPECTED,
+                )
+            )
+        ledger = build_research_trial_ledger_v1(trials)
+        evidence = evaluate_deflated_sharpe_evidence_v1(ledger=ledger, selected_trial_id=trials[0].trial_id)
+        self.assertEqual(evidence.status, "UNAVAILABLE")
+        self.assertIn("selected_sharpe_unavailable", evidence.unavailable_reasons)
+
+
+class BarSeriesFingerprintTests(unittest.TestCase):
+    def test_fingerprint_changes_with_volume(self) -> None:
+        run, bar_series = _two_trade_run()
+        varied_bars = tuple(dataclasses.replace(bar, volume=bar.volume + Decimal("1")) for bar in bar_series.bars)
+        varied_series = AuthoritativeTradableBarSeriesV2(
+            bar_series.dataset_version_id, bar_series.instrument_id, bar_series.interval, varied_bars
+        )
+        varied_series.validate()
+        first = evaluate_open_to_open_latency_sensitivity_v1(run=run, bar_series=bar_series, base_cost_model=ZERO_COST)
+        second = evaluate_open_to_open_latency_sensitivity_v1(run=run, bar_series=varied_series, base_cost_model=ZERO_COST)
+        self.assertEqual(first.scenarios, second.scenarios)
+        self.assertNotEqual(first.bar_series_fingerprint, second.bar_series_fingerprint)
+        self.assertNotEqual(first.content_hash, second.content_hash)
+
+
+class CostModelVersionBindingTests(unittest.TestCase):
+    def test_latency_identity_binds_cost_model_version(self) -> None:
+        opens = {1: Decimal("100"), 2: Decimal("110")}
+        run_v1 = _run(
+            offsets_values=[(0, Decimal("-0.001"))], minutes=3, opens=opens, horizon=1,
+            cost_model_version="cost-model-v1",
+        )
+        run_v2 = _run(
+            offsets_values=[(0, Decimal("-0.001"))], minutes=3, opens=opens, horizon=1,
+            cost_model_version="cost-model-v2",
+        )
+        bar_series = _bar_series(minutes=3, opens=opens)
+        first = evaluate_open_to_open_latency_sensitivity_v1(run=run_v1, bar_series=bar_series, base_cost_model=ZERO_COST)
+        second = evaluate_open_to_open_latency_sensitivity_v1(run=run_v2, bar_series=bar_series, base_cost_model=ZERO_COST)
+        self.assertEqual(first.base_cost_model_version, "cost-model-v1")
+        self.assertEqual(second.base_cost_model_version, "cost-model-v2")
+        self.assertEqual(first.scenarios, second.scenarios)
+        self.assertNotEqual(first.content_hash, second.content_hash)
 
 
 class DeterminismTests(unittest.TestCase):

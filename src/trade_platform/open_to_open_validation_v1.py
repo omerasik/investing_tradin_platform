@@ -9,12 +9,13 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from enum import StrEnum
 from itertools import combinations
-from math import comb, e, log, sqrt
+from math import comb, e, isfinite, log, sqrt
 from statistics import NormalDist, median
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from .crypto_basis_mean_reversion_v1 import (
+    BasisMeanReversionDecisionV1,
     BasisMeanReversionOutcomeV1,
     BasisMeanReversionResearchRunV1,
 )
@@ -96,11 +97,21 @@ def _bar_series_fingerprint(bar_series: AuthoritativeTradableBarSeriesV2) -> str
         "interval": bar_series.interval,
         "bars": [
             {
+                "dataset_content_hash": bar.dataset_content_hash,
+                "source_id": bar.source_id,
+                "normalized_observation_id": bar.normalized_observation_id,
+                "raw_observation_id": bar.raw_observation_id,
+                "raw_payload_sha256": bar.raw_payload_sha256,
+                "revision": bar.revision,
                 "bar_open_at": bar.bar_open_at,
                 "bar_close_at": bar.bar_close_at,
+                "normalized_at": bar.normalized_at,
                 "open": bar.open,
-                "raw_observation_id": bar.raw_observation_id,
-                "revision": bar.revision,
+                "high": bar.high,
+                "low": bar.low,
+                "close": bar.close,
+                "volume": bar.volume,
+                "provenance_uri": bar.provenance_uri,
             }
             for bar in bar_series.bars
         ],
@@ -145,6 +156,18 @@ def _floats(returns: Sequence[Decimal]) -> list[float]:
     return [float(value) for value in returns]
 
 
+def _decimal_sequence_is_finite(returns: Sequence[Decimal]) -> bool:
+    for value in returns:
+        if not value.is_finite():
+            return False
+        try:
+            if not isfinite(float(value)):
+                return False
+        except OverflowError:
+            return False
+    return True
+
+
 def _mean(values: Sequence[float]) -> float:
     return sum(values) / len(values)
 
@@ -156,19 +179,19 @@ def _sample_standard_deviation(values: Sequence[float]) -> float:
 
 
 def daily_mean(returns: Sequence[Decimal]) -> float | None:
-    if not returns:
+    if not returns or not _decimal_sequence_is_finite(returns):
         return None
     return _mean(_floats(returns))
 
 
 def sample_standard_deviation(returns: Sequence[Decimal]) -> float | None:
-    if len(returns) < 2:
+    if len(returns) < 2 or not _decimal_sequence_is_finite(returns):
         return None
     return _sample_standard_deviation(_floats(returns))
 
 
 def non_annualized_daily_sharpe(returns: Sequence[Decimal]) -> float | None:
-    if len(returns) < 2:
+    if len(returns) < 2 or not _decimal_sequence_is_finite(returns):
         return None
     values = _floats(returns)
     deviation = _sample_standard_deviation(values)
@@ -189,7 +212,7 @@ def _central_moments(values: Sequence[float]) -> tuple[float, float, float]:
 
 def bias_corrected_sample_skewness(returns: Sequence[Decimal]) -> float | None:
     count = len(returns)
-    if count < 4:
+    if count < 4 or not _decimal_sequence_is_finite(returns):
         return None
     second, third, _ = _central_moments(_floats(returns))
     if second <= 0:
@@ -200,7 +223,7 @@ def bias_corrected_sample_skewness(returns: Sequence[Decimal]) -> float | None:
 
 def bias_corrected_pearson_kurtosis(returns: Sequence[Decimal]) -> float | None:
     count = len(returns)
-    if count < 4:
+    if count < 4 or not _decimal_sequence_is_finite(returns):
         return None
     second, _, fourth = _central_moments(_floats(returns))
     if second <= 0:
@@ -211,13 +234,13 @@ def bias_corrected_pearson_kurtosis(returns: Sequence[Decimal]) -> float | None:
 
 
 def trial_sharpe_mean(sharpes: Sequence[float]) -> float | None:
-    if not sharpes:
+    if not sharpes or any(not isfinite(value) for value in sharpes):
         return None
     return _mean(list(sharpes))
 
 
 def trial_sharpe_standard_deviation(sharpes: Sequence[float]) -> float | None:
-    if len(sharpes) < 2:
+    if len(sharpes) < 2 or any(not isfinite(value) for value in sharpes):
         return None
     return _sample_standard_deviation(list(sharpes))
 
@@ -438,8 +461,12 @@ def _replay_open_to_open(
     return tuple(trades), excluded
 
 
-def _decision_inputs(run: BasisMeanReversionResearchRunV1) -> tuple[tuple[datetime, Decimal], ...]:
-    return tuple((decision.decision_at, decision.exposure) for decision in run.decisions)
+def _strategy_replay_inputs(run: BasisMeanReversionResearchRunV1) -> tuple[tuple[datetime, Decimal], ...]:
+    threshold = run.definition.basis_entry_threshold
+    cap = run.definition.maximum_absolute_exposure
+    return tuple(
+        (decision.decision_at, _direction(decision.basis_value, threshold, cap)) for decision in run.decisions
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -555,26 +582,30 @@ class OpenToOpenLatencySensitivityEvidenceV1:
     evidence_label: str
     source_run_content_hash: str
     bar_series_fingerprint: str
+    base_cost_model_version: str
     scenarios: tuple[OpenToOpenLatencyScenarioV1, ...]
     content_hash: str
     evidence_id: UUID
 
 
 def _verify_zero_latency_reconciles_canonical_run(
-    run: BasisMeanReversionResearchRunV1, trades: tuple[_ReplayTrade, ...], excluded: int
+    run: BasisMeanReversionResearchRunV1, bar_series: AuthoritativeTradableBarSeriesV2, cost_model: CostModel
 ) -> None:
-    if len(trades) != run.executed_trade_count or excluded != run.excluded_count:
-        raise OpenToOpenValidationV1Error("latency_zero_minute_does_not_reconcile_canonical_run")
-    for canonical, replay in zip(run.executed_trades, trades, strict=True):
-        if (
-            canonical.exposure != replay.exposure
-            or canonical.entry_time != replay.entry_time
-            or canonical.exit_time != replay.exit_time
-            or canonical.gross_return != replay.gross_return
-            or canonical.entry_cost != replay.entry_cost
-            or canonical.exit_cost != replay.exit_cost
-            or canonical.net_return != replay.net_return
-        ):
+    threshold = run.definition.basis_entry_threshold
+    cap = run.definition.maximum_absolute_exposure
+    horizon = run.definition.holding_horizon_bars * _ONE_BAR_INTERVAL
+    last_executed_exit_time: datetime | None = None
+    for decision in run.decisions:
+        discrepancies, last_executed_exit_time = _decision_discrepancies(
+            decision,
+            threshold=threshold,
+            cap=cap,
+            bar_series=bar_series,
+            horizon=horizon,
+            last_executed_exit_time=last_executed_exit_time,
+            cost_model=cost_model,
+        )
+        if discrepancies:
             raise OpenToOpenValidationV1Error("latency_zero_minute_does_not_reconcile_canonical_run")
 
 
@@ -587,9 +618,10 @@ def evaluate_open_to_open_latency_sensitivity_v1(
     _require_matching_bar_series(run, bar_series)
     _validate_cost_model(base_cost_model)
     _verify_base_cost_model_reconciles(run, base_cost_model)
+    _verify_zero_latency_reconciles_canonical_run(run, bar_series, base_cost_model)
     cap = run.definition.maximum_absolute_exposure
     horizon = run.definition.holding_horizon_bars * _ONE_BAR_INTERVAL
-    inputs = _decision_inputs(run)
+    inputs = _strategy_replay_inputs(run)
     scenarios: list[OpenToOpenLatencyScenarioV1] = []
     for minutes in _LATENCY_MINUTES:
         trades, excluded = _replay_open_to_open(
@@ -600,8 +632,6 @@ def evaluate_open_to_open_latency_sensitivity_v1(
             cost_model=base_cost_model,
             latency=timedelta(minutes=minutes),
         )
-        if minutes == 0:
-            _verify_zero_latency_reconciles_canonical_run(run, trades, excluded)
         scenarios.append(
             OpenToOpenLatencyScenarioV1(
                 latency_minutes=minutes,
@@ -619,6 +649,7 @@ def evaluate_open_to_open_latency_sensitivity_v1(
         "source_run_content_hash": run.content_hash,
         "bar_series_fingerprint": bar_fingerprint,
         "base_cost_model": _wire_cost_model(base_cost_model),
+        "base_cost_model_version": run.cost_model_version,
         "scenarios": [
             {
                 "latency_minutes": scenario.latency_minutes,
@@ -637,6 +668,7 @@ def evaluate_open_to_open_latency_sensitivity_v1(
         evidence_label=COARSE_1M_GRID_LATENCY_STRESS,
         source_run_content_hash=run.content_hash,
         bar_series_fingerprint=bar_fingerprint,
+        base_cost_model_version=run.cost_model_version,
         scenarios=tuple(scenarios),
         content_hash=content_hash,
         evidence_id=_identity("open-to-open-latency-sensitivity-v1", content_hash),
@@ -654,6 +686,7 @@ class AdverseExitShockScenarioV1:
 class AdverseExitShockEvidenceV1:
     synthetic_validation_evidence: bool
     source_run_content_hash: str
+    base_cost_model_version: str
     scenarios: tuple[AdverseExitShockScenarioV1, ...]
     content_hash: str
     evidence_id: UUID
@@ -691,6 +724,7 @@ def evaluate_open_to_open_adverse_exit_shock_v1(
         "synthetic_validation_evidence": True,
         "source_run_content_hash": run.content_hash,
         "base_cost_model": _wire_cost_model(base_cost_model),
+        "base_cost_model_version": run.cost_model_version,
         "scenarios": [
             {
                 "shock_magnitude": scenario.shock_magnitude,
@@ -704,6 +738,7 @@ def evaluate_open_to_open_adverse_exit_shock_v1(
     return AdverseExitShockEvidenceV1(
         synthetic_validation_evidence=True,
         source_run_content_hash=run.content_hash,
+        base_cost_model_version=run.cost_model_version,
         scenarios=tuple(scenarios),
         content_hash=content_hash,
         evidence_id=_identity("adverse-exit-shock-v1", content_hash),
@@ -715,6 +750,7 @@ class MissingBarStressEvidenceV1:
     synthetic_validation_evidence: bool
     source_run_content_hash: str
     bar_series_fingerprint: str
+    base_cost_model_version: str
     omitted_exit_bar_open_times: tuple[datetime, ...]
     baseline_executed_count: int
     baseline_excluded_count: int
@@ -738,12 +774,9 @@ def evaluate_open_to_open_missing_bar_stress_v1(
     if not omitted_exit_bar_open_times:
         raise OpenToOpenValidationV1Error("missing_bar_omissions_required")
     omitted = frozenset(omitted_exit_bar_open_times)
-    candidate_timestamps = frozenset(bar.bar_open_at for bar in bar_series.bars)
-    if not omitted <= candidate_timestamps:
-        raise OpenToOpenValidationV1Error("omitted_exit_bar_timestamp_not_a_candidate_bar")
     cap = run.definition.maximum_absolute_exposure
     horizon = run.definition.holding_horizon_bars * _ONE_BAR_INTERVAL
-    inputs = _decision_inputs(run)
+    inputs = _strategy_replay_inputs(run)
     baseline_trades, baseline_excluded = _replay_open_to_open(
         decision_inputs=inputs,
         bar_series=bar_series,
@@ -752,6 +785,9 @@ def evaluate_open_to_open_missing_bar_stress_v1(
         cost_model=base_cost_model,
         latency=timedelta(0),
     )
+    candidate_exit_timestamps = frozenset(trade.exit_time for trade in baseline_trades)
+    if not omitted <= candidate_exit_timestamps:
+        raise OpenToOpenValidationV1Error("omitted_exit_bar_timestamp_not_a_candidate_bar")
     stressed_trades, stressed_excluded = _replay_open_to_open(
         decision_inputs=inputs,
         bar_series=bar_series,
@@ -768,6 +804,7 @@ def evaluate_open_to_open_missing_bar_stress_v1(
         "source_run_content_hash": run.content_hash,
         "bar_series_fingerprint": bar_fingerprint,
         "base_cost_model": _wire_cost_model(base_cost_model),
+        "base_cost_model_version": run.cost_model_version,
         "omitted_exit_bar_open_times": ordered_omissions,
         "baseline_executed_count": len(baseline_trades),
         "baseline_excluded_count": baseline_excluded,
@@ -780,6 +817,7 @@ def evaluate_open_to_open_missing_bar_stress_v1(
         synthetic_validation_evidence=True,
         source_run_content_hash=run.content_hash,
         bar_series_fingerprint=bar_fingerprint,
+        base_cost_model_version=run.cost_model_version,
         omitted_exit_bar_open_times=ordered_omissions,
         baseline_executed_count=len(baseline_trades),
         baseline_excluded_count=baseline_excluded,
@@ -1028,6 +1066,8 @@ def evaluate_canonical_cscv_pbo_v1(
             if any(len(block) < CSCV_MINIMUM_OBSERVATIONS_PER_BLOCK for block in blocks):
                 reasons.append("block_below_minimum_observations")
                 break
+        if any(not _decimal_sequence_is_finite(block) for blocks in normalized_blocks for block in blocks):
+            reasons.append("non_finite_daily_return")
 
     if reasons:
         return _cscv_evidence(
@@ -1217,13 +1257,22 @@ def evaluate_deflated_sharpe_evidence_v1(
             (1 - _EULER_MASCHERONI) * standard_normal.inv_cdf(1 - 1 / trial_count)
             + _EULER_MASCHERONI * standard_normal.inv_cdf(1 - 1 / (trial_count * e))
         )
-        radicand = 1 - skewness * selected_sharpe + ((kurtosis - 1) / 4) * selected_sharpe ** 2
-        if radicand <= 0:
-            reasons.append("non_positive_denominator")
+        if not isfinite(expected_maximum):
+            reasons.append("non_finite_dsr_scalar")
+            expected_maximum = None
         else:
-            denominator = sqrt(radicand)
-            z_statistic = (selected_sharpe - expected_maximum) * sqrt(observation_count - 1) / denominator
-            deflated = standard_normal.cdf(z_statistic)
+            radicand = 1 - skewness * selected_sharpe + ((kurtosis - 1) / 4) * selected_sharpe ** 2
+            if radicand <= 0 or not isfinite(radicand):
+                reasons.append("non_positive_denominator")
+            else:
+                denominator = sqrt(radicand)
+                z_statistic = (selected_sharpe - expected_maximum) * sqrt(observation_count - 1) / denominator
+                deflated = standard_normal.cdf(z_statistic)
+                if not (isfinite(denominator) and isfinite(z_statistic) and isfinite(deflated)):
+                    reasons.append("non_finite_dsr_scalar")
+                    denominator = None
+                    z_statistic = None
+                    deflated = None
 
     status = STATUS_AVAILABLE if not reasons and deflated is not None else STATUS_UNAVAILABLE
     if status == STATUS_UNAVAILABLE:
@@ -1284,12 +1333,23 @@ def _eligible_decisions_in_window(
     return tuple(decision.decision_at for decision in eligible), tuple(decision.basis_value for decision in eligible)
 
 
+def _has_evaluation_window_carry_in_trade(
+    run: BasisMeanReversionResearchRunV1, window_start: datetime, window_end: datetime
+) -> bool:
+    for trade in run.executed_trades:
+        exit_utc = trade.exit_time.astimezone(_UTC)
+        if trade.decision_at < window_start <= exit_utc < window_end:
+            return True
+    return False
+
+
 @dataclass(frozen=True, slots=True)
 class CircularShiftNullControlEvidenceV1:
     status: str
     unavailable_reasons: tuple[str, ...]
     synthetic_null_control_evidence: bool
     seed: int
+    base_cost_model_version: str
     eligible_feature_event_count: int
     target_null_runs: int
     attempted_shifts: int
@@ -1321,6 +1381,7 @@ def evaluate_circular_shift_null_control_v1(
     if window_end <= window_start:
         raise OpenToOpenValidationV1Error("window_end_must_be_after_window_start")
 
+    carry_in = _has_evaluation_window_carry_in_trade(run, window_start, window_end)
     timestamps, basis_values = _eligible_decisions_in_window(run, window_start, window_end)
     event_count = len(basis_values)
     cap = run.definition.maximum_absolute_exposure
@@ -1332,39 +1393,41 @@ def evaluate_circular_shift_null_control_v1(
     )
     observed_sharpe = non_annualized_daily_sharpe(observed_series.daily_returns)
 
-    attempted = min(target_null_runs, event_count - 1) if event_count >= 2 else 0
-    if attempted > 0:
-        rng = random.Random(seed)  # nosec B311
-        selected_offsets = tuple(sorted(rng.sample(range(1, event_count), attempted)))
-    else:
-        selected_offsets = ()
-
+    attempted = 0
+    selected_offsets: tuple[int, ...] = ()
     valid_stats: list[float] = []
     unavailable_shifts = 0
-    for offset in selected_offsets:
-        shifted = circularly_shift_basis_values(basis_values, offset)
-        decision_inputs = tuple(
-            (timestamps[index], _direction(shifted[index], threshold, cap)) for index in range(event_count)
-        )
-        trades, _ = _replay_open_to_open(
-            decision_inputs=decision_inputs,
-            bar_series=bar_series,
-            cap=cap,
-            horizon=horizon,
-            cost_model=base_cost_model,
-            latency=timedelta(0),
-        )
-        _, null_daily = _daily_returns_over_window(
-            ((trade.exit_time, trade.net_return) for trade in trades), window_start, window_end
-        )
-        stat = non_annualized_daily_sharpe(null_daily)
-        if stat is None:
-            unavailable_shifts += 1
-        else:
-            valid_stats.append(stat)
+    if not carry_in:
+        attempted = min(target_null_runs, event_count - 1) if event_count >= 2 else 0
+        if attempted > 0:
+            rng = random.Random(seed)  # nosec B311
+            selected_offsets = tuple(sorted(rng.sample(range(1, event_count), attempted)))
+        for offset in selected_offsets:
+            shifted = circularly_shift_basis_values(basis_values, offset)
+            decision_inputs = tuple(
+                (timestamps[index], _direction(shifted[index], threshold, cap)) for index in range(event_count)
+            )
+            trades, _ = _replay_open_to_open(
+                decision_inputs=decision_inputs,
+                bar_series=bar_series,
+                cap=cap,
+                horizon=horizon,
+                cost_model=base_cost_model,
+                latency=timedelta(0),
+            )
+            _, null_daily = _daily_returns_over_window(
+                ((trade.exit_time, trade.net_return) for trade in trades), window_start, window_end
+            )
+            stat = non_annualized_daily_sharpe(null_daily)
+            if stat is None:
+                unavailable_shifts += 1
+            else:
+                valid_stats.append(stat)
 
     valid_shifts = len(valid_stats)
     reasons: list[str] = []
+    if carry_in:
+        reasons.append("evaluation_window_has_carry_in_trade")
     if observed_sharpe is None:
         reasons.append("observed_sharpe_unavailable")
     if valid_shifts < minimum_valid_shifts:
@@ -1386,6 +1449,7 @@ def evaluate_circular_shift_null_control_v1(
         "source_run_content_hash": run.content_hash,
         "bar_series_fingerprint": bar_fingerprint,
         "base_cost_model": _wire_cost_model(base_cost_model),
+        "base_cost_model_version": run.cost_model_version,
         "seed": seed,
         "window_start": window_start,
         "window_end": window_end,
@@ -1404,6 +1468,7 @@ def evaluate_circular_shift_null_control_v1(
         unavailable_reasons=tuple(reasons),
         synthetic_null_control_evidence=True,
         seed=seed,
+        base_cost_model_version=run.cost_model_version,
         eligible_feature_event_count=event_count,
         target_null_runs=target_null_runs,
         attempted_shifts=attempted,
@@ -1424,6 +1489,7 @@ class FullPermutationNullDiagnosticV1:
     unavailable_reasons: tuple[str, ...]
     synthetic_null_control_evidence: bool
     seed: int
+    base_cost_model_version: str
     attempted_permutations: int
     valid_permutations: int
     observed_sharpe: float | None
@@ -1453,6 +1519,7 @@ def evaluate_full_permutation_null_diagnostic_v1(
     if permutations < 1:
         raise OpenToOpenValidationV1Error("permutations_must_be_positive")
 
+    carry_in = _has_evaluation_window_carry_in_trade(run, window_start, window_end)
     timestamps, basis_tuple = _eligible_decisions_in_window(run, window_start, window_end)
     basis_values = list(basis_tuple)
     event_count = len(basis_values)
@@ -1465,31 +1532,34 @@ def evaluate_full_permutation_null_diagnostic_v1(
     )
     observed_sharpe = non_annualized_daily_sharpe(observed_series.daily_returns)
 
-    rng = random.Random(seed)  # nosec B311
     valid_stats: list[float] = []
-    for _ in range(permutations):
-        shuffled = basis_values[:]
-        rng.shuffle(shuffled)
-        decision_inputs = tuple(
-            (timestamps[index], _direction(shuffled[index], threshold, cap)) for index in range(event_count)
-        )
-        trades, _ = _replay_open_to_open(
-            decision_inputs=decision_inputs,
-            bar_series=bar_series,
-            cap=cap,
-            horizon=horizon,
-            cost_model=base_cost_model,
-            latency=timedelta(0),
-        )
-        _, null_daily = _daily_returns_over_window(
-            ((trade.exit_time, trade.net_return) for trade in trades), window_start, window_end
-        )
-        stat = non_annualized_daily_sharpe(null_daily)
-        if stat is not None:
-            valid_stats.append(stat)
+    if not carry_in:
+        rng = random.Random(seed)  # nosec B311
+        for _ in range(permutations):
+            shuffled = basis_values[:]
+            rng.shuffle(shuffled)
+            decision_inputs = tuple(
+                (timestamps[index], _direction(shuffled[index], threshold, cap)) for index in range(event_count)
+            )
+            trades, _ = _replay_open_to_open(
+                decision_inputs=decision_inputs,
+                bar_series=bar_series,
+                cap=cap,
+                horizon=horizon,
+                cost_model=base_cost_model,
+                latency=timedelta(0),
+            )
+            _, null_daily = _daily_returns_over_window(
+                ((trade.exit_time, trade.net_return) for trade in trades), window_start, window_end
+            )
+            stat = non_annualized_daily_sharpe(null_daily)
+            if stat is not None:
+                valid_stats.append(stat)
 
     valid_permutations = len(valid_stats)
     reasons: list[str] = []
+    if carry_in:
+        reasons.append("evaluation_window_has_carry_in_trade")
     if observed_sharpe is None:
         reasons.append("observed_sharpe_unavailable")
     if valid_permutations < minimum_valid_permutations:
@@ -1512,6 +1582,7 @@ def evaluate_full_permutation_null_diagnostic_v1(
         "source_run_content_hash": run.content_hash,
         "bar_series_fingerprint": bar_fingerprint,
         "base_cost_model": _wire_cost_model(base_cost_model),
+        "base_cost_model_version": run.cost_model_version,
         "seed": seed,
         "window_start": window_start,
         "window_end": window_end,
@@ -1527,6 +1598,7 @@ def evaluate_full_permutation_null_diagnostic_v1(
         unavailable_reasons=tuple(reasons),
         synthetic_null_control_evidence=True,
         seed=seed,
+        base_cost_model_version=run.cost_model_version,
         attempted_permutations=permutations,
         valid_permutations=valid_permutations,
         observed_sharpe=observed_sharpe,
@@ -1545,6 +1617,7 @@ class ReconciliationDecisionCheckV1:
 @dataclass(frozen=True, slots=True)
 class OpenToOpenReconciliationEvidenceV1:
     status: str
+    base_cost_model_version: str
     decision_count: int
     mismatched_decision_count: int
     checks: tuple[ReconciliationDecisionCheckV1, ...]
@@ -1594,6 +1667,61 @@ def _resolve_expected_outcome(
     return BasisMeanReversionOutcomeV1.EXECUTED, exposure, trade
 
 
+def _decision_discrepancies(
+    decision: BasisMeanReversionDecisionV1,
+    *,
+    threshold: Decimal,
+    cap: Decimal,
+    bar_series: AuthoritativeTradableBarSeriesV2,
+    horizon: timedelta,
+    last_executed_exit_time: datetime | None,
+    cost_model: CostModel,
+) -> tuple[tuple[str, ...], datetime | None]:
+    discrepancies: list[str] = []
+    expected_outcome, expected_exposure, expected_trade = _resolve_expected_outcome(
+        decision_at=decision.decision_at,
+        basis_value=decision.basis_value,
+        threshold=threshold,
+        cap=cap,
+        bar_series=bar_series,
+        horizon=horizon,
+        last_executed_exit_time=last_executed_exit_time,
+        cost_model=cost_model,
+    )
+    if expected_exposure != decision.exposure:
+        discrepancies.append("direction")
+    if expected_outcome != decision.outcome:
+        discrepancies.append("outcome")
+
+    next_last_executed_exit_time = last_executed_exit_time
+    if expected_outcome is BasisMeanReversionOutcomeV1.EXECUTED:
+        if expected_trade is None:
+            raise OpenToOpenValidationV1Error("internal_reconciliation_invariant_violation")
+        next_last_executed_exit_time = expected_trade.exit_time
+        if decision.trade is None:
+            discrepancies.append("missing_executed_trade")
+        else:
+            trade = decision.trade
+            if expected_trade.exposure != trade.exposure:
+                discrepancies.append("exposure")
+            if expected_trade.entry_time != trade.entry_time or expected_trade.entry_open != trade.entry_open:
+                discrepancies.append("entry")
+            if expected_trade.exit_time != trade.exit_time or expected_trade.exit_open != trade.exit_open:
+                discrepancies.append("exit")
+            if expected_trade.gross_return != trade.gross_return:
+                discrepancies.append("gross_return")
+            if expected_trade.entry_cost != trade.entry_cost:
+                discrepancies.append("entry_cost")
+            if expected_trade.exit_cost != trade.exit_cost:
+                discrepancies.append("exit_cost")
+            if expected_trade.net_return != trade.net_return:
+                discrepancies.append("net_return")
+    elif decision.trade is not None:
+        discrepancies.append("extra_executed_trade")
+
+    return tuple(discrepancies), next_last_executed_exit_time
+
+
 def reconcile_open_to_open_trade_ledger_v1(
     *,
     run: BasisMeanReversionResearchRunV1,
@@ -1612,10 +1740,8 @@ def reconcile_open_to_open_trade_ledger_v1(
     last_executed_exit_time: datetime | None = None
 
     for index, decision in enumerate(run.decisions):
-        discrepancies: list[str] = []
-        expected_outcome, expected_exposure, expected_trade = _resolve_expected_outcome(
-            decision_at=decision.decision_at,
-            basis_value=decision.basis_value,
+        discrepancies, last_executed_exit_time = _decision_discrepancies(
+            decision,
             threshold=threshold,
             cap=cap,
             bar_series=bar_series,
@@ -1623,39 +1749,9 @@ def reconcile_open_to_open_trade_ledger_v1(
             last_executed_exit_time=last_executed_exit_time,
             cost_model=base_cost_model,
         )
-        if expected_exposure != decision.exposure:
-            discrepancies.append("direction")
-        if expected_outcome != decision.outcome:
-            discrepancies.append("outcome")
-
-        if expected_outcome is BasisMeanReversionOutcomeV1.EXECUTED:
-            if expected_trade is None:
-                raise OpenToOpenValidationV1Error("internal_reconciliation_invariant_violation")
-            last_executed_exit_time = expected_trade.exit_time
-            if decision.trade is None:
-                discrepancies.append("missing_executed_trade")
-            else:
-                trade = decision.trade
-                if expected_trade.exposure != trade.exposure:
-                    discrepancies.append("exposure")
-                if expected_trade.entry_time != trade.entry_time or expected_trade.entry_open != trade.entry_open:
-                    discrepancies.append("entry")
-                if expected_trade.exit_time != trade.exit_time or expected_trade.exit_open != trade.exit_open:
-                    discrepancies.append("exit")
-                if expected_trade.gross_return != trade.gross_return:
-                    discrepancies.append("gross_return")
-                if expected_trade.entry_cost != trade.entry_cost:
-                    discrepancies.append("entry_cost")
-                if expected_trade.exit_cost != trade.exit_cost:
-                    discrepancies.append("exit_cost")
-                if expected_trade.net_return != trade.net_return:
-                    discrepancies.append("net_return")
-        elif decision.trade is not None:
-            discrepancies.append("extra_executed_trade")
-
         if discrepancies:
             mismatched += 1
-        checks.append(ReconciliationDecisionCheckV1(index, tuple(discrepancies)))
+        checks.append(ReconciliationDecisionCheckV1(index, discrepancies))
 
     status = STATUS_RECONCILED if mismatched == 0 else STATUS_BLOCKED
     bar_fingerprint = _bar_series_fingerprint(bar_series)
@@ -1664,6 +1760,7 @@ def reconcile_open_to_open_trade_ledger_v1(
         "source_run_content_hash": run.content_hash,
         "bar_series_fingerprint": bar_fingerprint,
         "base_cost_model": _wire_cost_model(base_cost_model),
+        "base_cost_model_version": run.cost_model_version,
         "decision_count": len(checks),
         "mismatched_decision_count": mismatched,
         "checks": [
@@ -1673,6 +1770,7 @@ def reconcile_open_to_open_trade_ledger_v1(
     content_hash = _content_hash(payload)
     return OpenToOpenReconciliationEvidenceV1(
         status=status,
+        base_cost_model_version=run.cost_model_version,
         decision_count=len(checks),
         mismatched_decision_count=mismatched,
         checks=tuple(checks),
