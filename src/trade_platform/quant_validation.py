@@ -343,8 +343,8 @@ class BootstrapEvidence:
 
 
 def evaluate_bootstrap(*, strategy_version: str, dataset_version: str, period_returns: tuple[Decimal, ...], seed: int,
-                       resamples: int, artifact_version: str = "bootstrap-v1") -> BootstrapEvidence:
-    if not strategy_version.strip() or not dataset_version.strip() or not period_returns or resamples < 1:
+                       resamples: int, periods_per_year: int = 252, artifact_version: str = "bootstrap-v1") -> BootstrapEvidence:
+    if not strategy_version.strip() or not dataset_version.strip() or not period_returns or resamples < 1 or periods_per_year < 1:
         raise QuantValidationError("invalid_bootstrap_inputs")
     rng = random.Random(seed)  # nosec B311 - deterministic statistical simulation, not security randomness
     returns: list[Decimal] = []; sharpes: list[Decimal | None] = []; drawdowns: list[Decimal] = []
@@ -354,7 +354,7 @@ def evaluate_bootstrap(*, strategy_version: str, dataset_version: str, period_re
         for value in sample: equity *= Decimal("1") + value; curve.append(equity)
         returns.append(equity - Decimal("1")); drawdowns.append(min(item / max(curve[: index + 1]) - Decimal("1") for index, item in enumerate(curve)))
         volatility = pstdev([float(value) for value in sample]) if len(sample) > 1 else 0
-        sharpes.append(None if volatility == 0 else Decimal(str(mean([float(value) for value in sample]) / volatility * sqrt(252))))
+        sharpes.append(None if volatility == 0 else Decimal(str(mean([float(value) for value in sample]) / volatility * sqrt(periods_per_year))))
     percentiles = {"p05_return": _quantile(returns, Decimal(".05")), "p50_return": _quantile(returns, Decimal(".5")), "p95_return": _quantile(returns, Decimal(".95")), "p05_drawdown": _quantile(drawdowns, Decimal(".05"))}
     payload = {"strategy_version": strategy_version, "dataset_version": dataset_version, "seed": seed, "resamples": resamples,
                "return_distribution": tuple(returns), "sharpe_distribution": tuple(sharpes), "drawdown_distribution": tuple(drawdowns),
