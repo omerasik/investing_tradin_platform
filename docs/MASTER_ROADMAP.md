@@ -655,8 +655,8 @@ alpha/performance claim; 3J.2b.2b (professional OOS/robustness validation
 orchestration) has not been started.
 
 Module 3J.2b.2b (Proposal: Professional Validation Semantics for OPEN→OPEN
-Basis Research) is a **docs-only architecture proposal — not yet owner
-reviewed, not implemented, not started.** See
+Basis Research) is a **docs-only architecture proposal — owner reviewed
+(PR #123); not implemented, not started.** See
 [MODULE_3J2B2B_PROPOSAL_OPEN_TO_OPEN_PROFESSIONAL_VALIDATION.md](MODULE_3J2B2B_PROPOSAL_OPEN_TO_OPEN_PROFESSIONAL_VALIDATION.md)
 for the full audit of every existing validation primitive
 (`run_purged_walk_forward`, `evaluate_capacity`,
@@ -666,18 +666,33 @@ for the full audit of every existing validation primitive
 `evaluate_multiple_testing`, `performance_metrics`, `tail_risk_metrics`,
 `complexity_components`, `StrategyScorecardV2`, `build_validation_package`,
 and the existing golden/vector reconciliation machinery) against
-3J.2b.2a's OPEN→OPEN, non-overlapping, event-driven trade-ledger semantics,
-the dual canonical-trade-return / `REALIZED_EXIT_DAILY_RETURN_SERIES_V1`
-return-series architecture it proposes, the chronological
-purge/embargo/holdout walk-forward design, the finding that the existing
+3J.2b.2a's OPEN→OPEN, non-overlapping, event-driven trade-ledger semantics;
+the revised, owner-approved dual canonical-trade-return /
+`REALIZED_EXIT_DAILY_RETURN_SERIES_V1` return-series architecture, including
+a corrected non-annualized `trade_return_metrics_v1` helper for trade-level
+scorecard fields; a new timestamp-aware `OpenToOpenWalkForwardProtocolV1`
+fold authority (not the existing integer-only `purged_walk_forward_splits`)
+with owner-approved `purge_bars`/`embargo_bars = holding_horizon_bars` and a
+mechanically-derived final-20%-of-UTC-time untouched holdout; capacity
+reclassified to explicit `BLOCKED`
+(`MISSING_AUTHORIZED_VOLUME_UNIT_SEMANTICS`, not implemented as an adapter,
+pending an authorized OHLCV volume-unit authority); a deterministic circular
+time-shift as the primary synthetic no-edge null (ordinary permutation
+demoted to a secondary diagnostic); a new `ResearchTrialLedgerV1` for
+historical trial accounting; the finding that the existing
 `backtest_overfitting_probability` and `deflated_sharpe_probability` fields
-are not canonical PBO/DSR and must not be relabeled as such, and the
-recommended 3J.2b.2b.1 (adapters + statistical evidence) /
+are not canonical PBO/DSR and must not be relabeled as such, with canonical
+CSCV PBO now authorized for implementation (concrete `cscv_blocks=8`
+eligibility gates) and canonical DSR pinned to the daily return series; and
+the owner-approved 3J.2b.2b.1 (adapters + statistical evidence) /
 3J.2b.2b.2 (orchestration + scorecard + validation package) implementation
 split. No code, migration, parameter, or strategy change is introduced by
-this proposal; the scorecard status for this module remains `BLOCKED`
-regardless of any apparent synthetic performance, and several architecture
-items remain explicitly `REQUIRES REVIEW` pending owner decision.
+this proposal; the scorecard status for this module remains `BLOCKED`,
+unconditionally, regardless of any apparent synthetic performance. Every
+architecture item previously marked `REQUIRES REVIEW` has been resolved by
+explicit owner decision; one new capacity/liquidity volume-unit
+data-authority gap surfaced during review remains recorded (not resolved) in
+the proposal's §24. No implementation is authorized by this revision.
 
 Exact merged-main run `34444477527` (verify) / `34444477591` (CodeQL)
 verifies Module 3J.2a on commit `31d38d18beb923ac1949120354a3dc17a83e5e06`
