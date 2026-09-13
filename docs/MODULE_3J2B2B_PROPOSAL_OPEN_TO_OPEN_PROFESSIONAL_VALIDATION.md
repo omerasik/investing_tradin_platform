@@ -185,8 +185,9 @@ deflated = Φ((observed_sharpe - expected_max) * sqrt(observations - 1))
 ```
 
 This is **not** the canonical Bailey & López de Prado Deflated Sharpe Ratio.
-Canonical DSR requires the return series' skewness and excess kurtosis, the
-variance of Sharpe ratios across the actual trial set, and an
+Canonical DSR requires the return series' skewness and kurtosis (Pearson
+convention — see the exact v1 contract pinned in §17), the variance of
+Sharpe ratios across the actual trial set, and an
 expected-maximum-Sharpe-under-the-null term built from the Euler-Mascheroni
 constant and the standard-normal inverse CDF evaluated at `1 - 1/N` and
 `1 - 1/(N·e)`. None of skewness, kurtosis, or a per-trial Sharpe-variance term
@@ -244,10 +245,16 @@ daily_return(d) = 0                                                             
 
 Annualization: `periods_per_year = 365` (not 252) — the instrument is a
 crypto perpetual and the accounting grid is UTC calendar days, not exchange
-trading days. This is the input fed to `performance_metrics(...,
-periods_per_year=365)` (§18), to `evaluate_bootstrap` (§12), to the canonical
-CSCV PBO artifact (§16), to `DeflatedSharpeEvidenceV1` (§17), and to any
-walk-forward fold-level Sharpe computation (§5).
+trading days. This is the daily series fed to `performance_metrics(...,
+periods_per_year=365)` (§18), to `evaluate_bootstrap` (§12), and to
+walk-forward fold-level Sharpe diagnostics (§5) as an annualized
+(`periods_per_year=365`) figure. The same underlying series is also the
+statistical core for the canonical CSCV PBO artifact (§16.1) and
+`DeflatedSharpeEvidenceV1` (§17), and for the primary null-control statistic
+(§14.3) — but for those three, it is consumed at its native non-annualized,
+one-day return horizon (`SR_hat`, §17.1), never annualized. The annualized
+and non-annualized uses of this one series are never mixed within a single
+statistical computation.
 
 **Explicit limitations, recorded prominently wherever this series is used**:
 it is realized-on-exit, not mark-to-market — a trade opened on day `d1` and
@@ -500,7 +507,7 @@ never presented as if it were real market data):
 1. **Transaction-cost deterioration** — reuse the §8 adapter directly (it already is a cost-multiplier scenario engine); no separate implementation needed.
 2. **Adverse exit-price shock** — for each executed trade, recompute `net_return` with `exit_open` shifted by a fixed adverse percentage (e.g. -1%, -2% magnitude in the position's losing direction) before feeding it to `SignedOpenToOpenReturnV2`; entry price, entry time, and exit time are untouched — only the exit price input to the return formula is shocked. This directly stress-tests exit-price risk without inventing a new price series.
 3. **Missing-bar / data-gap stress** — recompute the trade ledger under a synthetic ablation that marks a fixed fraction of otherwise-eligible exit bars as unavailable (forcing `EXCLUDED_MISSING_EXIT` for those trades) and reports the resulting change in trade count, hit rate, and `REALIZED_EXIT_DAILY_RETURN_SERIES_V1`-based Sharpe — tests sensitivity to the exact "no synthetic exit" discipline 3J.2b.2a already enforces.
-4. **Reduced liquidity / volume assumptions** — since §11's capacity adapter is now `BLOCKED` (`MISSING_AUTHORIZED_VOLUME_UNIT_SEMANTICS`), this stress category cannot be built on the same unproven volume-unit assumption capacity was blocked for. This sub-category is **also `BLOCKED` for v1**, for the identical reason, rather than fabricated from an unauthorized unit guess; it must be represented in the stress evidence artifact as an explicit blocked sub-result, not silently omitted.
+4. **Reduced liquidity / volume assumptions** — since §11's capacity evidence is now `BLOCKED` (`MISSING_AUTHORIZED_VOLUME_UNIT_SEMANTICS`), this stress category cannot be built on the same unproven volume-unit assumption capacity was blocked for. This sub-category is **also `BLOCKED` for v1**, for the identical reason, rather than fabricated from an unauthorized unit guess; it must be represented in the stress evidence artifact as an explicit blocked sub-result, not silently omitted.
 
 Every one of these four evidence categories must carry an explicit
 `"synthetic_validation_evidence": true` marker (or equivalent field) in its
@@ -671,14 +678,17 @@ the edge-claim gate.
 ### 14.3 Pinned performance statistic and empirical p-value
 
 The statistic compared between the observed untouched-OOS (or, pre-holdout,
-dedicated-OOS) run and each null run is the daily Sharpe computed from
-`REALIZED_EXIT_DAILY_RETURN_SERIES_V1` at `periods_per_year=365` (§4.B/§12) —
-chosen because it is the same statistic `evaluate_bootstrap`, the CSCV PBO
-artifact (§16), `DeflatedSharpeEvidenceV1` (§17), and the scorecard's
-daily-equity metrics all already use, so the null comparison is
-apples-to-apples with the headline scorecard figure, not a bespoke metric
-invented only for this test. Empirical p-value, using the primary
-circular-shift null:
+dedicated-OOS) run and each null run is `observed_stat` / `null_stat` —
+both computed identically as the **non-annualized** daily Sharpe `SR_hat =
+mean(daily_returns) / std(daily_returns)` (§17.1) from
+`REALIZED_EXIT_DAILY_RETURN_SERIES_V1` (§4.B) — the same statistical-core
+statistic and formula the canonical CSCV PBO artifact (§16.1) and
+`DeflatedSharpeEvidenceV1` (§17) use, so the null comparison is
+apples-to-apples on a like-for-like daily-series statistic, never a mix of
+statistical-core and presentation units. The scorecard may separately render
+the annualized Sharpe (`performance_metrics(..., periods_per_year=365)`,
+§18) for presentation, but that annualized figure is never the statistic
+compared here. Empirical p-value, using the primary circular-shift null:
 
 ```
 p = (1 + count(null_sharpe >= observed_sharpe)) / (1 + actual_null_runs)
@@ -736,15 +746,83 @@ gate, not a reason to skip building the gate.
   1. at least **8 non-empty chronological blocks** (i.e. `cscv_blocks = 8` and every block must actually contain daily observations — a block with zero trading days does not count);
   2. at least **5 complete UTC daily observations per block**;
   3. at least **6 distinct performance-bearing strategy/parameter trials** in `ResearchTrialLedgerV1`.
-- **CSCV process** (once eligible): form all `C(8, 4) = 70` combinatorially symmetric splits of the 8 blocks into an in-sample (IS) half (4 blocks) and an out-of-sample (OOS) half (the complementary 4 blocks); for each split, select the trial with the best IS performance statistic (Sharpe, from the same daily series) among the IS blocks (the **IS winner**); find that same trial's percentile rank among all trials' OOS performance over the complementary OOS blocks (the **corresponding OOS rank**); apply the **logit transform** `λ_c = logit(rank_c)` for each split `c`; PBO is the fraction of the 70 splits where `λ_c <= 0` (i.e. the IS winner performs below the OOS median) — the standard CSCV PBO estimator.
+- **CSCV process** (once eligible): form all `C(8, 4) = 70` combinatorially symmetric splits of the 8 blocks into an in-sample (IS) half (4 blocks) and an out-of-sample (OOS) half (the complementary 4 blocks). The exact ranking statistic, IS-winner tie-break, OOS-rank convention, and PBO aggregation are pinned in §16.1-§16.3 below, so implementation cannot choose its own variant.
 - **Insufficient trials/sample**: if the eligibility gate above is not met, `PBO = UNAVAILABLE` rather than a fabricated number computed on too few trials/blocks to be meaningful — this is an expected, not exceptional, v1 outcome given a single fixture dataset and a small preregistered trial count.
-- **Testing**: the implementation must ship with independent reference/test vectors for the CSCV computation (a hand-verifiable small trial-matrix example with a known PBO value) so the logit/combinatorial-split arithmetic itself is validated independently of any live strategy run.
+- **Testing**: the implementation must ship with independent reference/test vectors for the CSCV computation (a hand-verifiable small trial-matrix example with a known PBO value) so the logit/combinatorial-split/tie-break/zero-variance-handling arithmetic itself is validated independently of any live strategy run.
 
 Never reuse the current boolean failure-rate field (`backtest_overfitting_probability`)
 as canonical PBO under any circumstance — the new artifact is entirely
 separate.
 
-## 17. Canonical DSR — owner decided: daily series only
+### 16.1 Ranking statistic
+
+For every one of the 70 CSCV splits, the IS/OOS ranking statistic is the
+**non-annualized** daily Sharpe `SR_hat = mean(daily_returns) /
+std(daily_returns)` (§17.1) computed from each trial's
+`REALIZED_EXIT_DAILY_RETURN_SERIES_V1`, restricted to the split's IS or OOS
+blocks respectively. Annualizing by `sqrt(365)` would not change any rank
+(annualization is a strictly monotonic per-trial rescaling), but the
+statistical core stays daily/per-period, consistently with §14.3 and §17.
+
+### 16.2 IS winner and OOS rank
+
+**IS winner**: the trial with the highest IS daily Sharpe among the IS
+blocks wins the split. If an exact IS-Sharpe tie occurs among two or more
+trials, the tie is broken deterministically using the immutable canonical
+trial identity/content hash (lowest hash wins) — **never** using OOS
+information to break an IS tie. The number of IS ties encountered across all
+70 splits is recorded in the CSCV evidence artifact as diagnostic evidence.
+
+**OOS rank**: rank all `N` trials by OOS daily Sharpe over the complementary
+OOS blocks:
+
+```
+rank 1 = worst
+rank N = best
+```
+
+For an exact OOS-Sharpe tie among two or more trials, use the
+average/midrank convention (each tied trial receives the mean of the ranks
+its tied group spans).
+
+For the IS-selected trial in a given split, its OOS rank gives:
+
+```
+omega_c = oos_rank / (N + 1)
+```
+
+therefore:
+
+```
+0 < omega_c < 1
+```
+
+and:
+
+```
+lambda_c = ln(omega_c / (1 - omega_c))
+```
+
+### 16.3 PBO aggregation and zero-variance handling
+
+```
+PBO =
+    count(lambda_c <= 0)
+    / number_of_valid_CSCV_splits
+```
+
+Preserve the already-approved `cscv_blocks = 8`, minimum 5 complete UTC
+daily observations per block, and minimum 6 trials (eligibility gate above).
+
+**Zero-variance handling (fail-closed, deterministic)**: if any statistic
+required for a split (an IS or OOS trial's daily Sharpe) is undefined
+because the relevant daily-return series has zero variance within that
+split's blocks, the entire split is invalid: record the reason, do not
+silently substitute `Sharpe = 0` or any other placeholder value, and exclude
+the split from `number_of_valid_CSCV_splits`. **All 70 splits must be valid
+for a numeric v1 PBO result; otherwise `PBO = UNAVAILABLE`.**
+
+## 17. Canonical DSR — owner decided: exact v1 mathematical contract, daily series only
 
 Per §3.4, `deflated_sharpe_probability` is not canonical DSR. Proposal:
 introduce a separate, newly and explicitly reviewed artifact,
@@ -752,38 +830,126 @@ introduce a separate, newly and explicitly reviewed artifact,
 `MultipleTestingEvidence.deflated_sharpe_probability`'s established
 historical semantics (which Trend V2 callers already depend on).
 
-**Owner-decided return-series choice**: canonical DSR inputs for this
-strategy use `REALIZED_EXIT_DAILY_RETURN_SERIES_V1` exclusively — **not**
-irregular trade returns (§4.A). The observed Sharpe being deflated is itself
-a daily, regularly sampled, `periods_per_year=365` Sharpe (§4.B), so
-skewness, kurtosis, and sample length must come from that same daily return
-process for the deflation to be statistically coherent; mixing a daily Sharpe
-with trade-level skew/kurtosis would deflate one distribution's statistic
-using another distribution's shape. The trial Sharpe distribution (the "N
-trials" side of the DSR calculation) must likewise be built from each
-trial's own daily-series Sharpe, not a trade-level one.
+**Owner-decided return-series choice**: `DeflatedSharpeEvidenceV1` operates
+on the pre-holdout `REALIZED_EXIT_DAILY_RETURN_SERIES_V1` (§4.B) exclusively
+— **not** irregular trade returns (§4.A) — for the selected strategy, for
+every eligible research trial, and for the expected-maximum-Sharpe
+calculation alike. Mixing a daily-series statistic's shape with trade-level
+skew/kurtosis would deflate one distribution's statistic using another
+distribution's shape.
 
-Required inputs for `DeflatedSharpeEvidenceV1`:
+### 17.1 Non-annualized daily Sharpe (statistical core)
 
-- observed Sharpe (from `REALIZED_EXIT_DAILY_RETURN_SERIES_V1`, §4.B);
-- sample length (`len(REALIZED_EXIT_DAILY_RETURN_SERIES_V1)`, i.e. calendar days in the evaluation window, not trade count);
-- number of trials — read from the same `ResearchTrialLedgerV1` (§15) CSCV PBO (§16) uses, so all three consumers share one trial-count accounting, never divergent counts;
-- return skewness and excess kurtosis, computed from `REALIZED_EXIT_DAILY_RETURN_SERIES_V1` (owner-decided, resolved — no longer a choice between series);
-- expected maximum Sharpe / selection-bias adjustment, computed via the canonical order-statistics expectation over `N` trials' daily-series Sharpes (not the `sqrt(2 ln N)` asymptotic bound the current heuristic uses).
+The DSR statistical core is the non-annualized, one-day return-horizon
+Sharpe:
 
-**Evaluation window**: DSR is calculated over the **pre-holdout research/OOS
-evidence used in strategy selection** (TRAIN+VALIDATION+TEST daily series and
-trial Sharpes); the untouched holdout (§6) remains a separate, single
-confirmatory result and must never be used to tune or redefine DSR
-methodology (e.g. choosing a different skewness/kurtosis window because the
-pre-holdout DSR looked weak).
+```
+SR_hat = mean(daily_returns) / std(daily_returns)
+```
 
-**Insufficient observations/trials → `UNAVAILABLE`.** No "DSR passed" claim
-may be derived from the current simplified diagnostic; if
-`DeflatedSharpeEvidenceV1` cannot be computed (too few daily observations,
-too few trials for a meaningful selection-bias term), it must report
-`UNAVAILABLE`, and the scorecard (§18) must surface that `UNAVAILABLE` state
-rather than silently omitting the metric.
+The scorecard's annualized `SR_hat * sqrt(365)` must never be fed into the
+PSR/DSR finite-sample formula below. This exact one-day-horizon `SR_hat` is
+used consistently across: the selected strategy; every research trial; and
+the expected-maximum-Sharpe calculation (§17.3). Annualized Sharpe remains a
+presentation/scorecard metric only (§18).
+
+### 17.2 Pinned inputs
+
+```
+T = number of complete daily observations
+N = number of eligible trials from ResearchTrialLedgerV1
+gamma3 = sample skewness of daily returns
+gamma4 = sample PEARSON kurtosis of daily returns
+```
+
+**Important: `gamma4` is not excess kurtosis.** Normal-distribution Pearson
+kurtosis is `3`. If an implementation library returns excess/Fisher kurtosis
+(the convention where a normal distribution has excess kurtosis `0`), the
+implementation must convert before using the value as `gamma4`:
+
+```
+pearson_kurtosis = excess_kurtosis + 3
+```
+
+Any proposal or implementation wording stating that the canonical formula
+directly consumes "excess kurtosis" is incorrect; `gamma4` is always Pearson
+kurtosis as pinned here (see the consistency note in §23).
+
+### 17.3 Expected-maximum-Sharpe benchmark
+
+For all eligible trials' daily Sharpes (`ResearchTrialLedgerV1`, §15),
+compute:
+
+```
+mu_SR
+sigma_SR
+```
+
+and pin the expected-maximum-Sharpe benchmark:
+
+```
+gamma_EM = 0.5772156649015329
+
+SR_star =
+    mu_SR
+    + sigma_SR * (
+        (1 - gamma_EM) * Phi^-1(1 - 1/N)
+        + gamma_EM * Phi^-1(1 - 1/(N*e))
+      )
+```
+
+### 17.4 DSR statistic
+
+Then:
+
+```
+denominator =
+    sqrt(
+        1
+        - gamma3 * SR_hat
+        + ((gamma4 - 1) / 4) * SR_hat^2
+    )
+
+z =
+    (SR_hat - SR_star)
+    * sqrt(T - 1)
+    / denominator
+
+DSR = Phi(z)
+```
+
+### 17.5 V1 eligibility floor
+
+```
+T >= 30 complete UTC daily observations
+N >= 6 distinct performance-bearing trials
+finite trial Sharpe values
+finite sigma_SR
+denominator > 0
+```
+
+Otherwise: `DSR = UNAVAILABLE`.
+
+These `30`/`6` values are explicit conservative v1 evidence gates, not
+claims of universal statistical sufficiency. DSR must remain computed
+pre-holdout, over the same pre-holdout research/OOS evidence used in
+strategy selection (TRAIN+VALIDATION+TEST daily series and trial Sharpes,
+§6); the final untouched holdout is a separate confirmatory result and must
+never be used to tune or redefine DSR methodology (e.g. choosing a different
+skewness/kurtosis window because the pre-holdout DSR looked weak).
+
+**Insufficient observations/trials or a failed eligibility check →
+`DSR = UNAVAILABLE`.** No "DSR passed" claim may be derived from the current
+simplified diagnostic (§3.4) or from a DSR computed outside this exact
+contract; the scorecard (§18) must surface `UNAVAILABLE` rather than
+silently omitting the metric.
+
+**Testing**: the implementation must ship with independent hand-computed
+reference vectors for this exact formula (a small, hand-verifiable daily
+return series with known skewness, Pearson kurtosis, `SR_hat`, `SR_star`,
+`z`, and `DSR` values), the same discipline already required for CSCV PBO
+(§16), so the statistical core is validated independently of any live
+strategy run.
 
 ## 18. Scorecard semantics
 
@@ -1006,8 +1172,8 @@ Package.** Implement:
 | 8 | `evaluate_stress` | REQUIRES_OPEN_TO_OPEN_ADAPTER | close-to-close terminal-bar shock via `run_vectorized_backtest()` | §10 OPEN→OPEN stress adapters (cost deterioration, exit-price shock, missing-bar/data-gap); reduced-liquidity sub-category BLOCKED (same reason as row 3) | §4.A trade returns, cost/price-adjusted | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | RISK family | evidence only; liquidity sub-case BLOCKED | liquidity sub-case only | .2b.2b.1 |
 | 9 | `evaluate_parameter_stability` | REUSE_WITH_EXPLICIT_INPUT_CONTRACT | pure diagnostic scorer over caller-supplied `ParameterResult`s, no backtest call | supply OPEN→OPEN `ParameterResult`s from §7's baseline + 6-neighbor grid (baseline supplied by caller, not hardcoded) | §4.B daily series (Sharpe/return per neighbor) | 365 | n/a | n/a | n/a | never optimizes against holdout | n/a | n/a | n/a | n/a | ROBUSTNESS family | evidence only, never replaces baseline; every run enters `ResearchTrialLedgerV1` | no | .2b.2b.2 |
 | 10 | `evaluate_multiple_testing` (BH/FDR portion only) | REUSE_WITH_EXPLICIT_INPUT_CONTRACT | generic BH step-up over any p-value dict; prefer calling `research_validation.benjamini_hochberg` directly over the inline duplicate | supply full trial p-value dict sourced from `ResearchTrialLedgerV1` (§15) | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | ROBUSTNESS family | evidence only | no | .2b.2b.2 |
-| 11 | `backtest_overfitting_probability` field | REQUIRES_METHODOLOGY_CORRECTION | not canonical CSCV PBO — literal boolean failure-rate | new, separate CSCV PBO artifact, implemented now (owner decided, §16); do not reuse/relabel this field | §4.B daily series across `ResearchTrialLedgerV1` trial matrix | 365 | 8 equal contiguous chronological blocks (`cscv_blocks=8`) | n/a | n/a | trials never include holdout | n/a | n/a | CSCV: `C(8,4)=70` splits, IS winner, OOS rank, logit, fraction `λ<=0` (§16); gate: ≥8 non-empty blocks, ≥5 daily obs/block, ≥6 distinct trials | n/a | ROBUSTNESS family, may report UNAVAILABLE | `UNAVAILABLE` if eligibility gate unmet, never fabricated | no | .2b.2b.1 |
-| 12 | `deflated_sharpe_probability` field | REQUIRES_METHODOLOGY_CORRECTION | simplified Gaussian diagnostic, not canonical DSR (no skew/kurtosis/per-trial variance) | new `DeflatedSharpeEvidenceV1` artifact (§17); do not relabel existing field | §4.B daily series only (owner decided — never §4.A trade returns), evaluated on pre-holdout research/OOS evidence | 365 | n/a | n/a | n/a | never uses holdout to tune methodology | n/a | n/a | n/a | canonical DSR: skew/kurtosis/sample-length from daily series, trials from `ResearchTrialLedgerV1`, order-statistics expected-max-Sharpe | ROBUSTNESS family, may report UNAVAILABLE | `UNAVAILABLE` if observations/trials insufficient | no | .2b.2b.1 |
+| 11 | `backtest_overfitting_probability` field | REQUIRES_METHODOLOGY_CORRECTION | not canonical CSCV PBO — literal boolean failure-rate | new, separate CSCV PBO artifact, implemented now (owner decided, §16); do not reuse/relabel this field | §4.B daily series across `ResearchTrialLedgerV1` trial matrix | 365 | 8 equal contiguous chronological blocks (`cscv_blocks=8`) | n/a | n/a | trials never include holdout | n/a | n/a | CSCV: `C(8,4)=70` splits, IS winner (ties broken by canonical trial content hash, never OOS), OOS rank (midrank on ties), `omega_c=oos_rank/(N+1)`, `lambda_c=ln(omega_c/(1-omega_c))`, fraction `λ<=0` (§16.1-§16.3); gate: ≥8 non-empty blocks, ≥5 daily obs/block, ≥6 distinct trials; zero-variance splits invalid and excluded (reason recorded, never `Sharpe=0`); all 70 splits required valid for numeric v1 PBO, else UNAVAILABLE | n/a | ROBUSTNESS family, may report UNAVAILABLE | `UNAVAILABLE` if eligibility gate unmet, never fabricated | no | .2b.2b.1 |
+| 12 | `deflated_sharpe_probability` field | REQUIRES_METHODOLOGY_CORRECTION | simplified Gaussian diagnostic, not canonical DSR (no skew/kurtosis/per-trial variance) | new `DeflatedSharpeEvidenceV1` artifact (§17); do not relabel existing field | §4.B daily series only (owner decided — never §4.A trade returns), evaluated on pre-holdout research/OOS evidence | 365 | n/a | n/a | n/a | never uses holdout to tune methodology | n/a | n/a | n/a | canonical DSR: exact v1 formula pinned in §17.1-§17.5 — non-annualized `SR_hat=mean/std` of daily returns, `gamma3`=skewness, `gamma4`=Pearson kurtosis (convert from excess via `+3` if needed), Euler-Mascheroni `SR_star` expected-max-Sharpe over `N` trial Sharpes from `ResearchTrialLedgerV1`, eligibility floor `T>=30`/`N>=6`/finite `sigma_SR`/`denominator>0`, else UNAVAILABLE | ROBUSTNESS family, may report UNAVAILABLE | `UNAVAILABLE` if observations/trials insufficient | no | .2b.2b.1 |
 | 13 | `performance_metrics` | REUSE_WITH_EXPLICIT_INPUT_CONTRACT — daily series only | already parameterized `periods_per_year`; must never be called with an irregular trade-return sequence (owner-corrected, §18) | call once with §4.B daily series, `periods_per_year=365`, for daily metrics only | §4.B daily series only | 365 | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | PERFORMANCE family (daily) | n/a | no | .2b.2b.2 |
 | 13a | `trade_return_metrics_v1` (new, owner-directed) | new artifact | needed because `performance_metrics` would give trade returns a false annualized-period semantics | new small non-annualized helper: trade count, hit rate, average/median trade, win/loss ratio, payoff ratio, profit factor, win/loss distribution (§18) | §4.A trade returns | none (no annualized field exists) | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | PERFORMANCE family (trade-level) | n/a | no | .2b.2b.1 |
 | 14 | `tail_risk_metrics` | REUSE_WITH_EXPLICIT_INPUT_CONTRACT | pure quantile calc, no annualization, no close-to-close dependency | call with §4.A trade returns; resulting metrics dimensioned `TRADE_LEVEL` (§18) | §4.A trade returns | n/a (no annualization) | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | RISK family, dimensioned `TRADE_LEVEL` | n/a | no | .2b.2b.2 |
@@ -1028,7 +1194,25 @@ mark-to-market alternative, and whether to implement canonical PBO now have
 all been resolved by explicit owner decision above (§5.2, §6, §7, §14, §17,
 §9, §15, §4.C, §16 respectively).
 
-**No architecture item is required to start 3J.2b.2b.1.**
+**No architecture item blocks 3J.2b.2b.1.** This is a distinct statement
+from the capacity gap recorded below: the two coexist by design —
+
+```
+No architecture item blocks 3J.2b.2b.1.
+```
+
+and
+
+```
+Capacity remains intentionally unavailable until a separately reviewed
+authority resolves volume-unit semantics.
+```
+
+The capacity/liquidity data-authority gap (item 1 below) is a known
+external/future authority gap, not an architecture blocker for starting
+3J.2b.2b.1 — `evaluate_capacity`'s reclassification to explicit `BLOCKED`
+evidence (§11) is itself the v1 architecture decision, and it is fully
+specified and ready to implement now.
 
 One item surfaced *during* this revision that was not present in the prior
 REQUIRES REVIEW list, and is recorded here rather than resolved silently:
