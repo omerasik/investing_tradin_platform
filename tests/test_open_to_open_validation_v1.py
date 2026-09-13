@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import dataclasses
+import hashlib
 import unittest
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -9,6 +11,7 @@ from statistics import NormalDist, mean, stdev
 from uuid import uuid4
 
 from trade_platform.crypto_basis_mean_reversion_v1 import (
+    BasisMeanReversionOutcomeV1,
     BasisMeanReversionResearchRunV1,
     CryptoBasisMeanReversionDefinitionV1,
     run_crypto_basis_mean_reversion_research,
@@ -25,9 +28,12 @@ from trade_platform.open_to_open_validation_v1 import (
     REALIZED_EXIT_DAILY_RETURN_SERIES_KIND,
     OpenToOpenValidationV1Error,
     RealizedExitDailyReturnSeriesV1,
-    ResearchTrialClassificationV1,
+    ResearchTrialDispositionV1,
+    ResearchTrialRoleV1,
     _midranks_ascending,
+    _ReplayTrade,
     _select_is_winner,
+    _verify_zero_latency_reconciles_canonical_run,
     bias_corrected_pearson_kurtosis,
     bias_corrected_sample_skewness,
     build_capacity_blocked_evidence_v1,
@@ -40,6 +46,7 @@ from trade_platform.open_to_open_validation_v1 import (
     evaluate_canonical_cscv_pbo_v1,
     evaluate_circular_shift_null_control_v1,
     evaluate_deflated_sharpe_evidence_v1,
+    evaluate_full_permutation_null_diagnostic_v1,
     evaluate_open_to_open_adverse_exit_shock_v1,
     evaluate_open_to_open_cost_sensitivity_v1,
     evaluate_open_to_open_latency_sensitivity_v1,
@@ -53,7 +60,6 @@ from trade_platform.open_to_open_validation_v1 import (
 )
 from trade_platform.quant_validation import evaluate_bootstrap, evaluate_monte_carlo_trade_sequence
 from trade_platform.research import CostModel
-from trade_platform.signed_price_return_v2 import compute_signed_open_to_open_return
 from trade_platform.strategy_feature_binding_v2 import (
     AuthoritativeFeatureSeriesV2,
     ResearchFeatureRequirementV2,
@@ -74,6 +80,10 @@ ZERO_COST = CostModel()
 NONZERO_COST = CostModel(percentage_per_turnover=Decimal("0.001"))
 
 
+def _hash_id(seed: str) -> str:
+    return hashlib.sha256(seed.encode()).hexdigest()
+
+
 def _materialization(*, event_at: datetime, value: Decimal) -> FeatureMaterializationV2:
     return FeatureMaterializationV2.create(
         feature_id=BASIS_FEATURE_ID,
@@ -90,7 +100,9 @@ def _materialization(*, event_at: datetime, value: Decimal) -> FeatureMaterializ
     )
 
 
-def _bundle(offsets_values: list[tuple[int, Decimal]]) -> SubjectAwareResearchFeatureBundle:
+def _bundle(
+    offsets_values: list[tuple[int, Decimal]], *, decision_at: datetime = START + timedelta(days=1)
+) -> SubjectAwareResearchFeatureBundle:
     materializations = tuple(
         _materialization(event_at=START + timedelta(minutes=offset), value=value)
         for offset, value in offsets_values
@@ -108,27 +120,32 @@ def _bundle(offsets_values: list[tuple[int, Decimal]]) -> SubjectAwareResearchFe
         dataset_version=str(DATASET_ID),
         materializations=materializations,
     )
-    cutoff = START + timedelta(days=1)
     return SubjectAwareResearchFeatureBundle.create(
         dataset_version_id=DATASET_ID,
         subject_type=FeatureSubjectType.INSTRUMENT,
         subject_id=INSTRUMENT,
-        decision_at=cutoff,
+        decision_at=decision_at,
         quality_policy=ResearchQualityPolicyV2.VALIDATED_ONLY,
         feature_series=(series,),
     )
 
 
-def _bar(offset: int, open_price: Decimal) -> AuthoritativeTradableBarV2:
+def _bar(
+    offset: int,
+    open_price: Decimal,
+    *,
+    dataset_version_id: object = DATASET_ID,
+    instrument_id: str = INSTRUMENT,
+) -> AuthoritativeTradableBarV2:
     bar_open_at = START + timedelta(minutes=offset)
     return AuthoritativeTradableBarV2(
-        dataset_version_id=DATASET_ID,
+        dataset_version_id=dataset_version_id,  # type: ignore[arg-type]
         dataset_content_hash="e" * 64,
         source_id=uuid4(),
         normalized_observation_id=uuid4(),
         raw_observation_id=uuid4(),
         raw_payload_sha256="f" * 64,
-        instrument_id=INSTRUMENT,
+        instrument_id=instrument_id,
         interval="1m",
         bar_open_at=bar_open_at,
         bar_close_at=bar_open_at + timedelta(minutes=1),
@@ -143,9 +160,18 @@ def _bar(offset: int, open_price: Decimal) -> AuthoritativeTradableBarV2:
     )
 
 
-def _bar_series(*, minutes: int, opens: dict[int, Decimal]) -> AuthoritativeTradableBarSeriesV2:
-    bars = tuple(_bar(offset, opens.get(offset, Decimal("100"))) for offset in range(minutes))
-    series = AuthoritativeTradableBarSeriesV2(DATASET_ID, INSTRUMENT, "1m", bars)
+def _bar_series(
+    *,
+    minutes: int,
+    opens: dict[int, Decimal],
+    dataset_version_id: object = DATASET_ID,
+    instrument_id: str = INSTRUMENT,
+) -> AuthoritativeTradableBarSeriesV2:
+    bars = tuple(
+        _bar(offset, opens.get(offset, Decimal("100")), dataset_version_id=dataset_version_id, instrument_id=instrument_id)
+        for offset in range(minutes)
+    )
+    series = AuthoritativeTradableBarSeriesV2(dataset_version_id, instrument_id, "1m", bars)  # type: ignore[arg-type]
     series.validate()
     return series
 
@@ -177,8 +203,6 @@ def _run(
 
 
 def _two_trade_run(cost_model: CostModel = ZERO_COST) -> tuple[BasisMeanReversionResearchRunV1, AuthoritativeTradableBarSeriesV2]:
-    # Trade 1 LONG: entry m1 open 100 -> exit m2 open 110 => gross 0.1
-    # Trade 2 SHORT: entry m4 open 100 -> exit m5 open 90 => gross 0.1
     offsets_values = [(0, Decimal("-0.001")), (3, Decimal("0.001"))]
     opens = {2: Decimal("110"), 5: Decimal("90")}
     bundle = _bundle(offsets_values)
@@ -194,13 +218,44 @@ def _two_trade_run(cost_model: CostModel = ZERO_COST) -> tuple[BasisMeanReversio
     return run, bar_series
 
 
-def _series(daily_returns: tuple[Decimal, ...], content_hash: str) -> RealizedExitDailyReturnSeriesV1:
+def _run_with_overlap() -> tuple[BasisMeanReversionResearchRunV1, AuthoritativeTradableBarSeriesV2]:
+    offsets_values = [(0, Decimal("-0.001")), (1, Decimal("0.001"))]
+    opens = {offset: Decimal("100") + Decimal(offset) for offset in range(15)}
+    run = _run(offsets_values=offsets_values, minutes=15, opens=opens, horizon=10)
+    bar_series = _bar_series(minutes=15, opens=opens)
+    return run, bar_series
+
+
+def _run_with_flat_decision() -> tuple[BasisMeanReversionResearchRunV1, AuthoritativeTradableBarSeriesV2]:
+    offsets_values = [(0, Decimal("0")), (1, Decimal("-0.001"))]
+    opens = {2: Decimal("100"), 3: Decimal("110")}
+    run = _run(offsets_values=offsets_values, minutes=6, opens=opens, horizon=1)
+    bar_series = _bar_series(minutes=6, opens=opens)
+    return run, bar_series
+
+
+def _fake_run(*, content_hash: str, definition: CryptoBasisMeanReversionDefinitionV1 | None = None) -> BasisMeanReversionResearchRunV1:
+    return BasisMeanReversionResearchRunV1(
+        definition=definition or _definition(),
+        evidence_content_hash="0" * 64,
+        dataset_version_id=DATASET_ID,
+        instrument_id=INSTRUMENT,
+        cost_model_version="cost-model-v1",
+        decisions=(),
+        content_hash=content_hash,
+        run_id=uuid4(),
+    )
+
+
+def _series(
+    run: BasisMeanReversionResearchRunV1, daily_returns: tuple[Decimal, ...], content_hash: str
+) -> RealizedExitDailyReturnSeriesV1:
     return RealizedExitDailyReturnSeriesV1(
         series_kind=REALIZED_EXIT_DAILY_RETURN_SERIES_KIND,
         semantic_version="1.0.0",
-        source_run_content_hash="a" * 64,
-        dataset_version_id=DATASET_ID,
-        instrument_id=INSTRUMENT,
+        source_run_content_hash=run.content_hash,
+        dataset_version_id=run.dataset_version_id,
+        instrument_id=run.instrument_id,
         window_start=START,
         window_end=START + timedelta(days=len(daily_returns)),
         dates=tuple((START + timedelta(days=index)).date() for index in range(len(daily_returns))),
@@ -217,7 +272,6 @@ class RealizedExitDailySeriesTests(unittest.TestCase):
             run=run, window_start=START, window_end=START + timedelta(days=3)
         )
         self.assertEqual(len(series.daily_returns), 3)
-        # Both trades net 0.1, same UTC day -> (1.1 * 1.1) - 1 = 0.21
         self.assertEqual(series.daily_returns[0], Decimal("0.21"))
         self.assertEqual(series.daily_returns[1], Decimal("0"))
         self.assertEqual(series.daily_returns[2], Decimal("0"))
@@ -295,7 +349,6 @@ class CostSensitivityTests(unittest.TestCase):
         evidence = evaluate_open_to_open_cost_sensitivity_v1(run=run, base_cost_model=NONZERO_COST)
         multipliers = tuple(scenario.cost_multiplier for scenario in evidence.scenarios)
         self.assertEqual(multipliers, (Decimal("1.0"), Decimal("1.5"), Decimal("2.0"), Decimal("3.0")))
-        # gross 0.1 per trade; per-leg cost = 0.001 * multiplier, two legs charged.
         self.assertEqual(evidence.scenarios[0].net_returns[0], Decimal("0.098"))
         self.assertEqual(evidence.scenarios[1].net_returns[0], Decimal("0.097"))
         self.assertEqual(evidence.scenarios[2].net_returns[0], Decimal("0.096"))
@@ -303,8 +356,23 @@ class CostSensitivityTests(unittest.TestCase):
 
     def test_wrong_base_cost_model_rejected(self) -> None:
         run, _ = _two_trade_run(cost_model=NONZERO_COST)
-        with self.assertRaisesRegex(OpenToOpenValidationV1Error, "base_scenario_mismatch"):
+        with self.assertRaisesRegex(OpenToOpenValidationV1Error, "cost_sensitivity_base_scenario_mismatch"):
             evaluate_open_to_open_cost_sensitivity_v1(run=run, base_cost_model=ZERO_COST)
+
+    def test_1x_rejects_matching_net_cost_but_mismatched_entry_exit_split(self) -> None:
+        run, _ = _two_trade_run(cost_model=NONZERO_COST)
+        original_trade = run.executed_trades[0]
+        total_cost = original_trade.entry_cost + original_trade.exit_cost
+        corrupted_trade = dataclasses.replace(
+            original_trade,
+            entry_cost=total_cost,
+            exit_cost=Decimal("0"),
+            net_return=original_trade.gross_return - total_cost,
+        )
+        corrupted_decision = dataclasses.replace(run.decisions[0], trade=corrupted_trade)
+        corrupted_run = dataclasses.replace(run, decisions=(corrupted_decision,) + run.decisions[1:])
+        with self.assertRaisesRegex(OpenToOpenValidationV1Error, "cost_sensitivity_base_scenario_mismatch"):
+            evaluate_open_to_open_cost_sensitivity_v1(run=corrupted_run, base_cost_model=NONZERO_COST)
 
 
 class LatencySensitivityTests(unittest.TestCase):
@@ -318,16 +386,44 @@ class LatencySensitivityTests(unittest.TestCase):
         self.assertEqual(zero.latency_minutes, 0)
         self.assertEqual(zero.net_returns, run.trade_returns)
 
+    def test_zero_minute_helper_detects_mismatch(self) -> None:
+        run, _ = _two_trade_run()
+        canonical = run.executed_trades[0]
+        corrupted = _ReplayTrade(
+            exposure=canonical.exposure,
+            entry_time=canonical.entry_time,
+            exit_time=canonical.exit_time,
+            entry_open=canonical.entry_open,
+            exit_open=canonical.exit_open,
+            gross_return=Decimal("999"),
+            entry_cost=canonical.entry_cost,
+            exit_cost=canonical.exit_cost,
+            net_return=canonical.net_return,
+        )
+        rest = tuple(
+            _ReplayTrade(
+                exposure=trade.exposure,
+                entry_time=trade.entry_time,
+                exit_time=trade.exit_time,
+                entry_open=trade.entry_open,
+                exit_open=trade.exit_open,
+                gross_return=trade.gross_return,
+                entry_cost=trade.entry_cost,
+                exit_cost=trade.exit_cost,
+                net_return=trade.net_return,
+            )
+            for trade in run.executed_trades[1:]
+        )
+        with self.assertRaisesRegex(OpenToOpenValidationV1Error, "latency_zero_minute_does_not_reconcile_canonical_run"):
+            _verify_zero_latency_reconciles_canonical_run(run, (corrupted,) + rest, run.excluded_count)
+
     def test_strict_delayed_entry_and_exact_delayed_exit(self) -> None:
-        # Single LONG event at minute 0; horizon 1; opens create a per-minute ramp.
         opens = {offset: Decimal("100") + Decimal(offset) for offset in range(20)}
         run = _run(offsets_values=[(0, Decimal("-0.001"))], minutes=20, opens=opens, horizon=1)
         bar_series = _bar_series(minutes=20, opens=opens)
         evidence = evaluate_open_to_open_latency_sensitivity_v1(
             run=run, bar_series=bar_series, base_cost_model=ZERO_COST
         )
-        # latency 0: entry minute1 (open 101), exit minute2 (open 102) -> 1/101
-        # latency 5: delayed decision minute5 -> entry minute6 (open 106), exit minute7 (107) -> 1/106
         zero_net = evidence.scenarios[0].net_returns[0]
         five_net = evidence.scenarios[2].net_returns[0]
         self.assertEqual(evidence.scenarios[2].latency_minutes, 5)
@@ -335,7 +431,6 @@ class LatencySensitivityTests(unittest.TestCase):
         self.assertEqual(five_net, Decimal("107") / Decimal("106") - Decimal("1"))
 
     def test_missing_delayed_entry_excluded(self) -> None:
-        # Only 3 bars; a 15-minute delay leaves no eligible entry bar.
         run = _run(offsets_values=[(0, Decimal("-0.001"))], minutes=3, opens={2: Decimal("110")}, horizon=1)
         bar_series = _bar_series(minutes=3, opens={2: Decimal("110")})
         evidence = evaluate_open_to_open_latency_sensitivity_v1(
@@ -347,9 +442,6 @@ class LatencySensitivityTests(unittest.TestCase):
         self.assertEqual(fifteen.excluded_count, 1)
 
     def test_latency_changes_non_overlap(self) -> None:
-        # Two nearby non-flat events, horizon 3. At 0m only the first executes
-        # (second ignored while active). A large latency excludes the first,
-        # letting the second execute instead.
         opens = {offset: Decimal("100") + Decimal(offset) for offset in range(6)}
         run = _run(
             offsets_values=[(0, Decimal("-0.001")), (1, Decimal("0.001"))],
@@ -363,7 +455,6 @@ class LatencySensitivityTests(unittest.TestCase):
         )
         self.assertEqual(evidence.scenarios[0].executed_count, 1)
         fifteen = evidence.scenarios[3]
-        # first event delayed by 15m has no entry bar; both events excluded.
         self.assertEqual(fifteen.executed_count, 0)
 
 
@@ -375,19 +466,23 @@ class AdverseExitShockTests(unittest.TestCase):
         )
         self.assertTrue(evidence.synthetic_validation_evidence)
         scenario = evidence.scenarios[0]
-        # LONG: exit 110 -> 110*0.98 = 107.8 -> gross 0.078
         self.assertEqual(scenario.net_returns[0], Decimal("0.078"))
-        # SHORT: exit 90 -> 90*1.02 = 91.8 -> gross -1*(0.918-1) = 0.082
         self.assertEqual(scenario.net_returns[1], Decimal("0.082"))
-        # both reduced from the unshocked 0.1
         self.assertLess(scenario.net_returns[0], Decimal("0.1"))
         self.assertLess(scenario.net_returns[1], Decimal("0.1"))
 
     def test_shock_magnitude_must_be_positive(self) -> None:
         run, _ = _two_trade_run()
-        with self.assertRaisesRegex(OpenToOpenValidationV1Error, "shock_magnitude_must_be_positive"):
+        with self.assertRaisesRegex(OpenToOpenValidationV1Error, "adverse_shock_magnitude_out_of_bounds"):
             evaluate_open_to_open_adverse_exit_shock_v1(
                 run=run, base_cost_model=ZERO_COST, shock_magnitudes=(Decimal("0"),)
+            )
+
+    def test_shock_magnitude_must_be_below_one(self) -> None:
+        run, _ = _two_trade_run()
+        with self.assertRaisesRegex(OpenToOpenValidationV1Error, "adverse_shock_magnitude_out_of_bounds"):
+            evaluate_open_to_open_adverse_exit_shock_v1(
+                run=run, base_cost_model=ZERO_COST, shock_magnitudes=(Decimal("1"),)
             )
 
 
@@ -401,8 +496,6 @@ class MissingBarStressTests(unittest.TestCase):
             horizon=10,
         )
         bar_series = _bar_series(minutes=14, opens=opens)
-        # Baseline: first (LONG) trade executes entry m1 -> exit m11 (105/100-1 = 0.05);
-        # second event ignored while active.
         evidence = evaluate_open_to_open_missing_bar_stress_v1(
             run=run,
             bar_series=bar_series,
@@ -412,15 +505,37 @@ class MissingBarStressTests(unittest.TestCase):
         self.assertTrue(evidence.synthetic_validation_evidence)
         self.assertEqual(evidence.baseline_executed_count, 1)
         self.assertEqual(evidence.stressed_executed_count, 1)
-        # Removing m11 excludes the LONG trade; the SHORT trade now executes instead.
         self.assertEqual(run.trade_returns, (Decimal("0.05"),))
         self.assertEqual(evidence.net_returns, (Decimal("0.1"),))
+
+    def test_omitting_an_entry_bar_timestamp_does_not_shift_entry(self) -> None:
+        opens = {1: Decimal("105"), 11: Decimal("110")}
+        run = _run(offsets_values=[(0, Decimal("-0.001"))], minutes=14, opens=opens, horizon=10)
+        bar_series = _bar_series(minutes=14, opens=opens)
+        baseline_trade = run.executed_trades[0]
+        self.assertEqual(baseline_trade.entry_time, START + timedelta(minutes=1))
+        evidence = evaluate_open_to_open_missing_bar_stress_v1(
+            run=run,
+            bar_series=bar_series,
+            base_cost_model=ZERO_COST,
+            omitted_exit_bar_open_times=(START + timedelta(minutes=1),),
+        )
+        self.assertEqual(evidence.stressed_executed_count, 1)
+        self.assertEqual(evidence.net_returns, run.trade_returns)
 
     def test_omissions_required(self) -> None:
         run, bar_series = _two_trade_run()
         with self.assertRaisesRegex(OpenToOpenValidationV1Error, "missing_bar_omissions_required"):
             evaluate_open_to_open_missing_bar_stress_v1(
                 run=run, bar_series=bar_series, base_cost_model=ZERO_COST, omitted_exit_bar_open_times=()
+            )
+
+    def test_omission_of_non_candidate_timestamp_rejected(self) -> None:
+        run, bar_series = _two_trade_run()
+        bogus = START + timedelta(days=365)
+        with self.assertRaisesRegex(OpenToOpenValidationV1Error, "omitted_exit_bar_timestamp_not_a_candidate_bar"):
+            evaluate_open_to_open_missing_bar_stress_v1(
+                run=run, bar_series=bar_series, base_cost_model=ZERO_COST, omitted_exit_bar_open_times=(bogus,)
             )
 
 
@@ -439,6 +554,114 @@ class BlockedEvidenceTests(unittest.TestCase):
         evidence = build_reduced_liquidity_blocked_evidence_v1(run=run)
         self.assertEqual(evidence.status, "BLOCKED")
         self.assertEqual(evidence.reason, CAPACITY_BLOCKED_REASON)
+
+
+class CostModelValidationTests(unittest.TestCase):
+    def test_negative_cost_model_component_rejected_everywhere(self) -> None:
+        run, bar_series = _two_trade_run()
+        bad_cost = CostModel(percentage_per_turnover=Decimal("-0.01"))
+        with self.assertRaisesRegex(OpenToOpenValidationV1Error, "base_cost_model_component_invalid"):
+            evaluate_open_to_open_cost_sensitivity_v1(run=run, base_cost_model=bad_cost)
+        with self.assertRaisesRegex(OpenToOpenValidationV1Error, "base_cost_model_component_invalid"):
+            evaluate_open_to_open_latency_sensitivity_v1(run=run, bar_series=bar_series, base_cost_model=bad_cost)
+        with self.assertRaisesRegex(OpenToOpenValidationV1Error, "base_cost_model_component_invalid"):
+            evaluate_open_to_open_adverse_exit_shock_v1(run=run, base_cost_model=bad_cost, shock_magnitudes=(Decimal("0.01"),))
+        with self.assertRaisesRegex(OpenToOpenValidationV1Error, "base_cost_model_component_invalid"):
+            evaluate_open_to_open_missing_bar_stress_v1(
+                run=run, bar_series=bar_series, base_cost_model=bad_cost,
+                omitted_exit_bar_open_times=(bar_series.bars[0].bar_open_at,),
+            )
+        with self.assertRaisesRegex(OpenToOpenValidationV1Error, "base_cost_model_component_invalid"):
+            evaluate_circular_shift_null_control_v1(
+                run=run, bar_series=bar_series, base_cost_model=bad_cost,
+                window_start=START, window_end=START + timedelta(days=2), seed=1,
+            )
+        with self.assertRaisesRegex(OpenToOpenValidationV1Error, "base_cost_model_component_invalid"):
+            evaluate_full_permutation_null_diagnostic_v1(
+                run=run, bar_series=bar_series, base_cost_model=bad_cost,
+                window_start=START, window_end=START + timedelta(days=2), seed=1,
+            )
+        with self.assertRaisesRegex(OpenToOpenValidationV1Error, "base_cost_model_component_invalid"):
+            reconcile_open_to_open_trade_ledger_v1(run=run, bar_series=bar_series, base_cost_model=bad_cost)
+
+    def test_base_cost_model_must_reconcile_with_run(self) -> None:
+        run, bar_series = _two_trade_run(cost_model=NONZERO_COST)
+        with self.assertRaisesRegex(OpenToOpenValidationV1Error, "base_cost_model_does_not_reconcile_with_run"):
+            evaluate_open_to_open_latency_sensitivity_v1(run=run, bar_series=bar_series, base_cost_model=ZERO_COST)
+        with self.assertRaisesRegex(OpenToOpenValidationV1Error, "base_cost_model_does_not_reconcile_with_run"):
+            evaluate_open_to_open_adverse_exit_shock_v1(run=run, base_cost_model=ZERO_COST, shock_magnitudes=(Decimal("0.01"),))
+        with self.assertRaisesRegex(OpenToOpenValidationV1Error, "base_cost_model_does_not_reconcile_with_run"):
+            evaluate_open_to_open_missing_bar_stress_v1(
+                run=run, bar_series=bar_series, base_cost_model=ZERO_COST,
+                omitted_exit_bar_open_times=(bar_series.bars[0].bar_open_at,),
+            )
+        with self.assertRaisesRegex(OpenToOpenValidationV1Error, "base_cost_model_does_not_reconcile_with_run"):
+            evaluate_circular_shift_null_control_v1(
+                run=run, bar_series=bar_series, base_cost_model=ZERO_COST,
+                window_start=START, window_end=START + timedelta(days=2), seed=1,
+            )
+        with self.assertRaisesRegex(OpenToOpenValidationV1Error, "base_cost_model_does_not_reconcile_with_run"):
+            evaluate_full_permutation_null_diagnostic_v1(
+                run=run, bar_series=bar_series, base_cost_model=ZERO_COST,
+                window_start=START, window_end=START + timedelta(days=2), seed=1,
+            )
+
+
+class ProvenanceGateTests(unittest.TestCase):
+    def _call(self, name: str, run: BasisMeanReversionResearchRunV1, bar_series: AuthoritativeTradableBarSeriesV2) -> None:
+        if name == "latency":
+            evaluate_open_to_open_latency_sensitivity_v1(run=run, bar_series=bar_series, base_cost_model=ZERO_COST)
+        elif name == "missing_bar":
+            evaluate_open_to_open_missing_bar_stress_v1(
+                run=run, bar_series=bar_series, base_cost_model=ZERO_COST,
+                omitted_exit_bar_open_times=(bar_series.bars[0].bar_open_at,),
+            )
+        elif name == "circular_shift":
+            evaluate_circular_shift_null_control_v1(
+                run=run, bar_series=bar_series, base_cost_model=ZERO_COST,
+                window_start=START, window_end=START + timedelta(days=2), seed=1,
+            )
+        elif name == "full_permutation":
+            evaluate_full_permutation_null_diagnostic_v1(
+                run=run, bar_series=bar_series, base_cost_model=ZERO_COST,
+                window_start=START, window_end=START + timedelta(days=2), seed=1,
+            )
+        elif name == "reconciliation":
+            reconcile_open_to_open_trade_ledger_v1(run=run, bar_series=bar_series, base_cost_model=ZERO_COST)
+
+    def test_cross_dataset_rejected(self) -> None:
+        run, _ = _two_trade_run()
+        mismatched = _bar_series(minutes=8, opens={2: Decimal("110"), 5: Decimal("90")}, dataset_version_id=uuid4())
+        for name in ("latency", "missing_bar", "circular_shift", "full_permutation", "reconciliation"):
+            with self.subTest(name=name), self.assertRaisesRegex(OpenToOpenValidationV1Error, "bar_series_dataset_mismatch"):
+                self._call(name, run, mismatched)
+
+    def test_cross_instrument_rejected(self) -> None:
+        run, _ = _two_trade_run()
+        mismatched = _bar_series(minutes=8, opens={2: Decimal("110"), 5: Decimal("90")}, instrument_id="OTHER:INSTRUMENT")
+        for name in ("latency", "missing_bar", "circular_shift", "full_permutation", "reconciliation"):
+            with self.subTest(name=name), self.assertRaisesRegex(OpenToOpenValidationV1Error, "bar_series_instrument_mismatch"):
+                self._call(name, run, mismatched)
+
+
+class SemanticIdentityBindingTests(unittest.TestCase):
+    def test_latency_identity_binds_bar_series_provenance_not_just_output(self) -> None:
+        run, bar_series = _two_trade_run()
+        different_provenance = _bar_series(minutes=8, opens={2: Decimal("110"), 5: Decimal("90")})
+        first = evaluate_open_to_open_latency_sensitivity_v1(run=run, bar_series=bar_series, base_cost_model=ZERO_COST)
+        second = evaluate_open_to_open_latency_sensitivity_v1(run=run, bar_series=different_provenance, base_cost_model=ZERO_COST)
+        self.assertEqual(first.scenarios, second.scenarios)
+        self.assertNotEqual(first.bar_series_fingerprint, second.bar_series_fingerprint)
+        self.assertNotEqual(first.content_hash, second.content_hash)
+
+    def test_reconciliation_identity_binds_bar_series_provenance_not_just_output(self) -> None:
+        run, bar_series = _two_trade_run(cost_model=NONZERO_COST)
+        different_provenance = _bar_series(minutes=8, opens={2: Decimal("110"), 5: Decimal("90")})
+        first = reconcile_open_to_open_trade_ledger_v1(run=run, bar_series=bar_series, base_cost_model=NONZERO_COST)
+        second = reconcile_open_to_open_trade_ledger_v1(run=run, bar_series=different_provenance, base_cost_model=NONZERO_COST)
+        self.assertEqual(first.checks, second.checks)
+        self.assertEqual(first.status, second.status)
+        self.assertNotEqual(first.content_hash, second.content_hash)
 
 
 class BootstrapExtensionTests(unittest.TestCase):
@@ -476,6 +699,20 @@ class BootstrapExtensionTests(unittest.TestCase):
             self.assertAlmostEqual(float(crypto_value) / float(legacy_value), expected_ratio, places=9)
             compared += 1
         self.assertGreater(compared, 0)
+
+    def test_365_identity_bound_even_in_zero_volatility_sample(self) -> None:
+        constant_returns = (Decimal("0.01"),)
+        legacy = evaluate_bootstrap(
+            strategy_version="s", dataset_version="d", period_returns=constant_returns, seed=1, resamples=5
+        )
+        crypto = evaluate_bootstrap(
+            strategy_version="s", dataset_version="d", period_returns=constant_returns, seed=1, resamples=5,
+            periods_per_year=365,
+        )
+        self.assertEqual(legacy.sharpe_distribution, crypto.sharpe_distribution)
+        self.assertTrue(all(value is None for value in legacy.sharpe_distribution))
+        self.assertEqual(legacy.return_distribution, crypto.return_distribution)
+        self.assertNotEqual(legacy.identity.content_hash, crypto.identity.content_hash)
 
     def test_invalid_periods_per_year_rejected(self) -> None:
         from trade_platform.quant_validation import QuantValidationError
@@ -521,7 +758,6 @@ class EstimatorTests(unittest.TestCase):
 
     def test_pearson_kurtosis_reference_vector(self) -> None:
         two_valued = (Decimal("-0.01"), Decimal("-0.01"), Decimal("0.01"), Decimal("0.01"))
-        # symmetric two-point distribution -> Pearson kurtosis -3 under the pinned bias correction
         self.assertAlmostEqual(bias_corrected_pearson_kurtosis(two_valued), -3.0, places=12)
 
     def test_trial_sharpe_mean_and_std(self) -> None:
@@ -530,33 +766,89 @@ class EstimatorTests(unittest.TestCase):
         self.assertIsNone(trial_sharpe_standard_deviation([1.0]))
 
 
+class TrialProvenanceTests(unittest.TestCase):
+    def test_series_from_different_run_rejected(self) -> None:
+        run_one = _fake_run(content_hash="a" * 64)
+        run_two = _fake_run(content_hash="b" * 64)
+        series = _series(run_one, tuple(Decimal("0.01") for _ in range(30)), "c" * 64)
+        with self.assertRaisesRegex(OpenToOpenValidationV1Error, "trial_series_run_mismatch"):
+            build_research_trial_v1(
+                run=run_two, series=series, trial_role=ResearchTrialRoleV1.BASELINE,
+                disposition=ResearchTrialDispositionV1.SELECTED,
+            )
+
+    def test_series_from_different_dataset_rejected(self) -> None:
+        run = _fake_run(content_hash="a" * 64)
+        series = _series(run, tuple(Decimal("0.01") for _ in range(30)), "c" * 64)
+        mismatched_series = dataclasses.replace(series, dataset_version_id=uuid4())
+        with self.assertRaisesRegex(OpenToOpenValidationV1Error, "trial_series_dataset_mismatch"):
+            build_research_trial_v1(
+                run=run, series=mismatched_series, trial_role=ResearchTrialRoleV1.BASELINE,
+                disposition=ResearchTrialDispositionV1.SELECTED,
+            )
+
+    def test_series_from_different_instrument_rejected(self) -> None:
+        run = _fake_run(content_hash="a" * 64)
+        series = _series(run, tuple(Decimal("0.01") for _ in range(30)), "c" * 64)
+        mismatched_series = dataclasses.replace(series, instrument_id="OTHER:INSTRUMENT")
+        with self.assertRaisesRegex(OpenToOpenValidationV1Error, "trial_series_instrument_mismatch"):
+            build_research_trial_v1(
+                run=run, series=mismatched_series, trial_role=ResearchTrialRoleV1.BASELINE,
+                disposition=ResearchTrialDispositionV1.SELECTED,
+            )
+
+
+class TrialRoleDispositionTests(unittest.TestCase):
+    def test_role_and_disposition_both_bind_identity(self) -> None:
+        run = _fake_run(content_hash="a" * 64)
+        series = _series(run, tuple(Decimal("0.01") for _ in range(30)), "c" * 64)
+        baseline_selected = build_research_trial_v1(
+            run=run, series=series, trial_role=ResearchTrialRoleV1.BASELINE, disposition=ResearchTrialDispositionV1.SELECTED
+        )
+        neighbor_rejected = build_research_trial_v1(
+            run=run, series=series, trial_role=ResearchTrialRoleV1.NEIGHBOR, disposition=ResearchTrialDispositionV1.REJECTED
+        )
+        baseline_rejected = build_research_trial_v1(
+            run=run, series=series, trial_role=ResearchTrialRoleV1.BASELINE, disposition=ResearchTrialDispositionV1.REJECTED
+        )
+        self.assertNotEqual(baseline_selected.trial_content_hash, neighbor_rejected.trial_content_hash)
+        self.assertNotEqual(baseline_selected.trial_content_hash, baseline_rejected.trial_content_hash)
+        self.assertNotEqual(neighbor_rejected.trial_content_hash, baseline_rejected.trial_content_hash)
+
+
 class TrialLedgerTests(unittest.TestCase):
     def test_duplicate_trial_rejected(self) -> None:
-        definition = _definition()
-        series = _series((Decimal("0.01"), Decimal("-0.01")), "b" * 64)
+        run = _fake_run(content_hash="a" * 64)
+        series = _series(run, tuple(Decimal("0.01") for _ in range(30)), "b" * 64)
         trial_one = build_research_trial_v1(
-            definition=definition, series=series, classification=ResearchTrialClassificationV1.BASELINE
+            run=run, series=series, trial_role=ResearchTrialRoleV1.BASELINE, disposition=ResearchTrialDispositionV1.SELECTED
         )
         trial_two = build_research_trial_v1(
-            definition=definition, series=series, classification=ResearchTrialClassificationV1.NEIGHBOR
+            run=run, series=series, trial_role=ResearchTrialRoleV1.BASELINE, disposition=ResearchTrialDispositionV1.SELECTED
         )
         self.assertEqual(trial_one.trial_content_hash, trial_two.trial_content_hash)
         with self.assertRaisesRegex(OpenToOpenValidationV1Error, "duplicate_research_trial"):
             build_research_trial_ledger_v1([trial_one, trial_two])
 
-    def test_ledger_deterministic(self) -> None:
-        definition = _definition()
+    def test_ledger_deterministic_and_order_independent(self) -> None:
         trials = [
             build_research_trial_v1(
-                definition=definition,
-                series=_series((Decimal("0.01"), Decimal(str(index)) / Decimal("100")), f"{index:064d}"),
-                classification=ResearchTrialClassificationV1.INSPECTED,
+                run=_fake_run(content_hash=f"{index:064d}"),
+                series=_series(
+                    _fake_run(content_hash=f"{index:064d}"),
+                    tuple(Decimal(str(index)) / Decimal("100") for _ in range(30)),
+                    f"{index + 100:064d}",
+                ),
+                trial_role=ResearchTrialRoleV1.OTHER,
+                disposition=ResearchTrialDispositionV1.INSPECTED,
             )
             for index in range(1, 4)
         ]
         first = build_research_trial_ledger_v1(trials)
         second = build_research_trial_ledger_v1(trials)
+        reversed_order = build_research_trial_ledger_v1(list(reversed(trials)))
         self.assertEqual(first.content_hash, second.content_hash)
+        self.assertEqual(first.content_hash, reversed_order.content_hash)
         self.assertEqual(first.ledger_id, second.ledger_id)
         self.assertEqual(len(first.trials), 3)
 
@@ -569,7 +861,7 @@ def _dominant_block_matrix() -> tuple[list[list[tuple[Decimal, ...]]], list[str]
         centre = Decimal("0.10") + Decimal(index) / Decimal("100")
         block = tuple(centre + delta for delta in pattern)
         trial_blocks.append([block for _ in range(8)])
-        identities.append(f"trial-{index:02d}")
+        identities.append(_hash_id(f"trial-{index:02d}"))
     return trial_blocks, identities
 
 
@@ -620,8 +912,6 @@ class CanonicalCscvPboTests(unittest.TestCase):
         self.assertEqual(evidence.pbo, Decimal("0"))
 
     def test_matches_independent_reference(self) -> None:
-        # A mixed matrix where per-trial per-block means vary, so IS and OOS
-        # rankings genuinely differ across splits.
         trial_blocks: list[list[tuple[Decimal, ...]]] = []
         identities: list[str] = []
         base_pattern = (Decimal("-0.01"), Decimal("0.005"), Decimal("0.01"), Decimal("-0.005"), Decimal("0.008"))
@@ -631,7 +921,7 @@ class CanonicalCscvPboTests(unittest.TestCase):
                 centre = Decimal(str(0.001 * ((trial * 7 + block_index * 3) % 11)))
                 blocks.append(tuple(centre + delta for delta in base_pattern))
             trial_blocks.append(blocks)
-            identities.append(f"mixed-{trial:02d}")
+            identities.append(_hash_id(f"mixed-{trial:02d}"))
         evidence = evaluate_canonical_cscv_pbo_v1(trial_blocks=trial_blocks, trial_identities=identities)
         valid, lambda_le_zero = _reference_pbo(trial_blocks, identities)
         self.assertEqual(evidence.number_of_valid_splits, valid)
@@ -642,7 +932,6 @@ class CanonicalCscvPboTests(unittest.TestCase):
 
     def test_zero_variance_split_makes_pbo_unavailable(self) -> None:
         trial_blocks, identities = _dominant_block_matrix()
-        # Make one trial fully constant -> every split has an undefined Sharpe.
         trial_blocks[0] = [tuple(Decimal("0.05") for _ in range(5)) for _ in range(8)]
         evidence = evaluate_canonical_cscv_pbo_v1(trial_blocks=trial_blocks, trial_identities=identities)
         self.assertEqual(evidence.status, "UNAVAILABLE")
@@ -655,6 +944,29 @@ class CanonicalCscvPboTests(unittest.TestCase):
         self.assertEqual(evidence.status, "UNAVAILABLE")
         self.assertIn("insufficient_distinct_trials", evidence.unavailable_reasons)
 
+    def test_duplicate_identity_unavailable_even_with_enough_rows(self) -> None:
+        trial_blocks, identities = _dominant_block_matrix()
+        seven_blocks = trial_blocks + [trial_blocks[0]]
+        seven_identities = identities + [identities[0]]
+        evidence = evaluate_canonical_cscv_pbo_v1(trial_blocks=seven_blocks, trial_identities=seven_identities)
+        self.assertEqual(evidence.status, "UNAVAILABLE")
+        self.assertIn("duplicate_trial_identity", evidence.unavailable_reasons)
+
+    def test_non_canonical_identity_rejected(self) -> None:
+        trial_blocks, identities = _dominant_block_matrix()
+        bad_identities = list(identities)
+        bad_identities[0] = "not-a-hash"
+        with self.assertRaisesRegex(OpenToOpenValidationV1Error, "cscv_trial_identity_not_canonical_hash"):
+            evaluate_canonical_cscv_pbo_v1(trial_blocks=trial_blocks, trial_identities=bad_identities)
+
+    def test_misaligned_block_geometry_unavailable(self) -> None:
+        trial_blocks, identities = _dominant_block_matrix()
+        misaligned = [list(blocks) for blocks in trial_blocks]
+        misaligned[0][0] = misaligned[0][0] + (Decimal("0.02"),)
+        evidence = evaluate_canonical_cscv_pbo_v1(trial_blocks=misaligned, trial_identities=identities)
+        self.assertEqual(evidence.status, "UNAVAILABLE")
+        self.assertIn("block_observation_count_misaligned_across_trials", evidence.unavailable_reasons)
+
     def test_is_winner_deterministic_tie_break(self) -> None:
         self.assertEqual(_select_is_winner([2.0, 2.0, 1.0], ["bbb", "aaa", "zzz"]), 1)
         self.assertEqual(_select_is_winner([1.0, 3.0, 3.0], ["aaa", "ccc", "bbb"]), 2)
@@ -664,24 +976,22 @@ class CanonicalCscvPboTests(unittest.TestCase):
 
 
 def _dsr_ledger() -> tuple[object, object]:
-    definition = _definition()
-    selected_returns = tuple(
-        (Decimal("0.02"), Decimal("-0.01"), Decimal("0.03"))[index % 3] for index in range(30)
-    )
-    selected_series = _series(selected_returns, "1" * 64)
+    run = _fake_run(content_hash="a" * 64)
+    selected_returns = tuple((Decimal("0.02"), Decimal("-0.01"), Decimal("0.03"))[index % 3] for index in range(30))
+    selected_series = _series(run, selected_returns, "1" * 64)
     trials = [
         build_research_trial_v1(
-            definition=definition, series=selected_series, classification=ResearchTrialClassificationV1.SELECTED
+            run=run, series=selected_series, trial_role=ResearchTrialRoleV1.BASELINE,
+            disposition=ResearchTrialDispositionV1.SELECTED,
         )
     ]
     for index in range(1, 6):
-        returns = tuple(
-            Decimal(str(0.01 * (((index * 3 + step) % 5) - 2 + 0.5))) for step in range(6)
-        )
-        series = _series(returns, f"{index:064d}")
+        returns = tuple(Decimal(str(0.01 * (((index * 3 + step) % 5) - 2 + 0.5))) for step in range(30))
+        series = _series(run, returns, f"{index:064d}")
         trials.append(
             build_research_trial_v1(
-                definition=definition, series=series, classification=ResearchTrialClassificationV1.NEIGHBOR
+                run=run, series=series, trial_role=ResearchTrialRoleV1.NEIGHBOR,
+                disposition=ResearchTrialDispositionV1.INSPECTED,
             )
         )
     ledger = build_research_trial_ledger_v1(trials)
@@ -735,40 +1045,64 @@ class DeflatedSharpeTests(unittest.TestCase):
         self.assertAlmostEqual(evidence.deflated_sharpe, reference_dsr, places=10)
 
     def test_insufficient_observations_unavailable(self) -> None:
-        definition = _definition()
-        selected_series = _series((Decimal("0.01"), Decimal("-0.01"), Decimal("0.02")), "2" * 64)
+        run = _fake_run(content_hash="b" * 64)
+        short_returns = (Decimal("0.01"), Decimal("-0.01"), Decimal("0.02"))
+        selected_series = _series(run, short_returns, "2" * 64)
         trials = [
             build_research_trial_v1(
-                definition=definition, series=selected_series, classification=ResearchTrialClassificationV1.SELECTED
+                run=run, series=selected_series, trial_role=ResearchTrialRoleV1.BASELINE,
+                disposition=ResearchTrialDispositionV1.SELECTED,
             )
         ]
         for index in range(1, 6):
+            series = _series(run, short_returns, f"{index:064d}")
             trials.append(
                 build_research_trial_v1(
-                    definition=definition,
-                    series=_series((Decimal("0.01"), Decimal(str(index)) / Decimal("100")), f"{index:064d}"),
-                    classification=ResearchTrialClassificationV1.NEIGHBOR,
+                    run=run, series=series, trial_role=ResearchTrialRoleV1.NEIGHBOR,
+                    disposition=ResearchTrialDispositionV1.INSPECTED,
                 )
             )
         ledger = build_research_trial_ledger_v1(trials)
         evidence = evaluate_deflated_sharpe_evidence_v1(ledger=ledger, selected_trial_id=trials[0].trial_id)
         self.assertEqual(evidence.status, "UNAVAILABLE")
-        self.assertIsNone(evidence.deflated_sharpe)
         self.assertIn("insufficient_observations", evidence.unavailable_reasons)
 
     def test_insufficient_trials_unavailable(self) -> None:
-        definition = _definition()
-        selected_returns = tuple(
-            (Decimal("0.02"), Decimal("-0.01"), Decimal("0.03"))[index % 3] for index in range(30)
-        )
-        selected_series = _series(selected_returns, "3" * 64)
+        run = _fake_run(content_hash="c" * 64)
+        selected_returns = tuple((Decimal("0.02"), Decimal("-0.01"), Decimal("0.03"))[index % 3] for index in range(30))
+        selected_series = _series(run, selected_returns, "3" * 64)
         trial = build_research_trial_v1(
-            definition=definition, series=selected_series, classification=ResearchTrialClassificationV1.SELECTED
+            run=run, series=selected_series, trial_role=ResearchTrialRoleV1.BASELINE,
+            disposition=ResearchTrialDispositionV1.SELECTED,
         )
         ledger = build_research_trial_ledger_v1([trial])
         evidence = evaluate_deflated_sharpe_evidence_v1(ledger=ledger, selected_trial_id=trial.trial_id)
         self.assertEqual(evidence.status, "UNAVAILABLE")
         self.assertIn("insufficient_trials", evidence.unavailable_reasons)
+
+    def test_heterogeneous_window_trials_rejected(self) -> None:
+        run = _fake_run(content_hash="d" * 64)
+        selected_returns = tuple((Decimal("0.02"), Decimal("-0.01"), Decimal("0.03"))[index % 3] for index in range(30))
+        selected_series = _series(run, selected_returns, "4" * 64)
+        trials = [
+            build_research_trial_v1(
+                run=run, series=selected_series, trial_role=ResearchTrialRoleV1.BASELINE,
+                disposition=ResearchTrialDispositionV1.SELECTED,
+            )
+        ]
+        for index in range(1, 6):
+            other_run = _fake_run(content_hash=f"{index + 200:064d}")
+            short_series = _series(other_run, tuple(Decimal("0.01") for _ in range(6)), f"{index + 300:064d}")
+            trials.append(
+                build_research_trial_v1(
+                    run=other_run, series=short_series, trial_role=ResearchTrialRoleV1.NEIGHBOR,
+                    disposition=ResearchTrialDispositionV1.INSPECTED,
+                )
+            )
+        ledger = build_research_trial_ledger_v1(trials)
+        evidence = evaluate_deflated_sharpe_evidence_v1(ledger=ledger, selected_trial_id=trials[0].trial_id)
+        self.assertEqual(evidence.status, "UNAVAILABLE")
+        self.assertIn("incomparable_trial_evaluation_window", evidence.unavailable_reasons)
 
 
 class CircularShiftHelperTests(unittest.TestCase):
@@ -787,9 +1121,6 @@ class CircularShiftHelperTests(unittest.TestCase):
 
 
 def _null_control_run() -> tuple[BasisMeanReversionResearchRunV1, AuthoritativeTradableBarSeriesV2]:
-    # 10 feature events, exactly one non-flat at index 0; bars cover minutes 0..8
-    # only, so circular shifts that move the non-flat value past minute 6 fail to
-    # resolve an exit bar and become unavailable shifts (valid=6, attempted=9).
     offsets_values = [(index, Decimal("-0.001") if index == 0 else Decimal("0")) for index in range(10)]
     opens = {offset: Decimal("100") + Decimal(offset) for offset in range(9)}
     bundle = _bundle(offsets_values)
@@ -812,8 +1143,11 @@ def _independent_null_sharpe(
     window_start: datetime,
     window_end: datetime,
 ) -> float | None:
-    basis = tuple(decision.basis_value for decision in run.decisions)
-    timestamps = [decision.decision_at for decision in run.decisions]
+    from trade_platform.signed_price_return_v2 import compute_signed_open_to_open_return
+
+    eligible = [decision for decision in run.decisions if window_start <= decision.decision_at < window_end]
+    basis = tuple(decision.basis_value for decision in eligible)
+    timestamps = [decision.decision_at for decision in eligible]
     shifted = circularly_shift_basis_values(basis, offset)
     cap = run.definition.maximum_absolute_exposure
     threshold = run.definition.basis_entry_threshold
@@ -868,7 +1202,6 @@ class CircularShiftNullControlTests(unittest.TestCase):
         )
         self.assertEqual(evidence.status, "AVAILABLE")
         self.assertEqual(evidence.attempted_shifts, 9)
-        # shifts k=1..6 execute (valid); k=7..9 miss the exit bar (unavailable).
         self.assertEqual(evidence.valid_shifts, 6)
         self.assertEqual(evidence.unavailable_shifts, 3)
         self.assertNotEqual(evidence.valid_shifts, evidence.attempted_shifts)
@@ -952,6 +1285,40 @@ class CircularShiftNullControlTests(unittest.TestCase):
         self.assertNotIn("FeatureMaterializationV2", contents)
         self.assertNotIn("feature_authority", contents)
 
+    def test_decisions_outside_window_do_not_affect_result(self) -> None:
+        offsets_values = [(index, Decimal("-0.001") if index == 0 else Decimal("0")) for index in range(9)]
+        opens = {offset: Decimal("100") + Decimal(offset) for offset in range(9)}
+        bar_series = _bar_series(minutes=9, opens=opens)
+        base_bundle = _bundle(offsets_values)
+        base_evidence = SubjectAwareTradableResearchEvidenceV2.create(feature_bundle=base_bundle, bar_series=bar_series)
+        base_run = run_crypto_basis_mean_reversion_research(
+            definition=_definition(horizon=1), evidence=base_evidence,
+            instrument_kind=CryptoInstrumentKind.PERPETUAL, cost_model=ZERO_COST, cost_model_version="cost-model-v1",
+        )
+
+        far_future_minutes = 2 * 24 * 60 + 60
+        extended_offsets_values = offsets_values + [
+            (far_future_minutes, Decimal("0.999")), (far_future_minutes + 1, Decimal("-0.999"))
+        ]
+        extended_bundle = _bundle(extended_offsets_values, decision_at=START + timedelta(days=3))
+        extended_bar_series = _bar_series(minutes=9, opens=opens)
+        extended_evidence = SubjectAwareTradableResearchEvidenceV2.create(
+            feature_bundle=extended_bundle, bar_series=extended_bar_series
+        )
+        extended_run = run_crypto_basis_mean_reversion_research(
+            definition=_definition(horizon=1), evidence=extended_evidence,
+            instrument_kind=CryptoInstrumentKind.PERPETUAL, cost_model=ZERO_COST, cost_model_version="cost-model-v1",
+        )
+
+        window_start = START
+        window_end = START + timedelta(days=2)
+        common = {"base_cost_model": ZERO_COST, "window_start": window_start, "window_end": window_end, "seed": 11, "minimum_valid_shifts": 3}
+        base_result = evaluate_circular_shift_null_control_v1(run=base_run, bar_series=bar_series, **common)
+        extended_result = evaluate_circular_shift_null_control_v1(run=extended_run, bar_series=extended_bar_series, **common)
+        self.assertEqual(base_result.eligible_feature_event_count, extended_result.eligible_feature_event_count)
+        self.assertEqual(base_result.observed_sharpe, extended_result.observed_sharpe)
+        self.assertEqual(base_result.empirical_p_value, extended_result.empirical_p_value)
+
 
 class ReconciliationTests(unittest.TestCase):
     def test_clean_ledger_reconciles(self) -> None:
@@ -960,11 +1327,10 @@ class ReconciliationTests(unittest.TestCase):
             run=run, bar_series=bar_series, base_cost_model=NONZERO_COST
         )
         self.assertEqual(evidence.status, "RECONCILED")
-        self.assertEqual(evidence.mismatched_trade_count, 0)
+        self.assertEqual(evidence.mismatched_decision_count, 0)
+        self.assertEqual(evidence.decision_count, len(run.decisions))
 
-    def test_catches_corruption(self) -> None:
-        import dataclasses
-
+    def test_catches_field_corruption(self) -> None:
         run, bar_series = _two_trade_run(cost_model=NONZERO_COST)
         original_trade = run.executed_trades[0]
         corruptions = {
@@ -984,7 +1350,58 @@ class ReconciliationTests(unittest.TestCase):
                 run=corrupted_run, bar_series=bar_series, base_cost_model=NONZERO_COST
             )
             self.assertEqual(evidence.status, "BLOCKED", f"corruption {field_name} not caught")
-            self.assertGreaterEqual(evidence.mismatched_trade_count, 1)
+            self.assertGreaterEqual(evidence.mismatched_decision_count, 1)
+
+    def test_catches_missing_executed_trade(self) -> None:
+        run, bar_series = _two_trade_run(cost_model=NONZERO_COST)
+        corrupted_decision = dataclasses.replace(run.decisions[0], trade=None)
+        corrupted_run = dataclasses.replace(run, decisions=(corrupted_decision,) + run.decisions[1:])
+        evidence = reconcile_open_to_open_trade_ledger_v1(
+            run=corrupted_run, bar_series=bar_series, base_cost_model=NONZERO_COST
+        )
+        self.assertEqual(evidence.status, "BLOCKED")
+        self.assertIn("missing_executed_trade", evidence.checks[0].discrepancies)
+
+    def test_catches_extra_executed_trade(self) -> None:
+        run, bar_series = _run_with_flat_decision()
+        flat_index = next(
+            index for index, decision in enumerate(run.decisions)
+            if decision.outcome is BasisMeanReversionOutcomeV1.FLAT
+        )
+        executed_trade = run.executed_trades[0]
+        fabricated_trade = dataclasses.replace(executed_trade, decision_at=run.decisions[flat_index].decision_at)
+        corrupted_decision = dataclasses.replace(
+            run.decisions[flat_index], outcome=BasisMeanReversionOutcomeV1.EXECUTED, trade=fabricated_trade
+        )
+        decisions = list(run.decisions)
+        decisions[flat_index] = corrupted_decision
+        corrupted_run = dataclasses.replace(run, decisions=tuple(decisions))
+        evidence = reconcile_open_to_open_trade_ledger_v1(
+            run=corrupted_run, bar_series=bar_series, base_cost_model=ZERO_COST
+        )
+        self.assertEqual(evidence.status, "BLOCKED")
+        self.assertIn("outcome", evidence.checks[flat_index].discrepancies)
+
+    def test_catches_overlapping_executed_trade(self) -> None:
+        run, bar_series = _run_with_overlap()
+        self.assertEqual(run.decisions[1].outcome, BasisMeanReversionOutcomeV1.IGNORED_ACTIVE_TRADE)
+        first_trade = run.decisions[0].trade
+        assert first_trade is not None
+        fabricated_trade = dataclasses.replace(
+            first_trade,
+            decision_at=run.decisions[1].decision_at,
+            basis_value=run.decisions[1].basis_value,
+            exposure=run.decisions[1].exposure,
+        )
+        corrupted_decision = dataclasses.replace(
+            run.decisions[1], outcome=BasisMeanReversionOutcomeV1.EXECUTED, trade=fabricated_trade
+        )
+        corrupted_run = dataclasses.replace(run, decisions=(run.decisions[0], corrupted_decision) + run.decisions[2:])
+        evidence = reconcile_open_to_open_trade_ledger_v1(
+            run=corrupted_run, bar_series=bar_series, base_cost_model=ZERO_COST
+        )
+        self.assertEqual(evidence.status, "BLOCKED")
+        self.assertIn("outcome", evidence.checks[1].discrepancies)
 
 
 class DeterminismTests(unittest.TestCase):

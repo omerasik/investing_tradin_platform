@@ -360,7 +360,10 @@ def evaluate_bootstrap(*, strategy_version: str, dataset_version: str, period_re
                "return_distribution": tuple(returns), "sharpe_distribution": tuple(sharpes), "drawdown_distribution": tuple(drawdowns),
                "percentiles": percentiles, "probability_negative_outcome": Decimal(sum(value < 0 for value in returns)) / Decimal(resamples),
                "confidence_interval": (percentiles["p05_return"], percentiles["p95_return"])}
-    return BootstrapEvidence(_identity("bootstrap", artifact_version, payload), **payload)
+    identity_payload: dict[str, Any] = dict(payload)
+    if periods_per_year != 252:
+        identity_payload["periods_per_year"] = periods_per_year
+    return BootstrapEvidence(_identity("bootstrap", artifact_version, identity_payload), **payload)
 
 
 @dataclass(frozen=True, slots=True)

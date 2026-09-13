@@ -15,12 +15,12 @@ from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from .crypto_basis_mean_reversion_v1 import (
+    BasisMeanReversionOutcomeV1,
     BasisMeanReversionResearchRunV1,
-    CryptoBasisMeanReversionDefinitionV1,
 )
 from .research import CostModel
 from .signed_price_return_v2 import compute_signed_open_to_open_return
-from .tradable_bar_evidence_v2 import AuthoritativeTradableBarSeriesV2, AuthoritativeTradableBarV2
+from .tradable_bar_evidence_v2 import AuthoritativeTradableBarSeriesV2
 
 _UTC = timezone.utc
 _ONE_BAR_INTERVAL = timedelta(minutes=1)
@@ -41,6 +41,7 @@ DSR_MINIMUM_OBSERVATIONS = 30
 DSR_MINIMUM_TRIALS = 6
 NULL_CONTROL_TARGET_RUNS = 999
 NULL_CONTROL_MINIMUM_VALID_SHIFTS = 99
+_SUPPORTED_BAR_INTERVAL = "1m"
 _COST_MULTIPLIERS = (Decimal("1.0"), Decimal("1.5"), Decimal("2.0"), Decimal("3.0"))
 _LATENCY_MINUTES = (0, 1, 5, 15)
 STATUS_AVAILABLE = "AVAILABLE"
@@ -70,7 +71,7 @@ def _wire(value: Any) -> Any:
         return value.value
     if isinstance(value, Mapping):
         return {str(key): _wire(item) for key, item in value.items()}
-    if isinstance(value, (tuple, list)):
+    if isinstance(value, (tuple, list, frozenset, set)):
         return [_wire(item) for item in value]
     return value
 
@@ -82,6 +83,62 @@ def _content_hash(payload: Mapping[str, Any]) -> str:
 
 def _identity(kind: str, content_hash: str) -> UUID:
     return uuid5(_NAMESPACE, f"{kind}:{content_hash}")
+
+
+def _is_canonical_sha256_hex(value: str) -> bool:
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+
+
+def _bar_series_fingerprint(bar_series: AuthoritativeTradableBarSeriesV2) -> str:
+    payload = {
+        "dataset_version_id": bar_series.dataset_version_id,
+        "instrument_id": bar_series.instrument_id,
+        "interval": bar_series.interval,
+        "bars": [
+            {
+                "bar_open_at": bar.bar_open_at,
+                "bar_close_at": bar.bar_close_at,
+                "open": bar.open,
+                "raw_observation_id": bar.raw_observation_id,
+                "revision": bar.revision,
+            }
+            for bar in bar_series.bars
+        ],
+    }
+    return _content_hash(payload)
+
+
+def _require_matching_bar_series(
+    run: BasisMeanReversionResearchRunV1, bar_series: AuthoritativeTradableBarSeriesV2
+) -> None:
+    bar_series.validate()
+    if bar_series.dataset_version_id != run.dataset_version_id:
+        raise OpenToOpenValidationV1Error("bar_series_dataset_mismatch")
+    if bar_series.instrument_id != run.instrument_id:
+        raise OpenToOpenValidationV1Error("bar_series_instrument_mismatch")
+    if bar_series.interval != _SUPPORTED_BAR_INTERVAL:
+        raise OpenToOpenValidationV1Error("bar_series_interval_not_one_minute")
+
+
+def _validate_cost_model(cost_model: CostModel) -> None:
+    for value in (cost_model.fixed_per_turnover, cost_model.percentage_per_turnover, cost_model.spread_fraction_per_turnover):
+        if not value.is_finite() or value < 0:
+            raise OpenToOpenValidationV1Error("base_cost_model_component_invalid")
+
+
+def _verify_base_cost_model_reconciles(run: BasisMeanReversionResearchRunV1, cost_model: CostModel) -> None:
+    for trade in run.executed_trades:
+        turnover = abs(trade.exposure)
+        if cost_model.cost(turnover) != trade.entry_cost or cost_model.cost(turnover) != trade.exit_cost:
+            raise OpenToOpenValidationV1Error("base_cost_model_does_not_reconcile_with_run")
+
+
+def _wire_cost_model(cost_model: CostModel) -> dict[str, Decimal]:
+    return {
+        "fixed_per_turnover": cost_model.fixed_per_turnover,
+        "percentage_per_turnover": cost_model.percentage_per_turnover,
+        "spread_fraction_per_turnover": cost_model.spread_fraction_per_turnover,
+    }
 
 
 def _floats(returns: Sequence[Decimal]) -> list[float]:
@@ -195,9 +252,6 @@ def _daily_returns_over_window(
     return tuple(dates), tuple(daily_returns)
 
 
-# --- Section A: REALIZED_EXIT_DAILY_RETURN_SERIES_V1 --------------------------
-
-
 @dataclass(frozen=True, slots=True)
 class RealizedExitDailyReturnSeriesV1:
     series_kind: str
@@ -247,9 +301,6 @@ def build_realized_exit_daily_return_series_v1(
         content_hash=content_hash,
         series_id=_identity(REALIZED_EXIT_DAILY_RETURN_SERIES_KIND, content_hash),
     )
-
-
-# --- Section C: trade_return_metrics_v1 --------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,9 +363,6 @@ def trade_return_metrics_v1(trade_returns: tuple[Decimal, ...]) -> TradeReturnMe
     )
 
 
-# --- Shared OPEN->OPEN replay ------------------------------------------------
-
-
 @dataclass(frozen=True, slots=True)
 class _ReplayTrade:
     exposure: Decimal
@@ -344,6 +392,7 @@ def _replay_open_to_open(
     horizon: timedelta,
     cost_model: CostModel,
     latency: timedelta,
+    omitted_exit_open_times: frozenset[datetime] = frozenset(),
 ) -> tuple[tuple[_ReplayTrade, ...], int]:
     trades: list[_ReplayTrade] = []
     excluded = 0
@@ -358,6 +407,9 @@ def _replay_open_to_open(
             excluded += 1
             continue
         exit_open_at = entry_bar.bar_open_at + horizon
+        if exit_open_at in omitted_exit_open_times:
+            excluded += 1
+            continue
         exit_bar = next((bar for bar in bar_series.bars if bar.bar_open_at == exit_open_at), None)
         if exit_bar is None:
             excluded += 1
@@ -388,9 +440,6 @@ def _replay_open_to_open(
 
 def _decision_inputs(run: BasisMeanReversionResearchRunV1) -> tuple[tuple[datetime, Decimal], ...]:
     return tuple((decision.decision_at, decision.exposure) for decision in run.decisions)
-
-
-# --- Section D: OPEN->OPEN cost sensitivity ----------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -428,6 +477,7 @@ def _scaled_cost_model(base: CostModel, multiplier: Decimal) -> CostModel:
 def evaluate_open_to_open_cost_sensitivity_v1(
     *, run: BasisMeanReversionResearchRunV1, base_cost_model: CostModel
 ) -> OpenToOpenCostSensitivityEvidenceV1:
+    _validate_cost_model(base_cost_model)
     cap = run.definition.maximum_absolute_exposure
     scenarios: list[OpenToOpenCostScenarioV1] = []
     for multiplier in _COST_MULTIPLIERS:
@@ -442,7 +492,12 @@ def evaluate_open_to_open_cost_sensitivity_v1(
                 maximum_absolute_exposure=cap,
                 cost_model=model,
             )
-            if multiplier == Decimal("1.0") and computed.net_return != trade.net_return:
+            if multiplier == Decimal("1.0") and (
+                computed.gross_return != trade.gross_return
+                or computed.entry_cost != trade.entry_cost
+                or computed.exit_cost != trade.exit_cost
+                or computed.net_return != trade.net_return
+            ):
                 raise OpenToOpenValidationV1Error("cost_sensitivity_base_scenario_mismatch")
             recomputations.append(
                 OpenToOpenTradeCostRecomputationV1(
@@ -456,11 +511,7 @@ def evaluate_open_to_open_cost_sensitivity_v1(
         scenarios.append(OpenToOpenCostScenarioV1(multiplier, tuple(recomputations), tuple(net_returns)))
     payload = {
         "source_run_content_hash": run.content_hash,
-        "base_cost_model": {
-            "fixed_per_turnover": base_cost_model.fixed_per_turnover,
-            "percentage_per_turnover": base_cost_model.percentage_per_turnover,
-            "spread_fraction_per_turnover": base_cost_model.spread_fraction_per_turnover,
-        },
+        "base_cost_model": _wire_cost_model(base_cost_model),
         "base_cost_model_version": run.cost_model_version,
         "scenarios": [
             {
@@ -488,9 +539,6 @@ def evaluate_open_to_open_cost_sensitivity_v1(
     )
 
 
-# --- Section E: OPEN->OPEN latency sensitivity -------------------------------
-
-
 @dataclass(frozen=True, slots=True)
 class OpenToOpenLatencyScenarioV1:
     latency_minutes: int
@@ -506,9 +554,28 @@ class OpenToOpenLatencyScenarioV1:
 class OpenToOpenLatencySensitivityEvidenceV1:
     evidence_label: str
     source_run_content_hash: str
+    bar_series_fingerprint: str
     scenarios: tuple[OpenToOpenLatencyScenarioV1, ...]
     content_hash: str
     evidence_id: UUID
+
+
+def _verify_zero_latency_reconciles_canonical_run(
+    run: BasisMeanReversionResearchRunV1, trades: tuple[_ReplayTrade, ...], excluded: int
+) -> None:
+    if len(trades) != run.executed_trade_count or excluded != run.excluded_count:
+        raise OpenToOpenValidationV1Error("latency_zero_minute_does_not_reconcile_canonical_run")
+    for canonical, replay in zip(run.executed_trades, trades, strict=True):
+        if (
+            canonical.exposure != replay.exposure
+            or canonical.entry_time != replay.entry_time
+            or canonical.exit_time != replay.exit_time
+            or canonical.gross_return != replay.gross_return
+            or canonical.entry_cost != replay.entry_cost
+            or canonical.exit_cost != replay.exit_cost
+            or canonical.net_return != replay.net_return
+        ):
+            raise OpenToOpenValidationV1Error("latency_zero_minute_does_not_reconcile_canonical_run")
 
 
 def evaluate_open_to_open_latency_sensitivity_v1(
@@ -517,6 +584,9 @@ def evaluate_open_to_open_latency_sensitivity_v1(
     bar_series: AuthoritativeTradableBarSeriesV2,
     base_cost_model: CostModel,
 ) -> OpenToOpenLatencySensitivityEvidenceV1:
+    _require_matching_bar_series(run, bar_series)
+    _validate_cost_model(base_cost_model)
+    _verify_base_cost_model_reconciles(run, base_cost_model)
     cap = run.definition.maximum_absolute_exposure
     horizon = run.definition.holding_horizon_bars * _ONE_BAR_INTERVAL
     inputs = _decision_inputs(run)
@@ -530,6 +600,8 @@ def evaluate_open_to_open_latency_sensitivity_v1(
             cost_model=base_cost_model,
             latency=timedelta(minutes=minutes),
         )
+        if minutes == 0:
+            _verify_zero_latency_reconciles_canonical_run(run, trades, excluded)
         scenarios.append(
             OpenToOpenLatencyScenarioV1(
                 latency_minutes=minutes,
@@ -541,14 +613,12 @@ def evaluate_open_to_open_latency_sensitivity_v1(
                 excluded_count=excluded,
             )
         )
+    bar_fingerprint = _bar_series_fingerprint(bar_series)
     payload = {
         "evidence_label": COARSE_1M_GRID_LATENCY_STRESS,
         "source_run_content_hash": run.content_hash,
-        "base_cost_model": {
-            "fixed_per_turnover": base_cost_model.fixed_per_turnover,
-            "percentage_per_turnover": base_cost_model.percentage_per_turnover,
-            "spread_fraction_per_turnover": base_cost_model.spread_fraction_per_turnover,
-        },
+        "bar_series_fingerprint": bar_fingerprint,
+        "base_cost_model": _wire_cost_model(base_cost_model),
         "scenarios": [
             {
                 "latency_minutes": scenario.latency_minutes,
@@ -566,13 +636,11 @@ def evaluate_open_to_open_latency_sensitivity_v1(
     return OpenToOpenLatencySensitivityEvidenceV1(
         evidence_label=COARSE_1M_GRID_LATENCY_STRESS,
         source_run_content_hash=run.content_hash,
+        bar_series_fingerprint=bar_fingerprint,
         scenarios=tuple(scenarios),
         content_hash=content_hash,
         evidence_id=_identity("open-to-open-latency-sensitivity-v1", content_hash),
     )
-
-
-# --- Section F.2: adverse exit-price shock -----------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -597,11 +665,13 @@ def evaluate_open_to_open_adverse_exit_shock_v1(
     base_cost_model: CostModel,
     shock_magnitudes: tuple[Decimal, ...],
 ) -> AdverseExitShockEvidenceV1:
+    _validate_cost_model(base_cost_model)
+    _verify_base_cost_model_reconciles(run, base_cost_model)
     if not shock_magnitudes:
         raise OpenToOpenValidationV1Error("adverse_shock_magnitudes_required")
     for magnitude in shock_magnitudes:
-        if not magnitude.is_finite() or magnitude <= 0:
-            raise OpenToOpenValidationV1Error("adverse_shock_magnitude_must_be_positive")
+        if not magnitude.is_finite() or not (Decimal("0") < magnitude < Decimal("1")):
+            raise OpenToOpenValidationV1Error("adverse_shock_magnitude_out_of_bounds")
     scenarios: list[AdverseExitShockScenarioV1] = []
     for magnitude in shock_magnitudes:
         net_returns: list[Decimal] = []
@@ -620,11 +690,7 @@ def evaluate_open_to_open_adverse_exit_shock_v1(
     payload = {
         "synthetic_validation_evidence": True,
         "source_run_content_hash": run.content_hash,
-        "base_cost_model": {
-            "fixed_per_turnover": base_cost_model.fixed_per_turnover,
-            "percentage_per_turnover": base_cost_model.percentage_per_turnover,
-            "spread_fraction_per_turnover": base_cost_model.spread_fraction_per_turnover,
-        },
+        "base_cost_model": _wire_cost_model(base_cost_model),
         "scenarios": [
             {
                 "shock_magnitude": scenario.shock_magnitude,
@@ -644,13 +710,11 @@ def evaluate_open_to_open_adverse_exit_shock_v1(
     )
 
 
-# --- Section F.3: missing-bar / data-gap stress ------------------------------
-
-
 @dataclass(frozen=True, slots=True)
 class MissingBarStressEvidenceV1:
     synthetic_validation_evidence: bool
     source_run_content_hash: str
+    bar_series_fingerprint: str
     omitted_exit_bar_open_times: tuple[datetime, ...]
     baseline_executed_count: int
     baseline_excluded_count: int
@@ -668,9 +732,15 @@ def evaluate_open_to_open_missing_bar_stress_v1(
     base_cost_model: CostModel,
     omitted_exit_bar_open_times: tuple[datetime, ...],
 ) -> MissingBarStressEvidenceV1:
+    _require_matching_bar_series(run, bar_series)
+    _validate_cost_model(base_cost_model)
+    _verify_base_cost_model_reconciles(run, base_cost_model)
     if not omitted_exit_bar_open_times:
         raise OpenToOpenValidationV1Error("missing_bar_omissions_required")
-    omitted = set(omitted_exit_bar_open_times)
+    omitted = frozenset(omitted_exit_bar_open_times)
+    candidate_timestamps = frozenset(bar.bar_open_at for bar in bar_series.bars)
+    if not omitted <= candidate_timestamps:
+        raise OpenToOpenValidationV1Error("omitted_exit_bar_timestamp_not_a_candidate_bar")
     cap = run.definition.maximum_absolute_exposure
     horizon = run.definition.holding_horizon_bars * _ONE_BAR_INTERVAL
     inputs = _decision_inputs(run)
@@ -682,25 +752,22 @@ def evaluate_open_to_open_missing_bar_stress_v1(
         cost_model=base_cost_model,
         latency=timedelta(0),
     )
-    filtered = AuthoritativeTradableBarSeriesV2(
-        bar_series.dataset_version_id,
-        bar_series.instrument_id,
-        bar_series.interval,
-        tuple(bar for bar in bar_series.bars if bar.bar_open_at not in omitted),
-    )
-    filtered.validate()
     stressed_trades, stressed_excluded = _replay_open_to_open(
         decision_inputs=inputs,
-        bar_series=filtered,
+        bar_series=bar_series,
         cap=cap,
         horizon=horizon,
         cost_model=base_cost_model,
         latency=timedelta(0),
+        omitted_exit_open_times=omitted,
     )
     ordered_omissions = tuple(sorted(omitted))
+    bar_fingerprint = _bar_series_fingerprint(bar_series)
     payload = {
         "synthetic_validation_evidence": True,
         "source_run_content_hash": run.content_hash,
+        "bar_series_fingerprint": bar_fingerprint,
+        "base_cost_model": _wire_cost_model(base_cost_model),
         "omitted_exit_bar_open_times": ordered_omissions,
         "baseline_executed_count": len(baseline_trades),
         "baseline_excluded_count": baseline_excluded,
@@ -712,6 +779,7 @@ def evaluate_open_to_open_missing_bar_stress_v1(
     return MissingBarStressEvidenceV1(
         synthetic_validation_evidence=True,
         source_run_content_hash=run.content_hash,
+        bar_series_fingerprint=bar_fingerprint,
         omitted_exit_bar_open_times=ordered_omissions,
         baseline_executed_count=len(baseline_trades),
         baseline_excluded_count=baseline_excluded,
@@ -723,9 +791,6 @@ def evaluate_open_to_open_missing_bar_stress_v1(
     )
 
 
-# --- Section F.4 / N: capacity + reduced-liquidity BLOCKED --------------------
-
-
 @dataclass(frozen=True, slots=True)
 class CapacityBlockedEvidenceV1:
     status: str
@@ -735,9 +800,7 @@ class CapacityBlockedEvidenceV1:
     evidence_id: UUID
 
 
-def build_capacity_blocked_evidence_v1(
-    *, run: BasisMeanReversionResearchRunV1
-) -> CapacityBlockedEvidenceV1:
+def build_capacity_blocked_evidence_v1(*, run: BasisMeanReversionResearchRunV1) -> CapacityBlockedEvidenceV1:
     payload = {
         "status": CAPACITY_BLOCKED_STATUS,
         "reason": CAPACITY_BLOCKED_REASON,
@@ -780,21 +843,17 @@ def build_reduced_liquidity_blocked_evidence_v1(
     )
 
 
-# --- Section H: Monte Carlo boundary -----------------------------------------
-
-
-def canonical_trade_returns_for_monte_carlo(
-    run: BasisMeanReversionResearchRunV1,
-) -> tuple[Decimal, ...]:
+def canonical_trade_returns_for_monte_carlo(run: BasisMeanReversionResearchRunV1) -> tuple[Decimal, ...]:
     return run.trade_returns
 
 
-# --- Section I: ResearchTrialLedgerV1 ----------------------------------------
-
-
-class ResearchTrialClassificationV1(StrEnum):
+class ResearchTrialRoleV1(StrEnum):
     BASELINE = "BASELINE"
     NEIGHBOR = "NEIGHBOR"
+    OTHER = "OTHER"
+
+
+class ResearchTrialDispositionV1(StrEnum):
     SELECTED = "SELECTED"
     REJECTED = "REJECTED"
     INSPECTED = "INSPECTED"
@@ -802,11 +861,15 @@ class ResearchTrialClassificationV1(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ResearchTrialV1:
-    classification: ResearchTrialClassificationV1
+    trial_role: ResearchTrialRoleV1
+    disposition: ResearchTrialDispositionV1
     strategy_definition_content_hash: str
     basis_entry_threshold: Decimal
     holding_horizon_bars: int
     maximum_absolute_exposure: Decimal
+    source_run_content_hash: str
+    dataset_version_id: UUID
+    instrument_id: str
     window_start: datetime
     window_end: datetime
     daily_series_content_hash: str
@@ -817,16 +880,29 @@ class ResearchTrialV1:
 
 def build_research_trial_v1(
     *,
-    definition: CryptoBasisMeanReversionDefinitionV1,
+    run: BasisMeanReversionResearchRunV1,
     series: RealizedExitDailyReturnSeriesV1,
-    classification: ResearchTrialClassificationV1,
+    trial_role: ResearchTrialRoleV1,
+    disposition: ResearchTrialDispositionV1,
 ) -> ResearchTrialV1:
+    if series.source_run_content_hash != run.content_hash:
+        raise OpenToOpenValidationV1Error("trial_series_run_mismatch")
+    if series.dataset_version_id != run.dataset_version_id:
+        raise OpenToOpenValidationV1Error("trial_series_dataset_mismatch")
+    if series.instrument_id != run.instrument_id:
+        raise OpenToOpenValidationV1Error("trial_series_instrument_mismatch")
+    definition = run.definition
     definition_content_hash = definition.content_hash()
     identity_payload = {
+        "trial_role": trial_role.value,
+        "disposition": disposition.value,
         "strategy_definition_content_hash": definition_content_hash,
         "basis_entry_threshold": definition.basis_entry_threshold,
         "holding_horizon_bars": definition.holding_horizon_bars,
         "maximum_absolute_exposure": definition.maximum_absolute_exposure,
+        "source_run_content_hash": run.content_hash,
+        "dataset_version_id": run.dataset_version_id,
+        "instrument_id": run.instrument_id,
         "window_start": series.window_start,
         "window_end": series.window_end,
         "daily_series_content_hash": series.content_hash,
@@ -834,11 +910,15 @@ def build_research_trial_v1(
     }
     trial_content_hash = _content_hash(identity_payload)
     return ResearchTrialV1(
-        classification=classification,
+        trial_role=trial_role,
+        disposition=disposition,
         strategy_definition_content_hash=definition_content_hash,
         basis_entry_threshold=definition.basis_entry_threshold,
         holding_horizon_bars=definition.holding_horizon_bars,
         maximum_absolute_exposure=definition.maximum_absolute_exposure,
+        source_run_content_hash=run.content_hash,
+        dataset_version_id=run.dataset_version_id,
+        instrument_id=run.instrument_id,
         window_start=series.window_start,
         window_end=series.window_end,
         daily_series_content_hash=series.content_hash,
@@ -861,16 +941,14 @@ def build_research_trial_ledger_v1(trials: Sequence[ResearchTrialV1]) -> Researc
         if trial.trial_content_hash in seen:
             raise OpenToOpenValidationV1Error("duplicate_research_trial")
         seen.add(trial.trial_content_hash)
-    payload = {"trials": [trial.trial_content_hash for trial in trials]}
+    ordered = tuple(sorted(trials, key=lambda trial: trial.trial_content_hash))
+    payload = {"trials": [trial.trial_content_hash for trial in ordered]}
     content_hash = _content_hash(payload)
     return ResearchTrialLedgerV1(
-        trials=tuple(trials),
+        trials=ordered,
         content_hash=content_hash,
         ledger_id=_identity("research-trial-ledger-v1", content_hash),
     )
-
-
-# --- Section J: canonical CSCV PBO -------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -925,19 +1003,32 @@ def evaluate_canonical_cscv_pbo_v1(
     trial_count = len(trial_blocks)
     if trial_count != len(trial_identities):
         raise OpenToOpenValidationV1Error("cscv_trial_identity_count_mismatch")
-    reasons: list[str] = []
-    if len(set(trial_identities)) < CSCV_MINIMUM_TRIALS:
-        reasons.append("insufficient_distinct_trials")
-    for blocks in trial_blocks:
-        if len(blocks) != CSCV_BLOCKS:
-            reasons.append("trial_block_count_not_eight")
-            break
-    for blocks in trial_blocks:
-        if any(len(block) < CSCV_MINIMUM_OBSERVATIONS_PER_BLOCK for block in blocks):
-            reasons.append("block_below_minimum_observations")
-            break
-    normalized_blocks = [[tuple(block) for block in blocks] for blocks in trial_blocks]
+    for identity in trial_identities:
+        if not _is_canonical_sha256_hex(identity):
+            raise OpenToOpenValidationV1Error("cscv_trial_identity_not_canonical_hash")
+
     identities = tuple(trial_identities)
+    normalized_blocks = [[tuple(block) for block in blocks] for blocks in trial_blocks]
+    reasons: list[str] = []
+    if len(set(identities)) != trial_count:
+        reasons.append("duplicate_trial_identity")
+    if len(set(identities)) < CSCV_MINIMUM_TRIALS:
+        reasons.append("insufficient_distinct_trials")
+
+    block_count_ok = all(len(blocks) == CSCV_BLOCKS for blocks in normalized_blocks)
+    if not block_count_ok:
+        reasons.append("trial_block_count_not_eight")
+    else:
+        for block_index in range(CSCV_BLOCKS):
+            lengths = {len(normalized_blocks[trial][block_index]) for trial in range(trial_count)}
+            if len(lengths) > 1:
+                reasons.append("block_observation_count_misaligned_across_trials")
+                break
+        for blocks in normalized_blocks:
+            if any(len(block) < CSCV_MINIMUM_OBSERVATIONS_PER_BLOCK for block in blocks):
+                reasons.append("block_below_minimum_observations")
+                break
+
     if reasons:
         return _cscv_evidence(
             status=STATUS_UNAVAILABLE,
@@ -1047,9 +1138,6 @@ def _cscv_evidence(
     )
 
 
-# --- Section K: canonical DSR ------------------------------------------------
-
-
 @dataclass(frozen=True, slots=True)
 class DeflatedSharpeEvidenceV1:
     status: str
@@ -1086,12 +1174,20 @@ def evaluate_deflated_sharpe_evidence_v1(
     sigma = (
         trial_sharpe_standard_deviation(finite_trial_sharpes) if len(finite_trial_sharpes) == trial_count else None
     )
+    comparable_window = all(
+        trial.window_start == selected.window_start
+        and trial.window_end == selected.window_end
+        and len(trial.daily_returns) == observation_count
+        for trial in ledger.trials
+    )
 
     reasons: list[str] = []
     if observation_count < DSR_MINIMUM_OBSERVATIONS:
         reasons.append("insufficient_observations")
     if trial_count < DSR_MINIMUM_TRIALS:
         reasons.append("insufficient_trials")
+    if not comparable_window:
+        reasons.append("incomparable_trial_evaluation_window")
     if selected_sharpe is None:
         reasons.append("selected_sharpe_unavailable")
     if skewness is None:
@@ -1169,9 +1265,6 @@ def evaluate_deflated_sharpe_evidence_v1(
     )
 
 
-# --- Section L: circular-shift null control ----------------------------------
-
-
 def circularly_shift_basis_values(values: Sequence[Decimal], offset: int) -> tuple[Decimal, ...]:
     count = len(values)
     if count == 0:
@@ -1180,6 +1273,15 @@ def circularly_shift_basis_values(values: Sequence[Decimal], offset: int) -> tup
         raise OpenToOpenValidationV1Error("zero_shift_forbidden")
     shift = offset % count
     return tuple(values[(index - shift) % count] for index in range(count))
+
+
+def _eligible_decisions_in_window(
+    run: BasisMeanReversionResearchRunV1, window_start: datetime, window_end: datetime
+) -> tuple[tuple[datetime, ...], tuple[Decimal, ...]]:
+    eligible = tuple(
+        decision for decision in run.decisions if window_start <= decision.decision_at < window_end
+    )
+    return tuple(decision.decision_at for decision in eligible), tuple(decision.basis_value for decision in eligible)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1211,12 +1313,15 @@ def evaluate_circular_shift_null_control_v1(
     target_null_runs: int = NULL_CONTROL_TARGET_RUNS,
     minimum_valid_shifts: int = NULL_CONTROL_MINIMUM_VALID_SHIFTS,
 ) -> CircularShiftNullControlEvidenceV1:
+    _require_matching_bar_series(run, bar_series)
+    _validate_cost_model(base_cost_model)
+    _verify_base_cost_model_reconciles(run, base_cost_model)
     _require_utc_midnight(window_start, "window_start")
     _require_utc_midnight(window_end, "window_end")
     if window_end <= window_start:
         raise OpenToOpenValidationV1Error("window_end_must_be_after_window_start")
-    timestamps = tuple(decision.decision_at for decision in run.decisions)
-    basis_values = tuple(decision.basis_value for decision in run.decisions)
+
+    timestamps, basis_values = _eligible_decisions_in_window(run, window_start, window_end)
     event_count = len(basis_values)
     cap = run.definition.maximum_absolute_exposure
     threshold = run.definition.basis_entry_threshold
@@ -1273,11 +1378,14 @@ def evaluate_circular_shift_null_control_v1(
         greater_or_equal = sum(1 for stat in valid_stats if stat >= observed_sharpe)
         p_value = Decimal(1 + greater_or_equal) / Decimal(1 + valid_shifts)
 
+    bar_fingerprint = _bar_series_fingerprint(bar_series)
     payload = {
         "status": status,
         "unavailable_reasons": tuple(reasons),
         "synthetic_null_control_evidence": True,
         "source_run_content_hash": run.content_hash,
+        "bar_series_fingerprint": bar_fingerprint,
+        "base_cost_model": _wire_cost_model(base_cost_model),
         "seed": seed,
         "window_start": window_start,
         "window_end": window_end,
@@ -1335,14 +1443,18 @@ def evaluate_full_permutation_null_diagnostic_v1(
     permutations: int = NULL_CONTROL_TARGET_RUNS,
     minimum_valid_permutations: int = NULL_CONTROL_MINIMUM_VALID_SHIFTS,
 ) -> FullPermutationNullDiagnosticV1:
+    _require_matching_bar_series(run, bar_series)
+    _validate_cost_model(base_cost_model)
+    _verify_base_cost_model_reconciles(run, base_cost_model)
     _require_utc_midnight(window_start, "window_start")
     _require_utc_midnight(window_end, "window_end")
     if window_end <= window_start:
         raise OpenToOpenValidationV1Error("window_end_must_be_after_window_start")
     if permutations < 1:
         raise OpenToOpenValidationV1Error("permutations_must_be_positive")
-    timestamps = tuple(decision.decision_at for decision in run.decisions)
-    basis_values = [decision.basis_value for decision in run.decisions]
+
+    timestamps, basis_tuple = _eligible_decisions_in_window(run, window_start, window_end)
+    basis_values = list(basis_tuple)
     event_count = len(basis_values)
     cap = run.definition.maximum_absolute_exposure
     threshold = run.definition.basis_entry_threshold
@@ -1391,12 +1503,15 @@ def evaluate_full_permutation_null_diagnostic_v1(
         greater_or_equal = sum(1 for stat in valid_stats if stat >= observed_sharpe)
         p_value = Decimal(1 + greater_or_equal) / Decimal(1 + valid_permutations)
 
+    bar_fingerprint = _bar_series_fingerprint(bar_series)
     payload = {
         "is_primary": False,
         "status": status,
         "unavailable_reasons": tuple(reasons),
         "synthetic_null_control_evidence": True,
         "source_run_content_hash": run.content_hash,
+        "bar_series_fingerprint": bar_fingerprint,
+        "base_cost_model": _wire_cost_model(base_cost_model),
         "seed": seed,
         "window_start": window_start,
         "window_end": window_end,
@@ -1421,23 +1536,62 @@ def evaluate_full_permutation_null_diagnostic_v1(
     )
 
 
-# --- Section M: independent OPEN->OPEN reconciliation -------------------------
-
-
 @dataclass(frozen=True, slots=True)
-class ReconciliationTradeCheckV1:
-    trade_index: int
+class ReconciliationDecisionCheckV1:
+    decision_index: int
     discrepancies: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class OpenToOpenReconciliationEvidenceV1:
     status: str
-    trade_count: int
-    mismatched_trade_count: int
-    checks: tuple[ReconciliationTradeCheckV1, ...]
+    decision_count: int
+    mismatched_decision_count: int
+    checks: tuple[ReconciliationDecisionCheckV1, ...]
     content_hash: str
     evidence_id: UUID
+
+
+def _resolve_expected_outcome(
+    *,
+    decision_at: datetime,
+    basis_value: Decimal,
+    threshold: Decimal,
+    cap: Decimal,
+    bar_series: AuthoritativeTradableBarSeriesV2,
+    horizon: timedelta,
+    last_executed_exit_time: datetime | None,
+    cost_model: CostModel,
+) -> tuple[BasisMeanReversionOutcomeV1, Decimal, _ReplayTrade | None]:
+    exposure = _direction(basis_value, threshold, cap)
+    if exposure == 0:
+        return BasisMeanReversionOutcomeV1.FLAT, exposure, None
+    if last_executed_exit_time is not None and decision_at <= last_executed_exit_time:
+        return BasisMeanReversionOutcomeV1.IGNORED_ACTIVE_TRADE, exposure, None
+    entry_bar = bar_series.first_eligible_bar_after(decision_at)
+    if entry_bar is None:
+        return BasisMeanReversionOutcomeV1.EXCLUDED_MISSING_ENTRY, exposure, None
+    exit_open_at = entry_bar.bar_open_at + horizon
+    exit_bar = next((bar for bar in bar_series.bars if bar.bar_open_at == exit_open_at), None)
+    if exit_bar is None:
+        return BasisMeanReversionOutcomeV1.EXCLUDED_MISSING_EXIT, exposure, None
+    gross = exposure * (exit_bar.open / entry_bar.open - Decimal("1"))
+    turnover = abs(exposure)
+    entry_cost = cost_model.cost(turnover)
+    exit_cost = cost_model.cost(turnover)
+    net = gross - entry_cost - exit_cost
+    trade = _ReplayTrade(
+        exposure=exposure,
+        entry_time=entry_bar.bar_open_at,
+        exit_time=exit_bar.bar_open_at,
+        entry_open=entry_bar.open,
+        exit_open=exit_bar.open,
+        gross_return=gross,
+        entry_cost=entry_cost,
+        exit_cost=exit_cost,
+        net_return=net,
+    )
+    return BasisMeanReversionOutcomeV1.EXECUTED, exposure, trade
 
 
 def reconcile_open_to_open_trade_ledger_v1(
@@ -1446,63 +1600,81 @@ def reconcile_open_to_open_trade_ledger_v1(
     bar_series: AuthoritativeTradableBarSeriesV2,
     base_cost_model: CostModel,
 ) -> OpenToOpenReconciliationEvidenceV1:
+    _require_matching_bar_series(run, bar_series)
+    _validate_cost_model(base_cost_model)
+
     threshold = run.definition.basis_entry_threshold
     cap = run.definition.maximum_absolute_exposure
     horizon = run.definition.holding_horizon_bars * _ONE_BAR_INTERVAL
-    checks: list[ReconciliationTradeCheckV1] = []
+
+    checks: list[ReconciliationDecisionCheckV1] = []
     mismatched = 0
-    for index, trade in enumerate(run.executed_trades):
+    last_executed_exit_time: datetime | None = None
+
+    for index, decision in enumerate(run.decisions):
         discrepancies: list[str] = []
-        expected_exposure = _direction(trade.basis_value, threshold, cap)
-        if expected_exposure != trade.exposure:
+        expected_outcome, expected_exposure, expected_trade = _resolve_expected_outcome(
+            decision_at=decision.decision_at,
+            basis_value=decision.basis_value,
+            threshold=threshold,
+            cap=cap,
+            bar_series=bar_series,
+            horizon=horizon,
+            last_executed_exit_time=last_executed_exit_time,
+            cost_model=base_cost_model,
+        )
+        if expected_exposure != decision.exposure:
             discrepancies.append("direction")
-        expected_direction = "LONG" if trade.exposure > 0 else "SHORT" if trade.exposure < 0 else "FLAT"
-        if expected_direction != trade.direction:
-            discrepancies.append("direction_sign")
-        entry_bar: AuthoritativeTradableBarV2 | None = bar_series.first_eligible_bar_after(trade.decision_at)
-        if entry_bar is None or entry_bar.bar_open_at != trade.entry_time or entry_bar.open != trade.entry_open:
-            discrepancies.append("entry")
-        if entry_bar is not None:
-            exit_open_at = entry_bar.bar_open_at + horizon
-            exit_bar = next((bar for bar in bar_series.bars if bar.bar_open_at == exit_open_at), None)
-            if exit_bar is None or exit_bar.bar_open_at != trade.exit_time or exit_bar.open != trade.exit_open:
-                discrepancies.append("exit")
-        recomputed_gross = trade.exposure * (trade.exit_open / trade.entry_open - Decimal("1"))
-        if recomputed_gross != trade.gross_return:
-            discrepancies.append("gross_return")
-        turnover = abs(trade.exposure)
-        recomputed_entry_cost = base_cost_model.cost(turnover)
-        recomputed_exit_cost = base_cost_model.cost(turnover)
-        if recomputed_entry_cost != trade.entry_cost:
-            discrepancies.append("entry_cost")
-        if recomputed_exit_cost != trade.exit_cost:
-            discrepancies.append("exit_cost")
-        recomputed_net = recomputed_gross - recomputed_entry_cost - recomputed_exit_cost
-        if recomputed_net != trade.net_return:
-            discrepancies.append("net_return")
+        if expected_outcome != decision.outcome:
+            discrepancies.append("outcome")
+
+        if expected_outcome is BasisMeanReversionOutcomeV1.EXECUTED:
+            if expected_trade is None:
+                raise OpenToOpenValidationV1Error("internal_reconciliation_invariant_violation")
+            last_executed_exit_time = expected_trade.exit_time
+            if decision.trade is None:
+                discrepancies.append("missing_executed_trade")
+            else:
+                trade = decision.trade
+                if expected_trade.exposure != trade.exposure:
+                    discrepancies.append("exposure")
+                if expected_trade.entry_time != trade.entry_time or expected_trade.entry_open != trade.entry_open:
+                    discrepancies.append("entry")
+                if expected_trade.exit_time != trade.exit_time or expected_trade.exit_open != trade.exit_open:
+                    discrepancies.append("exit")
+                if expected_trade.gross_return != trade.gross_return:
+                    discrepancies.append("gross_return")
+                if expected_trade.entry_cost != trade.entry_cost:
+                    discrepancies.append("entry_cost")
+                if expected_trade.exit_cost != trade.exit_cost:
+                    discrepancies.append("exit_cost")
+                if expected_trade.net_return != trade.net_return:
+                    discrepancies.append("net_return")
+        elif decision.trade is not None:
+            discrepancies.append("extra_executed_trade")
+
         if discrepancies:
             mismatched += 1
-        checks.append(ReconciliationTradeCheckV1(index, tuple(discrepancies)))
+        checks.append(ReconciliationDecisionCheckV1(index, tuple(discrepancies)))
+
     status = STATUS_RECONCILED if mismatched == 0 else STATUS_BLOCKED
+    bar_fingerprint = _bar_series_fingerprint(bar_series)
     payload = {
         "status": status,
         "source_run_content_hash": run.content_hash,
-        "base_cost_model": {
-            "fixed_per_turnover": base_cost_model.fixed_per_turnover,
-            "percentage_per_turnover": base_cost_model.percentage_per_turnover,
-            "spread_fraction_per_turnover": base_cost_model.spread_fraction_per_turnover,
-        },
-        "trade_count": len(checks),
-        "mismatched_trade_count": mismatched,
+        "bar_series_fingerprint": bar_fingerprint,
+        "base_cost_model": _wire_cost_model(base_cost_model),
+        "decision_count": len(checks),
+        "mismatched_decision_count": mismatched,
         "checks": [
-            {"trade_index": check.trade_index, "discrepancies": check.discrepancies} for check in checks
+            {"decision_index": check.decision_index, "discrepancies": check.discrepancies} for check in checks
         ],
     }
     content_hash = _content_hash(payload)
     return OpenToOpenReconciliationEvidenceV1(
         status=status,
-        trade_count=len(checks),
-        mismatched_trade_count=mismatched,
+        decision_count=len(checks),
+        mismatched_decision_count=mismatched,
         checks=tuple(checks),
         content_hash=content_hash,
         evidence_id=_identity("open-to-open-reconciliation-v1", content_hash),
