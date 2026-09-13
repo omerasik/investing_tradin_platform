@@ -20,7 +20,7 @@ from .crypto_basis_mean_reversion_v1 import (
     BasisMeanReversionResearchRunV1,
 )
 from .research import CostModel
-from .signed_price_return_v2 import compute_signed_open_to_open_return
+from .signed_price_return_v2 import SignedOpenToOpenReturnV2, compute_signed_open_to_open_return
 from .tradable_bar_evidence_v2 import AuthoritativeTradableBarSeriesV2
 
 _UTC = timezone.utc
@@ -407,6 +407,100 @@ def _direction(basis_value: Decimal, threshold: Decimal, cap: Decimal) -> Decima
     return Decimal("0")
 
 
+def _replay_trade_from_signed_return(exposure: Decimal, computed: SignedOpenToOpenReturnV2) -> _ReplayTrade:
+    return _ReplayTrade(
+        exposure=exposure,
+        entry_time=computed.entry_time,
+        exit_time=computed.exit_time,
+        entry_open=computed.entry_open,
+        exit_open=computed.exit_open,
+        gross_return=computed.gross_return,
+        entry_cost=computed.entry_cost,
+        exit_cost=computed.exit_cost,
+        net_return=computed.net_return,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _ReplayEventGeometry:
+    exit_open_at: datetime | None
+    long_trade: _ReplayTrade | None
+    short_trade: _ReplayTrade | None
+
+
+def _build_replay_geometry(
+    *,
+    timestamps: Sequence[datetime],
+    bar_series: AuthoritativeTradableBarSeriesV2,
+    cap: Decimal,
+    horizon: timedelta,
+    cost_model: CostModel,
+    latency: timedelta,
+) -> tuple[_ReplayEventGeometry, ...]:
+    events: list[_ReplayEventGeometry] = []
+    for decision_at in timestamps:
+        entry_bar = bar_series.first_eligible_bar_after(decision_at + latency)
+        if entry_bar is None:
+            events.append(_ReplayEventGeometry(None, None, None))
+            continue
+        exit_open_at = entry_bar.bar_open_at + horizon
+        exit_bar = bar_series.bar_at_open_time(exit_open_at)
+        if exit_bar is None:
+            events.append(_ReplayEventGeometry(exit_open_at, None, None))
+            continue
+        long_computed = compute_signed_open_to_open_return(
+            entry_bar=entry_bar,
+            exit_bar=exit_bar,
+            exposure=cap,
+            maximum_absolute_exposure=cap,
+            cost_model=cost_model,
+        )
+        short_computed = compute_signed_open_to_open_return(
+            entry_bar=entry_bar,
+            exit_bar=exit_bar,
+            exposure=-cap,
+            maximum_absolute_exposure=cap,
+            cost_model=cost_model,
+        )
+        events.append(
+            _ReplayEventGeometry(
+                exit_open_at,
+                _replay_trade_from_signed_return(cap, long_computed),
+                _replay_trade_from_signed_return(-cap, short_computed),
+            )
+        )
+    return tuple(events)
+
+
+def _replay_open_to_open_from_geometry(
+    *,
+    decision_inputs: Sequence[tuple[datetime, Decimal]],
+    geometry: Sequence[_ReplayEventGeometry],
+    omitted_exit_open_times: frozenset[datetime] = frozenset(),
+) -> tuple[tuple[_ReplayTrade, ...], int]:
+    trades: list[_ReplayTrade] = []
+    excluded = 0
+    last_executed_exit_time: datetime | None = None
+    for (decision_at, exposure), event in zip(decision_inputs, geometry, strict=True):
+        if exposure == 0:
+            continue
+        if last_executed_exit_time is not None and decision_at <= last_executed_exit_time:
+            continue
+        if event.exit_open_at is None:
+            excluded += 1
+            continue
+        if event.exit_open_at in omitted_exit_open_times:
+            excluded += 1
+            continue
+        trade = event.long_trade if exposure > 0 else event.short_trade
+        if trade is None:
+            excluded += 1
+            continue
+        trades.append(trade)
+        last_executed_exit_time = trade.exit_time
+    return tuple(trades), excluded
+
+
 def _replay_open_to_open(
     *,
     decision_inputs: Sequence[tuple[datetime, Decimal]],
@@ -417,48 +511,20 @@ def _replay_open_to_open(
     latency: timedelta,
     omitted_exit_open_times: frozenset[datetime] = frozenset(),
 ) -> tuple[tuple[_ReplayTrade, ...], int]:
-    trades: list[_ReplayTrade] = []
-    excluded = 0
-    last_executed_exit_time: datetime | None = None
-    for decision_at, exposure in decision_inputs:
-        if exposure == 0:
-            continue
-        if last_executed_exit_time is not None and decision_at <= last_executed_exit_time:
-            continue
-        entry_bar = bar_series.first_eligible_bar_after(decision_at + latency)
-        if entry_bar is None:
-            excluded += 1
-            continue
-        exit_open_at = entry_bar.bar_open_at + horizon
-        if exit_open_at in omitted_exit_open_times:
-            excluded += 1
-            continue
-        exit_bar = next((bar for bar in bar_series.bars if bar.bar_open_at == exit_open_at), None)
-        if exit_bar is None:
-            excluded += 1
-            continue
-        computed = compute_signed_open_to_open_return(
-            entry_bar=entry_bar,
-            exit_bar=exit_bar,
-            exposure=exposure,
-            maximum_absolute_exposure=cap,
-            cost_model=cost_model,
-        )
-        trades.append(
-            _ReplayTrade(
-                exposure=exposure,
-                entry_time=computed.entry_time,
-                exit_time=computed.exit_time,
-                entry_open=computed.entry_open,
-                exit_open=computed.exit_open,
-                gross_return=computed.gross_return,
-                entry_cost=computed.entry_cost,
-                exit_cost=computed.exit_cost,
-                net_return=computed.net_return,
-            )
-        )
-        last_executed_exit_time = exit_bar.bar_open_at
-    return tuple(trades), excluded
+    timestamps = tuple(decision_at for decision_at, _ in decision_inputs)
+    geometry = _build_replay_geometry(
+        timestamps=timestamps,
+        bar_series=bar_series,
+        cap=cap,
+        horizon=horizon,
+        cost_model=cost_model,
+        latency=latency,
+    )
+    return _replay_open_to_open_from_geometry(
+        decision_inputs=decision_inputs,
+        geometry=geometry,
+        omitted_exit_open_times=omitted_exit_open_times,
+    )
 
 
 def _strategy_replay_inputs(run: BasisMeanReversionResearchRunV1) -> tuple[tuple[datetime, Decimal], ...]:
@@ -777,24 +843,25 @@ def evaluate_open_to_open_missing_bar_stress_v1(
     cap = run.definition.maximum_absolute_exposure
     horizon = run.definition.holding_horizon_bars * _ONE_BAR_INTERVAL
     inputs = _strategy_replay_inputs(run)
-    baseline_trades, baseline_excluded = _replay_open_to_open(
-        decision_inputs=inputs,
+    timestamps = tuple(decision_at for decision_at, _ in inputs)
+    geometry = _build_replay_geometry(
+        timestamps=timestamps,
         bar_series=bar_series,
         cap=cap,
         horizon=horizon,
         cost_model=base_cost_model,
         latency=timedelta(0),
     )
+    baseline_trades, baseline_excluded = _replay_open_to_open_from_geometry(
+        decision_inputs=inputs,
+        geometry=geometry,
+    )
     candidate_exit_timestamps = frozenset(trade.exit_time for trade in baseline_trades)
     if not omitted <= candidate_exit_timestamps:
         raise OpenToOpenValidationV1Error("omitted_exit_bar_timestamp_not_a_candidate_bar")
-    stressed_trades, stressed_excluded = _replay_open_to_open(
+    stressed_trades, stressed_excluded = _replay_open_to_open_from_geometry(
         decision_inputs=inputs,
-        bar_series=bar_series,
-        cap=cap,
-        horizon=horizon,
-        cost_model=base_cost_model,
-        latency=timedelta(0),
+        geometry=geometry,
         omitted_exit_open_times=omitted,
     )
     ordered_omissions = tuple(sorted(omitted))
@@ -1397,23 +1464,28 @@ def evaluate_circular_shift_null_control_v1(
     selected_offsets: tuple[int, ...] = ()
     valid_stats: list[float] = []
     unavailable_shifts = 0
+    geometry: tuple[_ReplayEventGeometry, ...] = ()
     if not carry_in:
         attempted = min(target_null_runs, event_count - 1) if event_count >= 2 else 0
         if attempted > 0:
             rng = random.Random(seed)  # nosec B311
             selected_offsets = tuple(sorted(rng.sample(range(1, event_count), attempted)))
-        for offset in selected_offsets:
-            shifted = circularly_shift_basis_values(basis_values, offset)
-            decision_inputs = tuple(
-                (timestamps[index], _direction(shifted[index], threshold, cap)) for index in range(event_count)
-            )
-            trades, _ = _replay_open_to_open(
-                decision_inputs=decision_inputs,
+            geometry = _build_replay_geometry(
+                timestamps=timestamps,
                 bar_series=bar_series,
                 cap=cap,
                 horizon=horizon,
                 cost_model=base_cost_model,
                 latency=timedelta(0),
+            )
+        for offset in selected_offsets:
+            shifted = circularly_shift_basis_values(basis_values, offset)
+            decision_inputs = tuple(
+                (timestamps[index], _direction(shifted[index], threshold, cap)) for index in range(event_count)
+            )
+            trades, _ = _replay_open_to_open_from_geometry(
+                decision_inputs=decision_inputs,
+                geometry=geometry,
             )
             _, null_daily = _daily_returns_over_window(
                 ((trade.exit_time, trade.net_return) for trade in trades), window_start, window_end
@@ -1535,19 +1607,23 @@ def evaluate_full_permutation_null_diagnostic_v1(
     valid_stats: list[float] = []
     if not carry_in:
         rng = random.Random(seed)  # nosec B311
+        geometry = _build_replay_geometry(
+            timestamps=timestamps,
+            bar_series=bar_series,
+            cap=cap,
+            horizon=horizon,
+            cost_model=base_cost_model,
+            latency=timedelta(0),
+        )
         for _ in range(permutations):
             shuffled = basis_values[:]
             rng.shuffle(shuffled)
             decision_inputs = tuple(
                 (timestamps[index], _direction(shuffled[index], threshold, cap)) for index in range(event_count)
             )
-            trades, _ = _replay_open_to_open(
+            trades, _ = _replay_open_to_open_from_geometry(
                 decision_inputs=decision_inputs,
-                bar_series=bar_series,
-                cap=cap,
-                horizon=horizon,
-                cost_model=base_cost_model,
-                latency=timedelta(0),
+                geometry=geometry,
             )
             _, null_daily = _daily_returns_over_window(
                 ((trade.exit_time, trade.net_return) for trade in trades), window_start, window_end
@@ -1645,7 +1721,7 @@ def _resolve_expected_outcome(
     if entry_bar is None:
         return BasisMeanReversionOutcomeV1.EXCLUDED_MISSING_ENTRY, exposure, None
     exit_open_at = entry_bar.bar_open_at + horizon
-    exit_bar = next((bar for bar in bar_series.bars if bar.bar_open_at == exit_open_at), None)
+    exit_bar = bar_series.bar_at_open_time(exit_open_at)
     if exit_bar is None:
         return BasisMeanReversionOutcomeV1.EXCLUDED_MISSING_EXIT, exposure, None
     gross = exposure * (exit_bar.open / entry_bar.open - Decimal("1"))

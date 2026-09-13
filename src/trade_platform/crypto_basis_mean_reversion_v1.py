@@ -381,7 +381,7 @@ def run_crypto_basis_mean_reversion_research(
                 outcome = BasisMeanReversionOutcomeV1.EXCLUDED_MISSING_ENTRY
             else:
                 exit_open_at = entry_bar.bar_open_at + horizon
-                exit_bar = next((bar for bar in bar_series.bars if bar.bar_open_at == exit_open_at), None)
+                exit_bar = bar_series.bar_at_open_time(exit_open_at)
                 if exit_bar is None:
                     outcome = BasisMeanReversionOutcomeV1.EXCLUDED_MISSING_EXIT
                 else:
