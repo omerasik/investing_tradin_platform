@@ -52,6 +52,7 @@ Two distinct failure modes are deliberately not conflated:
 
 from __future__ import annotations
 
+import bisect
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -159,14 +160,20 @@ class AuthoritativeTradableBarSeriesV2:
         trade or strategy decision; 3J.2b.2 owns entry/exit selection.
         """
         _aware(decision_at, "decision_at")
-        candidates = [bar for bar in self.bars if bar.bar_open_at > decision_at]
-        if not candidates:
+        index = bisect.bisect_right(self.bars, decision_at, key=lambda bar: bar.bar_open_at)
+        if index >= len(self.bars):
             return None
-        earliest = min(bar.bar_open_at for bar in candidates)
-        tied = [bar for bar in candidates if bar.bar_open_at == earliest]
-        if len(tied) > 1:
+        candidate = self.bars[index]
+        if index + 1 < len(self.bars) and self.bars[index + 1].bar_open_at == candidate.bar_open_at:
             raise TradableBarEvidenceV2Error("ambiguous_first_eligible_bar")
-        return tied[0]
+        return candidate
+
+    def bar_at_open_time(self, bar_open_at: datetime) -> AuthoritativeTradableBarV2 | None:
+        _aware(bar_open_at, "bar_open_at")
+        index = bisect.bisect_left(self.bars, bar_open_at, key=lambda bar: bar.bar_open_at)
+        if index < len(self.bars) and self.bars[index].bar_open_at == bar_open_at:
+            return self.bars[index]
+        return None
 
 
 class TradableBarEvidenceReaderV2(Protocol):
