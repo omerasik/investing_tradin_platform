@@ -237,7 +237,8 @@ CAPTURED_BTCUSDT_INSTRUMENT_PAYLOAD_V1: Final[dict[str, object]] = {
 #: Asserted on every parse, so a silent edit to the committed payload fails the
 #: build rather than quietly re-basing this platform's source-backed evidence.
 CAPTURED_BTCUSDT_PAYLOAD_SHA256: Final = (
-    "d89138353bea2b64b54164f42d97954c3dafdda3f779a61aab78670606c9f126"
+    # Content hash of a public market-data response; carries no credential.
+    "d89138353bea2b64b54164f42d97954c3dafdda3f779a61aab78670606c9f126"  # pragma: allowlist secret
 )
 
 
