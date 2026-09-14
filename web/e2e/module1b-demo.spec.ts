@@ -17,7 +17,7 @@ test("Module 1B synthetic demo auto-discovers every read-only workspace", async 
   await expect(page.getByText("LIVE TRADING: DISABLED", { exact: true })).toBeVisible();
 
   for (const [selector, label] of [
-    ["#instrument", "DEMO_EQ_A"], ["#features", "demo_"], ["#strategy", "SYNTHETIC_ENGINEERING_EVIDENCE_ONLY"],
+    ["#instrument", "AVAILABLE"], ["#features", "demo_"], ["#strategy", "SYNTHETIC_ENGINEERING_EVIDENCE_ONLY"],
     ["#backtest", "module1b-demo-evidence-v1"], ["#scorecard", "SYNTHETIC_ENGINEERING_EVIDENCE_ONLY"],
     ["#regime", "UPTREND"], ["#portfolio", "REVIEW ELIGIBLE"], ["#investment", "SYNTHETIC / DEMO"],
     ["#news", "Demo issuer retracts fictional guidance"], ["#signals", "DEMO:XNAS:DEMO_EQ_A"],
@@ -26,11 +26,24 @@ test("Module 1B synthetic demo auto-discovers every read-only workspace", async 
     await expect(page.locator(selector)).toContainText(label);
   }
 
-  await expect(page.locator("#instrument")).toContainText("SYNTHETIC / DEMO");
   await expect(page.locator("#news")).toContainText("NOT LIVE NEWS");
   await expect(page.locator("#investment")).toContainText("NOT A REAL INVESTMENT RECOMMENDATION");
   await expect(page.locator("#data-sources")).toContainText("EXTERNAL_BLOCKED");
   await expect(page.getByRole("button", { name: /execute|submit|buy|sell/i })).toHaveCount(0);
+
+  // The dashboard's Instrument card is a bounded preview: the first 20 canonical
+  // instruments by symbol, unfiltered. That is a product decision, not a demo
+  // guarantee -- once the platform onboards enough real instruments whose symbols
+  // sort before DEMO_EQ_A (a real Bybit BTCUSDT perpetual was the one that tipped
+  // it over), the demo row legitimately falls off the preview. So the demo-specific
+  // assertions belong on the dedicated workspace, which can actually search for it
+  // -- the same treatment the Operations and Portfolio cards get below.
+  await page.locator("#instrument").getByRole("link", { name: "Open Instrument Workstation" }).click();
+  await expect(page).toHaveURL(/\/instruments/);
+  await page.goto("/instruments?query=DEMO_EQ_A");
+  await expect(page.getByText("DEMO_EQ_A").first()).toBeVisible();
+  await expect(page.getByText("SYNTHETIC DEMO EVIDENCE").first()).toBeVisible();
+  await page.goto("/dashboard");
 
   // Module 2B-5: the dashboard's Operations card was intentionally trimmed to a concise
   // summary (PostgreSQL, service health, active incident count, kill switch); detailed
