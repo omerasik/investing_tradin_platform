@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["alembic>=1.14,<2", "bandit>=1.8,<2", "cyclonedx-bom>=5.1,<6", "detect-secrets>=1.5,<2", "httpx>=0.27,<1", "mypy>=1.13,<2", "pip-audit>=2.8,<3", "PyYAML>=6.0,<7", "ruff>=0.8,<1"]
+dev = ["alembic>=1.14,<2", "bandit>=1.8,<2", "cyclonedx-bom>=5.1,<6", "detect-secrets>=1.5,<2", "httpx>=0.27,<1", "mypy>=1.13,<3", "pip-audit>=2.8,<3", "PyYAML>=6.0,<7", "ruff>=0.8,<1"]
 
 [build-system]
 requires = ["setuptools>=68"]
