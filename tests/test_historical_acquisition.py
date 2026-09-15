@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import unittest
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -23,6 +23,7 @@ from trade_platform.bybit_instrument_onboarding import (
     BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID,
     BYBIT_BTCUSDT_SYMBOL,
 )
+from trade_platform.crypto_derivatives_features import CRYPTO_MARK_INDEX_BASIS
 from trade_platform.crypto_instruments import (
     CryptoInstrumentKind,
     ReferencePriceRequirement,
@@ -39,6 +40,7 @@ from trade_platform.historical_acquisition import (
     HistoricalAcquisitionRequest,
     HistoricalAcquisitionService,
     MaterializedFeatureCounts,
+    NormalizedObservationView,
     SealedDatasetView,
     SourceProfile,
     acquisition_fingerprint,
@@ -51,6 +53,7 @@ from trade_platform.historical_market_data import (
     QualityStatus,
     RawHistoricalObservation,
 )
+from trade_platform.open_interest_features import OPEN_INTEREST_CHANGE
 from trade_platform.provider_ingestion import RawHistoricalPage
 
 SOURCE_ID = UUID("11111111-1111-1111-1111-111111111111")
@@ -219,7 +222,17 @@ def _complete_pages(
 
 
 class FakePipeline:
-    """In-memory capture/normalize/seal with per-raw quality control."""
+    """In-memory capture/normalize/seal with per-raw quality control.
+
+    ``capture_raw`` deduplicates on ``(source_id, kind, event_at)`` exactly like
+    the real ``historical_raw_observations`` natural key, so a retry that
+    re-submits the same logical observation gets back the SAME
+    ``raw_observation_id``. ``normalize`` records every persisted normalized
+    row in ``normalized_by_raw`` (mirroring the real UNIQUE
+    ``raw_observation_id`` constraint) and every actual call it received in
+    ``normalize_calls``, so a test can assert a previously-normalized raw id is
+    never normalized twice.
+    """
 
     def __init__(
         self,
@@ -229,7 +242,10 @@ class FakePipeline:
         wrong_instrument_for: frozenset[tuple[ObservationKind, datetime]] = frozenset(),
     ) -> None:
         self._raws: dict[UUID, RawHistoricalObservation] = {}
+        self._raw_id_by_key: dict[tuple[UUID, ObservationKind, datetime], UUID] = {}
         self._normalized_ids: dict[UUID, UUID] = {}
+        self.normalized_by_raw: dict[UUID, NormalizedObservationView] = {}
+        self.normalize_calls: list[UUID] = []
         self._counter = 0
         self.reject = reject
         self.normalize_error = normalize_error
@@ -239,8 +255,14 @@ class FakePipeline:
     def capture_raw(self, observations: list[RawHistoricalObservation]) -> tuple[UUID, ...]:
         ids: list[UUID] = []
         for observation in observations:
+            key = (observation.source_id, observation.observation_kind, observation.event_at)
+            existing_id = self._raw_id_by_key.get(key)
+            if existing_id is not None:
+                ids.append(existing_id)
+                continue
             self._counter += 1
             raw_id = UUID(int=self._counter)
+            self._raw_id_by_key[key] = raw_id
             self._raws[raw_id] = observation
             ids.append(raw_id)
         return tuple(ids)
@@ -248,6 +270,14 @@ class FakePipeline:
     def normalize(
         self, raw_observation_id: UUID, normalization_version: str, normalized_at: datetime
     ) -> NormalizedHistoricalObservation:
+        self.normalize_calls.append(raw_observation_id)
+        if raw_observation_id in self.normalized_by_raw:
+            # Mirrors the real UNIQUE(raw_observation_id) constraint: a second
+            # normalize() call for an already-normalized raw id must never
+            # happen in correct service code.
+            raise AssertionError(
+                f"normalize() called twice for already-normalized raw id {raw_observation_id}"
+            )
         if self.normalize_error is not None:
             raise self.normalize_error
         observation = self._raws[raw_observation_id]
@@ -259,6 +289,15 @@ class FakePipeline:
         instrument_id = (
             "CRYPTO:OTHER:XXXUSDT:PERP" if key in self.wrong_instrument_for else INSTRUMENT_ID
         )
+        issues = () if quality is QualityStatus.VALIDATED else ("fixture_reject",)
+        self.normalized_by_raw[raw_observation_id] = NormalizedObservationView(
+            normalized_observation_id=normalized_id,
+            raw_observation_id=raw_observation_id,
+            instrument_id=instrument_id,
+            normalization_version=normalization_version,
+            quality_status=quality,
+            quality_issues=issues,
+        )
         return NormalizedHistoricalObservation(
             normalized_observation_id=normalized_id,
             raw_observation_id=raw_observation_id,
@@ -266,7 +305,7 @@ class FakePipeline:
             normalization_version=normalization_version,
             normalized_value={},
             quality_status=quality,
-            quality_issues=() if quality is QualityStatus.VALIDATED else ("fixture_reject",),
+            quality_issues=issues,
             normalized_at=normalized_at,
         )
 
@@ -306,6 +345,11 @@ class FakeEvidence:
     spec: CryptoSpecView | None
     existing: SealedDatasetView | None = None
     feature_count_map: Mapping[str, int] = field(default_factory=dict)
+    # Wired by `_build_service` to the SAME FakePipeline/FakeFeatureStore
+    # instances the service itself uses, so a retry within one test method sees
+    # the durable evidence the first attempt actually persisted.
+    pipeline: FakePipeline | None = None
+    feature_store: FakeFeatureStore | None = None
 
     def source_profile(self, source_id: UUID) -> SourceProfile | None:
         return self.profile
@@ -328,12 +372,49 @@ class FakeEvidence:
     def feature_counts(
         self, dataset_version_id: UUID, feature_names: tuple[str, ...]
     ) -> Mapping[str, int]:
+        if self.feature_store is not None:
+            return {
+                name: self.feature_store.get(dataset_version_id, name) for name in feature_names
+            }
         return self.feature_count_map
+
+    def normalized_observation_for_raw(
+        self, raw_observation_id: UUID
+    ) -> NormalizedObservationView | None:
+        if self.pipeline is None:
+            return None
+        return self.pipeline.normalized_by_raw.get(raw_observation_id)
+
+
+class FakeFeatureStore:
+    """Shared, durable feature-count state a `FakeFeatureMaterializer` writes to
+    and `FakeEvidence.feature_counts` reads back from -- models the real
+    idempotent, content-hash-agreeing feature authority closely enough that a
+    resumed materialization only adds what is genuinely still missing."""
+
+    def __init__(self) -> None:
+        self._counts: dict[tuple[UUID, str], int] = {}
+
+    def get(self, dataset_version_id: UUID, name: str) -> int:
+        return self._counts.get((dataset_version_id, name), 0)
+
+    def add(self, dataset_version_id: UUID, name: str, amount: int) -> None:
+        if amount <= 0:
+            return
+        self._counts[(dataset_version_id, name)] = self.get(dataset_version_id, name) + amount
 
 
 class FakeFeatureMaterializer:
-    def __init__(self, *, raise_error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        raise_error: Exception | None = None,
+        fail_first_n_calls: int = 0,
+        store: FakeFeatureStore | None = None,
+    ) -> None:
         self.raise_error = raise_error
+        self.fail_first_n_calls = fail_first_n_calls
+        self.store = store or FakeFeatureStore()
         self.calls: list[UUID] = []
         self.last_basis: tuple[datetime, ...] = ()
         self.last_open_interest: tuple[datetime, ...] = ()
@@ -348,14 +429,31 @@ class FakeFeatureMaterializer:
         decision_at: datetime,
         definition_created_at: datetime,
     ) -> MaterializedFeatureCounts:
-        if self.raise_error is not None:
-            raise self.raise_error
+        call_index = len(self.calls)
         self.calls.append(dataset_version_id)
         self.last_basis = basis_event_ats
         self.last_open_interest = open_interest_event_ats
+        if self.raise_error is not None:
+            raise self.raise_error
+        if call_index < self.fail_first_n_calls:
+            raise RuntimeError("feature_boom_transient")
+        expected_basis = len(basis_event_ats)
+        expected_open_interest = (
+            max(0, len(open_interest_event_ats) - 1) if open_interest_event_ats else 0
+        )
+        existing_basis = self.store.get(dataset_version_id, CRYPTO_MARK_INDEX_BASIS)
+        existing_open_interest = self.store.get(dataset_version_id, OPEN_INTEREST_CHANGE)
+        self.store.add(
+            dataset_version_id, CRYPTO_MARK_INDEX_BASIS, expected_basis - existing_basis
+        )
+        self.store.add(
+            dataset_version_id,
+            OPEN_INTEREST_CHANGE,
+            expected_open_interest - existing_open_interest,
+        )
         return MaterializedFeatureCounts(
-            crypto_mark_index_basis=len(basis_event_ats),
-            open_interest_change=max(0, len(open_interest_event_ats) - 1),
+            crypto_mark_index_basis=self.store.get(dataset_version_id, CRYPTO_MARK_INDEX_BASIS),
+            open_interest_change=self.store.get(dataset_version_id, OPEN_INTEREST_CHANGE),
         )
 
 
@@ -372,6 +470,43 @@ def _default_evidence() -> FakeEvidence:
     )
 
 
+def _sealed_view_for_request(
+    request: HistoricalAcquisitionRequest,
+    *,
+    dataset_version_id: UUID,
+    content_hash: str = "b" * 64,
+    instrument_id: str | None = None,
+    provider_symbol: str | None = None,
+    event_overrides: Mapping[ObservationKind, frozenset[datetime]] | None = None,
+) -> SealedDatasetView:
+    """Build a `SealedDatasetView` that -- unless overridden -- exactly matches
+    what a real successful acquisition for `request` would have persisted, for
+    use as `FakeEvidence.existing` in replay-path tests."""
+    event_ats_by_kind: dict[ObservationKind, frozenset[datetime]] = {
+        kind: frozenset(_expected_events(kind, request.start, request.end))
+        for kind in request.ordered_kinds()
+    }
+    if event_overrides:
+        event_ats_by_kind.update(event_overrides)
+    all_events = sorted({event for events in event_ats_by_kind.values() for event in events})
+    resolved_instrument = instrument_id if instrument_id is not None else request.instrument_id
+    resolved_symbol = (
+        provider_symbol if provider_symbol is not None else request.provider_symbol
+    )
+    return SealedDatasetView(
+        dataset_version_id=dataset_version_id,
+        content_hash=content_hash,
+        normalization_version=request.normalization_version,
+        valid_from=all_events[0],
+        valid_until=all_events[-1],
+        created_at=NOW,
+        instrument_ids=frozenset({resolved_instrument}),
+        provider_identifiers=frozenset({resolved_symbol}),
+        provider_symbols=frozenset({resolved_symbol}),
+        event_ats_by_kind=event_ats_by_kind,
+    )
+
+
 def _build_service(
     *,
     evidence: FakeEvidence | None = None,
@@ -385,6 +520,13 @@ def _build_service(
     checkpoint_store = checkpoint_store or FakeCheckpointStore()
     materializer = materializer or FakeFeatureMaterializer()
     adapter = adapter if adapter is not None else FakeAdapter(_complete_pages(ALL_KINDS))
+    resolved_evidence = evidence or _default_evidence()
+    # Every acquire() call shares these same fake collaborator instances, so a
+    # retry within one test method sees exactly what the first attempt durably
+    # persisted -- the same restart-safety contract the real Postgres-backed
+    # collaborators provide.
+    resolved_evidence.pipeline = pipeline
+    resolved_evidence.feature_store = materializer.store
 
     def factory(configuration: ProviderConfiguration, now: object) -> FakeAdapter:
         if adapter_factory_flag is not None:
@@ -392,7 +534,7 @@ def _build_service(
         return adapter
 
     service = HistoricalAcquisitionService(
-        evidence=evidence or _default_evidence(),
+        evidence=resolved_evidence,
         pipeline=pipeline,
         checkpoint_store=checkpoint_store,
         feature_materializer=materializer,
@@ -684,23 +826,13 @@ class HistoricalAcquisitionServiceTests(unittest.TestCase):
     # ---- idempotency -------------------------------------------------------
 
     def test_identical_completed_acquisition_replays_existing_result(self) -> None:
+        request = _request()
         evidence = _default_evidence()
-        evidence.existing = SealedDatasetView(
-            dataset_version_id=UUID("33333333-3333-3333-3333-333333333333"),
-            content_hash="b" * 64,
-            normalization_version=NORMALIZATION_VERSION,
-            valid_from=START,
-            valid_until=END,
-            created_at=NOW,
-            counts_by_kind={
-                ObservationKind.OHLCV: 30,
-                ObservationKind.MARK_PRICE: 30,
-                ObservationKind.INDEX_PRICE: 30,
-                ObservationKind.OPEN_INTEREST: 6,
-            },
+        evidence.existing = _sealed_view_for_request(
+            request, dataset_version_id=UUID("33333333-3333-3333-3333-333333333333")
         )
         service, pipeline, checkpoints, _mat, adapter = _build_service(evidence=evidence)
-        result = service.acquire(_request(), _configuration())
+        result = service.acquire(request, _configuration())
         self.assertEqual(result.status, AcquisitionStatus.SUCCEEDED)
         self.assertTrue(result.already_completed)
         self.assertEqual(
@@ -713,21 +845,245 @@ class HistoricalAcquisitionServiceTests(unittest.TestCase):
         self.assertEqual(checkpoints.recorded, [])
 
     def test_reused_dataset_version_with_different_semantics_conflicts(self) -> None:
+        request = _request()
         evidence = _default_evidence()
-        evidence.existing = SealedDatasetView(
-            dataset_version_id=UUID("33333333-3333-3333-3333-333333333333"),
-            content_hash="b" * 64,
-            normalization_version="a-different-normalization",
-            valid_from=START,
-            valid_until=END,
-            created_at=NOW,
-            counts_by_kind={ObservationKind.OHLCV: 30},
+        view = _sealed_view_for_request(
+            request, dataset_version_id=UUID("33333333-3333-3333-3333-333333333333")
         )
+        evidence.existing = replace(view, normalization_version="a-different-normalization")
         service, pipeline, *_ = _build_service(evidence=evidence)
-        result = service.acquire(_request(), _configuration())
+        result = service.acquire(request, _configuration())
         self.assertEqual(result.status, AcquisitionStatus.SEAL_FAILED)
         self.assertTrue(result.failure_code.startswith("dataset_version_conflict"))
         self.assertEqual(pipeline.sealed, [])
+
+    def test_replay_identity_conflict_on_different_instrument(self) -> None:
+        request = _request()
+        evidence = _default_evidence()
+        evidence.existing = _sealed_view_for_request(
+            request,
+            dataset_version_id=UUID("44444444-4444-4444-4444-444444444444"),
+            instrument_id="CRYPTO:BYBIT:ETHUSDT:PERP",
+        )
+        service, pipeline, *_ = _build_service(evidence=evidence)
+        result = service.acquire(request, _configuration())
+        self.assertEqual(result.status, AcquisitionStatus.SEAL_FAILED)
+        self.assertTrue(result.failure_code.startswith("dataset_version_conflict"))
+        self.assertEqual(pipeline.sealed, [])
+
+    def test_replay_identity_conflict_on_different_provider_symbol(self) -> None:
+        request = _request()
+        evidence = _default_evidence()
+        evidence.existing = _sealed_view_for_request(
+            request,
+            dataset_version_id=UUID("55555555-5555-5555-5555-555555555555"),
+            provider_symbol="ETHUSDT",
+        )
+        service, pipeline, *_ = _build_service(evidence=evidence)
+        result = service.acquire(request, _configuration())
+        self.assertEqual(result.status, AcquisitionStatus.SEAL_FAILED)
+        self.assertTrue(result.failure_code.startswith("dataset_version_conflict"))
+        self.assertEqual(pipeline.sealed, [])
+
+    def test_replay_identity_conflict_on_shifted_timestamp_layout(self) -> None:
+        request = _request(kinds=frozenset({ObservationKind.OHLCV}))
+        expected_ohlcv = frozenset(_expected_events(ObservationKind.OHLCV, START, END))
+        # Same COUNT (30) but one required instant swapped for one never expected.
+        shifted = (expected_ohlcv - {START}) | {START - _MINUTE}
+        self.assertEqual(len(shifted), len(expected_ohlcv))
+        evidence = _default_evidence()
+        evidence.existing = _sealed_view_for_request(
+            request,
+            dataset_version_id=UUID("66666666-6666-6666-6666-666666666666"),
+            event_overrides={ObservationKind.OHLCV: shifted},
+        )
+        service, pipeline, *_ = _build_service(evidence=evidence)
+        result = service.acquire(request, _configuration())
+        self.assertEqual(result.status, AcquisitionStatus.SEAL_FAILED)
+        self.assertTrue(result.failure_code.startswith("dataset_version_conflict"))
+        self.assertEqual(pipeline.sealed, [])
+
+    # ---- normalization restart-safety ---------------------------------------
+
+    def test_retry_after_coverage_failure_reuses_normalized_evidence_and_seals_once(
+        self,
+    ) -> None:
+        """A retry after a COVERAGE_FAILED boundary must not re-normalize any
+        raw observation an earlier attempt already normalized -- that would hit
+        the real UNIQUE(raw_observation_id) constraint -- and must seal exactly
+        once, using both the reused and the newly-normalized evidence."""
+        ohlcv_events = _expected_events(ObservationKind.OHLCV, START, END)
+        incomplete_ohlcv_page = _single_page(
+            [_raw(ObservationKind.OHLCV, event) for event in ohlcv_events[:-1]]
+        )
+        complete_ohlcv_page = _single_page(
+            [_raw(ObservationKind.OHLCV, event) for event in ohlcv_events]
+        )
+        other_kinds = frozenset(
+            {ObservationKind.MARK_PRICE, ObservationKind.INDEX_PRICE, ObservationKind.OPEN_INTEREST}
+        )
+        other_pages = _complete_pages(other_kinds)
+        adapter = FakeAdapter(
+            pages={
+                ObservationKind.OHLCV: [incomplete_ohlcv_page, complete_ohlcv_page],
+                # The provider returns the SAME already-fully-covered evidence
+                # again on retry, exactly as real historical data would.
+                ObservationKind.MARK_PRICE: [
+                    other_pages[ObservationKind.MARK_PRICE][0],
+                    other_pages[ObservationKind.MARK_PRICE][0],
+                ],
+                ObservationKind.INDEX_PRICE: [
+                    other_pages[ObservationKind.INDEX_PRICE][0],
+                    other_pages[ObservationKind.INDEX_PRICE][0],
+                ],
+                ObservationKind.OPEN_INTEREST: [
+                    other_pages[ObservationKind.OPEN_INTEREST][0],
+                    other_pages[ObservationKind.OPEN_INTEREST][0],
+                ],
+            }
+        )
+        service, pipeline, checkpoints, _materializer, used_adapter = _build_service(
+            adapter=adapter
+        )
+        request = _request()
+
+        first = service.acquire(request, _configuration())
+        self.assertEqual(first.status, AcquisitionStatus.COVERAGE_FAILED)
+        self.assertEqual(pipeline.sealed, [])
+        # 29 OHLCV + 30 MARK_PRICE + 30 INDEX_PRICE + 6 OPEN_INTEREST = 95.
+        first_normalize_call_count = len(pipeline.normalize_calls)
+        self.assertEqual(first_normalize_call_count, 29 + 30 + 30 + 6)
+
+        second = service.acquire(request, _configuration())
+        self.assertEqual(second.status, AcquisitionStatus.SUCCEEDED, second.failure_code)
+        self.assertEqual(len(pipeline.sealed), 1)
+        # Only the single previously-missing OHLCV bar is newly normalized; the
+        # other 95 raw ids are reused via the canonical evidence lookup, never
+        # handed to pipeline.normalize() a second time (which would raise).
+        self.assertEqual(len(pipeline.normalize_calls), first_normalize_call_count + 1)
+        self.assertEqual(
+            second.normalized_counts,
+            {
+                ObservationKind.OHLCV: 30,
+                ObservationKind.MARK_PRICE: 30,
+                ObservationKind.INDEX_PRICE: 30,
+                ObservationKind.OPEN_INTEREST: 6,
+            },
+        )
+        # No duplicate normalized rows: exactly 96 distinct normalized ids exist.
+        self.assertEqual(len(pipeline.normalized_by_raw), 96)
+        # A checkpoint is recorded for every attempted kind on both attempts.
+        self.assertEqual(len(checkpoints.recorded), 4 + 4)
+        self.assertEqual(used_adapter.fetched_kinds.count(ObservationKind.OHLCV), 2)
+
+    def test_retry_reuses_rejected_normalized_evidence_as_quality_failed(self) -> None:
+        """A raw row normalized to REJECTED on a prior attempt must be read
+        back as QUALITY_FAILED on retry -- never re-normalized."""
+        events = _expected_events(ObservationKind.OHLCV, START, END)
+        # The adapter returns the SAME historical page on both calls, exactly
+        # as a real provider would for an already-elapsed window.
+        page = _single_page([_raw(ObservationKind.OHLCV, event) for event in events])
+        adapter = FakeAdapter(pages={ObservationKind.OHLCV: [page, page]})
+        pipeline = FakePipeline(reject=frozenset({(ObservationKind.OHLCV, START)}))
+        service, pipeline, *_ = _build_service(pipeline=pipeline, adapter=adapter)
+        request = _request(kinds=frozenset({ObservationKind.OHLCV}))
+
+        first = service.acquire(request, _configuration())
+        self.assertEqual(first.status, AcquisitionStatus.QUALITY_FAILED)
+        first_calls = len(pipeline.normalize_calls)
+
+        second = service.acquire(request, _configuration())
+        self.assertEqual(second.status, AcquisitionStatus.QUALITY_FAILED)
+        self.assertGreaterEqual(second.rejected_count, 1)
+        # The rejected raw id is read back, never normalized a second time.
+        self.assertEqual(len(pipeline.normalize_calls), first_calls)
+
+    # ---- feature resumption on replay ---------------------------------------
+
+    def test_feature_resume_after_partial_failure_completes_and_succeeds(self) -> None:
+        materializer = FakeFeatureMaterializer(fail_first_n_calls=1)
+        evidence = _default_evidence()
+        service, pipeline, _cp, materializer, adapter = _build_service(
+            evidence=evidence, materializer=materializer
+        )
+        request = _request(materialize_features=True)
+
+        first = service.acquire(request, _configuration())
+        self.assertEqual(first.status, AcquisitionStatus.FEATURE_FAILED)
+        # The dataset was still sealed; only the feature step failed.
+        self.assertEqual(len(pipeline.sealed), 1)
+        sealed_dataset_version_id = UUID("22222222-2222-2222-2222-222222222222")
+
+        # Wire the evidence to report the now-sealed dataset for replay.
+        evidence.existing = _sealed_view_for_request(
+            request, dataset_version_id=sealed_dataset_version_id
+        )
+        fetched_before_retry = len(adapter.fetched_kinds)
+
+        second = service.acquire(request, _configuration())
+        self.assertEqual(second.status, AcquisitionStatus.SUCCEEDED, second.failure_code)
+        self.assertTrue(second.already_completed)
+        # Zero provider requests on the resume path.
+        self.assertEqual(len(adapter.fetched_kinds), fetched_before_retry)
+        # No second dataset is ever sealed.
+        self.assertEqual(len(pipeline.sealed), 1)
+        assert second.feature_counts is not None
+        self.assertEqual(second.feature_counts.crypto_mark_index_basis, 30)
+        self.assertEqual(second.feature_counts.open_interest_change, 5)
+        self.assertEqual(
+            materializer.store.get(sealed_dataset_version_id, CRYPTO_MARK_INDEX_BASIS), 30
+        )
+        self.assertEqual(
+            materializer.store.get(sealed_dataset_version_id, OPEN_INTEREST_CHANGE), 5
+        )
+
+    def test_feature_resume_from_features_disabled_to_enabled(self) -> None:
+        evidence = _default_evidence()
+        service, pipeline, _cp, materializer, adapter = _build_service(evidence=evidence)
+        disabled_request = _request(materialize_features=False)
+
+        first = service.acquire(disabled_request, _configuration())
+        self.assertEqual(first.status, AcquisitionStatus.SUCCEEDED)
+        self.assertIsNone(first.feature_counts)
+        self.assertEqual(materializer.calls, [])
+        sealed_dataset_version_id = UUID("22222222-2222-2222-2222-222222222222")
+
+        enabled_request = _request(materialize_features=True)
+        evidence.existing = _sealed_view_for_request(
+            enabled_request, dataset_version_id=sealed_dataset_version_id
+        )
+        fetched_before_retry = len(adapter.fetched_kinds)
+
+        second = service.acquire(enabled_request, _configuration())
+        self.assertEqual(second.status, AcquisitionStatus.SUCCEEDED, second.failure_code)
+        self.assertTrue(second.already_completed)
+        self.assertEqual(len(adapter.fetched_kinds), fetched_before_retry)
+        self.assertEqual(len(pipeline.sealed), 1)
+        assert second.feature_counts is not None
+        self.assertEqual(second.feature_counts.crypto_mark_index_basis, 30)
+        self.assertEqual(second.feature_counts.open_interest_change, 5)
+
+    def test_replay_features_excess_count_fails_closed(self) -> None:
+        request = _request(materialize_features=True)
+        store = FakeFeatureStore()
+        dataset_version_id = UUID("77777777-7777-7777-7777-777777777777")
+        # More materializations already exist than this window could ever
+        # produce -- an impossible/conflicting state that must fail closed
+        # rather than being silently accepted or trimmed.
+        store.add(dataset_version_id, CRYPTO_MARK_INDEX_BASIS, 999)
+        materializer = FakeFeatureMaterializer(store=store)
+        evidence = _default_evidence()
+        evidence.existing = _sealed_view_for_request(
+            request, dataset_version_id=dataset_version_id
+        )
+        service, _pipeline, _cp, materializer, adapter = _build_service(
+            evidence=evidence, materializer=materializer
+        )
+        result = service.acquire(request, _configuration())
+        self.assertEqual(result.status, AcquisitionStatus.FEATURE_FAILED)
+        self.assertTrue(result.failure_code.startswith("existing_feature_count_exceeds_expected"))
+        self.assertEqual(adapter.fetched_kinds, [])
+        self.assertEqual(materializer.calls, [])
 
 
 if __name__ == "__main__":

@@ -127,6 +127,7 @@ __all__ = [
     "HistoricalAcquisitionService",
     "IngestionCheckpointStore",
     "MaterializedFeatureCounts",
+    "NormalizedObservationView",
     "PostgresAcquisitionFeatureMaterializer",
     "PostgresCanonicalAcquisitionEvidence",
     "SealedDatasetView",
@@ -310,7 +311,15 @@ class CryptoSpecView:
 
 @dataclass(frozen=True, slots=True)
 class SealedDatasetView:
-    """An already-sealed dataset, used to prove idempotent replay or conflict."""
+    """An already-sealed dataset, used to prove idempotent replay or conflict.
+
+    Carries the full persisted member *identity* -- not merely counts -- so
+    replay can prove the existing dataset is the exact same logical acquisition
+    rather than one that merely happens to have the same shape. ``valid_from``/
+    ``valid_until`` remain informational (already implied by
+    ``event_ats_by_kind``); the real identity proof is
+    :meth:`matches_request`.
+    """
 
     dataset_version_id: UUID
     content_hash: str
@@ -318,7 +327,32 @@ class SealedDatasetView:
     valid_from: datetime
     valid_until: datetime
     created_at: datetime
-    counts_by_kind: Mapping[ObservationKind, int]
+    instrument_ids: frozenset[str]
+    provider_identifiers: frozenset[str]
+    provider_symbols: frozenset[str]
+    event_ats_by_kind: Mapping[ObservationKind, frozenset[datetime]]
+
+    @property
+    def counts_by_kind(self) -> Mapping[ObservationKind, int]:
+        return {kind: len(events) for kind, events in self.event_ats_by_kind.items()}
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedObservationView:
+    """The persisted normalized evidence for one raw observation, if any.
+
+    ``historical_normalized_observations.raw_observation_id`` is UNIQUE, so a
+    retry must read this back and reuse it rather than call
+    :meth:`HistoricalAcquisitionPipeline.normalize` again -- which would raise
+    on the duplicate-key constraint. Nothing here is ever mutated or deleted.
+    """
+
+    normalized_observation_id: UUID
+    raw_observation_id: UUID
+    instrument_id: str
+    normalization_version: str
+    quality_status: QualityStatus
+    quality_issues: tuple[str, ...]
 
 
 class CanonicalAcquisitionEvidence(Protocol):
@@ -341,6 +375,10 @@ class CanonicalAcquisitionEvidence(Protocol):
     def feature_counts(
         self, dataset_version_id: UUID, feature_names: tuple[str, ...]
     ) -> Mapping[str, int]: ...
+
+    def normalized_observation_for_raw(
+        self, raw_observation_id: UUID
+    ) -> NormalizedObservationView | None: ...
 
 
 class HistoricalAcquisitionPipeline(Protocol):
@@ -493,6 +531,44 @@ def _expected_event_ats(
     if kind is ObservationKind.OHLCV:
         return tuple(start + index * _KLINE_GRID for index in range(total_minutes))
     return tuple(start + (index + 1) * _KLINE_GRID for index in range(total_minutes))
+
+
+def _expected_feature_event_ats(
+    request: HistoricalAcquisitionRequest,
+) -> tuple[tuple[datetime, ...], tuple[datetime, ...]]:
+    """The exact event instants each canonical feature calculator must cover.
+
+    Shared by the fresh-acquisition feature step and the replay-resume feature
+    step, so both compute the identical expectation from the request window
+    alone -- never from whatever a calculator happened to produce.
+    """
+    basis_event_ats: tuple[datetime, ...] = ()
+    if {ObservationKind.MARK_PRICE, ObservationKind.INDEX_PRICE} <= request.observation_kinds:
+        basis_event_ats = _expected_event_ats(
+            ObservationKind.MARK_PRICE, request.start, request.end
+        )
+    open_interest_event_ats: tuple[datetime, ...] = ()
+    if ObservationKind.OPEN_INTEREST in request.observation_kinds:
+        open_interest_event_ats = _expected_event_ats(
+            ObservationKind.OPEN_INTEREST, request.start, request.end
+        )
+    return basis_event_ats, open_interest_event_ats
+
+
+def _expected_feature_counts(
+    basis_event_ats: tuple[datetime, ...], open_interest_event_ats: tuple[datetime, ...]
+) -> tuple[int, int]:
+    """Exact expected materialized-feature counts for one acquisition window.
+
+    ``crypto_mark_index_basis`` needs one value per shared mark/index event;
+    ``open_interest_change`` needs a prior observation, so its count is one
+    fewer than the number of open-interest events (never negative).
+    """
+    expected_basis = len(basis_event_ats)
+    expected_open_interest = (
+        max(len(open_interest_event_ats) - 1, 0) if open_interest_event_ats else 0
+    )
+    return expected_basis, expected_open_interest
 
 
 def _validate_window_alignment(request: HistoricalAcquisitionRequest) -> None:
@@ -802,34 +878,33 @@ class HistoricalAcquisitionService:
         )
         if existing is None:
             return None
-        expected = {
-            kind: _expected_event_ats(kind, request.start, request.end)
+        expected_events_by_kind = {
+            kind: frozenset(_expected_event_ats(kind, request.start, request.end))
             for kind in request.ordered_kinds()
         }
-        all_events = tuple(sorted({event for events in expected.values() for event in events}))
-        if not all_events:
-            raise _Abort(AcquisitionStatus.SEAL_FAILED, "dataset_version_conflict:empty_expectation")
+        # Full member-identity proof, not merely counts/min-max timestamps: the
+        # exact instrument, provider identifiers and per-kind event set the
+        # existing sealed dataset actually carries must match this request's
+        # own semantics exactly, or replay would silently accept a dataset that
+        # happens to share a shape with a completely different acquisition.
         conflicts = (
             existing.normalization_version != request.normalization_version
-            or existing.valid_from != all_events[0]
-            or existing.valid_until != all_events[-1]
-            or dict(existing.counts_by_kind)
-            != {kind: len(events) for kind, events in expected.items()}
+            or existing.instrument_ids != frozenset({request.instrument_id})
+            or existing.provider_identifiers != frozenset({request.provider_symbol})
+            or existing.provider_symbols != frozenset({request.provider_symbol})
+            or dict(existing.event_ats_by_kind) != expected_events_by_kind
         )
         if conflicts:
             raise _Abort(
                 AcquisitionStatus.SEAL_FAILED,
                 "dataset_version_conflict:existing_dataset_semantics_differ",
             )
-        feature_counts: MaterializedFeatureCounts | None = None
-        if request.materialize_features:
-            counts = self._evidence.feature_counts(
-                existing.dataset_version_id, (CRYPTO_MARK_INDEX_BASIS, OPEN_INTEREST_CHANGE)
-            )
-            feature_counts = MaterializedFeatureCounts(
-                crypto_mark_index_basis=counts.get(CRYPTO_MARK_INDEX_BASIS, 0),
-                open_interest_change=counts.get(OPEN_INTEREST_CHANGE, 0),
-            )
+        counts_by_kind = {kind: len(events) for kind, events in existing.event_ats_by_kind.items()}
+        feature_counts = (
+            self._replay_features(request, existing.dataset_version_id)
+            if request.materialize_features
+            else None
+        )
         return HistoricalAcquisitionResult(
             status=AcquisitionStatus.SUCCEEDED,
             idempotency_key=request.idempotency_key,
@@ -839,12 +914,73 @@ class HistoricalAcquisitionService:
             already_completed=True,
             dataset_version_id=existing.dataset_version_id,
             dataset_content_hash=existing.content_hash,
-            raw_counts=dict(existing.counts_by_kind),
-            normalized_counts=dict(existing.counts_by_kind),
+            raw_counts=dict(counts_by_kind),
+            normalized_counts=dict(counts_by_kind),
             rejected_count=0,
             provider_health_status=None,
             feature_counts=feature_counts,
         )
+
+    def _replay_features(
+        self, request: HistoricalAcquisitionRequest, dataset_version_id: UUID
+    ) -> MaterializedFeatureCounts:
+        """Complete canonical feature materialization on an already-sealed dataset.
+
+        Never re-fetches provider data and never seals a second dataset: the
+        acquisition itself already completed. If the persisted feature counts
+        already match the exact expectation, this is a deterministic read-only
+        replay with zero writes. If they are incomplete, the existing idempotent
+        feature authority (``ON CONFLICT`` + content-hash agreement) is invoked
+        again to fill in exactly the missing materializations, then counts are
+        re-read and must match exactly, or the boundary is ``FEATURE_FAILED``.
+        """
+        basis_event_ats, open_interest_event_ats = _expected_feature_event_ats(request)
+        expected_basis, expected_open_interest = _expected_feature_counts(
+            basis_event_ats, open_interest_event_ats
+        )
+        existing_counts = self._evidence.feature_counts(
+            dataset_version_id, (CRYPTO_MARK_INDEX_BASIS, OPEN_INTEREST_CHANGE)
+        )
+        existing_basis = existing_counts.get(CRYPTO_MARK_INDEX_BASIS, 0)
+        existing_open_interest = existing_counts.get(OPEN_INTEREST_CHANGE, 0)
+        if existing_basis == expected_basis and existing_open_interest == expected_open_interest:
+            return MaterializedFeatureCounts(existing_basis, existing_open_interest)
+        if existing_basis > expected_basis or existing_open_interest > expected_open_interest:
+            raise _Abort(
+                AcquisitionStatus.FEATURE_FAILED,
+                "existing_feature_count_exceeds_expected:"
+                f"basis={existing_basis}/{expected_basis},"
+                f"open_interest_change={existing_open_interest}/{expected_open_interest}",
+            )
+
+        decision_at = self._now()
+        try:
+            self._feature_materializer.materialize_features(
+                instrument_id=request.instrument_id,
+                dataset_version_id=dataset_version_id,
+                basis_event_ats=basis_event_ats,
+                open_interest_event_ats=open_interest_event_ats,
+                decision_at=decision_at,
+                definition_created_at=decision_at,
+            )
+        except Exception as error:
+            raise _Abort(
+                AcquisitionStatus.FEATURE_FAILED, str(error) or type(error).__name__
+            ) from error
+
+        final_counts = self._evidence.feature_counts(
+            dataset_version_id, (CRYPTO_MARK_INDEX_BASIS, OPEN_INTEREST_CHANGE)
+        )
+        final_basis = final_counts.get(CRYPTO_MARK_INDEX_BASIS, 0)
+        final_open_interest = final_counts.get(OPEN_INTEREST_CHANGE, 0)
+        if final_basis != expected_basis or final_open_interest != expected_open_interest:
+            raise _Abort(
+                AcquisitionStatus.FEATURE_FAILED,
+                "feature_materialization_incomplete_after_resume:"
+                f"basis={final_basis}/{expected_basis},"
+                f"open_interest_change={final_open_interest}/{expected_open_interest}",
+            )
+        return MaterializedFeatureCounts(final_basis, final_open_interest)
 
     # ---- acquisition helpers ----------------------------------------------
 
@@ -887,12 +1023,46 @@ class HistoricalAcquisitionService:
         captured: Mapping[ObservationKind, tuple[UUID, ...]],
         normalized_counts: dict[ObservationKind, int],
     ) -> tuple[UUID, ...]:
+        """Normalize captured raw evidence, reusing any already-persisted row.
+
+        ``historical_normalized_observations.raw_observation_id`` is UNIQUE, so
+        a raw id normalized by an earlier, since-failed attempt (raw capture
+        deduplicates across retries and returns the SAME id) must never be
+        handed to :meth:`HistoricalAcquisitionPipeline.normalize` a second time
+        -- that would hit the duplicate-key constraint. The canonical
+        normalized-evidence lookup is consulted first for every raw id; only a
+        raw id with no existing normalized row is actually normalized.
+        """
         normalized_at = self._now()
         rejected = 0
         member_ids: list[UUID] = []
         for kind in request.ordered_kinds():
             normalized_counts[kind] = 0
             for raw_id in dict.fromkeys(captured.get(kind, ())):
+                existing = self._evidence.normalized_observation_for_raw(raw_id)
+                if existing is not None:
+                    if existing.normalization_version != request.normalization_version:
+                        raise _Abort(
+                            AcquisitionStatus.NORMALIZATION_FAILED,
+                            "existing_normalized_observation_normalization_version_conflict:"
+                            f"{existing.normalization_version}!={request.normalization_version}",
+                        )
+                    if existing.instrument_id != request.instrument_id:
+                        raise _Abort(
+                            AcquisitionStatus.NORMALIZATION_FAILED,
+                            "existing_normalized_observation_instrument_conflict:"
+                            f"{existing.instrument_id}!={request.instrument_id}",
+                        )
+                    if existing.quality_status is not QualityStatus.VALIDATED:
+                        rejected += 1
+                        raise _Abort(
+                            AcquisitionStatus.QUALITY_FAILED,
+                            "rejected_observation:" + ",".join(existing.quality_issues),
+                            rejected_count=rejected,
+                        )
+                    normalized_counts[kind] += 1
+                    member_ids.append(existing.normalized_observation_id)
+                    continue
                 try:
                     result = self._pipeline.normalize(
                         raw_id, request.normalization_version, normalized_at
@@ -961,16 +1131,7 @@ class HistoricalAcquisitionService:
     ) -> MaterializedFeatureCounts | None:
         if not request.materialize_features:
             return None
-        basis_event_ats: tuple[datetime, ...] = ()
-        if {ObservationKind.MARK_PRICE, ObservationKind.INDEX_PRICE} <= request.observation_kinds:
-            basis_event_ats = _expected_event_ats(
-                ObservationKind.MARK_PRICE, request.start, request.end
-            )
-        open_interest_event_ats: tuple[datetime, ...] = ()
-        if ObservationKind.OPEN_INTEREST in request.observation_kinds:
-            open_interest_event_ats = _expected_event_ats(
-                ObservationKind.OPEN_INTEREST, request.start, request.end
-            )
+        basis_event_ats, open_interest_event_ats = _expected_feature_event_ats(request)
         decision_at = self._now()
         try:
             return self._feature_materializer.materialize_features(
@@ -1113,15 +1274,31 @@ class PostgresCanonicalAcquisitionEvidence:
             if row is None:
                 return None
             dataset_version_id = UUID(str(row[0]))
+            # One pass over every persisted member proves the full identity --
+            # instrument, provider identifiers and the exact per-kind event set
+            # -- not merely a count, so replay can never mistake a
+            # same-shape-but-different acquisition for this exact one.
             cursor.execute(
-                "SELECT r.observation_kind,COUNT(*) FROM historical_dataset_members m "
+                "SELECT r.observation_kind,r.event_at,n.instrument_id,"
+                "r.provider_identifier,r.provider_symbol "
+                "FROM historical_dataset_members m "
                 "JOIN historical_normalized_observations n "
                 "ON n.normalized_observation_id=m.normalized_observation_id "
                 "JOIN historical_raw_observations r ON r.raw_observation_id=n.raw_observation_id "
-                "WHERE m.dataset_version_id=%s GROUP BY r.observation_kind",
+                "WHERE m.dataset_version_id=%s",
                 (dataset_version_id,),
             )
-            count_rows = cursor.fetchall()
+            member_rows = cursor.fetchall()
+        event_ats_by_kind: dict[ObservationKind, set[datetime]] = {}
+        instrument_ids: set[str] = set()
+        provider_identifiers: set[str] = set()
+        provider_symbols: set[str] = set()
+        for member_row in member_rows:
+            kind = ObservationKind(str(member_row[0]))
+            event_ats_by_kind.setdefault(kind, set()).add(member_row[1])
+            instrument_ids.add(str(member_row[2]))
+            provider_identifiers.add(str(member_row[3]))
+            provider_symbols.add(str(member_row[4]))
         return SealedDatasetView(
             dataset_version_id=dataset_version_id,
             content_hash=str(row[1]),
@@ -1129,8 +1306,11 @@ class PostgresCanonicalAcquisitionEvidence:
             valid_from=row[3],
             valid_until=row[4],
             created_at=row[5],
-            counts_by_kind={
-                ObservationKind(str(item[0])): int(item[1]) for item in count_rows
+            instrument_ids=frozenset(instrument_ids),
+            provider_identifiers=frozenset(provider_identifiers),
+            provider_symbols=frozenset(provider_symbols),
+            event_ats_by_kind={
+                kind: frozenset(events) for kind, events in event_ats_by_kind.items()
             },
         )
 
@@ -1146,6 +1326,28 @@ class PostgresCanonicalAcquisitionEvidence:
             )
             rows = cursor.fetchall()
         return {str(row[0]): int(row[1]) for row in rows}
+
+    def normalized_observation_for_raw(
+        self, raw_observation_id: UUID
+    ) -> NormalizedObservationView | None:
+        with self._database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT normalized_observation_id,raw_observation_id,instrument_id,"
+                "normalization_version,quality_status,quality_issues "
+                "FROM historical_normalized_observations WHERE raw_observation_id=%s",
+                (raw_observation_id,),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            return None
+        return NormalizedObservationView(
+            normalized_observation_id=UUID(str(row[0])),
+            raw_observation_id=UUID(str(row[1])),
+            instrument_id=str(row[2]),
+            normalization_version=str(row[3]),
+            quality_status=QualityStatus(str(row[4])),
+            quality_issues=tuple(str(item) for item in row[5]),
+        )
 
 
 class PostgresAcquisitionFeatureMaterializer:

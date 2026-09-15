@@ -382,5 +382,275 @@ class HistoricalAcquisitionPostgresTests(unittest.TestCase):
         database.close()
 
 
+@unittest.skipUnless(os.environ.get("POSTGRES_TEST_DSN"), "POSTGRES_TEST_DSN not configured")
+class HistoricalAcquisitionRetryPostgresTests(unittest.TestCase):
+    """Real-PostgreSQL evidence that a retry after COVERAGE_FAILED is restart-safe.
+
+    ``historical_normalized_observations.raw_observation_id`` is UNIQUE. A first
+    attempt that captures and normalizes every kind, then fails at the coverage
+    boundary because the provider's OHLCV page was one bar short, durably
+    persists 95 raw rows and 95 normalized rows without sealing anything. An
+    identical retry -- for which the provider now returns the corrected,
+    complete OHLCV page -- must reuse those 95 already-normalized rows (never
+    calling ``normalize()`` on them again, which would raise on the UNIQUE
+    constraint), normalize only the one newly-captured bar, and seal exactly
+    one dataset containing all 96 members.
+
+    Owns its own disposable database, independent of
+    :class:`HistoricalAcquisitionPostgresTests`, so this test's extra raw/
+    normalized rows for the SAME real source never affect that class's
+    unscoped row-count assertions.
+    """
+
+    database_name: str
+    dsn: str
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        source_dsn = os.environ["POSTGRES_TEST_DSN"]
+        if urlparse(source_dsn).hostname not in LOCAL_HOSTS:
+            raise unittest.SkipTest(
+                "Phase 3B.1 acquisition retry requires a local or CI disposable PostgreSQL DSN"
+            )
+        cls.database_name = f"historical_acquisition_phase3b1_retry_{os.getpid()}"
+        cls.dsn = _disposable_dsn(source_dsn, cls.database_name)
+        with psycopg.connect(source_dsn, autocommit=True) as connection, connection.cursor() as cursor:
+            cursor.execute(f'DROP DATABASE IF EXISTS "{cls.database_name}" WITH (FORCE)')
+            cursor.execute(f'CREATE DATABASE "{cls.database_name}"')
+
+        from alembic import command
+        from alembic.config import Config
+
+        config = Config(str(ROOT / "alembic.ini"))
+        config.set_main_option(
+            "sqlalchemy.url", cls.dsn.replace("postgresql://", "postgresql+psycopg://", 1)
+        )
+        old_dsn = os.environ.get("POSTGRES_TEST_DSN")
+        try:
+            os.environ["POSTGRES_TEST_DSN"] = cls.dsn
+            command.upgrade(config, "head")
+        finally:
+            if old_dsn is not None:
+                os.environ["POSTGRES_TEST_DSN"] = old_dsn
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        source_dsn = os.environ["POSTGRES_TEST_DSN"]
+        with psycopg.connect(source_dsn, autocommit=True) as connection, connection.cursor() as cursor:
+            cursor.execute(f'DROP DATABASE IF EXISTS "{cls.database_name}" WITH (FORCE)')
+
+    def test_retry_after_coverage_failure_is_restart_safe(self) -> None:
+        from trade_platform.bybit_crypto_provider import BybitCryptoHistoricalAdapter
+        from trade_platform.bybit_instrument_onboarding import (
+            captured_btcusdt_snapshot_v1,
+            onboard_bybit_btcusdt_perpetual_v1,
+        )
+        from trade_platform.data_providers import HttpResponse, ProviderConfiguration
+        from trade_platform.historical_acquisition import (
+            AcquisitionStatus,
+            HistoricalAcquisitionRequest,
+            HistoricalAcquisitionService,
+            acquisition_fingerprint,
+        )
+        from trade_platform.historical_market_data import ObservationKind
+        from trade_platform.persistence import PostgresDatabase
+
+        database = PostgresDatabase(self.dsn)
+
+        onboarding = onboard_bybit_btcusdt_perpetual_v1(
+            database, captured_btcusdt_snapshot_v1(), ONBOARDED_AT
+        )
+        source_id = onboarding.source_id
+
+        bar_opens = [START + index * _MINUTE for index in range(30)]
+        oi_instants = [START + index * _FIVE for index in range(6)]
+        trade_closes = [f"{27000 + index}.0" for index in range(30)]
+        mark_closes = [f"{27010 + index}.0" for index in range(30)]
+        index_closes = [f"{27005 + index}.0" for index in range(30)]
+        oi_values = [f"{461000 + index * 10}.0" for index in range(6)]
+
+        # First attempt's OHLCV page is missing its last (30th) bar; every
+        # other kind's page is already fully complete on the first attempt.
+        incomplete_kline_body = _kline_envelope(
+            [
+                _trade_row(bar_open, close)
+                for bar_open, close in reversed(
+                    list(zip(bar_opens[:-1], trade_closes[:-1], strict=True))
+                )
+            ]
+        )
+        complete_kline_body = _kline_envelope(
+            [
+                _trade_row(bar_open, close)
+                for bar_open, close in reversed(list(zip(bar_opens, trade_closes, strict=True)))
+            ]
+        )
+        mark_body = _kline_envelope(
+            [
+                _reference_row(bar_open, close)
+                for bar_open, close in reversed(list(zip(bar_opens, mark_closes, strict=True)))
+            ]
+        )
+        index_body = _kline_envelope(
+            [
+                _reference_row(bar_open, close)
+                for bar_open, close in reversed(list(zip(bar_opens, index_closes, strict=True)))
+            ]
+        )
+        oi_body = _open_interest_envelope(
+            [
+                {"openInterest": value, "timestamp": str(_ms(instant))}
+                for instant, value in reversed(list(zip(oi_instants, oi_values, strict=True)))
+            ]
+        )
+
+        transport = RoutingTransport(
+            {
+                # Real historical data does not change between requests, so
+                # the retry's second entry for every already-complete kind is
+                # identical to the first -- only OHLCV's second entry differs.
+                "/v5/market/kline": [
+                    HttpResponse(200, incomplete_kline_body),
+                    HttpResponse(200, complete_kline_body),
+                ],
+                "/v5/market/mark-price-kline": [
+                    HttpResponse(200, mark_body),
+                    HttpResponse(200, mark_body),
+                ],
+                "/v5/market/index-price-kline": [
+                    HttpResponse(200, index_body),
+                    HttpResponse(200, index_body),
+                ],
+                "/v5/market/open-interest": [
+                    HttpResponse(200, oi_body),
+                    HttpResponse(200, oi_body),
+                ],
+            }
+        )
+
+        def adapter_factory(
+            configuration: ProviderConfiguration, now: object
+        ) -> BybitCryptoHistoricalAdapter:
+            return BybitCryptoHistoricalAdapter(
+                configuration,
+                transport=transport,  # type: ignore[arg-type]
+                now=now,  # type: ignore[arg-type]
+                sleep=lambda _seconds: None,
+            )
+
+        service = HistoricalAcquisitionService.for_postgres(
+            database, adapter_factory=adapter_factory, now=lambda: NOW
+        )
+
+        dataset_version = "bybit-v5-linear-btcusdt-phase3b1-retry"
+        request = HistoricalAcquisitionRequest(
+            source_id=source_id,
+            instrument_id=INSTRUMENT_ID,
+            provider="bybit",
+            provider_symbol=SYMBOL,
+            start=START,
+            end=END,
+            observation_kinds=frozenset(
+                {
+                    ObservationKind.OHLCV,
+                    ObservationKind.MARK_PRICE,
+                    ObservationKind.INDEX_PRICE,
+                    ObservationKind.OPEN_INTEREST,
+                }
+            ),
+            normalization_version=NORMALIZATION_VERSION,
+            dataset_version=dataset_version,
+            maximum_pages_per_kind=8,
+            materialize_features=False,
+            idempotency_key="",
+        )
+        request = replace(request, idempotency_key=acquisition_fingerprint(request))
+        configuration = ProviderConfiguration(
+            provider="bybit",
+            base_url="https://api.bybit.com",
+            terms_accepted=True,
+            secret_reference=None,
+        )
+
+        # ---- first attempt: durable partial evidence, no seal -----------------
+        first = service.acquire(request, configuration)
+        self.assertEqual(first.status, AcquisitionStatus.COVERAGE_FAILED)
+
+        with database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM historical_raw_observations "
+                "WHERE source_id=%s AND event_at>=%s AND event_at<=%s",
+                (source_id, START, END),
+            )
+            # 29 OHLCV + 30 MARK_PRICE + 30 INDEX_PRICE + 6 OPEN_INTEREST.
+            self.assertEqual(int(str(cursor.fetchone()[0])), 95)
+            cursor.execute(
+                "SELECT COUNT(*) FROM historical_normalized_observations n "
+                "JOIN historical_raw_observations r "
+                "ON r.raw_observation_id=n.raw_observation_id "
+                "WHERE r.source_id=%s AND r.event_at>=%s AND r.event_at<=%s",
+                (source_id, START, END),
+            )
+            self.assertEqual(int(str(cursor.fetchone()[0])), 95)
+            cursor.execute(
+                "SELECT COUNT(*) FROM historical_dataset_versions "
+                "WHERE source_id=%s AND version=%s",
+                (source_id, dataset_version),
+            )
+            self.assertEqual(int(str(cursor.fetchone()[0])), 0)
+
+        # ---- identical retry: corrected coverage, restart-safe normalization --
+        second = service.acquire(request, configuration)
+        self.assertEqual(second.status, AcquisitionStatus.SUCCEEDED, second.failure_code)
+        self.assertFalse(second.rejected_count)
+        self.assertEqual(
+            second.normalized_counts,
+            {
+                ObservationKind.OHLCV: 30,
+                ObservationKind.MARK_PRICE: 30,
+                ObservationKind.INDEX_PRICE: 30,
+                ObservationKind.OPEN_INTEREST: 6,
+            },
+        )
+
+        with database.transaction() as connection, connection.cursor() as cursor:
+            # Capture deduplicated the 95 already-persisted raw rows and added
+            # exactly the one previously-missing OHLCV bar: 96 total, never 191.
+            cursor.execute(
+                "SELECT COUNT(*) FROM historical_raw_observations "
+                "WHERE source_id=%s AND event_at>=%s AND event_at<=%s",
+                (source_id, START, END),
+            )
+            self.assertEqual(int(str(cursor.fetchone()[0])), 96)
+            # Exactly 96 normalized rows prove the UNIQUE(raw_observation_id)
+            # constraint was never hit: 95 rows were reused from the first
+            # attempt and exactly 1 new row was created on retry, never 191.
+            cursor.execute(
+                "SELECT COUNT(*) FROM historical_normalized_observations n "
+                "JOIN historical_raw_observations r "
+                "ON r.raw_observation_id=n.raw_observation_id "
+                "WHERE r.source_id=%s AND r.event_at>=%s AND r.event_at<=%s",
+                (source_id, START, END),
+            )
+            self.assertEqual(int(str(cursor.fetchone()[0])), 96)
+            cursor.execute(
+                "SELECT COUNT(*) FROM historical_normalized_observations n "
+                "JOIN historical_raw_observations r "
+                "ON r.raw_observation_id=n.raw_observation_id "
+                "WHERE r.source_id=%s AND r.event_at>=%s AND r.event_at<=%s "
+                "AND n.quality_status<>'VALIDATED'",
+                (source_id, START, END),
+            )
+            self.assertEqual(int(str(cursor.fetchone()[0])), 0)
+            cursor.execute(
+                "SELECT COUNT(*) FROM historical_dataset_versions "
+                "WHERE source_id=%s AND version=%s AND status='SEALED'",
+                (source_id, dataset_version),
+            )
+            self.assertEqual(int(str(cursor.fetchone()[0])), 1)
+
+        database.close()
+
+
 if __name__ == "__main__":
     unittest.main()
