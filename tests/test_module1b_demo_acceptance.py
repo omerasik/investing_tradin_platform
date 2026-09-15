@@ -197,7 +197,24 @@ class Module1BDemoAcceptanceTests(unittest.TestCase):
         self.assertEqual(len(current.items), 1)
         self.assertLessEqual(current.items[0].knowledge_time, self.seed_module.DEMO_AT)
 
-    def test_04_all_demo_discovery_projections_are_available_and_bounded(self) -> None:
+    def test_04_demo_instrument_stays_discoverable_by_search(self) -> None:
+        """The demo instrument must remain findable however large the universe grows.
+
+        The unfiltered discovery page is a bounded preview ordered by symbol, so a
+        demo row's presence there is alphabetical luck, not an invariant -- real
+        onboarded instruments legitimately push it off. What must always hold is
+        that an explicit search finds it and that it is still flagged synthetic.
+        """
+        self.seed_module.seed_demo_evidence(self.dsn)
+        page = self.queries.instruments(query="DEMO_EQ_A", limit=20, offset=0)
+
+        self.assertEqual("AVAILABLE", page.state)
+        matches = [item for item in page.items if item.instrument_id == "DEMO:XNAS:DEMO_EQ_A"]
+        self.assertEqual(1, len(matches))
+        self.assertEqual("DEMO_EQ_A", matches[0].canonical_symbol)
+        self.assertTrue(matches[0].synthetic_demo)
+
+    def test_05_all_demo_discovery_projections_are_available_and_bounded(self) -> None:
         self.seed_module.seed_demo_evidence(self.dsn)
         pages = {
             "instruments": self.queries.instruments(limit=20, offset=0),

@@ -17,7 +17,7 @@ test("Module 1B synthetic demo auto-discovers every read-only workspace", async 
   await expect(page.getByText("LIVE TRADING: DISABLED", { exact: true })).toBeVisible();
 
   for (const [selector, label] of [
-    ["#instrument", "DEMO_EQ_A"], ["#features", "demo_"], ["#strategy", "SYNTHETIC_ENGINEERING_EVIDENCE_ONLY"],
+    ["#instrument", "AVAILABLE"], ["#features", "demo_"], ["#strategy", "SYNTHETIC_ENGINEERING_EVIDENCE_ONLY"],
     ["#backtest", "module1b-demo-evidence-v1"], ["#scorecard", "SYNTHETIC_ENGINEERING_EVIDENCE_ONLY"],
     ["#regime", "UPTREND"], ["#portfolio", "REVIEW ELIGIBLE"], ["#investment", "SYNTHETIC / DEMO"],
     ["#news", "Demo issuer retracts fictional guidance"], ["#signals", "DEMO:XNAS:DEMO_EQ_A"],
@@ -26,11 +26,18 @@ test("Module 1B synthetic demo auto-discovers every read-only workspace", async 
     await expect(page.locator(selector)).toContainText(label);
   }
 
-  await expect(page.locator("#instrument")).toContainText("SYNTHETIC / DEMO");
   await expect(page.locator("#news")).toContainText("NOT LIVE NEWS");
   await expect(page.locator("#investment")).toContainText("NOT A REAL INVESTMENT RECOMMENDATION");
   await expect(page.locator("#data-sources")).toContainText("EXTERNAL_BLOCKED");
   await expect(page.getByRole("button", { name: /execute|submit|buy|sell/i })).toHaveCount(0);
+
+  // The Instrument card is a bounded preview: the first 20 canonical instruments by
+  // symbol, unfiltered. A specific demo row appearing there is alphabetical luck, not
+  // a guarantee -- onboarding the real Bybit BTCUSDT perpetual is what pushed
+  // DEMO_EQ_A off it. So this spec asserts only what the card actually promises, that
+  // it resolves; that the demo instrument stays discoverable by an explicit search is
+  // asserted deterministically in tests/test_module1b_demo_acceptance.py instead of
+  // depending on where it happens to land in an alphabetical preview.
 
   // Module 2B-5: the dashboard's Operations card was intentionally trimmed to a concise
   // summary (PostgreSQL, service health, active incident count, kill switch); detailed

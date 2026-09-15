@@ -19,7 +19,19 @@ from decimal import Decimal
 from uuid import UUID
 
 VENUE = "BYBIT"
-SYMBOL = "BTCUSDT"
+#: Fixture-scoped, exactly like ``canonical_symbol`` below. ``professional_
+#: identifier_mappings`` excludes overlapping ``(namespace, identifier_value)``
+#: ranges, so one Bybit provider identifier resolves to at most one instrument
+#: -- which is the whole point of provider-identifier resolution. This fixture
+#: must therefore not claim the REAL ``bybit_v5_symbol``/``BTCUSDT`` identifier:
+#: that one belongs to the real onboarded ``CRYPTO:BYBIT:BTCUSDT:PERP``. The
+#: namespace itself stays the production constant, still asserted below.
+SYMBOL = "TESTFIXBTCUSDT"
+#: Likewise fixture-scoped. ``crypto_instrument_specifications`` uniquely indexes
+#: ``(venue, base_asset, quote_asset, kind)`` for undated contracts, so there is
+#: exactly one BYBIT BTC/USDT perpetual -- and that one is the real onboarded
+#: instrument, not this fixture.
+BASE_ASSET = "TESTFIXBTC"
 NAMESPACE = "bybit_v5_symbol"
 INSTRUMENT_ID = "TESTFIXTURE:BYBITV5:BTCUSDT:PERP"
 
@@ -256,7 +268,7 @@ class BybitCryptoProviderPostgresTests(unittest.TestCase):
                 mic=None,
                 canonical_symbol="TESTFIXBYBITV5BTCUSDTP",
                 listing_date=date(2026, 1, 2),
-                base_currency="BTC",
+                base_currency=BASE_ASSET,
                 quote_currency="USDT",
                 settlement_currency="USDT",
                 contract_multiplier=Decimal(1),
@@ -290,7 +302,7 @@ class BybitCryptoProviderPostgresTests(unittest.TestCase):
                 instrument_id=INSTRUMENT_ID,
                 venue=VENUE,
                 kind=CryptoInstrumentKind.PERPETUAL,
-                base_asset="BTC",
+                base_asset=BASE_ASSET,
                 quote_asset="USDT",
                 settlement_asset="USDT",
                 settlement_style=SettlementStyle.LINEAR,
@@ -482,10 +494,10 @@ class BybitCryptoProviderPostgresTests(unittest.TestCase):
         self.assertEqual(
             sorted({str(row[4]) for row in raw_rows}),
             [
-                "bybit://v5/index-kline/linear/BTCUSDT",
-                "bybit://v5/mark-kline/linear/BTCUSDT",
-                "bybit://v5/open-interest/linear/BTCUSDT",
-                "bybit://v5/trade-kline/linear/BTCUSDT",
+                f"bybit://v5/index-kline/linear/{SYMBOL}",
+                f"bybit://v5/mark-kline/linear/{SYMBOL}",
+                f"bybit://v5/open-interest/linear/{SYMBOL}",
+                f"bybit://v5/trade-kline/linear/{SYMBOL}",
             ],
         )
 
@@ -603,7 +615,7 @@ class BybitCryptoProviderPostgresTests(unittest.TestCase):
             projected = item.normalized_value  # type: ignore[attr-defined]
             self.assertEqual(Decimal(str(projected["open_interest"])), Decimal(value))
             self.assertEqual(projected["unit"], "BASE_ASSET")
-            self.assertEqual(projected["unit_asset"], "BTC")
+            self.assertEqual(projected["unit_asset"], BASE_ASSET)
             self.assertEqual(projected["observed_at"], instant.isoformat())
 
         # ---- 3J.2b.1 tradable-bar reader over the sealed 1m trade bars --------
@@ -622,7 +634,7 @@ class BybitCryptoProviderPostgresTests(unittest.TestCase):
         self.assertEqual({bar.dataset_content_hash for bar in series.bars}, {dataset.content_hash})
         self.assertEqual(
             {bar.provenance_uri for bar in series.bars},
-            {"bybit://v5/trade-kline/linear/BTCUSDT"},
+            {f"bybit://v5/trade-kline/linear/{SYMBOL}"},
         )
         with database.transaction() as connection, connection.cursor() as cursor:
             cursor.execute(
@@ -837,7 +849,7 @@ class BybitCryptoProviderPostgresTests(unittest.TestCase):
             "category": "linear",
             "symbol": SYMBOL,
             "interval": interval,
-            "base_asset": "BTC",
+            "base_asset": BASE_ASSET,
             "quote_asset": "USDT",
             "settlement_asset": "USDT",
             "start": start.isoformat(),
