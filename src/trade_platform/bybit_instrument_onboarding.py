@@ -62,10 +62,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Final
+from typing import Final, TypeVar
 from uuid import UUID, uuid5
 
 from .bybit_crypto_provider import (
@@ -75,10 +76,11 @@ from .bybit_crypto_provider import (
     BYBIT_V5_SYMBOL_NAMESPACE,
 )
 from .crypto_instruments import (
-    CryptoInstrumentError,
     CryptoInstrumentKind,
     CryptoInstrumentSpecification,
+    CryptoResolutionError,
     CryptoSettlementType,
+    CryptoVenueRuleError,
     CryptoVenueTradingRules,
     PostgresCryptoInstrumentAuthority,
     ReferencePriceRequirement,
@@ -95,6 +97,7 @@ from .persistence import PostgresDatabase
 from .professional_instruments import (
     IdentifierMapping,
     IdentifierSourceKind,
+    InstrumentResolutionError,
     InstrumentType,
     LifecycleStatus,
     PostgresProfessionalInstrumentMaster,
@@ -103,6 +106,8 @@ from .professional_instruments import (
     SessionType,
     SymbolMapping,
 )
+
+_T = TypeVar("_T")
 
 BYBIT_INSTRUMENTS_INFO_PATH: Final = "/v5/market/instruments-info"
 
@@ -148,6 +153,13 @@ _EXPECTED_STATUS: Final = "Trading"
 _EXPECTED_BASE_COIN: Final = "BTC"
 _EXPECTED_QUOTE_COIN: Final = "USDT"
 _EXPECTED_SETTLE_COIN: Final = "USDT"
+
+
+def _bybit_source_id() -> UUID:
+    """The one deterministic ``historical_data_sources`` id this module ever
+    addresses. Shared by the builder and the existing-state reader so both
+    always agree on which row they mean."""
+    return uuid5(_ONBOARDING_NAMESPACE, f"source:{BYBIT_PROVIDER_NAME}:{BYBIT_DATASET_NAME}")
 
 
 class BybitInstrumentOnboardingError(ValueError):
@@ -727,9 +739,7 @@ def bybit_authorized_historical_source(
     """Operator-approved public Bybit V5 market-data pilot authority."""
     _require_onboarding_time(snapshot, onboarded_at)
     return AuthorizedHistoricalSource(
-        source_id=uuid5(
-            _ONBOARDING_NAMESPACE, f"source:{BYBIT_PROVIDER_NAME}:{BYBIT_DATASET_NAME}"
-        ),
+        source_id=_bybit_source_id(),
         provider=BYBIT_PROVIDER_NAME,
         dataset_name=BYBIT_DATASET_NAME,
         provider_identifier_namespace=BYBIT_V5_SYMBOL_NAMESPACE,
@@ -773,33 +783,50 @@ def onboard_bybit_btcusdt_perpetual_v1(
 ) -> BybitInstrumentOnboardingResult:
     """Register Bybit BTCUSDT through the existing authorities, or fail closed.
 
-    Repeating the *identical* onboarding is a deterministic no-op: the already
-    recorded specification and venue rules are read back and compared against
-    this snapshot, and a match returns ``already_onboarded=True`` without
-    writing anything. Onboarding the same instrument under *different* evidence
-    raises :class:`BybitOnboardingConflictError` -- nothing is overwritten and
-    no recorded rule is ever mutated in place, because a changed Bybit snapshot
-    must become a new rules version, not a silent edit to the old one.
+    First-time onboarding is one PostgreSQL transaction. The professional
+    instrument, its symbol and identifier mappings, the crypto specification,
+    the venue trading rules, and the authorized historical source with its
+    capability rows are written inside a single outer ``database.transaction()``
+    opened here. Each authority still performs its own write through its own
+    nested ``database.transaction()`` call -- no direct SQL and no second write
+    path are introduced -- but because every authority shares this same
+    ``PostgresDatabase`` connection, psycopg treats each nested call as a
+    SAVEPOINT beneath the outer transaction rather than an independent commit.
+    An exception at any stage therefore rolls back every earlier write from
+    this same call: there is no window in which a partial onboarding is
+    visible to any other reader.
+
+    Repeating the *identical* onboarding is a deterministic no-op: every
+    component a successful onboarding writes is read back and compared
+    against this exact snapshot (see :func:`_resolve_existing_onboarding`) --
+    not merely the specification and venue rules -- and a complete, matching
+    state returns ``already_onboarded=True`` without writing anything. Any
+    state short of that -- some but not all components present, or a
+    component present but disagreeing with this snapshot -- raises
+    :class:`BybitOnboardingConflictError`. Nothing already recorded is ever
+    repaired piecemeal or overwritten; a later, genuinely revised Bybit
+    snapshot is a future rules-versioning workflow, not this function's job.
     """
     _require_onboarding_time(snapshot, onboarded_at)
 
+    master = PostgresProfessionalInstrumentMaster(database)
     crypto = PostgresCryptoInstrumentAuthority(database)
-    existing = _existing_onboarding(crypto, snapshot, onboarded_at)
+    pipeline = PostgresHistoricalMarketDataPipeline(database)
+
+    existing = _resolve_existing_onboarding(database, master, crypto, snapshot, onboarded_at)
     if existing is not None:
         return existing
 
-    master = PostgresProfessionalInstrumentMaster(database)
-    pipeline = PostgresHistoricalMarketDataPipeline(database)
-
-    master.register(bybit_btcusdt_professional_instrument(snapshot, onboarded_at))
-    master.add_symbol_mapping(bybit_btcusdt_symbol_mapping(snapshot, onboarded_at))
-    master.add_identifier_mapping(bybit_btcusdt_identifier_mapping(snapshot, onboarded_at))
-    crypto.specify_instrument(bybit_btcusdt_crypto_specification(snapshot, onboarded_at))
-    crypto.record_venue_trading_rules(
-        bybit_btcusdt_venue_trading_rules(snapshot, onboarded_at)
-    )
     source = bybit_authorized_historical_source(snapshot, onboarded_at)
-    pipeline.register_source(source)
+    with database.transaction():
+        master.register(bybit_btcusdt_professional_instrument(snapshot, onboarded_at))
+        master.add_symbol_mapping(bybit_btcusdt_symbol_mapping(snapshot, onboarded_at))
+        master.add_identifier_mapping(bybit_btcusdt_identifier_mapping(snapshot, onboarded_at))
+        crypto.specify_instrument(bybit_btcusdt_crypto_specification(snapshot, onboarded_at))
+        crypto.record_venue_trading_rules(
+            bybit_btcusdt_venue_trading_rules(snapshot, onboarded_at)
+        )
+        pipeline.register_source(source)
 
     return BybitInstrumentOnboardingResult(
         instrument_id=BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID,
@@ -809,38 +836,318 @@ def onboard_bybit_btcusdt_perpetual_v1(
     )
 
 
-def _existing_onboarding(
+def _require_present(value: _T | None, what: str) -> _T:
+    """Narrow an optional read result once its presence has already been
+    proved by the ``presence`` classification in
+    :func:`_resolve_existing_onboarding`. Raising here (rather than asserting)
+    keeps this a real, always-active fail-closed check consistent with every
+    other invariant in this module -- and, unlike ``assert``, one that bandit
+    does not flag and that ``python -O`` cannot compile away.
+    """
+    if value is None:
+        raise BybitOnboardingConflictError(f"bybit_onboarding_state_inconsistent:{what}")
+    return value
+
+
+def _optional(action: Callable[[], _T], *not_found: type[Exception]) -> _T | None:
+    """Run ``action``, mapping only the given "not found" exceptions to
+    ``None``. Any other exception -- including an ambiguous-resolution error,
+    which is a subclass of some of these and would otherwise be swallowed --
+    is deliberately allowed through unchanged rather than being read as
+    "nothing onboarded yet"; the schema's own exclusion constraints make that
+    particular ambiguity unreachable for this module's fixed venue/symbol/
+    namespace keys in the first place, but this function never assumes that.
+    """
+    try:
+        return action()
+    except not_found:
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class _PersistedSourceRow:
+    """The columns of one ``historical_data_sources`` row this module cares
+    about, read back for existing-state verification. A private mirror of
+    ``register_source``'s own column order -- this module still owns no write
+    path to this table."""
+
+    provider: str
+    dataset_name: str
+    provider_identifier_namespace: str
+    provider_terms_version: str
+    authorization_reference: str
+    asset_scope: str
+
+
+def _read_persisted_source(
+    database: PostgresDatabase, source_id: UUID
+) -> _PersistedSourceRow | None:
+    with database.transaction() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT provider,dataset_name,provider_identifier_namespace,"
+            "provider_terms_version,authorization_reference,asset_scope "
+            "FROM historical_data_sources WHERE source_id=%s",
+            (source_id,),
+        )
+        row = cursor.fetchone()
+    if row is None:
+        return None
+    return _PersistedSourceRow(
+        provider=str(row[0]),
+        dataset_name=str(row[1]),
+        provider_identifier_namespace=str(row[2]),
+        provider_terms_version=str(row[3]),
+        authorization_reference=str(row[4]),
+        asset_scope=str(row[5]),
+    )
+
+
+def _read_persisted_capabilities(
+    database: PostgresDatabase, source_id: UUID
+) -> frozenset[ObservationKind]:
+    with database.transaction() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT observation_kind FROM historical_source_capabilities WHERE source_id=%s",
+            (source_id,),
+        )
+        rows = cursor.fetchall()
+    return frozenset(ObservationKind(str(row[0])) for row in rows)
+
+
+def _instrument_matches(actual: ProfessionalInstrument, expected: ProfessionalInstrument) -> bool:
+    """True when every field but ``registered_at`` -- a knowledge clock this
+    module deliberately does not require a repeat call to reproduce -- is
+    identical."""
+    return (
+        actual.instrument_id == expected.instrument_id
+        and actual.asset_class == expected.asset_class
+        and actual.instrument_type == expected.instrument_type
+        and actual.exchange_name == expected.exchange_name
+        and actual.venue == expected.venue
+        and actual.mic == expected.mic
+        and actual.canonical_symbol == expected.canonical_symbol
+        and actual.listing_date == expected.listing_date
+        and actual.base_currency == expected.base_currency
+        and actual.quote_currency == expected.quote_currency
+        and actual.settlement_currency == expected.settlement_currency
+        and actual.contract_multiplier == expected.contract_multiplier
+        and actual.contract_size == expected.contract_size
+        and actual.tick_size == expected.tick_size
+        and actual.lot_size == expected.lot_size
+        and actual.price_precision == expected.price_precision
+        and actual.quantity_precision == expected.quantity_precision
+        and actual.trading_timezone == expected.trading_timezone
+        and actual.market_session_type == expected.market_session_type
+        and actual.representation_kind == expected.representation_kind
+        and actual.lifecycle_status == expected.lifecycle_status
+    )
+
+
+def _specification_matches(
+    actual: CryptoInstrumentSpecification, expected: CryptoInstrumentSpecification
+) -> bool:
+    """True when every field but ``registered_at`` is identical."""
+    return (
+        actual.instrument_id == expected.instrument_id
+        and actual.venue == expected.venue
+        and actual.kind == expected.kind
+        and actual.base_asset == expected.base_asset
+        and actual.quote_asset == expected.quote_asset
+        and actual.settlement_asset == expected.settlement_asset
+        and actual.settlement_style == expected.settlement_style
+        and actual.settlement_type == expected.settlement_type
+        and actual.contract_multiplier == expected.contract_multiplier
+        and actual.contract_size == expected.contract_size
+        and actual.expiry_at == expected.expiry_at
+        and actual.reference_price_requirement == expected.reference_price_requirement
+        and actual.index_reference == expected.index_reference
+        and actual.source_reference == expected.source_reference
+    )
+
+
+def _rules_match(actual: CryptoVenueTradingRules, expected: CryptoVenueTradingRules) -> bool:
+    """True when every field but ``known_at`` is identical."""
+    return (
+        actual.rule_id == expected.rule_id
+        and actual.instrument_id == expected.instrument_id
+        and actual.rule_version == expected.rule_version
+        and actual.tick_size == expected.tick_size
+        and actual.quantity_step == expected.quantity_step
+        and actual.min_quantity == expected.min_quantity
+        and actual.max_quantity == expected.max_quantity
+        and actual.min_notional == expected.min_notional
+        and actual.price_precision == expected.price_precision
+        and actual.quantity_precision == expected.quantity_precision
+        and actual.effective_from == expected.effective_from
+        and actual.source_reference == expected.source_reference
+        and actual.source_hash == expected.source_hash
+    )
+
+
+def _source_matches(actual: _PersistedSourceRow, expected: AuthorizedHistoricalSource) -> bool:
+    """True when every field but ``authorized_at``/``created_at`` is
+    identical."""
+    return (
+        actual.provider == expected.provider
+        and actual.dataset_name == expected.dataset_name
+        and actual.provider_identifier_namespace == expected.provider_identifier_namespace
+        and actual.provider_terms_version == expected.provider_terms_version
+        and actual.authorization_reference == expected.authorization_reference
+        and actual.asset_scope == expected.asset_scope
+    )
+
+
+def _resolve_existing_onboarding(
+    database: PostgresDatabase,
+    master: PostgresProfessionalInstrumentMaster,
     crypto: PostgresCryptoInstrumentAuthority,
     snapshot: BybitInstrumentMetadataSnapshotV1,
     onboarded_at: datetime,
 ) -> BybitInstrumentOnboardingResult | None:
-    """Detect a prior onboarding, and prove it carried identical evidence."""
-    try:
-        specification = crypto.get_specification(
-            BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID, known_at=onboarded_at
+    """Classify what, if anything, of this onboarding already exists.
+
+    Reads back every one of the seven records a successful onboarding writes
+    -- the professional instrument, its exact BYBIT/BTCUSDT symbol mapping,
+    its exact ``bybit_v5_symbol``/``BTCUSDT`` identifier mapping, the crypto
+    perpetual specification, venue rules version 1, the deterministic Bybit
+    historical source, and its exact four source capabilities -- through the
+    existing authorities (plus a private read-only mirror of the source and
+    capability tables; this module still owns no write path of its own to
+    either). The classification is exactly:
+
+    * nothing exists -> ``None``, so the caller performs a fresh atomic write;
+    * everything exists and matches this exact snapshot in every field that
+      does not describe *when this platform learned it* -> a deterministic
+      no-op result, with zero writes;
+    * anything else -- some but not all components exist, or a component
+      exists but disagrees with this snapshot -- raises
+      :class:`BybitOnboardingConflictError`. A partial onboarding is never
+      completed piecemeal, and nothing already recorded is ever repaired or
+      overwritten in place.
+
+    A repeat call's ``onboarded_at`` need not equal the original persisted
+    knowledge time: only fields that describe the world (identity, launch
+    time, tick/quantity semantics, evidence hash, capability set) are
+    compared here, never ``registered_at``/``known_at``/``authorized_at``/
+    ``created_at``, which are expected to differ between onboarding attempts.
+    """
+    source_id = _bybit_source_id()
+
+    instrument = _optional(
+        lambda: master.get_as_of(BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID, onboarded_at),
+        InstrumentResolutionError,
+    )
+
+    symbol_owner = _optional(
+        lambda: master.resolve_symbol_point_in_time(
+            snapshot.symbol, BYBIT_EXCHANGE, snapshot.launch_time, onboarded_at
+        ),
+        InstrumentResolutionError,
+    )
+    if (
+        symbol_owner is not None
+        and symbol_owner.instrument_id != BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID
+    ):
+        raise BybitOnboardingConflictError(
+            "bybit_symbol_mapping_resolves_to_a_different_instrument:"
+            f"{symbol_owner.instrument_id}"
         )
-    except CryptoInstrumentError:
+
+    identifier_owner = _optional(
+        lambda: master.resolve_identifier_point_in_time(
+            BYBIT_V5_SYMBOL_NAMESPACE, snapshot.symbol, snapshot.launch_time, onboarded_at
+        ),
+        InstrumentResolutionError,
+    )
+    if (
+        identifier_owner is not None
+        and identifier_owner.instrument_id != BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID
+    ):
+        raise BybitOnboardingConflictError(
+            "bybit_identifier_mapping_resolves_to_a_different_instrument:"
+            f"{identifier_owner.instrument_id}"
+        )
+
+    specification = _optional(
+        lambda: crypto.get_specification(BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID, known_at=onboarded_at),
+        CryptoResolutionError,
+    )
+    rules = _optional(
+        lambda: crypto.venue_trading_rules_point_in_time(
+            BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID,
+            effective_at=snapshot.retrieved_at,
+            known_at=onboarded_at,
+        ),
+        CryptoVenueRuleError,
+    )
+    source_row = _read_persisted_source(database, source_id)
+    capabilities = (
+        _read_persisted_capabilities(database, source_id)
+        if source_row is not None
+        else frozenset()
+    )
+
+    presence = {
+        "professional_instrument": instrument is not None,
+        "symbol_mapping": symbol_owner is not None,
+        "identifier_mapping": identifier_owner is not None,
+        "crypto_specification": specification is not None,
+        "venue_trading_rules": rules is not None,
+        "historical_source": source_row is not None,
+        "historical_source_capabilities": bool(capabilities),
+    }
+
+    if not any(presence.values()):
         return None
 
-    if specification.source_reference != snapshot.source_reference:
+    if not all(presence.values()):
+        missing = sorted(key for key, present in presence.items() if not present)
+        raise BybitOnboardingConflictError(
+            "bybit_onboarding_partial_state:missing=" + ",".join(missing)
+        )
+
+    # Every component is present; the dict above already proved it, but mypy
+    # cannot see that through a dict lookup, so re-narrow each explicitly.
+    instrument = _require_present(instrument, "professional_instrument")
+    symbol_owner = _require_present(symbol_owner, "symbol_mapping")
+    identifier_owner = _require_present(identifier_owner, "identifier_mapping")
+    specification = _require_present(specification, "crypto_specification")
+    rules = _require_present(rules, "venue_trading_rules")
+    source_row = _require_present(source_row, "historical_source")
+
+    expected_instrument = bybit_btcusdt_professional_instrument(snapshot, onboarded_at)
+    if not _instrument_matches(instrument, expected_instrument):
+        raise BybitOnboardingConflictError(
+            "bybit_instrument_already_onboarded_with_different_identity"
+        )
+
+    expected_specification = bybit_btcusdt_crypto_specification(snapshot, onboarded_at)
+    if not _specification_matches(specification, expected_specification):
         raise BybitOnboardingConflictError(
             "bybit_instrument_already_onboarded_with_different_evidence:"
             f"{specification.source_reference}"
         )
-    rules = crypto.venue_trading_rules_point_in_time(
-        BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID,
-        effective_at=snapshot.retrieved_at,
-        known_at=onboarded_at,
-    )
-    if rules.source_hash != snapshot.canonical_payload_hash:
+
+    expected_rules = bybit_btcusdt_venue_trading_rules(snapshot, onboarded_at)
+    if not _rules_match(rules, expected_rules):
         raise BybitOnboardingConflictError(
             f"bybit_venue_rules_already_recorded_from_different_snapshot:{rules.source_hash}"
         )
+
+    expected_source = bybit_authorized_historical_source(snapshot, onboarded_at)
+    if not _source_matches(source_row, expected_source):
+        raise BybitOnboardingConflictError(
+            "bybit_historical_source_already_registered_with_different_evidence"
+        )
+    if capabilities != expected_source.resolved_capabilities():
+        raise BybitOnboardingConflictError(
+            "bybit_historical_source_capability_set_differs:"
+            + ",".join(sorted(kind.value for kind in capabilities))
+        )
+
     return BybitInstrumentOnboardingResult(
         instrument_id=BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID,
-        source_id=uuid5(
-            _ONBOARDING_NAMESPACE, f"source:{BYBIT_PROVIDER_NAME}:{BYBIT_DATASET_NAME}"
-        ),
+        source_id=source_id,
         canonical_payload_hash=snapshot.canonical_payload_hash,
         already_onboarded=True,
     )

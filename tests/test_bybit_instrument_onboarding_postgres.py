@@ -24,6 +24,7 @@ import os
 import unittest
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from unittest import mock
 
 from trade_platform.bybit_instrument_onboarding import (
     BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID,
@@ -46,7 +47,10 @@ from trade_platform.crypto_instruments import (
     SettlementStyle,
 )
 from trade_platform.domain import AssetClass
-from trade_platform.historical_market_data import ObservationKind
+from trade_platform.historical_market_data import (
+    ObservationKind,
+    PostgresHistoricalMarketDataPipeline,
+)
 from trade_platform.persistence import PostgresDatabase
 from trade_platform.professional_instruments import (
     InstrumentType,
@@ -64,10 +68,35 @@ LAUNCH_TIME = datetime(2020, 3, 15, tzinfo=UTC)
 ONBOARDED_AT = CAPTURED_BTCUSDT_RETRIEVED_AT + timedelta(seconds=30)
 READ_AT = ONBOARDED_AT + timedelta(minutes=1)
 
+#: Every table a successful onboarding writes, keyed by ``instrument_id``.
+_TABLES_BY_INSTRUMENT: tuple[str, ...] = (
+    "professional_instruments",
+    "professional_symbol_mappings",
+    "professional_identifier_mappings",
+    "crypto_instrument_specifications",
+    "crypto_venue_trading_rules",
+)
+#: The two remaining tables, keyed by ``source_id`` instead.
+_TABLES_BY_SOURCE: tuple[str, ...] = (
+    "historical_data_sources",
+    "historical_source_capabilities",
+)
+
+
+class _AtomicityProbeError(Exception):
+    """Sentinel raised mid-onboarding to prove the outer transaction rolls
+    back every earlier write from the same call. Deliberately not a subclass
+    of any domain error, so it propagates out of
+    ``onboard_bybit_btcusdt_perpetual_v1`` completely unchanged rather than
+    being caught and reinterpreted by an authority along the way."""
+
+
 @unittest.skipUnless(os.environ.get("POSTGRES_TEST_DSN"), "POSTGRES_TEST_DSN not configured")
 class BybitInstrumentOnboardingPostgresTests(unittest.TestCase):
     database: PostgresDatabase
     first_result: BybitInstrumentOnboardingResult
+    atomicity_probe_raised: bool
+    atomicity_probe_remnants: dict[str, int]
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -82,9 +111,60 @@ class BybitInstrumentOnboardingPostgresTests(unittest.TestCase):
         command.upgrade(config, "head")
 
         cls.database = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+
+        # Prove the atomic rollback BEFORE any real onboarding exists: once the
+        # instrument is genuinely onboarded, a repeat call never reaches the
+        # write path at all (it is classified as a no-op), so this probe would
+        # no longer exercise anything if it ran after ``first_result`` below.
+        cls._probe_atomic_rollback()
+
         cls.first_result = onboard_bybit_btcusdt_perpetual_v1(
             cls.database, captured_btcusdt_snapshot_v1(), ONBOARDED_AT
         )
+
+    @classmethod
+    def _probe_atomic_rollback(cls) -> None:
+        """Inject a failure at the LAST authority write (``register_source``),
+        so every earlier write in the sequence -- the professional instrument,
+        both its mappings, the crypto specification and the venue trading
+        rules -- has already executed for real against this database by the
+        time the sentinel fires. Only the still-open outer transaction's
+        rollback can undo them, so this is a genuine test of that rollback,
+        not of whether ``register_source`` itself was ever called.
+        """
+        probe_snapshot = captured_btcusdt_snapshot_v1()
+        with mock.patch.object(
+            PostgresHistoricalMarketDataPipeline,
+            "register_source",
+            side_effect=_AtomicityProbeError("sentinel_atomicity_failure"),
+        ):
+            try:
+                onboard_bybit_btcusdt_perpetual_v1(cls.database, probe_snapshot, ONBOARDED_AT)
+            except _AtomicityProbeError:
+                cls.atomicity_probe_raised = True
+            else:
+                cls.atomicity_probe_raised = False
+
+        source_id = bybit_authorized_historical_source(probe_snapshot, ONBOARDED_AT).source_id
+        cls.atomicity_probe_remnants = {
+            table: cls._count(table, "instrument_id", BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID)
+            for table in _TABLES_BY_INSTRUMENT
+        } | {
+            table: cls._count(table, "source_id", source_id) for table in _TABLES_BY_SOURCE
+        }
+
+    @classmethod
+    def _count(cls, table: str, column: str, key: object) -> int:
+        with cls.database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                # table/column are drawn only from the fixed tuples above; key
+                # is the sole bound parameter.
+                f"SELECT COUNT(*) FROM {table} WHERE {column}=%s",  # nosec B608
+                (key,),
+            )
+            row = cursor.fetchone()
+        assert row is not None
+        return int(row[0])
 
     def setUp(self) -> None:
         self.snapshot = captured_btcusdt_snapshot_v1()
@@ -96,6 +176,26 @@ class BybitInstrumentOnboardingPostgresTests(unittest.TestCase):
         with self.database.transaction() as connection, connection.cursor() as cursor:
             cursor.execute(statement, parameters)
             return [tuple(row) for row in cursor.fetchall()]
+
+    # ---- atomicity ---------------------------------------------------------
+
+    def test_atomic_rollback_leaves_no_canonical_remnants(self) -> None:
+        """``setUpClass`` runs the injected-failure probe before performing the
+        real onboarding used by every other test in this class; see
+        :meth:`_probe_atomic_rollback`. This asserts on what that probe found:
+        the sentinel exception propagated out of onboarding unchanged, and not
+        one of the seven records a successful onboarding writes was left
+        behind by the writes that ran before the sentinel fired.
+        """
+        self.assertTrue(
+            self.atomicity_probe_raised,
+            "the sentinel exception did not propagate out of onboarding",
+        )
+        for table, count in self.atomicity_probe_remnants.items():
+            with self.subTest(table=table):
+                self.assertEqual(
+                    0, count, f"{table} retained a row after a rolled-back onboarding"
+                )
 
     # ---- onboarding ------------------------------------------------------
 
@@ -295,6 +395,14 @@ class BybitInstrumentOnboardingPostgresTests(unittest.TestCase):
 
     def test_repeating_identical_onboarding_is_a_deterministic_no_op(self) -> None:
         first = self.first_result
+
+        before = {
+            table: self._count(table, "instrument_id", BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID)
+            for table in _TABLES_BY_INSTRUMENT
+        } | {
+            table: self._count(table, "source_id", first.source_id) for table in _TABLES_BY_SOURCE
+        }
+
         second = onboard_bybit_btcusdt_perpetual_v1(
             self.database, captured_btcusdt_snapshot_v1(), READ_AT
         )
@@ -305,20 +413,27 @@ class BybitInstrumentOnboardingPostgresTests(unittest.TestCase):
         self.assertEqual(first.source_id, second.source_id)
         self.assertEqual(first.canonical_payload_hash, second.canonical_payload_hash)
 
-        for table in (
-            "professional_instruments",
-            "professional_symbol_mappings",
-            "professional_identifier_mappings",
-            "crypto_instrument_specifications",
-            "crypto_venue_trading_rules",
+        # The second call must perform zero writes: every table's row count is
+        # exactly what it was before the repeat call, not merely "one" -- an
+        # unchanged count is what proves no row was appended, updated away and
+        # reinserted, or otherwise touched (the immutable-evidence trigger on
+        # every one of these tables rules out an in-place update entirely, so
+        # an unchanged count after a successful, exception-free call means no
+        # write statement reached the database at all).
+        for table in _TABLES_BY_INSTRUMENT:
+            with self.subTest(table=table):
+                after = self._count(table, "instrument_id", BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID)
+                self.assertEqual(1, after)
+                self.assertEqual(before[table], after)
+
+        for table, expected_count in (
+            ("historical_data_sources", 1),
+            ("historical_source_capabilities", 4),
         ):
             with self.subTest(table=table):
-                rows = self._query(
-                    # Fixed table list above; the key is a bound parameter.
-                    f"SELECT COUNT(*) FROM {table} WHERE instrument_id=%s",  # nosec B608
-                    (BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID,),
-                )
-                self.assertEqual(1, rows[0][0])
+                after = self._count(table, "source_id", first.source_id)
+                self.assertEqual(expected_count, after)
+                self.assertEqual(before[table], after)
 
     def test_onboarding_different_evidence_fails_closed_without_overwriting(self) -> None:
         envelope = captured_btcusdt_envelope_v1()
