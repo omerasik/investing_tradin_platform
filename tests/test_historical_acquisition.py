@@ -9,7 +9,7 @@ fakes. No live Bybit request, order or account call is ever made.
 from __future__ import annotations
 
 import unittest
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -23,7 +23,7 @@ from trade_platform.bybit_instrument_onboarding import (
     BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID,
     BYBIT_BTCUSDT_SYMBOL,
 )
-from trade_platform.crypto_derivatives_features import CRYPTO_MARK_INDEX_BASIS
+from trade_platform.crypto_derivatives_features import crypto_mark_index_basis_definition
 from trade_platform.crypto_instruments import (
     CryptoInstrumentKind,
     ReferencePriceRequirement,
@@ -34,9 +34,11 @@ from trade_platform.data_providers import (
     ProviderError,
     ProviderOperationalStatus,
 )
+from trade_platform.feature_authority import FeatureDefinitionVersion
 from trade_platform.historical_acquisition import (
     AcquisitionStatus,
     CryptoSpecView,
+    HistoricalAcquisitionError,
     HistoricalAcquisitionRequest,
     HistoricalAcquisitionService,
     MaterializedFeatureCounts,
@@ -53,7 +55,7 @@ from trade_platform.historical_market_data import (
     QualityStatus,
     RawHistoricalObservation,
 )
-from trade_platform.open_interest_features import OPEN_INTEREST_CHANGE
+from trade_platform.open_interest_features import open_interest_change_definition
 from trade_platform.provider_ingestion import RawHistoricalPage
 
 SOURCE_ID = UUID("11111111-1111-1111-1111-111111111111")
@@ -344,7 +346,7 @@ class FakeEvidence:
     resolved: tuple[str, ...]
     spec: CryptoSpecView | None
     existing: SealedDatasetView | None = None
-    feature_count_map: Mapping[str, int] = field(default_factory=dict)
+    feature_count_map: Mapping[UUID, int] = field(default_factory=dict)
     # Wired by `_build_service` to the SAME FakePipeline/FakeFeatureStore
     # instances the service itself uses, so a retry within one test method sees
     # the durable evidence the first attempt actually persisted.
@@ -370,11 +372,12 @@ class FakeEvidence:
         return self.existing
 
     def feature_counts(
-        self, dataset_version_id: UUID, feature_names: tuple[str, ...]
-    ) -> Mapping[str, int]:
+        self, dataset_version_id: UUID, feature_ids: tuple[UUID, ...]
+    ) -> Mapping[UUID, int]:
         if self.feature_store is not None:
             return {
-                name: self.feature_store.get(dataset_version_id, name) for name in feature_names
+                feature_id: self.feature_store.get(dataset_version_id, feature_id)
+                for feature_id in feature_ids
             }
         return self.feature_count_map
 
@@ -390,34 +393,79 @@ class FakeFeatureStore:
     """Shared, durable feature-count state a `FakeFeatureMaterializer` writes to
     and `FakeEvidence.feature_counts` reads back from -- models the real
     idempotent, content-hash-agreeing feature authority closely enough that a
-    resumed materialization only adds what is genuinely still missing."""
+    resumed materialization only adds what is genuinely still missing.
+
+    Keyed by exact ``feature_id`` (never by name), mirroring the real
+    ``feature_materializations`` table -- so counts for a legacy/different
+    ``semantic_version`` of the same feature name never combine with the
+    canonical definition's counts.
+    """
 
     def __init__(self) -> None:
-        self._counts: dict[tuple[UUID, str], int] = {}
+        self._counts: dict[tuple[UUID, UUID], int] = {}
 
-    def get(self, dataset_version_id: UUID, name: str) -> int:
-        return self._counts.get((dataset_version_id, name), 0)
+    def get(self, dataset_version_id: UUID, feature_id: UUID) -> int:
+        return self._counts.get((dataset_version_id, feature_id), 0)
 
-    def add(self, dataset_version_id: UUID, name: str, amount: int) -> None:
+    def add(self, dataset_version_id: UUID, feature_id: UUID, amount: int) -> None:
         if amount <= 0:
             return
-        self._counts[(dataset_version_id, name)] = self.get(dataset_version_id, name) + amount
+        self._counts[(dataset_version_id, feature_id)] = (
+            self.get(dataset_version_id, feature_id) + amount
+        )
 
 
 class FakeFeatureMaterializer:
+    """Mirrors `PostgresAcquisitionFeatureMaterializer`'s exact-identity
+    resolution: a definition is registered once per ``(name, semantic_version)``
+    and every later call with the same key must agree on ``calculation_version``
+    or resolution fails closed -- never returns a stale/mismatched identity."""
+
     def __init__(
         self,
         *,
         raise_error: Exception | None = None,
         fail_first_n_calls: int = 0,
         store: FakeFeatureStore | None = None,
+        basis_definition_factory: Callable[
+            [datetime], FeatureDefinitionVersion
+        ] = crypto_mark_index_basis_definition,
+        open_interest_definition_factory: Callable[
+            [datetime], FeatureDefinitionVersion
+        ] = open_interest_change_definition,
     ) -> None:
         self.raise_error = raise_error
         self.fail_first_n_calls = fail_first_n_calls
         self.store = store or FakeFeatureStore()
+        self._basis_definition_factory = basis_definition_factory
+        self._open_interest_definition_factory = open_interest_definition_factory
+        self._definitions: dict[tuple[str, str], FeatureDefinitionVersion] = {}
         self.calls: list[UUID] = []
         self.last_basis: tuple[datetime, ...] = ()
         self.last_open_interest: tuple[datetime, ...] = ()
+
+    def register_definition(self, definition: FeatureDefinitionVersion) -> UUID:
+        """Test-only hook to pre-seed a definition identity (e.g. a legacy
+        semantic version) exactly as `_feature_id` would resolve/register it."""
+        return self._feature_id(definition)
+
+    def _feature_id(self, definition: FeatureDefinitionVersion) -> UUID:
+        key = (definition.name, definition.semantic_version)
+        existing = self._definitions.get(key)
+        if existing is None:
+            self._definitions[key] = definition
+            return definition.feature_id
+        if existing.calculation_version != definition.calculation_version:
+            raise HistoricalAcquisitionError(
+                f"feature_definition_calculation_version_drift:{definition.name}"
+            )
+        return existing.feature_id
+
+    def resolve_basis_feature_id(self, definition_created_at: datetime) -> UUID:
+        return self._feature_id(self._basis_definition_factory(definition_created_at))
+
+    def resolve_open_interest_feature_id(self, definition_created_at: datetime) -> UUID:
+        return self._feature_id(self._open_interest_definition_factory(definition_created_at))
 
     def materialize_features(
         self,
@@ -441,19 +489,33 @@ class FakeFeatureMaterializer:
         expected_open_interest = (
             max(0, len(open_interest_event_ats) - 1) if open_interest_event_ats else 0
         )
-        existing_basis = self.store.get(dataset_version_id, CRYPTO_MARK_INDEX_BASIS)
-        existing_open_interest = self.store.get(dataset_version_id, OPEN_INTEREST_CHANGE)
-        self.store.add(
-            dataset_version_id, CRYPTO_MARK_INDEX_BASIS, expected_basis - existing_basis
+        basis_feature_id = (
+            self.resolve_basis_feature_id(definition_created_at) if basis_event_ats else None
         )
-        self.store.add(
-            dataset_version_id,
-            OPEN_INTEREST_CHANGE,
-            expected_open_interest - existing_open_interest,
+        open_interest_feature_id = (
+            self.resolve_open_interest_feature_id(definition_created_at)
+            if open_interest_event_ats
+            else None
         )
+        if basis_feature_id is not None:
+            existing_basis = self.store.get(dataset_version_id, basis_feature_id)
+            self.store.add(dataset_version_id, basis_feature_id, expected_basis - existing_basis)
+        if open_interest_feature_id is not None:
+            existing_open_interest = self.store.get(dataset_version_id, open_interest_feature_id)
+            self.store.add(
+                dataset_version_id,
+                open_interest_feature_id,
+                expected_open_interest - existing_open_interest,
+            )
         return MaterializedFeatureCounts(
-            crypto_mark_index_basis=self.store.get(dataset_version_id, CRYPTO_MARK_INDEX_BASIS),
-            open_interest_change=self.store.get(dataset_version_id, OPEN_INTEREST_CHANGE),
+            crypto_mark_index_basis=(
+                self.store.get(dataset_version_id, basis_feature_id) if basis_feature_id else 0
+            ),
+            open_interest_change=(
+                self.store.get(dataset_version_id, open_interest_feature_id)
+                if open_interest_feature_id
+                else 0
+            ),
         )
 
 
@@ -478,16 +540,28 @@ def _sealed_view_for_request(
     instrument_id: str | None = None,
     provider_symbol: str | None = None,
     event_overrides: Mapping[ObservationKind, frozenset[datetime]] | None = None,
+    member_count_overrides: Mapping[ObservationKind, int] | None = None,
 ) -> SealedDatasetView:
     """Build a `SealedDatasetView` that -- unless overridden -- exactly matches
     what a real successful acquisition for `request` would have persisted, for
-    use as `FakeEvidence.existing` in replay-path tests."""
+    use as `FakeEvidence.existing` in replay-path tests.
+
+    `member_count_overrides` lets a test assert a persisted member count that
+    diverges from the (deduplicated) timestamp set -- e.g. an extra
+    revision/member at an already-covered timestamp -- without changing
+    `event_ats_by_kind` itself.
+    """
     event_ats_by_kind: dict[ObservationKind, frozenset[datetime]] = {
         kind: frozenset(_expected_events(kind, request.start, request.end))
         for kind in request.ordered_kinds()
     }
     if event_overrides:
         event_ats_by_kind.update(event_overrides)
+    member_count_by_kind: dict[ObservationKind, int] = {
+        kind: len(events) for kind, events in event_ats_by_kind.items()
+    }
+    if member_count_overrides:
+        member_count_by_kind.update(member_count_overrides)
     all_events = sorted({event for events in event_ats_by_kind.values() for event in events})
     resolved_instrument = instrument_id if instrument_id is not None else request.instrument_id
     resolved_symbol = (
@@ -504,6 +578,7 @@ def _sealed_view_for_request(
         provider_identifiers=frozenset({resolved_symbol}),
         provider_symbols=frozenset({resolved_symbol}),
         event_ats_by_kind=event_ats_by_kind,
+        member_count_by_kind=member_count_by_kind,
     )
 
 
@@ -1030,11 +1105,11 @@ class HistoricalAcquisitionServiceTests(unittest.TestCase):
         assert second.feature_counts is not None
         self.assertEqual(second.feature_counts.crypto_mark_index_basis, 30)
         self.assertEqual(second.feature_counts.open_interest_change, 5)
+        basis_feature_id = materializer.resolve_basis_feature_id(NOW)
+        open_interest_feature_id = materializer.resolve_open_interest_feature_id(NOW)
+        self.assertEqual(materializer.store.get(sealed_dataset_version_id, basis_feature_id), 30)
         self.assertEqual(
-            materializer.store.get(sealed_dataset_version_id, CRYPTO_MARK_INDEX_BASIS), 30
-        )
-        self.assertEqual(
-            materializer.store.get(sealed_dataset_version_id, OPEN_INTEREST_CHANGE), 5
+            materializer.store.get(sealed_dataset_version_id, open_interest_feature_id), 5
         )
 
     def test_feature_resume_from_features_disabled_to_enabled(self) -> None:
@@ -1067,11 +1142,12 @@ class HistoricalAcquisitionServiceTests(unittest.TestCase):
         request = _request(materialize_features=True)
         store = FakeFeatureStore()
         dataset_version_id = UUID("77777777-7777-7777-7777-777777777777")
+        materializer = FakeFeatureMaterializer(store=store)
         # More materializations already exist than this window could ever
         # produce -- an impossible/conflicting state that must fail closed
         # rather than being silently accepted or trimmed.
-        store.add(dataset_version_id, CRYPTO_MARK_INDEX_BASIS, 999)
-        materializer = FakeFeatureMaterializer(store=store)
+        basis_feature_id = materializer.resolve_basis_feature_id(NOW)
+        store.add(dataset_version_id, basis_feature_id, 999)
         evidence = _default_evidence()
         evidence.existing = _sealed_view_for_request(
             request, dataset_version_id=dataset_version_id
@@ -1084,6 +1160,136 @@ class HistoricalAcquisitionServiceTests(unittest.TestCase):
         self.assertTrue(result.failure_code.startswith("existing_feature_count_exceeds_expected"))
         self.assertEqual(adapter.fetched_kinds, [])
         self.assertEqual(materializer.calls, [])
+
+    # ---- sealed-replay member-multiplicity regression (owner review) -------
+
+    def test_replay_rejects_extra_member_at_existing_timestamp(self) -> None:
+        """`event_ats_by_kind` alone proves timestamp coverage but not member
+        multiplicity: PostgreSQL permits a second normalized member (e.g. a
+        distinct ``revision``) at an already-covered
+        ``(observation_kind, event_at)``. Replay must reject that extra member
+        even though the expected timestamp SET is completely unchanged."""
+        request = _request(kinds=frozenset({ObservationKind.OHLCV}))
+        expected_count = len(_expected_events(ObservationKind.OHLCV, START, END))
+        evidence = _default_evidence()
+        evidence.existing = _sealed_view_for_request(
+            request,
+            dataset_version_id=UUID("88888888-8888-8888-8888-888888888888"),
+            member_count_overrides={ObservationKind.OHLCV: expected_count + 1},
+        )
+        service, pipeline, *_ = _build_service(evidence=evidence)
+        result = service.acquire(request, _configuration())
+        self.assertEqual(result.status, AcquisitionStatus.SEAL_FAILED)
+        self.assertTrue(result.failure_code.startswith("dataset_version_conflict"))
+        self.assertEqual(pipeline.sealed, [])
+
+    # ---- exact feature-definition identity regressions (owner review) ------
+
+    @staticmethod
+    def _legacy_basis_definition(
+        *, semantic_version: str = "0.9.0", calculation_version: str | None = None
+    ) -> FeatureDefinitionVersion:
+        canonical = crypto_mark_index_basis_definition(NOW)
+        return replace(
+            canonical,
+            semantic_version=semantic_version,
+            calculation_version=calculation_version or canonical.calculation_version,
+            feature_id=uuid4(),
+        )
+
+    def test_replay_feature_identity_ignores_legacy_semantic_version_rows(self) -> None:
+        """A legacy ``semantic_version`` row has the full expected count while
+        the canonical definition has zero: replay must materialize the
+        canonical definition, never return success from the legacy rows."""
+        request = _request(
+            kinds=frozenset({ObservationKind.MARK_PRICE, ObservationKind.INDEX_PRICE}),
+            materialize_features=True,
+        )
+        dataset_version_id = UUID("99999999-9999-9999-9999-999999999999")
+        expected_basis = len(_expected_events(ObservationKind.MARK_PRICE, START, END))
+        materializer = FakeFeatureMaterializer()
+        legacy_feature_id = materializer.register_definition(self._legacy_basis_definition())
+        materializer.store.add(dataset_version_id, legacy_feature_id, expected_basis)
+        evidence = _default_evidence()
+        evidence.existing = _sealed_view_for_request(
+            request, dataset_version_id=dataset_version_id
+        )
+        service, _pipeline, _cp, materializer, adapter = _build_service(
+            evidence=evidence, materializer=materializer
+        )
+        result = service.acquire(request, _configuration())
+        self.assertEqual(result.status, AcquisitionStatus.SUCCEEDED, result.failure_code)
+        self.assertTrue(result.already_completed)
+        self.assertEqual(adapter.fetched_kinds, [])
+        canonical_feature_id = materializer.resolve_basis_feature_id(NOW)
+        self.assertNotEqual(canonical_feature_id, legacy_feature_id)
+        self.assertEqual(
+            materializer.store.get(dataset_version_id, canonical_feature_id), expected_basis
+        )
+        # The legacy rows are untouched -- never combined with the canonical count.
+        self.assertEqual(
+            materializer.store.get(dataset_version_id, legacy_feature_id), expected_basis
+        )
+        assert result.feature_counts is not None
+        self.assertEqual(result.feature_counts.crypto_mark_index_basis, expected_basis)
+
+    def test_replay_feature_identity_uses_canonical_count_alone(self) -> None:
+        """Both a legacy-version row set and the canonical row set exist with
+        the full expected count: the canonical count alone must determine
+        replay success, with zero further writes."""
+        request = _request(
+            kinds=frozenset({ObservationKind.MARK_PRICE, ObservationKind.INDEX_PRICE}),
+            materialize_features=True,
+        )
+        dataset_version_id = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        expected_basis = len(_expected_events(ObservationKind.MARK_PRICE, START, END))
+        materializer = FakeFeatureMaterializer()
+        legacy_feature_id = materializer.register_definition(self._legacy_basis_definition())
+        materializer.store.add(dataset_version_id, legacy_feature_id, expected_basis)
+        canonical_feature_id = materializer.resolve_basis_feature_id(NOW)
+        materializer.store.add(dataset_version_id, canonical_feature_id, expected_basis)
+        evidence = _default_evidence()
+        evidence.existing = _sealed_view_for_request(
+            request, dataset_version_id=dataset_version_id
+        )
+        service, _pipeline, _cp, materializer, adapter = _build_service(
+            evidence=evidence, materializer=materializer
+        )
+        result = service.acquire(request, _configuration())
+        self.assertEqual(result.status, AcquisitionStatus.SUCCEEDED, result.failure_code)
+        self.assertTrue(result.already_completed)
+        self.assertEqual(adapter.fetched_kinds, [])
+        # Read-only replay: the already-satisfied canonical count triggers no write.
+        self.assertEqual(materializer.calls, [])
+        assert result.feature_counts is not None
+        self.assertEqual(result.feature_counts.crypto_mark_index_basis, expected_basis)
+
+    def test_replay_feature_identity_calculation_version_drift_fails_closed(self) -> None:
+        """The canonical definition's persisted ``calculation_version`` has
+        drifted from what this workflow's factory would produce: identity
+        resolution must fail closed, never raise out of `acquire`."""
+        request = _request(
+            kinds=frozenset({ObservationKind.MARK_PRICE, ObservationKind.INDEX_PRICE}),
+            materialize_features=True,
+        )
+        dataset_version_id = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+        materializer = FakeFeatureMaterializer()
+        canonical = crypto_mark_index_basis_definition(NOW)
+        # Same (name, semantic_version) identity as the canonical factory would
+        # produce, but a different persisted calculation_version -- exactly the
+        # drift `PostgresAcquisitionFeatureMaterializer._feature_id` fails on.
+        materializer.register_definition(replace(canonical, calculation_version="drifted-v0"))
+        evidence = _default_evidence()
+        evidence.existing = _sealed_view_for_request(
+            request, dataset_version_id=dataset_version_id
+        )
+        service, _pipeline, _cp, materializer, adapter = _build_service(
+            evidence=evidence, materializer=materializer
+        )
+        result = service.acquire(request, _configuration())
+        self.assertEqual(result.status, AcquisitionStatus.FEATURE_FAILED)
+        self.assertTrue(result.failure_code.startswith("feature_definition_calculation_version_drift"))
+        self.assertEqual(adapter.fetched_kinds, [])
 
 
 if __name__ == "__main__":

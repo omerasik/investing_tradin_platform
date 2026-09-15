@@ -70,7 +70,6 @@ from .bybit_instrument_onboarding import (
     BYBIT_BTCUSDT_SYMBOL,
 )
 from .crypto_derivatives_features import (
-    CRYPTO_MARK_INDEX_BASIS,
     PostgresCryptoDerivativesFeatureCalculator,
     crypto_mark_index_basis_definition,
 )
@@ -101,7 +100,6 @@ from .historical_market_data import (
     RawHistoricalObservation,
 )
 from .open_interest_features import (
-    OPEN_INTEREST_CHANGE,
     PostgresOpenInterestFeatureCalculator,
     open_interest_change_definition,
 )
@@ -319,6 +317,15 @@ class SealedDatasetView:
     ``valid_until`` remain informational (already implied by
     ``event_ats_by_kind``); the real identity proof is
     :meth:`matches_request`.
+
+    ``event_ats_by_kind`` alone proves timestamp *coverage* but loses member
+    *multiplicity*: dataset membership is keyed by
+    ``(dataset_version_id, normalized_observation_id)`` and raw identity
+    includes ``revision``, so PostgreSQL permits two distinct normalized
+    members at the same ``(observation_kind, event_at)``. ``member_count_by_kind``
+    is the actual persisted member count per kind (not deduplicated by
+    timestamp), so replay can detect an extra revision/member at an
+    already-covered timestamp that a set-based comparison alone would miss.
     """
 
     dataset_version_id: UUID
@@ -331,6 +338,7 @@ class SealedDatasetView:
     provider_identifiers: frozenset[str]
     provider_symbols: frozenset[str]
     event_ats_by_kind: Mapping[ObservationKind, frozenset[datetime]]
+    member_count_by_kind: Mapping[ObservationKind, int]
 
     @property
     def counts_by_kind(self) -> Mapping[ObservationKind, int]:
@@ -373,8 +381,8 @@ class CanonicalAcquisitionEvidence(Protocol):
     ) -> SealedDatasetView | None: ...
 
     def feature_counts(
-        self, dataset_version_id: UUID, feature_names: tuple[str, ...]
-    ) -> Mapping[str, int]: ...
+        self, dataset_version_id: UUID, feature_ids: tuple[UUID, ...]
+    ) -> Mapping[UUID, int]: ...
 
     def normalized_observation_for_raw(
         self, raw_observation_id: UUID
@@ -419,6 +427,23 @@ class FeatureMaterializer(Protocol):
         decision_at: datetime,
         definition_created_at: datetime,
     ) -> MaterializedFeatureCounts: ...
+
+    def resolve_basis_feature_id(self, definition_created_at: datetime) -> UUID:
+        """Resolve the exact canonical ``crypto_mark_index_basis`` feature identity.
+
+        Must resolve/register through the same ``(name, semantic_version)``
+        authority path -- and fail closed on ``calculation_version`` drift --
+        that :meth:`materialize_features` itself uses, so replay counts are
+        bound to the exact same canonical definition, never a name-only match.
+        """
+        ...
+
+    def resolve_open_interest_feature_id(self, definition_created_at: datetime) -> UUID:
+        """Resolve the exact canonical ``open_interest_change`` feature identity.
+
+        Same exact-identity contract as :meth:`resolve_basis_feature_id`.
+        """
+        ...
 
 
 # ---------------------------------------------------------------------------
@@ -887,12 +912,22 @@ class HistoricalAcquisitionService:
         # existing sealed dataset actually carries must match this request's
         # own semantics exactly, or replay would silently accept a dataset that
         # happens to share a shape with a completely different acquisition.
+        # Timestamp-set equality alone cannot detect an extra revision/member at
+        # an already-covered timestamp, so replay additionally requires the
+        # actual persisted member count per kind to equal the expected event
+        # count per kind -- the same invariant fresh acquisition enforces via
+        # ``_reject_duplicate_timestamps``.
+        member_counts_match = all(
+            existing.member_count_by_kind.get(kind, 0) == len(expected)
+            for kind, expected in expected_events_by_kind.items()
+        )
         conflicts = (
             existing.normalization_version != request.normalization_version
             or existing.instrument_ids != frozenset({request.instrument_id})
             or existing.provider_identifiers != frozenset({request.provider_symbol})
             or existing.provider_symbols != frozenset({request.provider_symbol})
             or dict(existing.event_ats_by_kind) != expected_events_by_kind
+            or not member_counts_match
         )
         if conflicts:
             raise _Abort(
@@ -938,11 +973,43 @@ class HistoricalAcquisitionService:
         expected_basis, expected_open_interest = _expected_feature_counts(
             basis_event_ats, open_interest_event_ats
         )
-        existing_counts = self._evidence.feature_counts(
-            dataset_version_id, (CRYPTO_MARK_INDEX_BASIS, OPEN_INTEREST_CHANGE)
+        # Bind counts to the exact canonical feature-definition identity this
+        # workflow materializes -- the same identity resolution
+        # ``PostgresAcquisitionFeatureMaterializer`` uses -- never a name-only
+        # count, which would silently combine rows from a legacy/different
+        # ``semantic_version`` of the same feature name.
+        resolve_at = self._now()
+        try:
+            basis_feature_id = (
+                self._feature_materializer.resolve_basis_feature_id(resolve_at)
+                if basis_event_ats
+                else None
+            )
+            open_interest_feature_id = (
+                self._feature_materializer.resolve_open_interest_feature_id(resolve_at)
+                if open_interest_event_ats
+                else None
+            )
+        except Exception as error:
+            # Identity resolution (e.g. calculation_version drift on the
+            # canonical definition) must fail closed exactly like a
+            # materialization failure, never raise out of an otherwise
+            # fail-closed boundary.
+            raise _Abort(
+                AcquisitionStatus.FEATURE_FAILED, str(error) or type(error).__name__
+            ) from error
+        feature_ids = tuple(
+            feature_id
+            for feature_id in (basis_feature_id, open_interest_feature_id)
+            if feature_id is not None
         )
-        existing_basis = existing_counts.get(CRYPTO_MARK_INDEX_BASIS, 0)
-        existing_open_interest = existing_counts.get(OPEN_INTEREST_CHANGE, 0)
+        existing_counts = (
+            self._evidence.feature_counts(dataset_version_id, feature_ids) if feature_ids else {}
+        )
+        existing_basis = existing_counts.get(basis_feature_id, 0) if basis_feature_id else 0
+        existing_open_interest = (
+            existing_counts.get(open_interest_feature_id, 0) if open_interest_feature_id else 0
+        )
         if existing_basis == expected_basis and existing_open_interest == expected_open_interest:
             return MaterializedFeatureCounts(existing_basis, existing_open_interest)
         if existing_basis > expected_basis or existing_open_interest > expected_open_interest:
@@ -968,11 +1035,13 @@ class HistoricalAcquisitionService:
                 AcquisitionStatus.FEATURE_FAILED, str(error) or type(error).__name__
             ) from error
 
-        final_counts = self._evidence.feature_counts(
-            dataset_version_id, (CRYPTO_MARK_INDEX_BASIS, OPEN_INTEREST_CHANGE)
+        final_counts = (
+            self._evidence.feature_counts(dataset_version_id, feature_ids) if feature_ids else {}
         )
-        final_basis = final_counts.get(CRYPTO_MARK_INDEX_BASIS, 0)
-        final_open_interest = final_counts.get(OPEN_INTEREST_CHANGE, 0)
+        final_basis = final_counts.get(basis_feature_id, 0) if basis_feature_id else 0
+        final_open_interest = (
+            final_counts.get(open_interest_feature_id, 0) if open_interest_feature_id else 0
+        )
         if final_basis != expected_basis or final_open_interest != expected_open_interest:
             raise _Abort(
                 AcquisitionStatus.FEATURE_FAILED,
@@ -1290,12 +1359,17 @@ class PostgresCanonicalAcquisitionEvidence:
             )
             member_rows = cursor.fetchall()
         event_ats_by_kind: dict[ObservationKind, set[datetime]] = {}
+        member_count_by_kind: dict[ObservationKind, int] = {}
         instrument_ids: set[str] = set()
         provider_identifiers: set[str] = set()
         provider_symbols: set[str] = set()
         for member_row in member_rows:
             kind = ObservationKind(str(member_row[0]))
+            # One row per dataset member (the query is keyed by
+            # ``historical_dataset_members``' own primary key), so counting rows
+            # -- not the deduplicated timestamp set -- preserves multiplicity.
             event_ats_by_kind.setdefault(kind, set()).add(member_row[1])
+            member_count_by_kind[kind] = member_count_by_kind.get(kind, 0) + 1
             instrument_ids.add(str(member_row[2]))
             provider_identifiers.add(str(member_row[3]))
             provider_symbols.add(str(member_row[4]))
@@ -1312,20 +1386,28 @@ class PostgresCanonicalAcquisitionEvidence:
             event_ats_by_kind={
                 kind: frozenset(events) for kind, events in event_ats_by_kind.items()
             },
+            member_count_by_kind=dict(member_count_by_kind),
         )
 
     def feature_counts(
-        self, dataset_version_id: UUID, feature_names: tuple[str, ...]
-    ) -> Mapping[str, int]:
+        self, dataset_version_id: UUID, feature_ids: tuple[UUID, ...]
+    ) -> Mapping[UUID, int]:
+        """Materialized-value counts keyed by exact ``feature_id``, never by name.
+
+        ``feature_definition_versions`` explicitly permits multiple rows for the
+        same ``name`` (``UNIQUE(name, semantic_version)``), so a name-only count
+        would silently combine values from a legacy/different semantic version
+        of the same feature. Binding to ``feature_id`` -- the exact canonical
+        definition identity resolved by the caller -- makes that impossible.
+        """
         with self._database.transaction() as connection, connection.cursor() as cursor:
             cursor.execute(
-                "SELECT d.name,COUNT(*) FROM feature_materializations m "
-                "JOIN feature_definition_versions d ON d.feature_id=m.feature_id "
-                "WHERE m.dataset_version=%s AND d.name=ANY(%s) GROUP BY d.name",
-                (str(dataset_version_id), list(feature_names)),
+                "SELECT feature_id,COUNT(*) FROM feature_materializations "
+                "WHERE dataset_version=%s AND feature_id=ANY(%s) GROUP BY feature_id",
+                (str(dataset_version_id), [str(feature_id) for feature_id in feature_ids]),
             )
             rows = cursor.fetchall()
-        return {str(row[0]): int(row[1]) for row in rows}
+        return {UUID(str(row[0])): int(row[1]) for row in rows}
 
     def normalized_observation_for_raw(
         self, raw_observation_id: UUID
@@ -1430,6 +1512,12 @@ class PostgresAcquisitionFeatureMaterializer:
         return MaterializedFeatureCounts(
             crypto_mark_index_basis=basis_count, open_interest_change=open_interest_count
         )
+
+    def resolve_basis_feature_id(self, definition_created_at: datetime) -> UUID:
+        return self._feature_id(self._basis_definition_factory(definition_created_at))
+
+    def resolve_open_interest_feature_id(self, definition_created_at: datetime) -> UUID:
+        return self._feature_id(self._open_interest_definition_factory(definition_created_at))
 
     def _feature_id(self, definition: FeatureDefinitionVersion) -> UUID:
         with self._database.transaction() as connection, connection.cursor() as cursor:
