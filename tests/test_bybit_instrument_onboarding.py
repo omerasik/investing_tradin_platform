@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import copy
 import unittest
-from datetime import UTC, date, datetime
+from dataclasses import replace
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from unittest import mock
 
 from trade_platform import bybit_instrument_onboarding as onboarding
 from trade_platform.bybit_instrument_onboarding import (
@@ -22,6 +24,7 @@ from trade_platform.bybit_instrument_onboarding import (
     CAPTURED_BTCUSDT_RETRIEVED_AT,
     BybitInstrumentMetadataError,
     BybitInstrumentOnboardingError,
+    BybitOnboardingConflictError,
     bybit_authorized_historical_source,
     bybit_btcusdt_crypto_specification,
     bybit_btcusdt_identifier_mapping,
@@ -35,7 +38,9 @@ from trade_platform.bybit_instrument_onboarding import (
 )
 from trade_platform.crypto_instruments import (
     CryptoInstrumentKind,
+    CryptoResolutionError,
     CryptoSettlementType,
+    PostgresCryptoInstrumentAuthority,
     ReferencePriceRequirement,
     SettlementStyle,
 )
@@ -44,6 +49,7 @@ from trade_platform.historical_market_data import AssetScope, ObservationKind
 from trade_platform.professional_instruments import (
     IdentifierSourceKind,
     InstrumentType,
+    PostgresProfessionalInstrumentMaster,
     RepresentationKind,
     SessionType,
 )
@@ -592,6 +598,296 @@ class BybitFundingScopeTests(unittest.TestCase):
             "operator-approved public Bybit V5 market-data pilot authority",
             source.authorization_reference,
         )
+
+
+class _SentinelReadFailure(Exception):
+    """A distinctive exception used only to prove that a read failure
+    propagates out of ``_resolve_existing_onboarding`` unchanged -- never
+    reinterpreted as "nothing onboarded yet"."""
+
+
+class BybitPersistedMappingComparisonTests(unittest.TestCase):
+    """Focused reader/helper tests for scenarios the schema's own exclusion
+    and immutability constraints make impractical to manufacture as real
+    persisted rows against a live, already-onboarded instrument: the same
+    mapping owner recorded under evidence this exact snapshot does not
+    match. These exercise the comparison predicates
+    ``_resolve_existing_onboarding`` itself relies on to decide between a
+    deterministic no-op and ``BybitOnboardingConflictError``.
+    """
+
+    def setUp(self) -> None:
+        self.snapshot = captured_btcusdt_snapshot_v1()
+        self.expected_symbol = bybit_btcusdt_symbol_mapping(self.snapshot, ONBOARDED_AT)
+        self.expected_identifier = bybit_btcusdt_identifier_mapping(self.snapshot, ONBOARDED_AT)
+
+    def test_symbol_mapping_matches_the_expected_row(self) -> None:
+        actual = onboarding._PersistedSymbolMappingRow(
+            instrument_id=self.expected_symbol.instrument_id,
+            venue=self.expected_symbol.venue,
+            symbol=self.expected_symbol.symbol,
+            valid_from=self.expected_symbol.valid_from,
+            valid_until=self.expected_symbol.valid_until,
+            source_reference=self.expected_symbol.source_reference,
+        )
+        self.assertTrue(onboarding._symbol_mapping_matches(actual, self.expected_symbol))
+
+    def test_symbol_mapping_with_different_source_reference_does_not_match(self) -> None:
+        # Same owner, same validity window -- only the evidence differs.
+        actual = onboarding._PersistedSymbolMappingRow(
+            instrument_id=self.expected_symbol.instrument_id,
+            venue=self.expected_symbol.venue,
+            symbol=self.expected_symbol.symbol,
+            valid_from=self.expected_symbol.valid_from,
+            valid_until=self.expected_symbol.valid_until,
+            source_reference="fixture:a-different-source-reference",
+        )
+        self.assertFalse(onboarding._symbol_mapping_matches(actual, self.expected_symbol))
+
+    def test_symbol_mapping_with_finite_valid_until_does_not_match(self) -> None:
+        # Same owner, same evidence -- only the open-endedness differs.
+        actual = onboarding._PersistedSymbolMappingRow(
+            instrument_id=self.expected_symbol.instrument_id,
+            venue=self.expected_symbol.venue,
+            symbol=self.expected_symbol.symbol,
+            valid_from=self.expected_symbol.valid_from,
+            valid_until=self.expected_symbol.valid_from + timedelta(days=1),
+            source_reference=self.expected_symbol.source_reference,
+        )
+        self.assertFalse(onboarding._symbol_mapping_matches(actual, self.expected_symbol))
+
+    def test_identifier_mapping_matches_the_expected_row(self) -> None:
+        actual = onboarding._PersistedIdentifierMappingRow(
+            instrument_id=self.expected_identifier.instrument_id,
+            source_kind=self.expected_identifier.source_kind.value,
+            namespace=self.expected_identifier.namespace,
+            identifier_value=self.expected_identifier.value,
+            valid_from=self.expected_identifier.valid_from,
+            valid_until=self.expected_identifier.valid_until,
+            source_reference=self.expected_identifier.source_reference,
+        )
+        self.assertTrue(onboarding._identifier_mapping_matches(actual, self.expected_identifier))
+
+    def test_identifier_mapping_with_wrong_source_kind_does_not_match(self) -> None:
+        actual = onboarding._PersistedIdentifierMappingRow(
+            instrument_id=self.expected_identifier.instrument_id,
+            source_kind="BROKER",
+            namespace=self.expected_identifier.namespace,
+            identifier_value=self.expected_identifier.value,
+            valid_from=self.expected_identifier.valid_from,
+            valid_until=self.expected_identifier.valid_until,
+            source_reference=self.expected_identifier.source_reference,
+        )
+        self.assertFalse(onboarding._identifier_mapping_matches(actual, self.expected_identifier))
+
+    def test_identifier_mapping_with_different_source_reference_does_not_match(self) -> None:
+        actual = onboarding._PersistedIdentifierMappingRow(
+            instrument_id=self.expected_identifier.instrument_id,
+            source_kind=self.expected_identifier.source_kind.value,
+            namespace=self.expected_identifier.namespace,
+            identifier_value=self.expected_identifier.value,
+            valid_from=self.expected_identifier.valid_from,
+            valid_until=self.expected_identifier.valid_until,
+            source_reference="fixture:a-different-source-reference",
+        )
+        self.assertFalse(onboarding._identifier_mapping_matches(actual, self.expected_identifier))
+
+    def test_instrument_matches_is_sensitive_to_optional_fields(self) -> None:
+        expected = bybit_btcusdt_professional_instrument(self.snapshot, ONBOARDED_AT)
+        # Every one of these deliberately never-set optional fields is None
+        # on ``expected``; a persisted row carrying a value in any of them is
+        # a genuine identity conflict, not "close enough".
+        for field in (
+            "underlying_reference",
+            "corporate_action_reference",
+            "isin",
+            "cusip",
+            "contract_code",
+            "continuous_parent_id",
+            "roll_rule",
+        ):
+            with self.subTest(field=field):
+                mutated = replace(expected, **{field: "unexpected-value"})
+                self.assertFalse(onboarding._instrument_matches(mutated, expected))
+
+
+class BybitExistingStateReadFailureTests(unittest.TestCase):
+    """Read failures for the professional instrument, its mappings and the
+    venue trading rules must never be silently reinterpreted as "nothing
+    onboarded yet". Each test patches the ONE reader under test to raise
+    ``_SentinelReadFailure`` while every earlier-checked component is made to
+    report a clean, exception-free absence, isolating exactly what happens
+    when that one specific read fails.
+    """
+
+    def setUp(self) -> None:
+        self.snapshot = captured_btcusdt_snapshot_v1()
+        self.onboarded_at = ONBOARDED_AT
+        # Never genuinely touched: every test below either raises before any
+        # real database access, or has every earlier-called reader mocked
+        # away, so no method on these authorities ever actually runs.
+        self.database = object()
+        self.master = PostgresProfessionalInstrumentMaster(self.database)  # type: ignore[arg-type]
+        self.crypto = PostgresCryptoInstrumentAuthority(self.database)  # type: ignore[arg-type]
+
+    def _resolve(self) -> object:
+        return onboarding._resolve_existing_onboarding(
+            self.database,  # type: ignore[arg-type]
+            self.master,
+            self.crypto,
+            self.snapshot,
+            self.onboarded_at,
+        )
+
+    def test_professional_instrument_read_failure_propagates(self) -> None:
+        with mock.patch.object(
+            onboarding, "_persisted_instrument_exists", side_effect=_SentinelReadFailure("boom")
+        ), self.assertRaises(_SentinelReadFailure):
+            self._resolve()
+
+    def test_symbol_mapping_read_failure_propagates(self) -> None:
+        with (
+            mock.patch.object(onboarding, "_persisted_instrument_exists", return_value=False),
+            mock.patch.object(
+                onboarding,
+                "_resolve_symbol_mapping_state",
+                side_effect=_SentinelReadFailure("boom"),
+            ),
+            self.assertRaises(_SentinelReadFailure),
+        ):
+            self._resolve()
+
+    def test_identifier_mapping_read_failure_propagates(self) -> None:
+        with (
+            mock.patch.object(onboarding, "_persisted_instrument_exists", return_value=False),
+            mock.patch.object(onboarding, "_resolve_symbol_mapping_state", return_value=None),
+            mock.patch.object(
+                onboarding,
+                "_resolve_identifier_mapping_state",
+                side_effect=_SentinelReadFailure("boom"),
+            ),
+            self.assertRaises(_SentinelReadFailure),
+        ):
+            self._resolve()
+
+    def test_venue_rule_read_failure_propagates(self) -> None:
+        with (
+            mock.patch.object(onboarding, "_persisted_instrument_exists", return_value=False),
+            mock.patch.object(onboarding, "_resolve_symbol_mapping_state", return_value=None),
+            mock.patch.object(onboarding, "_resolve_identifier_mapping_state", return_value=None),
+            mock.patch.object(
+                PostgresCryptoInstrumentAuthority,
+                "get_specification",
+                side_effect=CryptoResolutionError("fixture_specification_not_found"),
+            ),
+            mock.patch.object(
+                onboarding,
+                "_resolve_venue_rule_state",
+                side_effect=_SentinelReadFailure("boom"),
+            ),
+            self.assertRaises(_SentinelReadFailure),
+        ):
+            self._resolve()
+
+    def test_ambiguous_symbol_mapping_rows_fail_closed_as_conflict_not_absence(self) -> None:
+        # This is the scenario that used to manifest as an
+        # AmbiguousInstrumentMappingError when resolved through
+        # resolve_symbol_point_in_time -- and, because that error is a
+        # subclass of InstrumentResolutionError, used to be silently
+        # swallowed as "absent" by the old broad _optional() usage.
+        rows = [
+            onboarding._PersistedSymbolMappingRow(
+                instrument_id=BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID,
+                venue="BYBIT",
+                symbol="BTCUSDT",
+                valid_from=self.snapshot.launch_time,
+                valid_until=None,
+                source_reference=self.snapshot.source_reference,
+            ),
+            onboarding._PersistedSymbolMappingRow(
+                instrument_id=BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID,
+                venue="BYBIT",
+                symbol="BTCUSDT",
+                valid_from=self.snapshot.launch_time - timedelta(days=3650),
+                valid_until=self.snapshot.launch_time,
+                source_reference="fixture:predecessor-era-mapping",
+            ),
+        ]
+        with (
+            mock.patch.object(onboarding, "_persisted_instrument_exists", return_value=False),
+            mock.patch.object(
+                onboarding, "_read_persisted_symbol_mapping_rows", return_value=rows
+            ),
+            self.assertRaises(BybitOnboardingConflictError),
+        ):
+            self._resolve()
+
+    def test_ambiguous_identifier_mapping_rows_fail_closed_as_conflict_not_absence(self) -> None:
+        rows = [
+            onboarding._PersistedIdentifierMappingRow(
+                instrument_id=BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID,
+                source_kind="PROVIDER",
+                namespace="bybit_v5_symbol",
+                identifier_value="BTCUSDT",
+                valid_from=self.snapshot.launch_time,
+                valid_until=None,
+                source_reference=self.snapshot.source_reference,
+            ),
+            onboarding._PersistedIdentifierMappingRow(
+                instrument_id=BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID,
+                source_kind="PROVIDER",
+                namespace="bybit_v5_symbol",
+                identifier_value="BTCUSDT",
+                valid_from=self.snapshot.launch_time - timedelta(days=3650),
+                valid_until=self.snapshot.launch_time,
+                source_reference="fixture:predecessor-era-mapping",
+            ),
+        ]
+        with (
+            mock.patch.object(onboarding, "_persisted_instrument_exists", return_value=False),
+            mock.patch.object(onboarding, "_resolve_symbol_mapping_state", return_value=None),
+            mock.patch.object(
+                onboarding, "_read_persisted_identifier_mapping_rows", return_value=rows
+            ),
+            self.assertRaises(BybitOnboardingConflictError),
+        ):
+            self._resolve()
+
+    def test_ambiguous_venue_rule_rows_fail_closed_as_conflict_not_absence(self) -> None:
+        # Schema-impossible today (UNIQUE(instrument_id, rule_version)), but
+        # the reader is still defensively exact about it rather than picking
+        # one arbitrarily should that invariant ever change.
+        base = bybit_btcusdt_venue_trading_rules(self.snapshot, self.onboarded_at)
+        row = onboarding._PersistedVenueRuleRow(
+            rule_id=base.rule_id,
+            instrument_id=base.instrument_id,
+            rule_version=base.rule_version,
+            tick_size=base.tick_size,
+            quantity_step=base.quantity_step,
+            min_quantity=base.min_quantity,
+            max_quantity=base.max_quantity,
+            min_notional=base.min_notional,
+            price_precision=base.price_precision,
+            quantity_precision=base.quantity_precision,
+            effective_from=base.effective_from,
+            source_reference=base.source_reference,
+            source_hash=base.source_hash,
+        )
+        with (
+            mock.patch.object(onboarding, "_persisted_instrument_exists", return_value=False),
+            mock.patch.object(onboarding, "_resolve_symbol_mapping_state", return_value=None),
+            mock.patch.object(onboarding, "_resolve_identifier_mapping_state", return_value=None),
+            mock.patch.object(
+                PostgresCryptoInstrumentAuthority,
+                "get_specification",
+                side_effect=CryptoResolutionError("fixture_specification_not_found"),
+            ),
+            mock.patch.object(
+                onboarding, "_read_persisted_venue_rule_rows", return_value=[row, row]
+            ),
+            self.assertRaises(BybitOnboardingConflictError),
+        ):
+            self._resolve()
 
 
 if __name__ == "__main__":

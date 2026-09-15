@@ -66,7 +66,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Final, TypeVar
+from typing import Final, TypeVar, cast
 from uuid import UUID, uuid5
 
 from .bybit_crypto_provider import (
@@ -80,7 +80,6 @@ from .crypto_instruments import (
     CryptoInstrumentSpecification,
     CryptoResolutionError,
     CryptoSettlementType,
-    CryptoVenueRuleError,
     CryptoVenueTradingRules,
     PostgresCryptoInstrumentAuthority,
     ReferencePriceRequirement,
@@ -97,7 +96,6 @@ from .persistence import PostgresDatabase
 from .professional_instruments import (
     IdentifierMapping,
     IdentifierSourceKind,
-    InstrumentResolutionError,
     InstrumentType,
     LifecycleStatus,
     PostgresProfessionalInstrumentMaster,
@@ -851,12 +849,36 @@ def _require_present(value: _T | None, what: str) -> _T:
 
 def _optional(action: Callable[[], _T], *not_found: type[Exception]) -> _T | None:
     """Run ``action``, mapping only the given "not found" exceptions to
-    ``None``. Any other exception -- including an ambiguous-resolution error,
-    which is a subclass of some of these and would otherwise be swallowed --
-    is deliberately allowed through unchanged rather than being read as
-    "nothing onboarded yet"; the schema's own exclusion constraints make that
-    particular ambiguity unreachable for this module's fixed venue/symbol/
-    namespace keys in the first place, but this function never assumes that.
+    ``None``. Any other exception propagates unchanged.
+
+    This is only safe where every exception type named in ``not_found`` is
+    genuinely disjoint from every OTHER failure mode of ``action`` -- never a
+    base class that a read failure or an ambiguous-resolution error also
+    raises or subclasses, since Python's ``except`` matches subclasses too.
+
+    ``PostgresCryptoInstrumentAuthority.get_specification`` satisfies this:
+    it raises ``CryptoSpecificationError`` -- a *sibling* type, not a
+    subclass -- for a genuine read failure, so ``CryptoResolutionError`` here
+    can only ever mean "no such specification is registered", and
+    ``crypto_instrument_specifications`` has no ambiguity concept at all
+    (its primary key is ``instrument_id`` alone).
+
+    The professional instrument and its symbol/identifier mappings do NOT
+    satisfy this: ``PostgresProfessionalInstrumentMaster``'s ``get_as_of``,
+    ``resolve_symbol_point_in_time`` and ``resolve_identifier_point_in_time``
+    all raise the *same* ``InstrumentResolutionError`` for both "not found"
+    and "the read itself failed", and ``AmbiguousInstrumentMappingError`` is
+    a subclass of it too -- so this module never reads those three
+    components through those methods or through ``_optional`` at all. It
+    uses its own small, exact read-only helpers instead
+    (``_persisted_instrument_exists``, ``_resolve_symbol_mapping_state``,
+    ``_resolve_identifier_mapping_state``), and likewise for the venue
+    trading rules (``_resolve_venue_rule_state``, replacing
+    ``venue_trading_rules_point_in_time``'s equally conflated
+    ``CryptoVenueRuleError``), where "absent", "ambiguous" and "read failed"
+    are distinguished directly from the shape of the query result -- zero
+    rows, more than one row, or an exception -- never from an exception
+    message string.
     """
     try:
         return action()
@@ -914,10 +936,293 @@ def _read_persisted_capabilities(
     return frozenset(ObservationKind(str(row[0])) for row in rows)
 
 
+def _persisted_instrument_exists(
+    database: PostgresDatabase, instrument_id: str, known_at: datetime
+) -> bool:
+    """A minimal, single-purpose existence check -- deliberately NOT
+    ``PostgresProfessionalInstrumentMaster.get_as_of``, whose own
+    ``InstrumentResolutionError`` conflates "not found" with "the read itself
+    failed" under one exception type (see :func:`_optional`'s docstring).
+
+    Any exception from this trivial single-column query is left to propagate
+    completely unchanged -- a genuine read failure, never "absent". Only a
+    clean, successful "zero rows" result is ever read as absence.
+    """
+    with database.transaction() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT 1 FROM professional_instruments WHERE instrument_id=%s "
+            "AND registered_at<=%s LIMIT 1",
+            (instrument_id, known_at),
+        )
+        row = cursor.fetchone()
+    return row is not None
+
+
+@dataclass(frozen=True, slots=True)
+class _PersistedSymbolMappingRow:
+    """One ``professional_symbol_mappings`` row, read back in full for
+    existing-state verification. ``venue``/``symbol`` are included even
+    though the query that produces this row already filters on their exact
+    values, purely so the comparison function reads as self-evidently
+    complete without requiring the reader to trace back to that filter."""
+
+    instrument_id: str
+    venue: str
+    symbol: str
+    valid_from: datetime
+    valid_until: datetime | None
+    source_reference: str
+
+
+def _read_persisted_symbol_mapping_rows(
+    database: PostgresDatabase, venue: str, symbol: str
+) -> list[_PersistedSymbolMappingRow]:
+    with database.transaction() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT instrument_id,venue,symbol,valid_from,valid_until,source_reference "
+            "FROM professional_symbol_mappings WHERE venue=%s AND symbol=%s",
+            (venue, symbol),
+        )
+        rows = cursor.fetchall()
+    return [
+        _PersistedSymbolMappingRow(
+            instrument_id=str(row[0]),
+            venue=str(row[1]),
+            symbol=str(row[2]),
+            valid_from=cast(datetime, row[3]),
+            valid_until=cast("datetime | None", row[4]),
+            source_reference=str(row[5]),
+        )
+        for row in rows
+    ]
+
+
+def _resolve_symbol_mapping_state(
+    database: PostgresDatabase, snapshot: BybitInstrumentMetadataSnapshotV1
+) -> _PersistedSymbolMappingRow | None:
+    """Read the exact BYBIT/BTCUSDT symbol mapping, or fail closed.
+
+    Zero rows -> absent (returns ``None``). Exactly one row -> returned, for
+    the caller to compare against this snapshot's expected mapping field by
+    field. More than one row -> ambiguous: this module has no basis for
+    picking one, so it raises :class:`BybitOnboardingConflictError`
+    immediately rather than silently choosing. A genuine read failure
+    propagates as whatever the database raised; it is never read as absent.
+    """
+    rows = _read_persisted_symbol_mapping_rows(database, BYBIT_EXCHANGE, snapshot.symbol)
+    if not rows:
+        return None
+    if len(rows) > 1:
+        raise BybitOnboardingConflictError(
+            f"bybit_symbol_mapping_ambiguous:{BYBIT_EXCHANGE}:{snapshot.symbol}:"
+            f"{len(rows)}_rows"
+        )
+    return rows[0]
+
+
+def _symbol_mapping_matches(actual: _PersistedSymbolMappingRow, expected: SymbolMapping) -> bool:
+    """True when every semantic field but the generated ``mapping_id`` and
+    the repeat-call knowledge clock ``ingested_at`` is identical."""
+    return (
+        actual.instrument_id == expected.instrument_id
+        and actual.venue == expected.venue
+        and actual.symbol == expected.symbol
+        and actual.valid_from == expected.valid_from
+        and actual.valid_until == expected.valid_until
+        and actual.source_reference == expected.source_reference
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _PersistedIdentifierMappingRow:
+    """One ``professional_identifier_mappings`` row, read back in full for
+    existing-state verification. ``namespace``/``identifier_value`` are
+    included for the same self-documentation reason as
+    :class:`_PersistedSymbolMappingRow`'s ``venue``/``symbol``."""
+
+    instrument_id: str
+    source_kind: str
+    namespace: str
+    identifier_value: str
+    valid_from: datetime
+    valid_until: datetime | None
+    source_reference: str
+
+
+def _read_persisted_identifier_mapping_rows(
+    database: PostgresDatabase, namespace: str, identifier_value: str
+) -> list[_PersistedIdentifierMappingRow]:
+    with database.transaction() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT instrument_id,source_kind,namespace,identifier_value,"
+            "valid_from,valid_until,source_reference "
+            "FROM professional_identifier_mappings WHERE namespace=%s AND identifier_value=%s",
+            (namespace, identifier_value),
+        )
+        rows = cursor.fetchall()
+    return [
+        _PersistedIdentifierMappingRow(
+            instrument_id=str(row[0]),
+            source_kind=str(row[1]),
+            namespace=str(row[2]),
+            identifier_value=str(row[3]),
+            valid_from=cast(datetime, row[4]),
+            valid_until=cast("datetime | None", row[5]),
+            source_reference=str(row[6]),
+        )
+        for row in rows
+    ]
+
+
+def _resolve_identifier_mapping_state(
+    database: PostgresDatabase, snapshot: BybitInstrumentMetadataSnapshotV1
+) -> _PersistedIdentifierMappingRow | None:
+    """Read the exact ``bybit_v5_symbol``/``BTCUSDT`` identifier mapping, or
+    fail closed. Same rules as :func:`_resolve_symbol_mapping_state`: zero
+    rows is absent, more than one is ambiguous (a conflict), and a genuine
+    read failure propagates unchanged rather than being read as absent.
+    """
+    rows = _read_persisted_identifier_mapping_rows(
+        database, BYBIT_V5_SYMBOL_NAMESPACE, snapshot.symbol
+    )
+    if not rows:
+        return None
+    if len(rows) > 1:
+        raise BybitOnboardingConflictError(
+            f"bybit_identifier_mapping_ambiguous:{BYBIT_V5_SYMBOL_NAMESPACE}:"
+            f"{snapshot.symbol}:{len(rows)}_rows"
+        )
+    return rows[0]
+
+
+def _identifier_mapping_matches(
+    actual: _PersistedIdentifierMappingRow, expected: IdentifierMapping
+) -> bool:
+    """True when every semantic field but the generated ``mapping_id`` and
+    the repeat-call knowledge clock ``ingested_at`` is identical."""
+    return (
+        actual.instrument_id == expected.instrument_id
+        and actual.source_kind == expected.source_kind.value
+        and actual.namespace == expected.namespace
+        and actual.identifier_value == expected.value
+        and actual.valid_from == expected.valid_from
+        and actual.valid_until == expected.valid_until
+        and actual.source_reference == expected.source_reference
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _PersistedVenueRuleRow:
+    """One ``crypto_venue_trading_rules`` row, read back in full for
+    existing-state verification. A private mirror of
+    ``record_venue_trading_rules``'s own column set, minus ``known_at``,
+    which this module never compares -- this module still owns no write path
+    to this table."""
+
+    rule_id: UUID
+    instrument_id: str
+    rule_version: int
+    tick_size: Decimal
+    quantity_step: Decimal
+    min_quantity: Decimal
+    max_quantity: Decimal | None
+    min_notional: Decimal | None
+    price_precision: int
+    quantity_precision: int
+    effective_from: datetime
+    source_reference: str
+    source_hash: str
+
+
+def _read_persisted_venue_rule_rows(
+    database: PostgresDatabase, instrument_id: str, rule_version: int
+) -> list[_PersistedVenueRuleRow]:
+    with database.transaction() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT rule_id,instrument_id,rule_version,tick_size,quantity_step,"
+            "min_quantity,max_quantity,min_notional,price_precision,"
+            "quantity_precision,effective_from,source_reference,source_hash "
+            "FROM crypto_venue_trading_rules WHERE instrument_id=%s AND rule_version=%s",
+            (instrument_id, rule_version),
+        )
+        rows = cursor.fetchall()
+    return [
+        _PersistedVenueRuleRow(
+            rule_id=cast(UUID, row[0]),
+            instrument_id=str(row[1]),
+            rule_version=int(row[2]),
+            tick_size=Decimal(str(row[3])),
+            quantity_step=Decimal(str(row[4])),
+            min_quantity=Decimal(str(row[5])),
+            max_quantity=None if row[6] is None else Decimal(str(row[6])),
+            min_notional=None if row[7] is None else Decimal(str(row[7])),
+            price_precision=int(row[8]),
+            quantity_precision=int(row[9]),
+            effective_from=cast(datetime, row[10]),
+            source_reference=str(row[11]),
+            source_hash=str(row[12]),
+        )
+        for row in rows
+    ]
+
+
+def _resolve_venue_rule_state(
+    database: PostgresDatabase, instrument_id: str
+) -> _PersistedVenueRuleRow | None:
+    """Read the exact venue-rules version-1 row for ``instrument_id``, or
+    fail closed. NOT ``venue_trading_rules_point_in_time``, whose own
+    ``CryptoVenueRuleError`` conflates "not found" with "the read itself
+    failed" the same way ``InstrumentResolutionError`` does (see
+    :func:`_optional`'s docstring).
+
+    Zero rows -> absent. Exactly one row -> returned for comparison. More
+    than one row is schema-impossible today (``UNIQUE(instrument_id,
+    rule_version)``) but is still treated as ambiguous rather than silently
+    picking one, should that invariant ever change. A genuine read failure
+    propagates as whatever the database raised; it is never read as absent.
+    """
+    rows = _read_persisted_venue_rule_rows(database, instrument_id, rule_version=1)
+    if not rows:
+        return None
+    if len(rows) > 1:
+        raise BybitOnboardingConflictError(
+            f"bybit_venue_rules_ambiguous:{instrument_id}:v1:{len(rows)}_rows"
+        )
+    return rows[0]
+
+
+def _rules_row_matches(actual: _PersistedVenueRuleRow, expected: CryptoVenueTradingRules) -> bool:
+    """True when every field but ``known_at`` (never read back, since it is
+    never compared) is identical."""
+    return (
+        actual.rule_id == expected.rule_id
+        and actual.instrument_id == expected.instrument_id
+        and actual.rule_version == expected.rule_version
+        and actual.tick_size == expected.tick_size
+        and actual.quantity_step == expected.quantity_step
+        and actual.min_quantity == expected.min_quantity
+        and actual.max_quantity == expected.max_quantity
+        and actual.min_notional == expected.min_notional
+        and actual.price_precision == expected.price_precision
+        and actual.quantity_precision == expected.quantity_precision
+        and actual.effective_from == expected.effective_from
+        and actual.source_reference == expected.source_reference
+        and actual.source_hash == expected.source_hash
+    )
+
+
 def _instrument_matches(actual: ProfessionalInstrument, expected: ProfessionalInstrument) -> bool:
     """True when every field but ``registered_at`` -- a knowledge clock this
     module deliberately does not require a repeat call to reproduce -- is
-    identical."""
+    identical.
+
+    Includes every optional field this onboarding never sets
+    (``underlying_reference``, ``corporate_action_reference``, ``isin``,
+    ``cusip``, ``contract_code``, ``expiration_date``, ``first_notice_date``,
+    ``last_trade_date``, ``continuous_parent_id``, ``roll_rule``), so a
+    persisted instrument that somehow acquired one of them from elsewhere is
+    a genuine identity conflict, never silently accepted as "close enough".
+    """
     return (
         actual.instrument_id == expected.instrument_id
         and actual.asset_class == expected.asset_class
@@ -940,6 +1245,16 @@ def _instrument_matches(actual: ProfessionalInstrument, expected: ProfessionalIn
         and actual.market_session_type == expected.market_session_type
         and actual.representation_kind == expected.representation_kind
         and actual.lifecycle_status == expected.lifecycle_status
+        and actual.underlying_reference == expected.underlying_reference
+        and actual.corporate_action_reference == expected.corporate_action_reference
+        and actual.isin == expected.isin
+        and actual.cusip == expected.cusip
+        and actual.contract_code == expected.contract_code
+        and actual.expiration_date == expected.expiration_date
+        and actual.first_notice_date == expected.first_notice_date
+        and actual.last_trade_date == expected.last_trade_date
+        and actual.continuous_parent_id == expected.continuous_parent_id
+        and actual.roll_rule == expected.roll_rule
     )
 
 
@@ -962,25 +1277,6 @@ def _specification_matches(
         and actual.reference_price_requirement == expected.reference_price_requirement
         and actual.index_reference == expected.index_reference
         and actual.source_reference == expected.source_reference
-    )
-
-
-def _rules_match(actual: CryptoVenueTradingRules, expected: CryptoVenueTradingRules) -> bool:
-    """True when every field but ``known_at`` is identical."""
-    return (
-        actual.rule_id == expected.rule_id
-        and actual.instrument_id == expected.instrument_id
-        and actual.rule_version == expected.rule_version
-        and actual.tick_size == expected.tick_size
-        and actual.quantity_step == expected.quantity_step
-        and actual.min_quantity == expected.min_quantity
-        and actual.max_quantity == expected.max_quantity
-        and actual.min_notional == expected.min_notional
-        and actual.price_precision == expected.price_precision
-        and actual.quantity_precision == expected.quantity_precision
-        and actual.effective_from == expected.effective_from
-        and actual.source_reference == expected.source_reference
-        and actual.source_hash == expected.source_hash
     )
 
 
@@ -1010,20 +1306,28 @@ def _resolve_existing_onboarding(
     -- the professional instrument, its exact BYBIT/BTCUSDT symbol mapping,
     its exact ``bybit_v5_symbol``/``BTCUSDT`` identifier mapping, the crypto
     perpetual specification, venue rules version 1, the deterministic Bybit
-    historical source, and its exact four source capabilities -- through the
-    existing authorities (plus a private read-only mirror of the source and
-    capability tables; this module still owns no write path of its own to
-    either). The classification is exactly:
+    historical source, and its exact four source capabilities. The
+    professional instrument, its two mappings and the venue rules are read
+    through this module's own small, exact read-only helpers rather than
+    through the corresponding authority resolver methods, because those
+    methods raise the *same* exception type for "not found" as for "the read
+    itself failed" (and, for the mappings, for "ambiguous" too) -- see
+    :func:`_optional`'s docstring for exactly why each one is or is not safe
+    to use that way. Only the crypto specification is read through its
+    authority method (``get_specification``), because that one genuinely
+    raises a distinct sibling type for a read failure. The classification is
+    exactly:
 
     * nothing exists -> ``None``, so the caller performs a fresh atomic write;
     * everything exists and matches this exact snapshot in every field that
       does not describe *when this platform learned it* -> a deterministic
       no-op result, with zero writes;
-    * anything else -- some but not all components exist, or a component
-      exists but disagrees with this snapshot -- raises
-      :class:`BybitOnboardingConflictError`. A partial onboarding is never
-      completed piecemeal, and nothing already recorded is ever repaired or
-      overwritten in place.
+    * anything else -- some but not all components exist, a component exists
+      but disagrees with this snapshot, or a component's own persisted state
+      is ambiguous -- raises :class:`BybitOnboardingConflictError`. A partial
+      onboarding is never completed piecemeal, and nothing already recorded
+      is ever repaired or overwritten in place. A genuine read failure is
+      never any of these outcomes: it propagates exactly as raised.
 
     A repeat call's ``onboarded_at`` need not equal the original persisted
     knowledge time: only fields that describe the world (identity, launch
@@ -1033,53 +1337,34 @@ def _resolve_existing_onboarding(
     """
     source_id = _bybit_source_id()
 
-    instrument = _optional(
-        lambda: master.get_as_of(BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID, onboarded_at),
-        InstrumentResolutionError,
-    )
+    instrument: ProfessionalInstrument | None = None
+    if _persisted_instrument_exists(database, BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID, onboarded_at):
+        # The row is known to exist from the check just above; immutable
+        # evidence cannot lose a row between these two reads, so any
+        # exception from here on is a genuine anomaly, never "absent".
+        instrument = master.get_as_of(BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID, onboarded_at)
 
-    symbol_owner = _optional(
-        lambda: master.resolve_symbol_point_in_time(
-            snapshot.symbol, BYBIT_EXCHANGE, snapshot.launch_time, onboarded_at
-        ),
-        InstrumentResolutionError,
-    )
-    if (
-        symbol_owner is not None
-        and symbol_owner.instrument_id != BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID
-    ):
+    symbol_row = _resolve_symbol_mapping_state(database, snapshot)
+    if symbol_row is not None and symbol_row.instrument_id != BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID:
         raise BybitOnboardingConflictError(
-            "bybit_symbol_mapping_resolves_to_a_different_instrument:"
-            f"{symbol_owner.instrument_id}"
+            f"bybit_symbol_mapping_resolves_to_a_different_instrument:{symbol_row.instrument_id}"
         )
 
-    identifier_owner = _optional(
-        lambda: master.resolve_identifier_point_in_time(
-            BYBIT_V5_SYMBOL_NAMESPACE, snapshot.symbol, snapshot.launch_time, onboarded_at
-        ),
-        InstrumentResolutionError,
-    )
+    identifier_row = _resolve_identifier_mapping_state(database, snapshot)
     if (
-        identifier_owner is not None
-        and identifier_owner.instrument_id != BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID
+        identifier_row is not None
+        and identifier_row.instrument_id != BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID
     ):
         raise BybitOnboardingConflictError(
             "bybit_identifier_mapping_resolves_to_a_different_instrument:"
-            f"{identifier_owner.instrument_id}"
+            f"{identifier_row.instrument_id}"
         )
 
     specification = _optional(
         lambda: crypto.get_specification(BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID, known_at=onboarded_at),
         CryptoResolutionError,
     )
-    rules = _optional(
-        lambda: crypto.venue_trading_rules_point_in_time(
-            BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID,
-            effective_at=snapshot.retrieved_at,
-            known_at=onboarded_at,
-        ),
-        CryptoVenueRuleError,
-    )
+    rules_row = _resolve_venue_rule_state(database, BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID)
     source_row = _read_persisted_source(database, source_id)
     capabilities = (
         _read_persisted_capabilities(database, source_id)
@@ -1089,10 +1374,10 @@ def _resolve_existing_onboarding(
 
     presence = {
         "professional_instrument": instrument is not None,
-        "symbol_mapping": symbol_owner is not None,
-        "identifier_mapping": identifier_owner is not None,
+        "symbol_mapping": symbol_row is not None,
+        "identifier_mapping": identifier_row is not None,
         "crypto_specification": specification is not None,
-        "venue_trading_rules": rules is not None,
+        "venue_trading_rules": rules_row is not None,
         "historical_source": source_row is not None,
         "historical_source_capabilities": bool(capabilities),
     }
@@ -1109,16 +1394,28 @@ def _resolve_existing_onboarding(
     # Every component is present; the dict above already proved it, but mypy
     # cannot see that through a dict lookup, so re-narrow each explicitly.
     instrument = _require_present(instrument, "professional_instrument")
-    symbol_owner = _require_present(symbol_owner, "symbol_mapping")
-    identifier_owner = _require_present(identifier_owner, "identifier_mapping")
+    symbol_row = _require_present(symbol_row, "symbol_mapping")
+    identifier_row = _require_present(identifier_row, "identifier_mapping")
     specification = _require_present(specification, "crypto_specification")
-    rules = _require_present(rules, "venue_trading_rules")
+    rules_row = _require_present(rules_row, "venue_trading_rules")
     source_row = _require_present(source_row, "historical_source")
 
     expected_instrument = bybit_btcusdt_professional_instrument(snapshot, onboarded_at)
     if not _instrument_matches(instrument, expected_instrument):
         raise BybitOnboardingConflictError(
             "bybit_instrument_already_onboarded_with_different_identity"
+        )
+
+    expected_symbol_mapping = bybit_btcusdt_symbol_mapping(snapshot, onboarded_at)
+    if not _symbol_mapping_matches(symbol_row, expected_symbol_mapping):
+        raise BybitOnboardingConflictError(
+            "bybit_symbol_mapping_already_recorded_with_different_evidence"
+        )
+
+    expected_identifier_mapping = bybit_btcusdt_identifier_mapping(snapshot, onboarded_at)
+    if not _identifier_mapping_matches(identifier_row, expected_identifier_mapping):
+        raise BybitOnboardingConflictError(
+            "bybit_identifier_mapping_already_recorded_with_different_evidence"
         )
 
     expected_specification = bybit_btcusdt_crypto_specification(snapshot, onboarded_at)
@@ -1129,9 +1426,9 @@ def _resolve_existing_onboarding(
         )
 
     expected_rules = bybit_btcusdt_venue_trading_rules(snapshot, onboarded_at)
-    if not _rules_match(rules, expected_rules):
+    if not _rules_row_matches(rules_row, expected_rules):
         raise BybitOnboardingConflictError(
-            f"bybit_venue_rules_already_recorded_from_different_snapshot:{rules.source_hash}"
+            f"bybit_venue_rules_already_recorded_from_different_snapshot:{rules_row.source_hash}"
         )
 
     expected_source = bybit_authorized_historical_source(snapshot, onboarded_at)
