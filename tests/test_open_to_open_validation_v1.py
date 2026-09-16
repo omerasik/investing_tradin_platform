@@ -22,6 +22,7 @@ from trade_platform.feature_authority import (
     FeatureQualityStatus,
     FeatureSubjectType,
 )
+from trade_platform.ohlcv_volume_semantics import BarVolumeUnit
 from trade_platform.open_to_open_validation_v1 import (
     CAPACITY_BLOCKED_REASON,
     COARSE_1M_GRID_LATENCY_STRESS,
@@ -30,6 +31,8 @@ from trade_platform.open_to_open_validation_v1 import (
     RealizedExitDailyReturnSeriesV1,
     ResearchTrialDispositionV1,
     ResearchTrialRoleV1,
+    _bar_series_fingerprint,
+    _content_hash,
     _midranks_ascending,
     _select_is_winner,
     _verify_zero_latency_reconciles_canonical_run,
@@ -135,6 +138,12 @@ def _bar(
     *,
     dataset_version_id: object = DATASET_ID,
     instrument_id: str = INSTRUMENT,
+    volume_unit: BarVolumeUnit | None = None,
+    volume_asset: str | None = None,
+    turnover: Decimal | None = None,
+    turnover_unit: BarVolumeUnit | None = None,
+    turnover_asset: str | None = None,
+    volume_semantic_version: str | None = None,
 ) -> AuthoritativeTradableBarV2:
     bar_open_at = START + timedelta(minutes=offset)
     return AuthoritativeTradableBarV2(
@@ -156,6 +165,12 @@ def _bar(
         close=open_price + Decimal("0.5"),
         volume=Decimal("10"),
         provenance_uri="fixture://bar",
+        volume_unit=volume_unit,
+        volume_asset=volume_asset,
+        turnover=turnover,
+        turnover_unit=turnover_unit,
+        turnover_asset=turnover_asset,
+        volume_semantic_version=volume_semantic_version,
     )
 
 
@@ -165,9 +180,21 @@ def _bar_series(
     opens: dict[int, Decimal],
     dataset_version_id: object = DATASET_ID,
     instrument_id: str = INSTRUMENT,
+    volume_unit: BarVolumeUnit | None = None,
+    volume_asset: str | None = None,
+    turnover: Decimal | None = None,
+    turnover_unit: BarVolumeUnit | None = None,
+    turnover_asset: str | None = None,
+    volume_semantic_version: str | None = None,
 ) -> AuthoritativeTradableBarSeriesV2:
     bars = tuple(
-        _bar(offset, opens.get(offset, Decimal("100")), dataset_version_id=dataset_version_id, instrument_id=instrument_id)
+        _bar(
+            offset, opens.get(offset, Decimal("100")),
+            dataset_version_id=dataset_version_id, instrument_id=instrument_id,
+            volume_unit=volume_unit, volume_asset=volume_asset, turnover=turnover,
+            turnover_unit=turnover_unit, turnover_asset=turnover_asset,
+            volume_semantic_version=volume_semantic_version,
+        )
         for offset in range(minutes)
     )
     series = AuthoritativeTradableBarSeriesV2(dataset_version_id, instrument_id, "1m", bars)  # type: ignore[arg-type]
@@ -687,6 +714,88 @@ class SemanticIdentityBindingTests(unittest.TestCase):
         second = reconcile_open_to_open_trade_ledger_v1(run=run, bar_series=different_provenance, base_cost_model=NONZERO_COST)
         self.assertEqual(first.checks, second.checks)
         self.assertEqual(first.status, second.status)
+
+    # ---- Module 3B.2: volume-semantics identity binding -----------------------
+
+    def test_legacy_bar_series_fingerprint_formula_unchanged(self) -> None:
+        """A legacy/unitless bar series' fingerprint reproduces the exact
+        pre-3B.2 formula byte-for-byte -- no ``volume_semantics`` key at all,
+        not even a ``None``-valued one."""
+        opens = {2: Decimal("110"), 5: Decimal("90")}
+        bar_series = _bar_series(minutes=8, opens=opens)
+        pre_3b2_payload = {
+            "dataset_version_id": bar_series.dataset_version_id,
+            "instrument_id": bar_series.instrument_id,
+            "interval": bar_series.interval,
+            "bars": [
+                {
+                    "dataset_content_hash": bar.dataset_content_hash,
+                    "source_id": bar.source_id,
+                    "normalized_observation_id": bar.normalized_observation_id,
+                    "raw_observation_id": bar.raw_observation_id,
+                    "raw_payload_sha256": bar.raw_payload_sha256,
+                    "revision": bar.revision,
+                    "bar_open_at": bar.bar_open_at,
+                    "bar_close_at": bar.bar_close_at,
+                    "normalized_at": bar.normalized_at,
+                    "open": bar.open,
+                    "high": bar.high,
+                    "low": bar.low,
+                    "close": bar.close,
+                    "volume": bar.volume,
+                    "provenance_uri": bar.provenance_uri,
+                }
+                for bar in bar_series.bars
+            ],
+        }
+        self.assertEqual(_bar_series_fingerprint(bar_series), _content_hash(pre_3b2_payload))
+
+    def test_latency_identity_binds_bar_volume_semantics(self) -> None:
+        """The enclosing validation evidence's content_hash changes when the
+        bar series' typed volume semantics change, even though the run's
+        financial output (scenarios) is identical."""
+        opens = {2: Decimal("110"), 5: Decimal("90")}
+        run, _ = _two_trade_run()
+        legacy = _bar_series(minutes=8, opens=opens)
+        typed = _bar_series(
+            minutes=8, opens=opens,
+            volume_unit=BarVolumeUnit.BASE_ASSET, volume_asset="BTC",
+            turnover=Decimal("1000"), turnover_unit=BarVolumeUnit.QUOTE_ASSET,
+            turnover_asset="USDT", volume_semantic_version="test-semantics-v1",
+        )
+        first = evaluate_open_to_open_latency_sensitivity_v1(run=run, bar_series=legacy, base_cost_model=ZERO_COST)
+        second = evaluate_open_to_open_latency_sensitivity_v1(run=run, bar_series=typed, base_cost_model=ZERO_COST)
+        self.assertEqual(first.scenarios, second.scenarios)
+        self.assertNotEqual(first.bar_series_fingerprint, second.bar_series_fingerprint)
+        self.assertNotEqual(first.content_hash, second.content_hash)
+
+    def test_latency_identity_binds_volume_unit_not_just_semantics_presence(self) -> None:
+        """Two typed series differing only in unit/asset (BASE_ASSET/BTC vs
+        CONTRACTS) must not share evidence identity even with the same
+        numeric volume."""
+        opens = {2: Decimal("110"), 5: Decimal("90")}
+        run, _ = _two_trade_run()
+        base_asset_series = _bar_series(
+            minutes=8, opens=opens,
+            volume_unit=BarVolumeUnit.BASE_ASSET, volume_asset="BTC",
+            turnover=Decimal("1000"), turnover_unit=BarVolumeUnit.QUOTE_ASSET,
+            turnover_asset="USDT", volume_semantic_version="test-semantics-v1",
+        )
+        contracts_series = _bar_series(
+            minutes=8, opens=opens,
+            volume_unit=BarVolumeUnit.CONTRACTS, volume_asset=None,
+            turnover=Decimal("1000"), turnover_unit=BarVolumeUnit.QUOTE_ASSET,
+            turnover_asset="USDT", volume_semantic_version="test-semantics-v1",
+        )
+        first = evaluate_open_to_open_latency_sensitivity_v1(
+            run=run, bar_series=base_asset_series, base_cost_model=ZERO_COST
+        )
+        second = evaluate_open_to_open_latency_sensitivity_v1(
+            run=run, bar_series=contracts_series, base_cost_model=ZERO_COST
+        )
+        self.assertEqual(first.scenarios, second.scenarios)
+        self.assertNotEqual(first.bar_series_fingerprint, second.bar_series_fingerprint)
+        self.assertNotEqual(first.content_hash, second.content_hash)
         self.assertNotEqual(first.content_hash, second.content_hash)
 
 

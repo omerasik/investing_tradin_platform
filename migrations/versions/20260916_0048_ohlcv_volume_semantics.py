@@ -27,6 +27,14 @@ introduced in ``20260907_0044``), and the row is immutable once written
 The sealed dataset content hash binds this sidecar only for the NEW rows that
 carry it; a legacy OHLCV row without a sidecar contributes nothing new to the
 hash, so every existing sealed dataset reproduces bit-identically.
+
+``volume_asset``/``turnover_asset`` are nullable, not ``NOT NULL``: a
+``CONTRACTS`` unit is a bare count that names no asset, while ``BASE_ASSET``/
+``QUOTE_ASSET`` always name one. The CHECK constraints below enforce that split
+both ways with explicit ``IS [NOT] NULL`` (never a bare comparison against a
+nullable column, which would silently pass on NULL) -- a CONTRACTS row with an
+asset, or a BASE_ASSET/QUOTE_ASSET row with no asset, is rejected at the
+database, not just in the Python authority.
 """
 
 from alembic import op
@@ -44,16 +52,25 @@ TABLE = "historical_ohlcv_volume_semantics"
 _VOLUME_UNITS = "'CONTRACTS','BASE_ASSET','QUOTE_ASSET'"
 
 
+def _asset_check(column: str, unit_column: str) -> str:
+    """CONTRACTS -> asset IS NULL; BASE_ASSET/QUOTE_ASSET -> asset present and valid."""
+    return (
+        f"CHECK(({unit_column} = 'CONTRACTS' AND {column} IS NULL) "
+        f"OR ({unit_column} <> 'CONTRACTS' AND {column} IS NOT NULL "
+        f"AND LENGTH({column}) BETWEEN 2 AND 12))"
+    )
+
+
 def upgrade() -> None:
     statements = (
         f"""CREATE TABLE {TABLE} (
             normalized_observation_id UUID PRIMARY KEY
                 REFERENCES historical_normalized_observations(normalized_observation_id),
             volume_unit TEXT NOT NULL CHECK(volume_unit IN ({_VOLUME_UNITS})),
-            volume_asset VARCHAR(12) NOT NULL CHECK(LENGTH(volume_asset) BETWEEN 2 AND 12),
+            volume_asset VARCHAR(12) {_asset_check("volume_asset", "volume_unit")},
             turnover NUMERIC(38,18) NOT NULL CHECK(turnover >= 0),
             turnover_unit TEXT NOT NULL CHECK(turnover_unit IN ({_VOLUME_UNITS})),
-            turnover_asset VARCHAR(12) NOT NULL CHECK(LENGTH(turnover_asset) BETWEEN 2 AND 12),
+            turnover_asset VARCHAR(12) {_asset_check("turnover_asset", "turnover_unit")},
             semantic_version TEXT NOT NULL CHECK(LENGTH(TRIM(semantic_version)) > 0),
             source_reference TEXT NOT NULL CHECK(LENGTH(TRIM(source_reference)) > 0)
         )""",

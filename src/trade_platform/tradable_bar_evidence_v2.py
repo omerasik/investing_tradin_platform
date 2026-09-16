@@ -64,7 +64,11 @@ from .crypto_instruments import (
     CryptoInstrumentKind,
     PostgresCryptoInstrumentAuthority,
 )
-from .ohlcv_volume_semantics import OHLCV_VOLUME_SEMANTICS_TABLE, BarVolumeUnit
+from .ohlcv_volume_semantics import (
+    OHLCV_VOLUME_SEMANTICS_TABLE,
+    UNITS_REQUIRING_ASSET,
+    BarVolumeUnit,
+)
 from .persistence import PostgresDatabase
 
 #: The sole bar-timestamp-semantics contract this reader recognizes in v1.
@@ -135,6 +139,80 @@ class AuthoritativeTradableBarV2:
     volume_semantic_version: str | None = None
 
 
+def _validate_bar_unit_asset(unit: BarVolumeUnit, asset: str | None, label: str) -> None:
+    """Asset presence must agree with its unit: CONTRACTS never, BASE/QUOTE always."""
+    if unit in UNITS_REQUIRING_ASSET:
+        if asset is None:
+            raise TradableBarEvidenceV2Error(f"bar_{label}_unit_requires_asset")
+    elif asset is not None:
+        raise TradableBarEvidenceV2Error(f"bar_{label}_contracts_cannot_declare_asset")
+
+
+def _validate_bar_volume_semantics(bar: AuthoritativeTradableBarV2) -> None:
+    """A bar must be either fully legacy/unitless or fully typed -- never a partial mix.
+
+    A directly-constructed bar with, say, ``volume_unit=BASE_ASSET`` but
+    ``volume_semantic_version=None`` must not validate and then be fingerprinted
+    as legacy by :func:`bar_volume_semantics_fingerprint` -- that would silently
+    drop real semantics from evidence identity. Exactly two states are accepted:
+    (A) none of ``volume_unit``/``turnover``/``turnover_unit``/``volume_semantic_version``
+    present, or (B) all four present, with each asset field's presence agreeing
+    with its own unit.
+    """
+    volume_unit, turnover, turnover_unit, volume_semantic_version = (
+        bar.volume_unit, bar.turnover, bar.turnover_unit, bar.volume_semantic_version,
+    )
+    present = (
+        volume_unit is not None, turnover is not None,
+        turnover_unit is not None, volume_semantic_version is not None,
+    )
+    if not any(present):
+        return
+    if not all(present):
+        raise TradableBarEvidenceV2Error("incoherent_bar_volume_semantics")
+    # Explicit narrowing rather than `assert`, which is stripped under -O; the
+    # `all(present)` check above already proved none of these four are None.
+    if volume_unit is None or turnover is None or turnover_unit is None or volume_semantic_version is None:
+        raise TradableBarEvidenceV2Error("incoherent_bar_volume_semantics")
+    if turnover < 0:
+        raise TradableBarEvidenceV2Error("negative_bar_turnover")
+    if not volume_semantic_version.strip():
+        raise TradableBarEvidenceV2Error("invalid_bar_volume_semantic_version")
+    _validate_bar_unit_asset(volume_unit, bar.volume_asset, "volume")
+    _validate_bar_unit_asset(turnover_unit, bar.turnover_asset, "turnover")
+
+
+def bar_volume_semantics_fingerprint(bar: AuthoritativeTradableBarV2) -> dict[str, object] | None:
+    """The canonical Module 3B.2 semantic contribution for one bar's evidence fingerprint.
+
+    Returns ``None`` for a legacy/unitless bar -- every caller MUST omit its key
+    entirely in that case (never add it with a ``None``/empty value), which is
+    what keeps a bar-series fingerprint computed before Module 3B.2 existed
+    reproducing byte-for-byte. Fails closed on an incoherent bar rather than
+    silently fingerprinting a partial state; callers normally reach this only
+    after ``AuthoritativeTradableBarSeriesV2.validate()`` has already enforced
+    that coherence, but this does not trust that -- it re-derives it.
+    """
+    _validate_bar_volume_semantics(bar)
+    volume_semantic_version = bar.volume_semantic_version
+    if volume_semantic_version is None:
+        return None
+    volume_unit, turnover, turnover_unit = bar.volume_unit, bar.turnover, bar.turnover_unit
+    # Explicit narrowing rather than `assert`, which is stripped under -O;
+    # _validate_bar_volume_semantics already proved these three are not None
+    # whenever volume_semantic_version is not None.
+    if volume_unit is None or turnover is None or turnover_unit is None:
+        raise TradableBarEvidenceV2Error("incoherent_bar_volume_semantics_for_fingerprint")
+    return {
+        "volume_unit": volume_unit.value,
+        "volume_asset": bar.volume_asset,
+        "turnover": str(turnover),
+        "turnover_unit": turnover_unit.value,
+        "turnover_asset": bar.turnover_asset,
+        "volume_semantic_version": volume_semantic_version,
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class AuthoritativeTradableBarSeriesV2:
     """A dataset-bound, single-instrument, single-interval, chronological bar series."""
@@ -159,6 +237,7 @@ class AuthoritativeTradableBarSeriesV2:
                 raise TradableBarEvidenceV2Error("non_positive_bar_price")
             if bar.volume < 0:
                 raise TradableBarEvidenceV2Error("negative_bar_volume")
+            _validate_bar_volume_semantics(bar)
             if previous is not None and bar.bar_open_at <= previous:
                 raise TradableBarEvidenceV2Error("tradable_bars_not_chronological")
             previous = bar.bar_open_at

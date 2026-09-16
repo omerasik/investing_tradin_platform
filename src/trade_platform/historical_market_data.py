@@ -51,6 +51,7 @@ from .ohlcv_volume_semantics import (
     OHLCV_VOLUME_SEMANTICS_TABLE,
     BarVolumeUnit,
     OhlcvVolumeSemantics,
+    OhlcvVolumeSemanticsSourceContext,
     authorized_volume_semantics_rule,
     resolve_ohlcv_volume_semantics,
 )
@@ -377,10 +378,10 @@ def _volume_semantics_from_row(
         return None
     return OhlcvVolumeSemantics(
         volume_unit=BarVolumeUnit(str(row[offset])),
-        volume_asset=str(row[offset + 1]),
+        volume_asset=None if row[offset + 1] is None else str(row[offset + 1]),
         turnover=Decimal(str(row[offset + 2])),
         turnover_unit=BarVolumeUnit(str(row[offset + 3])),
-        turnover_asset=str(row[offset + 4]),
+        turnover_asset=None if row[offset + 4] is None else str(row[offset + 4]),
         semantic_version=str(row[offset + 5]),
         source_reference=str(row[offset + 6]),
     )
@@ -816,8 +817,8 @@ class PostgresHistoricalMarketDataPipeline:
                 # volume_semantics None -- its OHLCV stays legacy/unitless.
                 volume_semantics, semantics_issues = self._resolve_volume_semantics(
                     provider=str(row[9]), dataset_name=str(row[10]),
-                    instrument_id=instrument.instrument_id, ingested_at=ingested_at,
-                    payload=payload,
+                    provider_identifier_namespace=str(row[7]), asset_scope=scope.value,
+                    instrument=instrument, ingested_at=ingested_at, payload=payload,
                 )
                 issues.extend(semantics_issues)
 
@@ -956,23 +957,36 @@ class PostgresHistoricalMarketDataPipeline:
             ) from error
 
     def _resolve_volume_semantics(
-        self, *, provider: str, dataset_name: str, instrument_id: str,
-        ingested_at: datetime, payload: dict[str, object],
+        self, *, provider: str, dataset_name: str, provider_identifier_namespace: str,
+        asset_scope: str, instrument: ProfessionalInstrument, ingested_at: datetime,
+        payload: dict[str, object],
     ) -> tuple[OhlcvVolumeSemantics | None, tuple[str, ...]]:
         """Resolve OHLCV volume semantics for an authorized source, or leave it None.
 
-        An unauthorized provider/dataset receives no semantics and no issues --
-        that is the legacy/unitless path, not a failure. Only a source with an
-        authorized rule resolves the crypto specification (the asset authority)
-        and turns the preserved provider turnover evidence into canonical
+        An unauthorized source contract receives no semantics and no issues --
+        that is the legacy/unitless path, not a failure. "Authorized" is judged
+        on the FULL source contract (provider, dataset_name, provider-identifier
+        namespace and asset scope -- see ``OhlcvVolumeSemanticsSourceContext``),
+        not merely provider/dataset_name: a synthetic source that copies those
+        two strings while using a different namespace or scope is exactly as
+        unauthorized as a source with a different provider outright. Only a
+        source with a genuinely matching rule resolves the crypto specification
+        (the instrument-level authority for venue/kind/settlement/assets) and
+        turns the preserved provider turnover evidence into canonical
         semantics, failing closed on anything it cannot prove.
         """
-        rule = authorized_volume_semantics_rule(provider, dataset_name)
+        context = OhlcvVolumeSemanticsSourceContext(
+            provider=provider, dataset_name=dataset_name,
+            provider_identifier_namespace=provider_identifier_namespace,
+            asset_scope=asset_scope,
+        )
+        rule = authorized_volume_semantics_rule(context)
         if rule is None:
             return None, ()
-        specification = self._crypto_specification(instrument_id, ingested_at)
+        specification = self._crypto_specification(instrument.instrument_id, ingested_at)
         return resolve_ohlcv_volume_semantics(
             rule,
+            venue=instrument.venue,
             base_asset=specification.base_asset,
             quote_asset=specification.quote_asset,
             settlement_asset=specification.settlement_asset,

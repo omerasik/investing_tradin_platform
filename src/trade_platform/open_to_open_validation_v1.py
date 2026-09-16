@@ -21,7 +21,11 @@ from .crypto_basis_mean_reversion_v1 import (
 )
 from .research import CostModel
 from .signed_price_return_v2 import SignedOpenToOpenReturnV2, compute_signed_open_to_open_return
-from .tradable_bar_evidence_v2 import AuthoritativeTradableBarSeriesV2
+from .tradable_bar_evidence_v2 import (
+    AuthoritativeTradableBarSeriesV2,
+    AuthoritativeTradableBarV2,
+    bar_volume_semantics_fingerprint,
+)
 
 _UTC = timezone.utc
 _ONE_BAR_INTERVAL = timedelta(minutes=1)
@@ -90,31 +94,42 @@ def _is_canonical_sha256_hex(value: str) -> bool:
     return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
+def _bar_fingerprint_payload(bar: AuthoritativeTradableBarV2) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "dataset_content_hash": bar.dataset_content_hash,
+        "source_id": bar.source_id,
+        "normalized_observation_id": bar.normalized_observation_id,
+        "raw_observation_id": bar.raw_observation_id,
+        "raw_payload_sha256": bar.raw_payload_sha256,
+        "revision": bar.revision,
+        "bar_open_at": bar.bar_open_at,
+        "bar_close_at": bar.bar_close_at,
+        "normalized_at": bar.normalized_at,
+        "open": bar.open,
+        "high": bar.high,
+        "low": bar.low,
+        "close": bar.close,
+        "volume": bar.volume,
+        "provenance_uri": bar.provenance_uri,
+    }
+    # Module 3B.2. A bar's volume figure is unitless on its own: 12.5 BTC and
+    # 12.5 CONTRACTS must not share identity. The shared helper binds
+    # unit/asset/turnover/semantic_version ONLY when the bar actually carries
+    # typed semantics, so a legacy/unitless bar's fingerprint -- and therefore
+    # this and every other already-sealed evidence identity built on top of
+    # it -- reproduces byte-for-byte exactly as it did before this module existed.
+    semantics = bar_volume_semantics_fingerprint(bar)
+    if semantics is not None:
+        payload["volume_semantics"] = semantics
+    return payload
+
+
 def _bar_series_fingerprint(bar_series: AuthoritativeTradableBarSeriesV2) -> str:
     payload = {
         "dataset_version_id": bar_series.dataset_version_id,
         "instrument_id": bar_series.instrument_id,
         "interval": bar_series.interval,
-        "bars": [
-            {
-                "dataset_content_hash": bar.dataset_content_hash,
-                "source_id": bar.source_id,
-                "normalized_observation_id": bar.normalized_observation_id,
-                "raw_observation_id": bar.raw_observation_id,
-                "raw_payload_sha256": bar.raw_payload_sha256,
-                "revision": bar.revision,
-                "bar_open_at": bar.bar_open_at,
-                "bar_close_at": bar.bar_close_at,
-                "normalized_at": bar.normalized_at,
-                "open": bar.open,
-                "high": bar.high,
-                "low": bar.low,
-                "close": bar.close,
-                "volume": bar.volume,
-                "provenance_uri": bar.provenance_uri,
-            }
-            for bar in bar_series.bars
-        ],
+        "bars": [_bar_fingerprint_payload(bar) for bar in bar_series.bars],
     }
     return _content_hash(payload)
 

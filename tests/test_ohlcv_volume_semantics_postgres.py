@@ -590,5 +590,177 @@ class LegacyOhlcvVolumeSemanticsPostgresTests(unittest.TestCase):
         database.close()
 
 
+@unittest.skipUnless(os.environ.get("POSTGRES_TEST_DSN"), "POSTGRES_TEST_DSN not configured")
+class ContractsVolumeUnitPostgresTests(unittest.TestCase):
+    """Item 4: CONTRACTS round-trips through the typed sidecar without inventing an asset.
+
+    ``volume_asset``/``turnover_asset`` are nullable columns with CHECK
+    constraints enforcing the split both ways (migration ``20260916_0048``):
+    a ``CONTRACTS`` unit must have a NULL asset, and ``BASE_ASSET``/
+    ``QUOTE_ASSET`` must have one. These constraints are exercised directly at
+    the database, independent of any resolver rule -- proving the schema
+    itself, not merely the Python authority, enforces the model.
+    """
+
+    database_name: str
+    dsn: str
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        source_dsn = os.environ["POSTGRES_TEST_DSN"]
+        if urlparse(source_dsn).hostname not in LOCAL_HOSTS:
+            raise unittest.SkipTest(
+                "Phase 3B.2 CONTRACTS representability requires a local or CI disposable PostgreSQL DSN"
+            )
+        cls.database_name = f"ohlcv_volume_semantics_phase3b2_contracts_{os.getpid()}"
+        cls.dsn = _disposable_dsn(source_dsn, cls.database_name)
+        with psycopg.connect(source_dsn, autocommit=True) as connection, connection.cursor() as cursor:
+            cursor.execute(f'DROP DATABASE IF EXISTS "{cls.database_name}" WITH (FORCE)')
+            cursor.execute(f'CREATE DATABASE "{cls.database_name}"')
+        _migrate(cls.dsn)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        source_dsn = os.environ["POSTGRES_TEST_DSN"]
+        with psycopg.connect(source_dsn, autocommit=True) as connection, connection.cursor() as cursor:
+            cursor.execute(f'DROP DATABASE IF EXISTS "{cls.database_name}" WITH (FORCE)')
+
+    def _normalized_observation_ids(self, count: int) -> list[object]:
+        """Capture and normalize ``count`` distinct legacy OHLCV observations.
+
+        Each sidecar row is 1:1 with a normalized observation, so every test
+        case below needs its own fresh, already-VALIDATED observation to
+        attach a sidecar row to.
+        """
+        from trade_platform.bybit_crypto_provider import BYBIT_V5_SYMBOL_NAMESPACE
+        from trade_platform.bybit_instrument_onboarding import (
+            captured_btcusdt_snapshot_v1,
+            onboard_bybit_btcusdt_perpetual_v1,
+        )
+        from trade_platform.historical_market_data import (
+            AdjustmentStatus,
+            AssetScope,
+            AuthorizedHistoricalSource,
+            ObservationKind,
+            PostgresHistoricalMarketDataPipeline,
+            RawHistoricalObservation,
+        )
+        from trade_platform.persistence import PostgresDatabase
+        from trade_platform.tradable_bar_evidence_v2 import BAR_TIMESTAMP_SEMANTICS_MARKER_V1
+
+        database = PostgresDatabase(self.dsn)
+        onboard_bybit_btcusdt_perpetual_v1(database, captured_btcusdt_snapshot_v1(), ONBOARDED_AT)
+        pipeline = PostgresHistoricalMarketDataPipeline(database)
+        source = AuthorizedHistoricalSource(
+            source_id=uuid4(),
+            provider="legacy_generic_md",
+            # Unique per call: this helper may be invoked by multiple test
+            # methods in this class, and historical_data_sources is UNIQUE on
+            # (provider, dataset_name, provider_terms_version).
+            dataset_name=f"legacy-generic-crypto-ohlcv-contracts-fixture-{uuid4()}",
+            provider_identifier_namespace=BYBIT_V5_SYMBOL_NAMESPACE,
+            provider_terms_version="operator-declared:legacy-fixture:v1",
+            authorization_reference="operator-approved legacy fixture source",
+            authorized_at=ONBOARDED_AT,
+            created_at=ONBOARDED_AT,
+            asset_scope=AssetScope.CRYPTO.value,
+            authorized_observation_kinds=frozenset({ObservationKind.OHLCV}),
+        )
+        pipeline.register_source(source)
+
+        normalized_ids: list[object] = []
+        for index in range(count):
+            bar_open = START + index * _MINUTE
+            bar_close = bar_open + _MINUTE
+            ingested_at = bar_close + _MINUTE
+            raw = RawHistoricalObservation(
+                source_id=source.source_id,
+                observation_kind=ObservationKind.OHLCV,
+                provider_identifier=SYMBOL,
+                provider_symbol=SYMBOL,
+                exchange=VENUE,
+                event_at=bar_open,
+                effective_at=bar_close,
+                ingested_at=ingested_at,
+                adjustment_status=AdjustmentStatus.RAW,
+                revision=0,
+                provenance_uri=f"legacy://fixture/ohlcv/contracts/{index}",
+                raw_payload={
+                    "bar_timestamp_semantics": BAR_TIMESTAMP_SEMANTICS_MARKER_V1,
+                    "interval": "1m",
+                    "open": "27000.0",
+                    "high": "27100.0",
+                    "low": "26900.0",
+                    "close": "27000.0",
+                    "volume": "1.0",
+                },
+            )
+            (raw_id,) = pipeline.capture_raw([raw])
+            normalized = pipeline.normalize(raw_id, NORMALIZATION_VERSION, NOW)
+            normalized_ids.append(normalized.normalized_observation_id)
+        database.close()
+        return normalized_ids
+
+    def test_valid_contracts_semantics_round_trips_with_no_asset(self) -> None:
+        from trade_platform.persistence import PostgresDatabase
+
+        (normalized_id,) = self._normalized_observation_ids(1)
+        database = PostgresDatabase(self.dsn)
+        with database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO historical_ohlcv_volume_semantics VALUES "
+                "(%s,'CONTRACTS',NULL,%s,'CONTRACTS',NULL,%s,%s)",
+                (normalized_id, Decimal("1000"), "fixture-contracts-v1", "fixture:contracts"),
+            )
+        with database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT volume_unit, volume_asset, turnover_unit, turnover_asset "
+                "FROM historical_ohlcv_volume_semantics WHERE normalized_observation_id=%s",
+                (normalized_id,),
+            )
+            row = cursor.fetchone()
+        self.assertEqual(row, ("CONTRACTS", None, "CONTRACTS", None))
+        database.close()
+
+    def test_contracts_unit_with_asset_rejected_by_database(self) -> None:
+        from trade_platform.persistence import PersistenceError, PostgresDatabase
+
+        (normalized_id,) = self._normalized_observation_ids(1)
+        database = PostgresDatabase(self.dsn)
+        with self.assertRaises(PersistenceError), database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO historical_ohlcv_volume_semantics VALUES "
+                "(%s,'CONTRACTS','BTC',%s,'QUOTE_ASSET','USDT',%s,%s)",
+                (normalized_id, Decimal("1000"), "fixture-v1", "fixture:contracts"),
+            )
+        database.close()
+
+    def test_base_asset_unit_with_no_asset_rejected_by_database(self) -> None:
+        from trade_platform.persistence import PersistenceError, PostgresDatabase
+
+        (normalized_id,) = self._normalized_observation_ids(1)
+        database = PostgresDatabase(self.dsn)
+        with self.assertRaises(PersistenceError), database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO historical_ohlcv_volume_semantics VALUES "
+                "(%s,'BASE_ASSET',NULL,%s,'QUOTE_ASSET','USDT',%s,%s)",
+                (normalized_id, Decimal("1000"), "fixture-v1", "fixture:contracts"),
+            )
+        database.close()
+
+    def test_quote_asset_unit_with_no_asset_rejected_by_database(self) -> None:
+        from trade_platform.persistence import PersistenceError, PostgresDatabase
+
+        (normalized_id,) = self._normalized_observation_ids(1)
+        database = PostgresDatabase(self.dsn)
+        with self.assertRaises(PersistenceError), database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO historical_ohlcv_volume_semantics VALUES "
+                "(%s,'BASE_ASSET','BTC',%s,'QUOTE_ASSET',NULL,%s,%s)",
+                (normalized_id, Decimal("1000"), "fixture-v1", "fixture:contracts"),
+            )
+        database.close()
+
+
 if __name__ == "__main__":
     unittest.main()

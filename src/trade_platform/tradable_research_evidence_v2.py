@@ -31,7 +31,11 @@ import json
 from dataclasses import dataclass
 
 from .strategy_feature_binding_v2 import FeatureSubjectType, SubjectAwareResearchFeatureBundle
-from .tradable_bar_evidence_v2 import AuthoritativeTradableBarSeriesV2, AuthoritativeTradableBarV2
+from .tradable_bar_evidence_v2 import (
+    AuthoritativeTradableBarSeriesV2,
+    AuthoritativeTradableBarV2,
+    bar_volume_semantics_fingerprint,
+)
 
 
 class TradableResearchEvidenceV2Error(ValueError):
@@ -55,20 +59,13 @@ def _bar_fingerprint(bar: AuthoritativeTradableBarV2) -> dict[str, object]:
         "revision": bar.revision,
     }
     # Module 3B.2. A bar's volume figure is unitless on its own: 12.5 BTC and
-    # 12.5 CONTRACTS are different evidence and must not share identity. When the
-    # bar carries typed volume semantics they are bound here so that a change in
-    # unit, asset, turnover or semantic version changes this fingerprint. The
-    # block is added ONLY when semantics are present, so a legacy/unitless bar's
+    # 12.5 CONTRACTS are different evidence and must not share identity. The
+    # shared helper binds unit/asset/turnover/semantic_version ONLY when the
+    # bar actually carries typed semantics, so a legacy/unitless bar's
     # fingerprint -- and therefore every existing composite hash -- is unchanged.
-    if bar.volume_semantic_version is not None:
-        payload["volume_semantics"] = {
-            "volume_unit": bar.volume_unit.value if bar.volume_unit is not None else None,
-            "volume_asset": bar.volume_asset,
-            "turnover": str(bar.turnover) if bar.turnover is not None else None,
-            "turnover_unit": bar.turnover_unit.value if bar.turnover_unit is not None else None,
-            "turnover_asset": bar.turnover_asset,
-            "volume_semantic_version": bar.volume_semantic_version,
-        }
+    semantics = bar_volume_semantics_fingerprint(bar)
+    if semantics is not None:
+        payload["volume_semantics"] = semantics
     return payload
 
 
