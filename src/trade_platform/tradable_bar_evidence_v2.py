@@ -151,29 +151,37 @@ def _validate_bar_unit_asset(unit: BarVolumeUnit, asset: str | None, label: str)
 def _validate_bar_volume_semantics(bar: AuthoritativeTradableBarV2) -> None:
     """A bar must be either fully legacy/unitless or fully typed -- never a partial mix.
 
-    A directly-constructed bar with, say, ``volume_unit=BASE_ASSET`` but
-    ``volume_semantic_version=None`` must not validate and then be fingerprinted
-    as legacy by :func:`bar_volume_semantics_fingerprint` -- that would silently
-    drop real semantics from evidence identity. Exactly two states are accepted:
-    (A) none of ``volume_unit``/``turnover``/``turnover_unit``/``volume_semantic_version``
-    present, or (B) all four present, with each asset field's presence agreeing
-    with its own unit.
+    "Legacy" is judged over ALL SIX semantic fields, not merely the four core
+    ones: a directly-constructed bar with, say, only ``volume_asset="BTC"`` set
+    (every other semantic field ``None``, including ``volume_unit`` itself) must
+    NOT validate as legacy -- an asset with no unit is exactly as incoherent as
+    a unit with no asset, and letting it slide would let
+    :func:`bar_volume_semantics_fingerprint` silently fingerprint it as legacy,
+    dropping real (if malformed) semantics from evidence identity. Exactly two
+    states are accepted: (A) all six of
+    ``volume_unit``/``volume_asset``/``turnover``/``turnover_unit``/
+    ``turnover_asset``/``volume_semantic_version`` are ``None``, or (B) the four
+    core fields (``volume_unit``/``turnover``/``turnover_unit``/
+    ``volume_semantic_version``) are all present, ``turnover`` is finite and
+    non-negative, and each asset field's presence agrees with its own unit.
     """
+    all_fields = (
+        bar.volume_unit, bar.volume_asset, bar.turnover,
+        bar.turnover_unit, bar.turnover_asset, bar.volume_semantic_version,
+    )
+    if all(field is None for field in all_fields):
+        return
     volume_unit, turnover, turnover_unit, volume_semantic_version = (
         bar.volume_unit, bar.turnover, bar.turnover_unit, bar.volume_semantic_version,
     )
-    present = (
-        volume_unit is not None, turnover is not None,
-        turnover_unit is not None, volume_semantic_version is not None,
-    )
-    if not any(present):
-        return
-    if not all(present):
-        raise TradableBarEvidenceV2Error("incoherent_bar_volume_semantics")
-    # Explicit narrowing rather than `assert`, which is stripped under -O; the
-    # `all(present)` check above already proved none of these four are None.
     if volume_unit is None or turnover is None or turnover_unit is None or volume_semantic_version is None:
         raise TradableBarEvidenceV2Error("incoherent_bar_volume_semantics")
+    # is_finite() is checked BEFORE any ordering comparison: comparing a
+    # Decimal NaN with `<` raises decimal.InvalidOperation, which must never
+    # leak past this boundary as anything other than a deterministic
+    # TradableBarEvidenceV2Error.
+    if not turnover.is_finite():
+        raise TradableBarEvidenceV2Error("non_finite_bar_turnover")
     if turnover < 0:
         raise TradableBarEvidenceV2Error("negative_bar_turnover")
     if not volume_semantic_version.strip():

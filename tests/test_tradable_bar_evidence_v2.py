@@ -101,6 +101,29 @@ class BarVolumeSemanticsCoherenceTests(unittest.TestCase):
         with self.assertRaisesRegex(TradableBarEvidenceV2Error, "incoherent_bar_volume_semantics"):
             _series((bar,)).validate()
 
+    def test_volume_asset_alone_is_not_legacy_and_is_rejected(self) -> None:
+        # An asset with no unit at all -- every other semantic field None --
+        # must not silently pass as "legacy" just because none of the four
+        # CORE fields happens to be populated.
+        bar = _bar(volume_asset="BTC")
+        with self.assertRaisesRegex(TradableBarEvidenceV2Error, "incoherent_bar_volume_semantics"):
+            _series((bar,)).validate()
+
+    def test_turnover_asset_alone_is_not_legacy_and_is_rejected(self) -> None:
+        bar = _bar(turnover_asset="USDT")
+        with self.assertRaisesRegex(TradableBarEvidenceV2Error, "incoherent_bar_volume_semantics"):
+            _series((bar,)).validate()
+
+    def test_both_assets_alone_are_not_legacy_and_are_rejected(self) -> None:
+        bar = _bar(volume_asset="BTC", turnover_asset="USDT")
+        with self.assertRaisesRegex(TradableBarEvidenceV2Error, "incoherent_bar_volume_semantics"):
+            _series((bar,)).validate()
+
+    def test_asset_and_semantic_version_with_no_units_or_turnover_rejected(self) -> None:
+        bar = _bar(volume_asset="BTC", volume_semantic_version="v1")
+        with self.assertRaisesRegex(TradableBarEvidenceV2Error, "incoherent_bar_volume_semantics"):
+            _series((bar,)).validate()
+
     def test_contracts_unit_with_asset_rejected(self) -> None:
         bar = _typed_bar(volume_unit=BarVolumeUnit.CONTRACTS, volume_asset="BTC")
         with self.assertRaisesRegex(TradableBarEvidenceV2Error, "bar_volume_contracts_cannot_declare_asset"):
@@ -124,6 +147,24 @@ class BarVolumeSemanticsCoherenceTests(unittest.TestCase):
     def test_empty_semantic_version_rejected(self) -> None:
         bar = _typed_bar(volume_semantic_version="   ")
         with self.assertRaisesRegex(TradableBarEvidenceV2Error, "invalid_bar_volume_semantic_version"):
+            _series((bar,)).validate()
+
+    def test_positive_infinity_turnover_rejected_deterministically(self) -> None:
+        bar = _typed_bar(turnover=Decimal("Infinity"))
+        with self.assertRaisesRegex(TradableBarEvidenceV2Error, "non_finite_bar_turnover"):
+            _series((bar,)).validate()
+
+    def test_negative_infinity_turnover_rejected_deterministically(self) -> None:
+        bar = _typed_bar(turnover=Decimal("-Infinity"))
+        with self.assertRaisesRegex(TradableBarEvidenceV2Error, "non_finite_bar_turnover"):
+            _series((bar,)).validate()
+
+    def test_nan_turnover_rejected_deterministically(self) -> None:
+        # Decimal('NaN') < 0 raises decimal.InvalidOperation under the default
+        # context traps -- is_finite() must be checked first so this never
+        # leaks past TradableBarEvidenceV2Error.
+        bar = _typed_bar(turnover=Decimal("NaN"))
+        with self.assertRaisesRegex(TradableBarEvidenceV2Error, "non_finite_bar_turnover"):
             _series((bar,)).validate()
 
 
@@ -180,6 +221,30 @@ class BarVolumeSemanticsFingerprintTests(unittest.TestCase):
         bar = _bar(volume_unit=BarVolumeUnit.BASE_ASSET, volume_asset="BTC")
         with self.assertRaises(TradableBarEvidenceV2Error):
             bar_volume_semantics_fingerprint(bar)
+
+    def test_asset_only_states_never_fingerprint_as_legacy(self) -> None:
+        # None of these partial states may return None (the legacy sentinel)
+        # from the fingerprint helper -- each must fail closed instead, with
+        # no prior call to AuthoritativeTradableBarSeriesV2.validate().
+        partial_bars = (
+            _bar(volume_asset="BTC"),
+            _bar(turnover_asset="USDT"),
+            _bar(volume_asset="BTC", turnover_asset="USDT"),
+            _bar(volume_asset="BTC", volume_semantic_version="v1"),
+        )
+        for bar in partial_bars:
+            with self.subTest(bar=bar), self.assertRaisesRegex(
+                TradableBarEvidenceV2Error, "incoherent_bar_volume_semantics"
+            ):
+                bar_volume_semantics_fingerprint(bar)
+
+    def test_fingerprint_fails_closed_on_non_finite_turnover_without_prior_validation(self) -> None:
+        for non_finite in (Decimal("Infinity"), Decimal("-Infinity"), Decimal("NaN")):
+            bar = _typed_bar(turnover=non_finite)
+            with self.subTest(turnover=non_finite), self.assertRaisesRegex(
+                TradableBarEvidenceV2Error, "non_finite_bar_turnover"
+            ):
+                bar_volume_semantics_fingerprint(bar)
 
 
 if __name__ == "__main__":
