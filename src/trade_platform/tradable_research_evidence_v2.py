@@ -31,11 +31,45 @@ import json
 from dataclasses import dataclass
 
 from .strategy_feature_binding_v2 import FeatureSubjectType, SubjectAwareResearchFeatureBundle
-from .tradable_bar_evidence_v2 import AuthoritativeTradableBarSeriesV2
+from .tradable_bar_evidence_v2 import AuthoritativeTradableBarSeriesV2, AuthoritativeTradableBarV2
 
 
 class TradableResearchEvidenceV2Error(ValueError):
     """Raised when a feature bundle and a bar series cannot be combined safely."""
+
+
+def _bar_fingerprint(bar: AuthoritativeTradableBarV2) -> dict[str, object]:
+    # Canonical immutable provenance, not merely references:
+    # dataset_content_hash/raw_payload_sha256 tie each bar to the exact sealed
+    # evidence it was projected from, so the composite hash commits to the
+    # underlying financial content transitively (via the raw payload's own
+    # SHA-256) without copying any OHLCV value into this payload.
+    payload: dict[str, object] = {
+        "dataset_content_hash": bar.dataset_content_hash,
+        "source_id": str(bar.source_id),
+        "normalized_observation_id": str(bar.normalized_observation_id),
+        "raw_observation_id": str(bar.raw_observation_id),
+        "raw_payload_sha256": bar.raw_payload_sha256,
+        "bar_open_at": bar.bar_open_at.isoformat(),
+        "bar_close_at": bar.bar_close_at.isoformat(),
+        "revision": bar.revision,
+    }
+    # Module 3B.2. A bar's volume figure is unitless on its own: 12.5 BTC and
+    # 12.5 CONTRACTS are different evidence and must not share identity. When the
+    # bar carries typed volume semantics they are bound here so that a change in
+    # unit, asset, turnover or semantic version changes this fingerprint. The
+    # block is added ONLY when semantics are present, so a legacy/unitless bar's
+    # fingerprint -- and therefore every existing composite hash -- is unchanged.
+    if bar.volume_semantic_version is not None:
+        payload["volume_semantics"] = {
+            "volume_unit": bar.volume_unit.value if bar.volume_unit is not None else None,
+            "volume_asset": bar.volume_asset,
+            "turnover": str(bar.turnover) if bar.turnover is not None else None,
+            "turnover_unit": bar.turnover_unit.value if bar.turnover_unit is not None else None,
+            "turnover_asset": bar.turnover_asset,
+            "volume_semantic_version": bar.volume_semantic_version,
+        }
+    return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,25 +103,7 @@ class SubjectAwareTradableResearchEvidenceV2:
             "subject_id": feature_bundle.subject_id,
             "instrument_id": bar_series.instrument_id,
             "interval": bar_series.interval,
-            "bars": [
-                {
-                    # Canonical immutable provenance, not merely references:
-                    # dataset_content_hash/raw_payload_sha256 tie each bar to
-                    # the exact sealed evidence it was projected from, so the
-                    # composite hash commits to the underlying financial
-                    # content transitively (via the raw payload's own SHA-256)
-                    # without copying any OHLCV value into this payload.
-                    "dataset_content_hash": bar.dataset_content_hash,
-                    "source_id": str(bar.source_id),
-                    "normalized_observation_id": str(bar.normalized_observation_id),
-                    "raw_observation_id": str(bar.raw_observation_id),
-                    "raw_payload_sha256": bar.raw_payload_sha256,
-                    "bar_open_at": bar.bar_open_at.isoformat(),
-                    "bar_close_at": bar.bar_close_at.isoformat(),
-                    "revision": bar.revision,
-                }
-                for bar in bar_series.bars
-            ],
+            "bars": [_bar_fingerprint(bar) for bar in bar_series.bars],
         }
         content_hash = hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()

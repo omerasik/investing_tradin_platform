@@ -47,6 +47,13 @@ from .market_observation_payloads import (
     canonical_payload_marker,
     parse_open_interest_payload,
 )
+from .ohlcv_volume_semantics import (
+    OHLCV_VOLUME_SEMANTICS_TABLE,
+    BarVolumeUnit,
+    OhlcvVolumeSemantics,
+    authorized_volume_semantics_rule,
+    resolve_ohlcv_volume_semantics,
+)
 from .persistence import PostgresDatabase
 from .professional_instruments import (
     InstrumentResolutionError,
@@ -346,6 +353,54 @@ def _sealed_typed_components(row: tuple[object, ...]) -> tuple[str, ...]:
     return payload.canonical_tuple()
 
 
+#: The volume-semantics sidecar columns, selected in this order by both
+#: :meth:`~PostgresHistoricalMarketDataPipeline.seal_dataset` and
+#: :meth:`~PostgresHistoricalMarketDataPipeline.research_query` so one hydration
+#: function serves both. The sidecar is optional (Module 3B.2): an OHLCV row
+#: without one is legacy/unitless evidence and every column below reads NULL.
+_VOLUME_SEMANTICS_COLUMNS = (
+    "vs.volume_unit,vs.volume_asset,vs.turnover,vs.turnover_unit,"
+    "vs.turnover_asset,vs.semantic_version,vs.source_reference"
+)
+
+_VOLUME_SEMANTICS_JOIN = (
+    f"LEFT JOIN {OHLCV_VOLUME_SEMANTICS_TABLE} vs "
+    "ON vs.normalized_observation_id=n.normalized_observation_id"
+)
+
+
+def _volume_semantics_from_row(
+    row: tuple[object, ...], offset: int
+) -> OhlcvVolumeSemantics | None:
+    """Rebuild the canonical volume semantics from its sidecar columns, or ``None``."""
+    if row[offset] is None:
+        return None
+    return OhlcvVolumeSemantics(
+        volume_unit=BarVolumeUnit(str(row[offset])),
+        volume_asset=str(row[offset + 1]),
+        turnover=Decimal(str(row[offset + 2])),
+        turnover_unit=BarVolumeUnit(str(row[offset + 3])),
+        turnover_asset=str(row[offset + 4]),
+        semantic_version=str(row[offset + 5]),
+        source_reference=str(row[offset + 6]),
+    )
+
+
+def _sealed_volume_semantics_components(
+    row: tuple[object, ...], offset: int
+) -> tuple[str, ...]:
+    """Canonical volume-semantics values contributed to a sealed dataset's hash.
+
+    Empty for a legacy OHLCV row with no sidecar, so its historical content hash
+    is byte-identical to its pre-3B.2 value; the canonical tuple is folded in
+    only for a NEW row that actually carries typed volume semantics.
+    """
+    semantics = _volume_semantics_from_row(row, offset)
+    if semantics is None:
+        return ()
+    return semantics.canonical_tuple()
+
+
 CONSOLIDATED_TAPE_EXCHANGE = "CONSOLIDATED_TAPE"
 """Sentinel ``RawHistoricalObservation.exchange`` value for genuinely multi-venue data.
 
@@ -539,6 +594,17 @@ class HistoricalResearchObservation:
     raw_payload_sha256: str
     normalized_value: dict[str, object]
     data_version: str
+    #: Module 3B.2 canonical OHLCV volume/turnover semantics, populated only for
+    #: an authorized OHLCV row that carries the typed sidecar and ``None`` for
+    #: every legacy/unitless row -- surfaced here so a research consumer never
+    #: parses raw provider JSON to recover a unit. ``turnover`` is a canonical
+    #: decimal string, matching how ``normalized_value`` carries ``volume``.
+    volume_unit: str | None = None
+    volume_asset: str | None = None
+    turnover: str | None = None
+    turnover_unit: str | None = None
+    turnover_asset: str | None = None
+    volume_semantic_version: str | None = None
 
 
 def _decimal(payload: dict[str, object], key: str, issues: list[str]) -> Decimal | None:
@@ -690,7 +756,7 @@ class PostgresHistoricalMarketDataPipeline:
         _aware(normalized_at, "normalized_at")
         with self._database.transaction() as connection, connection.cursor() as cursor:
             cursor.execute(
-                "SELECT r.source_id,r.observation_kind,r.provider_identifier,r.exchange,r.event_at,r.ingested_at,r.raw_payload,s.provider_identifier_namespace,s.asset_scope "
+                "SELECT r.source_id,r.observation_kind,r.provider_identifier,r.exchange,r.event_at,r.ingested_at,r.raw_payload,s.provider_identifier_namespace,s.asset_scope,s.provider,s.dataset_name "
                 "FROM historical_raw_observations r JOIN historical_data_sources s ON s.source_id=r.source_id WHERE r.raw_observation_id=%s",
                 (raw_observation_id,),
             )
@@ -729,6 +795,7 @@ class PostgresHistoricalMarketDataPipeline:
         payload = cast(dict[str, object], row[6])
 
         typed: TypedPayload | None = None
+        volume_semantics: OhlcvVolumeSemantics | None = None
         if kind in TYPED_PAYLOAD_KINDS:
             typed, typed_issues = self._parse_typed_payload(
                 kind, payload, scope=scope, instrument_id=instrument.instrument_id,
@@ -741,6 +808,18 @@ class PostgresHistoricalMarketDataPipeline:
         else:
             normalized, payload_issues = normalize_payload(kind, payload)
             issues.extend(payload_issues)
+            if kind is ObservationKind.OHLCV:
+                # OHLCV keeps its financial values in normalized_value; the
+                # optional sidecar adds canonical unit/turnover *authority* on
+                # top, and only for a source whose provider contract this
+                # repository has authorized. A source with no rule leaves
+                # volume_semantics None -- its OHLCV stays legacy/unitless.
+                volume_semantics, semantics_issues = self._resolve_volume_semantics(
+                    provider=str(row[9]), dataset_name=str(row[10]),
+                    instrument_id=instrument.instrument_id, ingested_at=ingested_at,
+                    payload=payload,
+                )
+                issues.extend(semantics_issues)
 
         result = NormalizedHistoricalObservation(
             uuid4(), raw_observation_id, instrument.instrument_id, normalization_version,
@@ -796,6 +875,21 @@ class PostgresHistoricalMarketDataPipeline:
                         "VALUES (%s,%s,%s,%s,%s)",
                         (result.normalized_observation_id, typed.price, typed.price_asset,
                          typed.observed_at, typed.methodology_reference),
+                    )
+                # Only a VALIDATED OHLCV row earns its typed volume semantics: a
+                # rejected bar is evidence of nothing and must not carry an
+                # authoritative unit/turnover it did not pass validation for.
+                if (
+                    volume_semantics is not None
+                    and result.quality_status is QualityStatus.VALIDATED
+                ):
+                    cursor.execute(
+                        f"INSERT INTO {OHLCV_VOLUME_SEMANTICS_TABLE} "  # nosec B608 - fixed constant
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                        (result.normalized_observation_id, volume_semantics.volume_unit.value,
+                         volume_semantics.volume_asset, volume_semantics.turnover,
+                         volume_semantics.turnover_unit.value, volume_semantics.turnover_asset,
+                         volume_semantics.semantic_version, volume_semantics.source_reference),
                     )
         except Exception as error:
             raise HistoricalMarketDataError("historical_normalization_persistence_failed") from error
@@ -860,6 +954,32 @@ class PostgresHistoricalMarketDataPipeline:
             raise HistoricalDataResolutionError(
                 f"instrument_has_no_crypto_specification:{instrument_id}"
             ) from error
+
+    def _resolve_volume_semantics(
+        self, *, provider: str, dataset_name: str, instrument_id: str,
+        ingested_at: datetime, payload: dict[str, object],
+    ) -> tuple[OhlcvVolumeSemantics | None, tuple[str, ...]]:
+        """Resolve OHLCV volume semantics for an authorized source, or leave it None.
+
+        An unauthorized provider/dataset receives no semantics and no issues --
+        that is the legacy/unitless path, not a failure. Only a source with an
+        authorized rule resolves the crypto specification (the asset authority)
+        and turns the preserved provider turnover evidence into canonical
+        semantics, failing closed on anything it cannot prove.
+        """
+        rule = authorized_volume_semantics_rule(provider, dataset_name)
+        if rule is None:
+            return None, ()
+        specification = self._crypto_specification(instrument_id, ingested_at)
+        return resolve_ohlcv_volume_semantics(
+            rule,
+            base_asset=specification.base_asset,
+            quote_asset=specification.quote_asset,
+            settlement_asset=specification.settlement_asset,
+            settlement_style=specification.settlement_style,
+            kind=specification.kind,
+            provider_turnover=payload.get("provider_turnover"),
+        )
 
     @staticmethod
     def _require_source_scope_matches_instrument(
@@ -956,10 +1076,10 @@ class PostgresHistoricalMarketDataPipeline:
                 "SELECT n.normalized_observation_id,n.normalization_version,n.quality_status,"
                 "n.normalized_value,n.normalized_at,r.source_id,r.event_at,r.ingested_at,"
                 "r.raw_payload_sha256,r.observation_kind,"
-                f"{_TYPED_PAYLOAD_COLUMNS} "
+                f"{_TYPED_PAYLOAD_COLUMNS},{_VOLUME_SEMANTICS_COLUMNS} "
                 "FROM historical_normalized_observations n "
                 "JOIN historical_raw_observations r ON r.raw_observation_id=n.raw_observation_id "
-                f"{_TYPED_PAYLOAD_JOINS} "
+                f"{_TYPED_PAYLOAD_JOINS} {_VOLUME_SEMANTICS_JOIN} "
                 f"WHERE n.normalized_observation_id IN ({placeholders})",  # nosec B608 - fixed fragments and placeholders only
                 normalized_ids,
             )
@@ -983,6 +1103,11 @@ class PostgresHistoricalMarketDataPipeline:
                     str(row[9]),
                     _canonical(cast(dict[str, object], row[3])),
                     *_sealed_typed_components(row),
+                    # The typed payload columns occupy offsets 10..29; the
+                    # volume-semantics sidecar columns follow at offset 30. A
+                    # legacy OHLCV row with no sidecar contributes nothing here,
+                    # so its content hash is unchanged.
+                    *_sealed_volume_semantics_components(row, 30),
                 )
             )
             digest.update(canonical.encode())
@@ -1021,7 +1146,7 @@ class PostgresHistoricalMarketDataPipeline:
             "WITH ranked AS (SELECT n.instrument_id,r.observation_kind,s.provider,r.provider_identifier," 
             "r.provider_symbol,r.exchange,r.event_at,r.effective_at,r.ingested_at,r.adjustment_status," 
             "r.revision,r.provenance_uri,r.raw_payload_sha256,n.normalized_value,d.version,"
-            f"{_TYPED_PAYLOAD_COLUMNS},"
+            f"{_TYPED_PAYLOAD_COLUMNS},{_VOLUME_SEMANTICS_COLUMNS},"
             "ROW_NUMBER() OVER (PARTITION BY r.source_id,r.provider_identifier,r.observation_kind,r.event_at "
             "ORDER BY r.revision DESC,r.ingested_at DESC) AS rank "
             "FROM historical_dataset_members m "
@@ -1029,7 +1154,7 @@ class PostgresHistoricalMarketDataPipeline:
             "JOIN historical_normalized_observations n ON n.normalized_observation_id=m.normalized_observation_id "
             "JOIN historical_raw_observations r ON r.raw_observation_id=n.raw_observation_id "
             "JOIN historical_data_sources s ON s.source_id=r.source_id "
-            f"{_TYPED_PAYLOAD_JOINS} "
+            f"{_TYPED_PAYLOAD_JOINS} {_VOLUME_SEMANTICS_JOIN} "
             "WHERE d.dataset_version_id=%s AND d.status='SEALED' AND d.created_at<=%s "
             "AND n.instrument_id=%s AND n.quality_status='VALIDATED' AND n.normalized_at<=%s " 
             "AND r.event_at BETWEEN %s AND %s AND r.event_at<=%s AND r.ingested_at<=%s "
@@ -1060,6 +1185,11 @@ class PostgresHistoricalMarketDataPipeline:
             if typed is not None
             else cast("dict[str, object]", row[13])
         )
+        # The volume-semantics sidecar columns follow the typed columns (offset
+        # 15..34) at offset 35. Every field is populated from the canonical
+        # authority, never parsed from raw_payload, and stays None for a
+        # legacy/unitless OHLCV row.
+        semantics = _volume_semantics_from_row(row, 35)
         return HistoricalResearchObservation(
             instrument_id=str(row[0]), observation_kind=kind,
             provider=str(row[2]), provider_identifier=str(row[3]), provider_symbol=str(row[4]),
@@ -1068,4 +1198,10 @@ class PostgresHistoricalMarketDataPipeline:
             adjustment_status=AdjustmentStatus(str(row[9])), revision=int(str(row[10])),
             provenance_uri=str(row[11]), raw_payload_sha256=str(row[12]),
             normalized_value=normalized_value, data_version=str(row[14]),
+            volume_unit=None if semantics is None else semantics.volume_unit.value,
+            volume_asset=None if semantics is None else semantics.volume_asset,
+            turnover=None if semantics is None else str(semantics.turnover),
+            turnover_unit=None if semantics is None else semantics.turnover_unit.value,
+            turnover_asset=None if semantics is None else semantics.turnover_asset,
+            volume_semantic_version=None if semantics is None else semantics.semantic_version,
         )

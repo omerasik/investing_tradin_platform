@@ -64,6 +64,7 @@ from .crypto_instruments import (
     CryptoInstrumentKind,
     PostgresCryptoInstrumentAuthority,
 )
+from .ohlcv_volume_semantics import OHLCV_VOLUME_SEMANTICS_TABLE, BarVolumeUnit
 from .persistence import PostgresDatabase
 
 #: The sole bar-timestamp-semantics contract this reader recognizes in v1.
@@ -122,6 +123,16 @@ class AuthoritativeTradableBarV2:
     close: Decimal
     volume: Decimal
     provenance_uri: str
+    #: Module 3B.2 canonical OHLCV volume/turnover semantics, obtained from the
+    #: typed authority (never parsed from raw_payload) and populated only for an
+    #: authorized bar that carries the sidecar. ``volume`` stays the unitless
+    #: figure it always was; these say what it means. All None for a legacy bar.
+    volume_unit: BarVolumeUnit | None = None
+    volume_asset: str | None = None
+    turnover: Decimal | None = None
+    turnover_unit: BarVolumeUnit | None = None
+    turnover_asset: str | None = None
+    volume_semantic_version: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,14 +272,18 @@ class PostgresTradableBarEvidenceReaderV2:
             cursor.execute(
                 "SELECT n.normalized_observation_id, n.raw_observation_id, n.normalized_value, "
                 "n.normalized_at, r.source_id, r.provider_identifier, r.event_at, r.effective_at, "
-                "r.ingested_at, r.revision, r.provenance_uri, r.raw_payload, r.raw_payload_sha256 "
+                "r.ingested_at, r.revision, r.provenance_uri, r.raw_payload, r.raw_payload_sha256, "
+                "vs.volume_unit, vs.volume_asset, vs.turnover, vs.turnover_unit, "
+                "vs.turnover_asset, vs.semantic_version "
                 "FROM historical_dataset_members m "
                 "JOIN historical_normalized_observations n "
                 "  ON n.normalized_observation_id=m.normalized_observation_id "
                 "JOIN historical_raw_observations r ON r.raw_observation_id=n.raw_observation_id "
+                f"LEFT JOIN {OHLCV_VOLUME_SEMANTICS_TABLE} vs "
+                "  ON vs.normalized_observation_id=n.normalized_observation_id "
                 "WHERE m.dataset_version_id=%s AND n.instrument_id=%s "
                 "AND r.observation_kind='OHLCV' AND r.source_id=%s "
-                "AND n.quality_status='VALIDATED' AND n.normalized_value->>'interval'=%s",
+                "AND n.quality_status='VALIDATED' AND n.normalized_value->>'interval'=%s",  # nosec B608 - fixed table constant
                 (dataset_version_id, instrument_id, source_id, interval),
             )
             return list(cursor.fetchall())
@@ -323,6 +338,12 @@ def _build_bar(
         provenance_uri,
         raw_payload,
         raw_payload_sha256,
+        volume_unit_raw,
+        volume_asset_raw,
+        turnover_raw,
+        turnover_unit_raw,
+        turnover_asset_raw,
+        semantic_version_raw,
     ) = row
     bar_open_at = cast(datetime, event_at)
     bar_close_at = cast(datetime, effective_at)
@@ -344,6 +365,13 @@ def _build_bar(
     values = cast(dict[str, object], normalized_value)
     ohlcv = {key: _decimal(values, key) for key in _OHLCV_VALUE_KEYS}
 
+    # The typed volume semantics come solely from the sidecar authority; this
+    # reader never inspects raw_payload to establish a unit. All None for a
+    # legacy bar with no sidecar.
+    volume_unit = None if volume_unit_raw is None else BarVolumeUnit(str(volume_unit_raw))
+    turnover_unit = None if turnover_unit_raw is None else BarVolumeUnit(str(turnover_unit_raw))
+    turnover = None if turnover_raw is None else Decimal(str(turnover_raw))
+
     return AuthoritativeTradableBarV2(
         dataset_version_id=dataset_version_id,
         dataset_content_hash=dataset_content_hash,
@@ -363,4 +391,10 @@ def _build_bar(
         close=ohlcv["close"],
         volume=ohlcv["volume"],
         provenance_uri=str(provenance_uri),
+        volume_unit=volume_unit,
+        volume_asset=None if volume_asset_raw is None else str(volume_asset_raw),
+        turnover=turnover,
+        turnover_unit=turnover_unit,
+        turnover_asset=None if turnover_asset_raw is None else str(turnover_asset_raw),
+        volume_semantic_version=None if semantic_version_raw is None else str(semantic_version_raw),
     )
