@@ -35,9 +35,14 @@ _NAMESPACE = uuid5(NAMESPACE_URL, "trade_platform.open_to_open_validation_v1")
 REALIZED_EXIT_DAILY_RETURN_SERIES_KIND = "REALIZED_EXIT_DAILY_RETURN_SERIES_V1"
 REALIZED_EXIT_DAILY_RETURN_SERIES_SEMANTIC_VERSION = "1.0.0"
 COARSE_1M_GRID_LATENCY_STRESS = "COARSE_1M_GRID_LATENCY_STRESS"
-CAPACITY_BLOCKED_STATUS = "BLOCKED"
-CAPACITY_BLOCKED_REASON = "MISSING_AUTHORIZED_VOLUME_UNIT_SEMANTICS"
-REDUCED_LIQUIDITY_BLOCKED_REASON = "MISSING_AUTHORIZED_VOLUME_UNIT_SEMANTICS"
+# Module 3B.3 retired this module's capacity/reduced-liquidity DATA blockers.
+# Their sole reason -- MISSING_AUTHORIZED_VOLUME_UNIT_SEMANTICS -- was answered
+# by Module 3B.2's typed OHLCV semantics, so keeping them would assert a data
+# gap that no longer exists. Canonical liquidity/participation/capacity evidence
+# (including the reduced-liquidity stress ladder) now lives in
+# ``crypto_liquidity_capacity_v1``, which distinguishes legacy data, insufficient
+# complete liquidity history, a missing authorized capacity policy, and the fully
+# proven case instead of collapsing all four into one obsolete string.
 CSCV_BLOCKS = 8
 CSCV_SPLIT_COUNT = comb(8, 4)
 CSCV_MINIMUM_OBSERVATIONS_PER_BLOCK = 5
@@ -908,58 +913,6 @@ def evaluate_open_to_open_missing_bar_stress_v1(
         net_returns=tuple(trade.net_return for trade in stressed_trades),
         content_hash=content_hash,
         evidence_id=_identity("missing-bar-stress-v1", content_hash),
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class CapacityBlockedEvidenceV1:
-    status: str
-    reason: str
-    source_run_content_hash: str
-    content_hash: str
-    evidence_id: UUID
-
-
-def build_capacity_blocked_evidence_v1(*, run: BasisMeanReversionResearchRunV1) -> CapacityBlockedEvidenceV1:
-    payload = {
-        "status": CAPACITY_BLOCKED_STATUS,
-        "reason": CAPACITY_BLOCKED_REASON,
-        "source_run_content_hash": run.content_hash,
-    }
-    content_hash = _content_hash(payload)
-    return CapacityBlockedEvidenceV1(
-        status=CAPACITY_BLOCKED_STATUS,
-        reason=CAPACITY_BLOCKED_REASON,
-        source_run_content_hash=run.content_hash,
-        content_hash=content_hash,
-        evidence_id=_identity("capacity-blocked-v1", content_hash),
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class ReducedLiquidityBlockedEvidenceV1:
-    status: str
-    reason: str
-    source_run_content_hash: str
-    content_hash: str
-    evidence_id: UUID
-
-
-def build_reduced_liquidity_blocked_evidence_v1(
-    *, run: BasisMeanReversionResearchRunV1
-) -> ReducedLiquidityBlockedEvidenceV1:
-    payload = {
-        "status": CAPACITY_BLOCKED_STATUS,
-        "reason": REDUCED_LIQUIDITY_BLOCKED_REASON,
-        "source_run_content_hash": run.content_hash,
-    }
-    content_hash = _content_hash(payload)
-    return ReducedLiquidityBlockedEvidenceV1(
-        status=CAPACITY_BLOCKED_STATUS,
-        reason=REDUCED_LIQUIDITY_BLOCKED_REASON,
-        source_run_content_hash=run.content_hash,
-        content_hash=content_hash,
-        evidence_id=_identity("reduced-liquidity-blocked-v1", content_hash),
     )
 
 
