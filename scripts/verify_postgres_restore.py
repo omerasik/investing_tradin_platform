@@ -104,6 +104,8 @@ CRITICAL_TABLES = (
     "open_interest_observations",
     "crypto_funding_observations",
     "crypto_reference_price_observations",
+    # Module 3B.2 optional typed OHLCV volume/turnover semantics sidecar.
+    "historical_ohlcv_volume_semantics",
     "futures_term_structure_methods",
     "futures_term_structure_curves",
     "futures_term_structure_points",

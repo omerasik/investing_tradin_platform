@@ -64,6 +64,11 @@ from .crypto_instruments import (
     CryptoInstrumentKind,
     PostgresCryptoInstrumentAuthority,
 )
+from .ohlcv_volume_semantics import (
+    OHLCV_VOLUME_SEMANTICS_TABLE,
+    UNITS_REQUIRING_ASSET,
+    BarVolumeUnit,
+)
 from .persistence import PostgresDatabase
 
 #: The sole bar-timestamp-semantics contract this reader recognizes in v1.
@@ -122,6 +127,98 @@ class AuthoritativeTradableBarV2:
     close: Decimal
     volume: Decimal
     provenance_uri: str
+    #: Module 3B.2 canonical OHLCV volume/turnover semantics, obtained from the
+    #: typed authority (never parsed from raw_payload) and populated only for an
+    #: authorized bar that carries the sidecar. ``volume`` stays the unitless
+    #: figure it always was; these say what it means. All None for a legacy bar.
+    volume_unit: BarVolumeUnit | None = None
+    volume_asset: str | None = None
+    turnover: Decimal | None = None
+    turnover_unit: BarVolumeUnit | None = None
+    turnover_asset: str | None = None
+    volume_semantic_version: str | None = None
+
+
+def _validate_bar_unit_asset(unit: BarVolumeUnit, asset: str | None, label: str) -> None:
+    """Asset presence must agree with its unit: CONTRACTS never, BASE/QUOTE always."""
+    if unit in UNITS_REQUIRING_ASSET:
+        if asset is None:
+            raise TradableBarEvidenceV2Error(f"bar_{label}_unit_requires_asset")
+    elif asset is not None:
+        raise TradableBarEvidenceV2Error(f"bar_{label}_contracts_cannot_declare_asset")
+
+
+def _validate_bar_volume_semantics(bar: AuthoritativeTradableBarV2) -> None:
+    """A bar must be either fully legacy/unitless or fully typed -- never a partial mix.
+
+    "Legacy" is judged over ALL SIX semantic fields, not merely the four core
+    ones: a directly-constructed bar with, say, only ``volume_asset="BTC"`` set
+    (every other semantic field ``None``, including ``volume_unit`` itself) must
+    NOT validate as legacy -- an asset with no unit is exactly as incoherent as
+    a unit with no asset, and letting it slide would let
+    :func:`bar_volume_semantics_fingerprint` silently fingerprint it as legacy,
+    dropping real (if malformed) semantics from evidence identity. Exactly two
+    states are accepted: (A) all six of
+    ``volume_unit``/``volume_asset``/``turnover``/``turnover_unit``/
+    ``turnover_asset``/``volume_semantic_version`` are ``None``, or (B) the four
+    core fields (``volume_unit``/``turnover``/``turnover_unit``/
+    ``volume_semantic_version``) are all present, ``turnover`` is finite and
+    non-negative, and each asset field's presence agrees with its own unit.
+    """
+    all_fields = (
+        bar.volume_unit, bar.volume_asset, bar.turnover,
+        bar.turnover_unit, bar.turnover_asset, bar.volume_semantic_version,
+    )
+    if all(field is None for field in all_fields):
+        return
+    volume_unit, turnover, turnover_unit, volume_semantic_version = (
+        bar.volume_unit, bar.turnover, bar.turnover_unit, bar.volume_semantic_version,
+    )
+    if volume_unit is None or turnover is None or turnover_unit is None or volume_semantic_version is None:
+        raise TradableBarEvidenceV2Error("incoherent_bar_volume_semantics")
+    # is_finite() is checked BEFORE any ordering comparison: comparing a
+    # Decimal NaN with `<` raises decimal.InvalidOperation, which must never
+    # leak past this boundary as anything other than a deterministic
+    # TradableBarEvidenceV2Error.
+    if not turnover.is_finite():
+        raise TradableBarEvidenceV2Error("non_finite_bar_turnover")
+    if turnover < 0:
+        raise TradableBarEvidenceV2Error("negative_bar_turnover")
+    if not volume_semantic_version.strip():
+        raise TradableBarEvidenceV2Error("invalid_bar_volume_semantic_version")
+    _validate_bar_unit_asset(volume_unit, bar.volume_asset, "volume")
+    _validate_bar_unit_asset(turnover_unit, bar.turnover_asset, "turnover")
+
+
+def bar_volume_semantics_fingerprint(bar: AuthoritativeTradableBarV2) -> dict[str, object] | None:
+    """The canonical Module 3B.2 semantic contribution for one bar's evidence fingerprint.
+
+    Returns ``None`` for a legacy/unitless bar -- every caller MUST omit its key
+    entirely in that case (never add it with a ``None``/empty value), which is
+    what keeps a bar-series fingerprint computed before Module 3B.2 existed
+    reproducing byte-for-byte. Fails closed on an incoherent bar rather than
+    silently fingerprinting a partial state; callers normally reach this only
+    after ``AuthoritativeTradableBarSeriesV2.validate()`` has already enforced
+    that coherence, but this does not trust that -- it re-derives it.
+    """
+    _validate_bar_volume_semantics(bar)
+    volume_semantic_version = bar.volume_semantic_version
+    if volume_semantic_version is None:
+        return None
+    volume_unit, turnover, turnover_unit = bar.volume_unit, bar.turnover, bar.turnover_unit
+    # Explicit narrowing rather than `assert`, which is stripped under -O;
+    # _validate_bar_volume_semantics already proved these three are not None
+    # whenever volume_semantic_version is not None.
+    if volume_unit is None or turnover is None or turnover_unit is None:
+        raise TradableBarEvidenceV2Error("incoherent_bar_volume_semantics_for_fingerprint")
+    return {
+        "volume_unit": volume_unit.value,
+        "volume_asset": bar.volume_asset,
+        "turnover": str(turnover),
+        "turnover_unit": turnover_unit.value,
+        "turnover_asset": bar.turnover_asset,
+        "volume_semantic_version": volume_semantic_version,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +245,7 @@ class AuthoritativeTradableBarSeriesV2:
                 raise TradableBarEvidenceV2Error("non_positive_bar_price")
             if bar.volume < 0:
                 raise TradableBarEvidenceV2Error("negative_bar_volume")
+            _validate_bar_volume_semantics(bar)
             if previous is not None and bar.bar_open_at <= previous:
                 raise TradableBarEvidenceV2Error("tradable_bars_not_chronological")
             previous = bar.bar_open_at
@@ -261,14 +359,18 @@ class PostgresTradableBarEvidenceReaderV2:
             cursor.execute(
                 "SELECT n.normalized_observation_id, n.raw_observation_id, n.normalized_value, "
                 "n.normalized_at, r.source_id, r.provider_identifier, r.event_at, r.effective_at, "
-                "r.ingested_at, r.revision, r.provenance_uri, r.raw_payload, r.raw_payload_sha256 "
+                "r.ingested_at, r.revision, r.provenance_uri, r.raw_payload, r.raw_payload_sha256, "
+                "vs.volume_unit, vs.volume_asset, vs.turnover, vs.turnover_unit, "
+                "vs.turnover_asset, vs.semantic_version "
                 "FROM historical_dataset_members m "
                 "JOIN historical_normalized_observations n "
                 "  ON n.normalized_observation_id=m.normalized_observation_id "
                 "JOIN historical_raw_observations r ON r.raw_observation_id=n.raw_observation_id "
+                f"LEFT JOIN {OHLCV_VOLUME_SEMANTICS_TABLE} vs "
+                "  ON vs.normalized_observation_id=n.normalized_observation_id "
                 "WHERE m.dataset_version_id=%s AND n.instrument_id=%s "
                 "AND r.observation_kind='OHLCV' AND r.source_id=%s "
-                "AND n.quality_status='VALIDATED' AND n.normalized_value->>'interval'=%s",
+                "AND n.quality_status='VALIDATED' AND n.normalized_value->>'interval'=%s",  # nosec B608 - fixed table constant
                 (dataset_version_id, instrument_id, source_id, interval),
             )
             return list(cursor.fetchall())
@@ -323,6 +425,12 @@ def _build_bar(
         provenance_uri,
         raw_payload,
         raw_payload_sha256,
+        volume_unit_raw,
+        volume_asset_raw,
+        turnover_raw,
+        turnover_unit_raw,
+        turnover_asset_raw,
+        semantic_version_raw,
     ) = row
     bar_open_at = cast(datetime, event_at)
     bar_close_at = cast(datetime, effective_at)
@@ -344,6 +452,13 @@ def _build_bar(
     values = cast(dict[str, object], normalized_value)
     ohlcv = {key: _decimal(values, key) for key in _OHLCV_VALUE_KEYS}
 
+    # The typed volume semantics come solely from the sidecar authority; this
+    # reader never inspects raw_payload to establish a unit. All None for a
+    # legacy bar with no sidecar.
+    volume_unit = None if volume_unit_raw is None else BarVolumeUnit(str(volume_unit_raw))
+    turnover_unit = None if turnover_unit_raw is None else BarVolumeUnit(str(turnover_unit_raw))
+    turnover = None if turnover_raw is None else Decimal(str(turnover_raw))
+
     return AuthoritativeTradableBarV2(
         dataset_version_id=dataset_version_id,
         dataset_content_hash=dataset_content_hash,
@@ -363,4 +478,10 @@ def _build_bar(
         close=ohlcv["close"],
         volume=ohlcv["volume"],
         provenance_uri=str(provenance_uri),
+        volume_unit=volume_unit,
+        volume_asset=None if volume_asset_raw is None else str(volume_asset_raw),
+        turnover=turnover,
+        turnover_unit=turnover_unit,
+        turnover_asset=None if turnover_asset_raw is None else str(turnover_asset_raw),
+        volume_semantic_version=None if semantic_version_raw is None else str(semantic_version_raw),
     )
