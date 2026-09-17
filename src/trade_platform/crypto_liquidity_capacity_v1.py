@@ -84,6 +84,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 from enum import StrEnum
 from itertools import pairwise
+from types import MappingProxyType
 from typing import Any, Final
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -328,12 +329,28 @@ BYBIT_BTCUSDT_PERPETUAL_LIQUIDITY_CONTRACT_V1: Final = AuthorizedInstrumentLiqui
 #: Every instrument this repository has already authorized for canonical
 #: liquidity evidence. An instrument outside this registry must be given an
 #: explicit contract by its caller -- it is never guessed.
+#:
+#: This is a read-only mapping, not a ``dict``. ``Final`` is a type-checker
+#: annotation and stops nobody from doing
+#: ``AUTHORIZED_INSTRUMENT_LIQUIDITY_CONTRACTS[...] = ...`` at runtime, which
+#: would let any imported module silently redefine the canonical economic
+#: identity of an authorized instrument. The proxy is built directly over an
+#: anonymous dict, so no mutable alias to the underlying mapping exists.
 AUTHORIZED_INSTRUMENT_LIQUIDITY_CONTRACTS: Final[
-    dict[str, AuthorizedInstrumentLiquidityContractV1]
-] = {
-    contract.instrument_id: contract
-    for contract in (BYBIT_BTCUSDT_PERPETUAL_LIQUIDITY_CONTRACT_V1,)
-}
+    Mapping[str, AuthorizedInstrumentLiquidityContractV1]
+] = MappingProxyType(
+    {
+        contract.instrument_id: contract
+        for contract in (BYBIT_BTCUSDT_PERPETUAL_LIQUIDITY_CONTRACT_V1,)
+    }
+)
+
+#: The fields that make up an instrument's canonical ECONOMIC identity. A
+#: caller-supplied contract may differ from a registered one in its
+#: ``contract_reference`` -- that is only provenance, and a
+#: specification-derived contract legitimately carries a different one -- but
+#: never in any of these.
+CANONICAL_CONTRACT_IDENTITY_FIELDS: Final = ("instrument_id", "venue", "base_asset", "quote_asset")
 
 
 def authorized_instrument_liquidity_contract(
@@ -341,6 +358,58 @@ def authorized_instrument_liquidity_contract(
 ) -> AuthorizedInstrumentLiquidityContractV1 | None:
     """The registered contract for an instrument, or ``None`` -- never a guess."""
     return AUTHORIZED_INSTRUMENT_LIQUIDITY_CONTRACTS.get(instrument_id)
+
+
+def canonical_contract_conflicts(
+    *,
+    explicit: AuthorizedInstrumentLiquidityContractV1,
+    registered: AuthorizedInstrumentLiquidityContractV1,
+) -> tuple[str, ...]:
+    """Which parts of the canonical economic identity an explicit contract contradicts.
+
+    Empty when the explicit contract agrees with the registered one on every
+    field of :data:`CANONICAL_CONTRACT_IDENTITY_FIELDS`. Non-empty means the
+    caller is trying to redefine an identity this repository already authorized
+    independently, which is exactly what the registry exists to prevent.
+    """
+    return tuple(
+        field
+        for field in CANONICAL_CONTRACT_IDENTITY_FIELDS
+        if getattr(explicit, field) != getattr(registered, field)
+    )
+
+
+def resolve_instrument_liquidity_contract(
+    instrument_id: str,
+    explicit: AuthorizedInstrumentLiquidityContractV1 | None,
+) -> AuthorizedInstrumentLiquidityContractV1 | None:
+    """Resolve the governing contract; the registry wins over any caller claim.
+
+    A registered instrument's canonical identity is not negotiable. Supplying an
+    explicit contract for one is allowed -- a specification-derived contract with
+    the same economic identity is genuinely useful, and its provenance reference
+    is the more informative one -- but it may only *restate* that identity, never
+    redefine it. A caller that hands
+    ``CRYPTO:BYBIT:BTCUSDT:PERP`` a contract claiming ETH/USDC, or a different
+    venue, fails closed here rather than quietly overriding the authority. An
+    unregistered instrument still takes the caller's explicit contract, which is
+    how fixtures and future canonical-specification integration work, and still
+    returns ``None`` when neither source has one.
+    """
+    registered = authorized_instrument_liquidity_contract(instrument_id)
+    if explicit is None:
+        return registered
+    explicit.validate()
+    if explicit.instrument_id != instrument_id:
+        raise CryptoLiquidityCapacityV1Error("instrument_contract_instrument_mismatch")
+    if registered is None:
+        return explicit
+    conflicts = canonical_contract_conflicts(explicit=explicit, registered=registered)
+    if conflicts:
+        raise CryptoLiquidityCapacityV1Error(
+            f"canonical_instrument_contract_conflict:{','.join(conflicts)}"
+        )
+    return explicit
 
 
 def instrument_liquidity_contract_from_specification(
@@ -616,12 +685,29 @@ def complete_liquidity_days(
     minute and no authority here can say which is the bar -- so it fails closed.
     The daily figure is the exact sum of the provider-published quote turnover;
     it is never derived from volume and a price.
+
+    **Every bar must prove the canonical 1-minute close itself.** Since
+    :attr:`CompleteLiquidityDayV1.last_bar_close_at` is used as a causal
+    knowledge clock -- a day may not be used until its final bar has closed --
+    trusting ``bar_close_at`` would let malformed evidence move that clock. A
+    directly-constructed bar opening at 23:59 and claiming to close at 23:59
+    would make the whole day's turnover appear knowable a minute early. This
+    therefore proves ``bar_close_at == bar_open_at + 1 minute`` for every bar
+    before any of it counts, and fails closed otherwise. Nothing is repaired: no
+    replacement close instant is derived and the bar is not silently dropped,
+    because a stored authoritative bar that cannot state its own interval is
+    structurally contradictory evidence, not a gap.
     """
     by_day: dict[date, dict[datetime, tuple[Decimal, datetime]]] = {}
     for bar in bars:
         _require_aware(bar.bar_open_at, "bar_open_at")
         _require_aware(bar.bar_close_at, "bar_close_at")
         opened_at = bar.bar_open_at.astimezone(_UTC)
+        closed_at = bar.bar_close_at.astimezone(_UTC)
+        if closed_at != opened_at + _ONE_MINUTE:
+            raise CryptoLiquidityCapacityV1Error(
+                f"non_canonical_1m_bar_close:{opened_at.isoformat()}:{closed_at.isoformat()}"
+            )
         turnover = bar.turnover
         if turnover is None:
             raise CryptoLiquidityCapacityV1Error("liquidity_day_requires_canonical_turnover")
@@ -650,9 +736,11 @@ def complete_liquidity_days(
         total = Decimal("0")
         last_close_at = None
         for opened_at in sorted(minutes):
-            turnover, closed_at = minutes[opened_at]
+            turnover, bar_closed_at = minutes[opened_at]
             total = total + turnover
-            last_close_at = closed_at if last_close_at is None else max(last_close_at, closed_at)
+            last_close_at = (
+                bar_closed_at if last_close_at is None else max(last_close_at, bar_closed_at)
+            )
         # Unreachable for a complete grid (it holds 1440 bars), narrowed
         # explicitly rather than with `assert`, which is stripped under -O.
         if last_close_at is None:
@@ -1262,13 +1350,11 @@ def evaluate_crypto_liquidity_capacity_v1(
     # summed. A series whose bars disagree is structurally untrustworthy.
     dataset_content_hash = proven_dataset_content_hash(bar_series.bars)
 
-    contract = instrument_contract
-    if contract is not None:
-        contract.validate()
-        if contract.instrument_id != bar_series.instrument_id:
-            raise CryptoLiquidityCapacityV1Error("instrument_contract_instrument_mismatch")
-    else:
-        contract = authorized_instrument_liquidity_contract(bar_series.instrument_id)
+    # The registry wins: an explicit contract for an already-authorized
+    # instrument may restate its canonical identity but never redefine it.
+    contract = resolve_instrument_liquidity_contract(
+        bar_series.instrument_id, instrument_contract
+    )
 
     def evidence(
         *,

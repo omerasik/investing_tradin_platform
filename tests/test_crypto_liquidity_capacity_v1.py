@@ -1235,6 +1235,216 @@ class ContractFromCanonicalSpecificationTests(unittest.TestCase):
         self.assertEqual(wrong.unavailable_reasons, (REASON_INSTRUMENT_BASE_ASSET_MISMATCH,))
 
 
+class CanonicalContractCannotBeOverriddenTests(unittest.TestCase):
+    """A caller may restate an authorized canonical identity, never redefine it."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from trade_platform.bybit_instrument_onboarding import (
+            BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID,
+        )
+
+        cls.canonical_id = BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID
+        cls.registered = BYBIT_BTCUSDT_PERPETUAL_LIQUIDITY_CONTRACT_V1
+
+    def _resolve(self, explicit):
+        return liquidity.resolve_instrument_liquidity_contract(self.canonical_id, explicit)
+
+    def test_explicit_eth_usdc_for_the_canonical_instrument_fails_closed(self) -> None:
+        hijack = replace(self.registered, base_asset="ETH", quote_asset="USDC")
+        with self.assertRaises(CryptoLiquidityCapacityV1Error) as caught:
+            self._resolve(hijack)
+        self.assertIn("canonical_instrument_contract_conflict", str(caught.exception))
+        self.assertIn("base_asset", str(caught.exception))
+        self.assertIn("quote_asset", str(caught.exception))
+
+    def test_explicit_wrong_venue_for_the_canonical_instrument_fails_closed(self) -> None:
+        with self.assertRaises(CryptoLiquidityCapacityV1Error) as caught:
+            self._resolve(replace(self.registered, venue="OTHER"))
+        self.assertIn("canonical_instrument_contract_conflict:venue", str(caught.exception))
+
+    def test_an_identical_economic_identity_is_accepted(self) -> None:
+        # A specification-derived contract legitimately carries a different
+        # provenance reference; only the economic identity is fixed.
+        restated = replace(
+            self.registered, contract_reference="fixture://restated-from-specification"
+        )
+        resolved = self._resolve(restated)
+        self.assertIs(resolved, restated)
+        self.assertEqual(
+            (resolved.venue, resolved.base_asset, resolved.quote_asset),
+            (self.registered.venue, self.registered.base_asset, self.registered.quote_asset),
+        )
+
+    def test_the_canonical_instrument_with_no_explicit_contract_uses_the_registry(self) -> None:
+        resolved = self._resolve(None)
+        self.assertIs(resolved, self.registered)
+        self.assertEqual(
+            (resolved.venue, resolved.base_asset, resolved.quote_asset), ("BYBIT", "BTC", "USDT")
+        )
+
+    def test_an_unregistered_fixture_instrument_still_takes_its_explicit_contract(self) -> None:
+        self.assertIs(
+            liquidity.resolve_instrument_liquidity_contract(INSTRUMENT, CONTRACT), CONTRACT
+        )
+        self.assertIsNone(liquidity.resolve_instrument_liquidity_contract(INSTRUMENT, None))
+
+    def test_a_contract_naming_another_instrument_fails_closed(self) -> None:
+        with self.assertRaises(CryptoLiquidityCapacityV1Error):
+            liquidity.resolve_instrument_liquidity_contract(self.canonical_id, CONTRACT)
+
+    def test_the_evaluator_refuses_the_override_end_to_end(self) -> None:
+        # Bars that consistently claim ETH/USDC plus an explicit contract that
+        # "authorizes" exactly that, for the canonical BTCUSDT instrument: the
+        # registry must still win, so this never reaches AVAILABLE.
+        canonical_bars = [
+            replace(bar, instrument_id=self.canonical_id, volume_asset="ETH", turnover_asset="USDC")
+            for bar in _day_bars(DAYS[0])
+        ]
+        series = replace(
+            _series(canonical_bars), instrument_id=self.canonical_id
+        )
+        run = replace(_run(), instrument_id=self.canonical_id)
+        with self.assertRaises(CryptoLiquidityCapacityV1Error) as caught:
+            evaluate_crypto_liquidity_capacity_v1(
+                bar_series=series,
+                run=run,
+                capital_levels=CAPITAL_LEVELS,
+                policy=POLICY,
+                instrument_contract=replace(
+                    self.registered, base_asset="ETH", quote_asset="USDC"
+                ),
+            )
+        self.assertIn("canonical_instrument_contract_conflict", str(caught.exception))
+
+    def test_conflict_fields_are_reported_deterministically(self) -> None:
+        self.assertEqual(
+            liquidity.canonical_contract_conflicts(
+                explicit=replace(self.registered, venue="OTHER", base_asset="ETH"),
+                registered=self.registered,
+            ),
+            ("venue", "base_asset"),
+        )
+        self.assertEqual(
+            liquidity.canonical_contract_conflicts(
+                explicit=self.registered, registered=self.registered
+            ),
+            (),
+        )
+
+
+class AuthorizedRegistryImmutabilityTests(unittest.TestCase):
+    """The authority registry is read-only, not merely annotated ``Final``."""
+
+    def test_the_registry_cannot_be_mutated_in_place(self) -> None:
+        registry = liquidity.AUTHORIZED_INSTRUMENT_LIQUIDITY_CONTRACTS
+        self.assertNotIsInstance(registry, dict)
+        for mutate in (
+            lambda: registry.__setitem__(INSTRUMENT, CONTRACT),  # type: ignore[attr-defined]
+            lambda: registry.__delitem__(next(iter(registry))),  # type: ignore[attr-defined]
+            lambda: registry.clear(),  # type: ignore[attr-defined]
+            lambda: registry.update({INSTRUMENT: CONTRACT}),  # type: ignore[attr-defined]
+            lambda: registry.pop(next(iter(registry))),  # type: ignore[attr-defined]
+        ):
+            with self.subTest(mutate.__qualname__), self.assertRaises((TypeError, AttributeError)):
+                mutate()
+
+    def test_the_registry_still_reads_normally(self) -> None:
+        from trade_platform.bybit_instrument_onboarding import (
+            BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID,
+        )
+
+        registry = liquidity.AUTHORIZED_INSTRUMENT_LIQUIDITY_CONTRACTS
+        self.assertIn(BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID, registry)
+        self.assertIs(
+            registry[BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID],
+            BYBIT_BTCUSDT_PERPETUAL_LIQUIDITY_CONTRACT_V1,
+        )
+        self.assertNotIn(INSTRUMENT, registry)
+
+
+# ---------------------------------------------------------------------------
+# Blocker 2 (final round) -- the canonical 1m close width is proven, not trusted
+# ---------------------------------------------------------------------------
+
+
+class CanonicalOneMinuteBarCloseTests(unittest.TestCase):
+    """``last_bar_close_at`` is a causal knowledge clock, so its input is proven.
+
+    Without this, a directly-constructed bar opening at 23:59 and claiming to
+    close at 23:59 would make a whole day's turnover appear knowable a minute
+    early, defeating the strict "knowable before T" rule.
+    """
+
+    @staticmethod
+    def _bar_with_close(open_at: datetime, close_at: datetime):
+        return replace(_bar(open_at, turnover=Decimal("1000")), bar_close_at=close_at)
+
+    def _day_with_last_bar_close(self, close_at: datetime):
+        bars = _day_bars(DAYS[0])
+        last_open = bars[-1].bar_open_at
+        self.assertEqual(last_open.hour, 23)
+        self.assertEqual(last_open.minute, 59)
+        bars[-1] = self._bar_with_close(last_open, close_at)
+        return bars
+
+    def test_a_2359_bar_closing_at_next_day_midnight_is_valid(self) -> None:
+        midnight = datetime(DAYS[1].year, DAYS[1].month, DAYS[1].day, tzinfo=UTC)
+        complete, excluded = complete_liquidity_days(self._day_with_last_bar_close(midnight))
+        self.assertEqual(excluded, ())
+        self.assertEqual(complete[0].last_bar_close_at, midnight)
+
+    def test_a_2359_bar_closing_at_its_own_open_is_rejected(self) -> None:
+        last_open = datetime(DAYS[0].year, DAYS[0].month, DAYS[0].day, 23, 59, tzinfo=UTC)
+        with self.assertRaises(CryptoLiquidityCapacityV1Error) as caught:
+            complete_liquidity_days(self._day_with_last_bar_close(last_open))
+        self.assertIn("non_canonical_1m_bar_close", str(caught.exception))
+
+    def test_a_2359_bar_closing_one_second_early_is_rejected(self) -> None:
+        midnight = datetime(DAYS[1].year, DAYS[1].month, DAYS[1].day, tzinfo=UTC)
+        with self.assertRaises(CryptoLiquidityCapacityV1Error):
+            complete_liquidity_days(
+                self._day_with_last_bar_close(midnight - timedelta(seconds=1))
+            )
+
+    def test_a_2359_bar_closing_one_second_late_is_rejected(self) -> None:
+        midnight = datetime(DAYS[1].year, DAYS[1].month, DAYS[1].day, tzinfo=UTC)
+        with self.assertRaises(CryptoLiquidityCapacityV1Error):
+            complete_liquidity_days(
+                self._day_with_last_bar_close(midnight + timedelta(seconds=1))
+            )
+
+    def test_an_arbitrary_middle_of_day_bar_with_a_wrong_close_width_is_rejected(self) -> None:
+        bars = _day_bars(DAYS[0])
+        middle = bars[720]
+        bars[720] = self._bar_with_close(
+            middle.bar_open_at, middle.bar_open_at + timedelta(minutes=5)
+        )
+        with self.assertRaises(CryptoLiquidityCapacityV1Error) as caught:
+            complete_liquidity_days(bars)
+        self.assertIn("non_canonical_1m_bar_close", str(caught.exception))
+
+    def test_a_malformed_close_never_yields_capacity_evidence(self) -> None:
+        last_open = datetime(DAYS[0].year, DAYS[0].month, DAYS[0].day, 23, 59, tzinfo=UTC)
+        bars = self._day_with_last_bar_close(last_open) + _day_bars(DAYS[1]) + _day_bars(DAYS[2])
+        with self.assertRaises(CryptoLiquidityCapacityV1Error):
+            _evaluate_capacity(
+                bar_series=_series(bars),
+                run=_run(),
+                capital_levels=CAPITAL_LEVELS,
+                policy=POLICY,
+            )
+
+    def test_a_naive_close_timestamp_is_rejected(self) -> None:
+        last_open = datetime(DAYS[0].year, DAYS[0].month, DAYS[0].day, 23, 59, tzinfo=UTC)
+        with self.assertRaises(CryptoLiquidityCapacityV1Error):
+            complete_liquidity_days(
+                self._day_with_last_bar_close(
+                    (last_open + timedelta(minutes=1)).replace(tzinfo=None)
+                )
+            )
+
+
 # ---------------------------------------------------------------------------
 # Blocker 3 -- exactly one proven dataset content hash
 # ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ from trade_platform.crypto_basis_mean_reversion_v1 import (
 )
 from trade_platform.crypto_instruments import CryptoInstrumentKind
 from trade_platform.crypto_liquidity_capacity_v1 import (
+    BYBIT_BTCUSDT_PERPETUAL_LIQUIDITY_CONTRACT_V1,
     REASON_MISSING_CANONICAL_QUOTE_TURNOVER,
     AuthorizedInstrumentLiquidityContractV1,
     CryptoLiquidityCapacityV1Error,
@@ -1746,6 +1747,57 @@ class CapacityPolicyPlumbingTests(unittest.TestCase):
         )
         with self.assertRaises(OpenToOpenValidationOrchestrationV1Error):
             replace(self.without_policy, capacity_instrument_contract=contract).validate()
+
+    def _canonical_instrument_request(self):
+        """The same fixture request, retargeted at the canonical Bybit instrument.
+
+        Only the instrument identity is swapped -- every bar, the span and the
+        protocol are the fixture's own -- which is enough to reach the request's
+        canonical-registry check.
+        """
+        from trade_platform.bybit_instrument_onboarding import (
+            BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID,
+        )
+
+        series = self.without_policy.evidence.bar_series
+        retargeted = replace(
+            series,
+            instrument_id=BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID,
+            bars=tuple(
+                replace(bar, instrument_id=BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID)
+                for bar in series.bars
+            ),
+        )
+        request = replace(
+            self.without_policy,
+            evidence=replace(self.without_policy.evidence, bar_series=retargeted),
+        )
+        return BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID, request
+
+    def test_request_data_cannot_self_authorize_another_canonical_contract(self) -> None:
+        canonical_id, request = self._canonical_instrument_request()
+        hijack = AuthorizedInstrumentLiquidityContractV1(
+            instrument_id=canonical_id,
+            venue="OTHER",
+            base_asset="ETH",
+            quote_asset="USDC",
+            contract_reference="fixture://attempted-override",
+        )
+        with self.assertRaises(OpenToOpenValidationOrchestrationV1Error) as caught:
+            replace(request, capacity_instrument_contract=hijack).validate()
+        message = str(caught.exception)
+        self.assertIn("capacity_instrument_contract_conflicts_canonical_registry", message)
+        for field in ("venue", "base_asset", "quote_asset"):
+            self.assertIn(field, message)
+
+    def test_a_restated_canonical_contract_is_accepted_by_the_request(self) -> None:
+        canonical_id, request = self._canonical_instrument_request()
+        restated = replace(
+            BYBIT_BTCUSDT_PERPETUAL_LIQUIDITY_CONTRACT_V1,
+            contract_reference="fixture://restated-canonical-contract",
+        )
+        self.assertEqual(restated.instrument_id, canonical_id)
+        replace(request, capacity_instrument_contract=restated).validate()
 
     def test_invalid_capacity_policy_rejected_by_the_request(self) -> None:
         with self.assertRaises(CryptoLiquidityCapacityV1Error):

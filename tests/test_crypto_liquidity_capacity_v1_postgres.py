@@ -426,6 +426,104 @@ class CanonicalBybitLiquidityCapacityPostgresTests(unittest.TestCase):
         )
         self.assertIsNone(evidence.baseline_envelope)
 
+    def test_a_caller_cannot_override_the_canonical_registry_contract(self) -> None:
+        from dataclasses import replace
+
+        from trade_platform.crypto_liquidity_capacity_v1 import (
+            BYBIT_BTCUSDT_PERPETUAL_LIQUIDITY_CONTRACT_V1,
+            CryptoLiquidityCapacityV1Error,
+            evaluate_crypto_liquidity_capacity_v1,
+        )
+
+        run = self._run(self.series, self._midnight(COMPLETE_DAYS[2]) + timedelta(minutes=5))
+        for label, hijack in (
+            (
+                "assets",
+                replace(
+                    BYBIT_BTCUSDT_PERPETUAL_LIQUIDITY_CONTRACT_V1,
+                    base_asset="ETH",
+                    quote_asset="USDC",
+                ),
+            ),
+            ("venue", replace(BYBIT_BTCUSDT_PERPETUAL_LIQUIDITY_CONTRACT_V1, venue="OTHER")),
+        ):
+            with self.subTest(label), self.assertRaises(CryptoLiquidityCapacityV1Error) as caught:
+                evaluate_crypto_liquidity_capacity_v1(
+                    bar_series=self.series,
+                    run=run,
+                    capital_levels=(Decimal("1000000"),),
+                    policy=self._policy(),
+                    instrument_contract=hijack,
+                )
+            self.assertIn("canonical_instrument_contract_conflict", str(caught.exception))
+
+    def test_a_specification_derived_contract_restates_the_canonical_identity(self) -> None:
+        from trade_platform.crypto_instruments import PostgresCryptoInstrumentAuthority
+        from trade_platform.crypto_liquidity_capacity_v1 import (
+            STATUS_AVAILABLE,
+            evaluate_crypto_liquidity_capacity_v1,
+            instrument_liquidity_contract_from_specification,
+        )
+
+        specification = PostgresCryptoInstrumentAuthority(self.database).get_specification(
+            INSTRUMENT_ID, known_at=DATASET_CREATED_AT
+        )
+        derived = instrument_liquidity_contract_from_specification(
+            specification, contract_reference="fixture://restated-from-postgres-specification"
+        )
+        evidence = evaluate_crypto_liquidity_capacity_v1(
+            bar_series=self.series,
+            run=self._run(self.series, self._midnight(COMPLETE_DAYS[2]) + timedelta(minutes=5)),
+            capital_levels=(Decimal("1000000"),),
+            policy=self._policy(),
+            instrument_contract=derived,
+        )
+        self.assertEqual(evidence.status, STATUS_AVAILABLE)
+        self.assertEqual(evidence.instrument_contract_reference, derived.contract_reference)
+        self.assertEqual(evidence.volume_asset, "BTC")
+        self.assertEqual(evidence.turnover_asset, "USDT")
+
+    def test_persisted_bars_prove_the_canonical_one_minute_close(self) -> None:
+        from dataclasses import replace
+
+        from trade_platform.crypto_liquidity_capacity_v1 import (
+            CryptoLiquidityCapacityV1Error,
+            complete_liquidity_days,
+            evaluate_crypto_liquidity_capacity_v1,
+        )
+
+        # Every bar the sealed dataset produced already closes exactly one minute
+        # after it opens ...
+        complete, excluded = complete_liquidity_days(self.series.bars)
+        self.assertEqual(excluded, ())
+        self.assertEqual(len(complete), len(COMPLETE_DAYS))
+        for day, expected_close in zip(
+            complete,
+            [self._midnight(day) + timedelta(days=1) for day in COMPLETE_DAYS],
+            strict=True,
+        ):
+            self.assertEqual(day.last_bar_close_at, expected_close)
+
+        # ... and a projected bar whose close is moved back to its own open --
+        # which would make the whole day knowable a minute early -- fails closed.
+        bars = list(self.series.bars)
+        last_index = max(
+            range(len(bars)), key=lambda index: bars[index].bar_open_at
+        )
+        bars[last_index] = replace(
+            bars[last_index], bar_close_at=bars[last_index].bar_open_at
+        )
+        with self.assertRaises(CryptoLiquidityCapacityV1Error) as caught:
+            evaluate_crypto_liquidity_capacity_v1(
+                bar_series=replace(self.series, bars=tuple(bars)),
+                run=self._run(
+                    self.series, self._midnight(COMPLETE_DAYS[2]) + timedelta(minutes=5)
+                ),
+                capital_levels=(Decimal("1000000"),),
+                policy=self._policy(),
+            )
+        self.assertIn("non_canonical_1m_bar_close", str(caught.exception))
+
     def test_one_divergent_dataset_content_hash_fails_closed(self) -> None:
         from dataclasses import replace
 

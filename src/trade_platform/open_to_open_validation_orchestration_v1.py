@@ -24,7 +24,9 @@ from .crypto_liquidity_capacity_v1 import (
     CryptoLiquidityCapacityEvidenceV1,
     CryptoReducedLiquidityStressEvidenceV1,
     LiquidityCapacityPolicyV1,
+    authorized_instrument_liquidity_contract,
     build_reduced_liquidity_stress_evidence_v1,
+    canonical_contract_conflicts,
     evaluate_crypto_liquidity_capacity_v1,
 )
 from .feature_authority import FeatureMaterializationV2
@@ -1412,10 +1414,26 @@ class OpenToOpenProfessionalValidationRequestV1:
             )
         if self.capacity_instrument_contract is not None:
             self.capacity_instrument_contract.validate()
-            if self.capacity_instrument_contract.instrument_id != self.evidence.bar_series.instrument_id:
+            instrument_id = self.evidence.bar_series.instrument_id
+            if self.capacity_instrument_contract.instrument_id != instrument_id:
                 raise OpenToOpenValidationOrchestrationV1Error(
                     "capacity_instrument_contract_instrument_mismatch"
                 )
+            # Request data must never self-authorize a different canonical
+            # economic identity for an instrument this repository already
+            # authorized independently. The evaluator enforces this too; failing
+            # at request validation means a conflicting request cannot even start
+            # a professional-validation run.
+            registered = authorized_instrument_liquidity_contract(instrument_id)
+            if registered is not None:
+                conflicts = canonical_contract_conflicts(
+                    explicit=self.capacity_instrument_contract, registered=registered
+                )
+                if conflicts:
+                    raise OpenToOpenValidationOrchestrationV1Error(
+                        f"capacity_instrument_contract_conflicts_canonical_registry:"
+                        f"{','.join(conflicts)}"
+                    )
 
     def content_hash(self) -> str:
         # The Module 3B.3 fields are contributed only when they are actually
