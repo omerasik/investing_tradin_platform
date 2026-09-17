@@ -20,6 +20,7 @@ from .crypto_basis_mean_reversion_v1 import (
 )
 from .crypto_instruments import CryptoInstrumentKind
 from .crypto_liquidity_capacity_v1 import (
+    AuthorizedInstrumentLiquidityContractV1,
     CryptoLiquidityCapacityEvidenceV1,
     CryptoReducedLiquidityStressEvidenceV1,
     LiquidityCapacityPolicyV1,
@@ -1350,6 +1351,11 @@ class OpenToOpenProfessionalValidationRequestV1:
     #: answer, not a failure.
     capacity_policy: LiquidityCapacityPolicyV1 | None = None
     capacity_capital_levels: tuple[Decimal, ...] = ()
+    #: The authorized base/quote identity the bar series' typed semantics must
+    #: prove against. Omitted means "use the frozen registry of already-authorized
+    #: instruments"; an instrument outside it then stays UNAVAILABLE rather than
+    #: having its assets guessed.
+    capacity_instrument_contract: AuthorizedInstrumentLiquidityContractV1 | None = None
 
     def validate(self) -> None:
         self.evidence.feature_bundle.validate()
@@ -1404,9 +1410,15 @@ class OpenToOpenProfessionalValidationRequestV1:
             raise OpenToOpenValidationOrchestrationV1Error(
                 "capacity_capital_levels_must_be_sorted_unique"
             )
+        if self.capacity_instrument_contract is not None:
+            self.capacity_instrument_contract.validate()
+            if self.capacity_instrument_contract.instrument_id != self.evidence.bar_series.instrument_id:
+                raise OpenToOpenValidationOrchestrationV1Error(
+                    "capacity_instrument_contract_instrument_mismatch"
+                )
 
     def content_hash(self) -> str:
-        # The two Module 3B.3 fields are contributed only when they are actually
+        # The Module 3B.3 fields are contributed only when they are actually
         # supplied, so a request written before this phase hashes to exactly the
         # same value it always did.
         capacity: dict[str, Any] = {}
@@ -1414,6 +1426,10 @@ class OpenToOpenProfessionalValidationRequestV1:
             capacity["capacity_policy_content_hash"] = self.capacity_policy.content_hash()
         if self.capacity_capital_levels:
             capacity["capacity_capital_levels"] = self.capacity_capital_levels
+        if self.capacity_instrument_contract is not None:
+            capacity["capacity_instrument_contract_content_hash"] = (
+                self.capacity_instrument_contract.content_hash()
+            )
         return _content_hash(
             {
                 **capacity,
@@ -1886,6 +1902,7 @@ def run_open_to_open_professional_validation_v1(
         run=baseline_run,
         capital_levels=request.capacity_capital_levels,
         policy=request.capacity_policy,
+        instrument_contract=request.capacity_instrument_contract,
     )
     reduced_liquidity = build_reduced_liquidity_stress_evidence_v1(capacity=capacity)
     execution_realism = build_execution_realism_blocked_evidence_v1(run=baseline_run)

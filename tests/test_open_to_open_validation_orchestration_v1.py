@@ -17,6 +17,7 @@ from trade_platform.crypto_basis_mean_reversion_v1 import (
 from trade_platform.crypto_instruments import CryptoInstrumentKind
 from trade_platform.crypto_liquidity_capacity_v1 import (
     REASON_MISSING_CANONICAL_QUOTE_TURNOVER,
+    AuthorizedInstrumentLiquidityContractV1,
     CryptoLiquidityCapacityV1Error,
     LiquidityCapacityPolicyV1,
 )
@@ -1713,6 +1714,38 @@ class CapacityPolicyPlumbingTests(unittest.TestCase):
                     capacity_policy=self.policy,
                     capacity_capital_levels=levels,
                 ).validate()
+
+    def test_instrument_contract_is_optional_and_bound_to_request_identity(self) -> None:
+        contract = AuthorizedInstrumentLiquidityContractV1(
+            instrument_id=INSTRUMENT,
+            venue="TESTFIXTUREVENUE",
+            base_asset="BTC",
+            quote_asset="USDT",
+            contract_reference="fixture://orchestration-instrument-contract-v1",
+        )
+        with_contract = replace(self.without_policy, capacity_instrument_contract=contract)
+        with_contract.validate()
+        self.assertNotEqual(
+            with_contract.content_hash(), self.without_policy.content_hash()
+        )
+        result = run_open_to_open_professional_validation_v1(with_contract)
+        # The contract is now known, so the reason is the one that actually
+        # describes these bars: they carry no typed semantics at all.
+        self.assertEqual(result.capacity.status, STATUS_UNAVAILABLE)
+        self.assertEqual(
+            result.capacity.unavailable_reasons, (REASON_MISSING_CANONICAL_QUOTE_TURNOVER,)
+        )
+
+    def test_instrument_contract_for_another_instrument_rejected(self) -> None:
+        contract = AuthorizedInstrumentLiquidityContractV1(
+            instrument_id="TESTFIXTURE:3J2B2B2:ETHUSDT:PERP",
+            venue="TESTFIXTUREVENUE",
+            base_asset="ETH",
+            quote_asset="USDT",
+            contract_reference="fixture://orchestration-instrument-contract-v1",
+        )
+        with self.assertRaises(OpenToOpenValidationOrchestrationV1Error):
+            replace(self.without_policy, capacity_instrument_contract=contract).validate()
 
     def test_invalid_capacity_policy_rejected_by_the_request(self) -> None:
         with self.assertRaises(CryptoLiquidityCapacityV1Error):

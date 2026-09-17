@@ -27,14 +27,18 @@ from trade_platform.crypto_basis_mean_reversion_v1 import (
     CryptoBasisMeanReversionDefinitionV1,
 )
 from trade_platform.crypto_liquidity_capacity_v1 import (
+    BYBIT_BTCUSDT_PERPETUAL_LIQUIDITY_CONTRACT_V1,
     COMPLETE_UTC_DAY_BAR_COUNT,
     CRYPTO_LIQUIDITY_BASIS,
     CRYPTO_LIQUIDITY_SEMANTIC_VERSION,
     EVENT_INSUFFICIENT_PRIOR_COMPLETE_DAYS,
     EXCLUDED_DAY_INCOMPLETE_MINUTE_GRID,
+    REASON_INSTRUMENT_BASE_ASSET_MISMATCH,
+    REASON_INSTRUMENT_QUOTE_ASSET_MISMATCH,
     REASON_INSUFFICIENT_COMPLETE_LIQUIDITY_DAYS,
     REASON_INSUFFICIENT_PRIOR_LIQUIDITY_HISTORY,
     REASON_MISSING_AUTHORIZED_CAPACITY_POLICY,
+    REASON_MISSING_AUTHORIZED_INSTRUMENT_CONTRACT,
     REASON_MISSING_CANONICAL_QUOTE_TURNOVER,
     REASON_MIXED_TURNOVER_ASSET,
     REASON_MIXED_VOLUME_SEMANTIC_VERSION,
@@ -44,11 +48,14 @@ from trade_platform.crypto_liquidity_capacity_v1 import (
     STATUS_AVAILABLE,
     STATUS_BLOCKED,
     STATUS_UNAVAILABLE,
+    AuthorizedInstrumentLiquidityContractV1,
     CryptoLiquidityCapacityV1Error,
     LiquidityCapacityPolicyV1,
     build_reduced_liquidity_stress_evidence_v1,
     complete_liquidity_days,
     evaluate_crypto_liquidity_capacity_v1,
+    instrument_liquidity_contract_from_specification,
+    proven_dataset_content_hash,
 )
 from trade_platform.ohlcv_volume_semantics import BarVolumeUnit
 from trade_platform.signed_research_exposure_v2 import SignedResearchSignalObservationV2
@@ -94,6 +101,18 @@ POLICY = LiquidityCapacityPolicyV1(
     reduced_liquidity_multipliers=(Decimal("0.25"), Decimal("0.50")),
 )
 CAPITAL_LEVELS = (Decimal("1000000"), Decimal("5000000"))
+
+#: The authorized base/quote identity for this file's fixture instrument. The
+#: fixture instrument is deliberately NOT in the module's frozen registry, so
+#: every evaluation here has to state its authorization explicitly -- which is
+#: exactly the property Blocker 2 asks for.
+CONTRACT = AuthorizedInstrumentLiquidityContractV1(
+    instrument_id=INSTRUMENT,
+    venue="TESTFIXTUREVENUE",
+    base_asset="BTC",
+    quote_asset="USDT",
+    contract_reference="fixture://instrument-liquidity-contract/3b3-v1",
+)
 
 #: An independent recomputation context, declared here rather than imported from
 #: the module, so the determinism assertions do not merely agree with the
@@ -157,6 +176,12 @@ def _day_bars(day: date, *, minutes: int = COMPLETE_UTC_DAY_BAR_COUNT, **overrid
         _bar(midnight + index * timedelta(minutes=1), turnover=turnover, **overrides)  # type: ignore[arg-type]
         for index in range(minutes)
     ]
+
+
+def _evaluate_capacity(**kwargs: object):
+    """Every evaluation in this file states its instrument authorization."""
+    kwargs.setdefault("instrument_contract", CONTRACT)
+    return evaluate_crypto_liquidity_capacity_v1(**kwargs)  # type: ignore[arg-type]
 
 
 def _series(bars, *, dataset_version_id=DATASET_ID) -> AuthoritativeTradableBarSeriesV2:
@@ -262,7 +287,7 @@ class _FiveCompleteDaysFixture(unittest.TestCase):
 
 class CanonicalTurnoverEligibilityTests(unittest.TestCase):
     def _evaluate(self, series, *, policy=POLICY):
-        return evaluate_crypto_liquidity_capacity_v1(
+        return _evaluate_capacity(
             bar_series=series,
             run=_run(),
             capital_levels=CAPITAL_LEVELS,
@@ -349,7 +374,7 @@ class CanonicalTurnoverEligibilityTests(unittest.TestCase):
         # rather than quietly measuring one dataset's trades against another's
         # liquidity.
         with self.assertRaises(CryptoLiquidityCapacityV1Error):
-            evaluate_crypto_liquidity_capacity_v1(
+            _evaluate_capacity(
                 bar_series=_series(_day_bars(DAYS[0])),
                 run=_run(dataset_version_id=OTHER_DATASET_ID),
                 capital_levels=CAPITAL_LEVELS,
@@ -358,7 +383,7 @@ class CanonicalTurnoverEligibilityTests(unittest.TestCase):
 
     def test_mixed_instrument_fails_closed(self) -> None:
         with self.assertRaises(CryptoLiquidityCapacityV1Error):
-            evaluate_crypto_liquidity_capacity_v1(
+            _evaluate_capacity(
                 bar_series=_series(_day_bars(DAYS[0])),
                 run=_run(instrument_id="TESTFIXTURE:3B3:ETHUSDT:PERP"),
                 capital_levels=CAPITAL_LEVELS,
@@ -372,7 +397,7 @@ class CanonicalTurnoverEligibilityTests(unittest.TestCase):
 
     def test_unsupported_interval_is_unavailable(self) -> None:
         series = replace(_series(_day_bars(DAYS[0], minutes=3)), interval="5m")
-        evidence = evaluate_crypto_liquidity_capacity_v1(
+        evidence = _evaluate_capacity(
             bar_series=replace(series, bars=()),
             run=_run(),
             capital_levels=CAPITAL_LEVELS,
@@ -508,7 +533,7 @@ class LiquidityCapacityPolicyTests(unittest.TestCase):
 
 class CausalTrailingLiquidityTests(_FiveCompleteDaysFixture):
     def _evidence(self, *, policy=POLICY, run=None, capital=CAPITAL_LEVELS):
-        return evaluate_crypto_liquidity_capacity_v1(
+        return _evaluate_capacity(
             bar_series=self.series,
             run=self.research_run if run is None else run,
             capital_levels=capital,
@@ -578,7 +603,7 @@ class CausalTrailingLiquidityTests(_FiveCompleteDaysFixture):
 
     def test_no_complete_day_at_all_is_unavailable_even_without_a_policy(self) -> None:
         pilot = _series(_day_bars(DAYS[3], minutes=30))
-        evidence = evaluate_crypto_liquidity_capacity_v1(
+        evidence = _evaluate_capacity(
             bar_series=pilot, run=self.research_run, capital_levels=CAPITAL_LEVELS, policy=None
         )
         self.assertEqual(evidence.status, STATUS_UNAVAILABLE)
@@ -594,7 +619,7 @@ class CausalTrailingLiquidityTests(_FiveCompleteDaysFixture):
 
 class ExplicitPolicyRequirementTests(_FiveCompleteDaysFixture):
     def test_capacity_is_blocked_without_an_explicit_policy(self) -> None:
-        evidence = evaluate_crypto_liquidity_capacity_v1(
+        evidence = _evaluate_capacity(
             bar_series=self.series, run=self.research_run, capital_levels=CAPITAL_LEVELS, policy=None
         )
         self.assertEqual(evidence.status, STATUS_BLOCKED)
@@ -617,7 +642,7 @@ class ExplicitPolicyRequirementTests(_FiveCompleteDaysFixture):
             (Decimal("1"), Decimal("1")),
         ):
             with self.subTest(str(levels)), self.assertRaises(CryptoLiquidityCapacityV1Error):
-                evaluate_crypto_liquidity_capacity_v1(
+                _evaluate_capacity(
                     bar_series=self.series, run=self.research_run, capital_levels=levels, policy=POLICY
                 )
 
@@ -631,7 +656,7 @@ class ParticipationAndCapacityTests(_FiveCompleteDaysFixture):
     @classmethod
     def setUpClass(cls) -> None:
         super().setUpClass()
-        cls.evidence = evaluate_crypto_liquidity_capacity_v1(
+        cls.evidence = _evaluate_capacity(
             bar_series=cls.series, run=cls.research_run, capital_levels=CAPITAL_LEVELS, policy=POLICY
         )
 
@@ -710,7 +735,7 @@ class ParticipationAndCapacityTests(_FiveCompleteDaysFixture):
                 for bar in self.series.bars
             ]
         )
-        thin = evaluate_crypto_liquidity_capacity_v1(
+        thin = _evaluate_capacity(
             bar_series=thin_series, run=self.research_run, capital_levels=CAPITAL_LEVELS, policy=POLICY
         )
         fat_envelope = self.evidence.baseline_envelope
@@ -754,7 +779,7 @@ class ReducedLiquidityStressTests(_FiveCompleteDaysFixture):
     @classmethod
     def setUpClass(cls) -> None:
         super().setUpClass()
-        cls.evidence = evaluate_crypto_liquidity_capacity_v1(
+        cls.evidence = _evaluate_capacity(
             bar_series=cls.series, run=cls.research_run, capital_levels=CAPITAL_LEVELS, policy=POLICY
         )
 
@@ -805,7 +830,7 @@ class ReducedLiquidityStressTests(_FiveCompleteDaysFixture):
         )
 
     def test_stress_inherits_an_unavailable_capacity_status(self) -> None:
-        legacy = evaluate_crypto_liquidity_capacity_v1(
+        legacy = _evaluate_capacity(
             bar_series=_series(_day_bars(DAYS[0], typed=False)),
             run=_run(),
             capital_levels=CAPITAL_LEVELS,
@@ -824,7 +849,7 @@ class ReducedLiquidityStressTests(_FiveCompleteDaysFixture):
 
 class EvidenceIdentityTests(_FiveCompleteDaysFixture):
     def _evaluate(self, *, series=None, policy=POLICY, capital=CAPITAL_LEVELS, run=None):
-        return evaluate_crypto_liquidity_capacity_v1(
+        return _evaluate_capacity(
             bar_series=self.series if series is None else series,
             run=self.research_run if run is None else run,
             capital_levels=capital,
@@ -895,6 +920,414 @@ class EvidenceIdentityTests(_FiveCompleteDaysFixture):
             [DAILY_TURNOVER[day] for day in DAYS],
         )
         self.assertEqual(evidence.capital_levels, CAPITAL_LEVELS)
+
+
+# ---------------------------------------------------------------------------
+# Blocker 1 -- AVAILABLE requires complete order-event coverage
+# ---------------------------------------------------------------------------
+
+
+class AvailableRequiresFullOrderCoverageTests(_FiveCompleteDaysFixture):
+    """A capacity artifact covers the whole required order path or it is not AVAILABLE.
+
+    Trade A opens on the second complete day, where only one prior complete day
+    exists and the policy demands two. Trade B opens on the fourth and has ample
+    prior history. Measuring only B would publish an envelope whose "maximum
+    participation" is not the maximum the strategy actually required.
+    """
+
+    EARLY_ENTRY = datetime(DAYS[1].year, DAYS[1].month, DAYS[1].day, 0, 5, tzinfo=UTC)
+    LATE_ENTRY = datetime(DAYS[3].year, DAYS[3].month, DAYS[3].day, 0, 5, tzinfo=UTC)
+
+    def _evidence(self, trades):
+        return _evaluate_capacity(
+            bar_series=self.series,
+            run=_run(trades=trades),
+            capital_levels=CAPITAL_LEVELS,
+            policy=POLICY,
+        )
+
+    def _mixed(self):
+        return self._evidence(
+            (
+                (self.EARLY_ENTRY, self.EARLY_ENTRY + timedelta(minutes=2), EXPOSURE),
+                (self.LATE_ENTRY, self.LATE_ENTRY + timedelta(minutes=2), EXPOSURE),
+            )
+        )
+
+    def test_one_uncovered_event_makes_the_whole_artifact_unavailable(self) -> None:
+        evidence = self._mixed()
+        self.assertEqual(evidence.status, STATUS_UNAVAILABLE)
+        self.assertEqual(
+            evidence.unavailable_reasons, (REASON_INSUFFICIENT_PRIOR_LIQUIDITY_HISTORY,)
+        )
+
+    def test_no_envelope_is_published_from_the_measurable_subset(self) -> None:
+        evidence = self._mixed()
+        self.assertIsNone(evidence.baseline_envelope)
+        self.assertEqual(evidence.stress_envelopes, ())
+
+    def test_order_event_diagnostics_name_exactly_which_events_are_missing(self) -> None:
+        evidence = self._mixed()
+        self.assertEqual(len(evidence.order_events), 4)
+        self.assertEqual(evidence.required_order_event_count, 4)
+        self.assertEqual(evidence.uncovered_order_event_count, 2)
+        by_day = {
+            event.order_at: (event.trailing_liquidity, event.unavailable_reason)
+            for event in evidence.order_events
+        }
+        for order_at, (reference, reason) in by_day.items():
+            if order_at.date() == DAYS[1]:
+                self.assertIsNone(reference)
+                self.assertEqual(reason, EVENT_INSUFFICIENT_PRIOR_COMPLETE_DAYS)
+            else:
+                self.assertIsNotNone(reference)
+                self.assertIsNone(reason)
+
+    def test_the_later_trade_alone_would_have_been_available(self) -> None:
+        # Proves the UNAVAILABLE above is caused by the uncovered early trade,
+        # not by anything wrong with the later one.
+        evidence = self._evidence(
+            ((self.LATE_ENTRY, self.LATE_ENTRY + timedelta(minutes=2), EXPOSURE),)
+        )
+        self.assertEqual(evidence.status, STATUS_AVAILABLE)
+        self.assertEqual(evidence.uncovered_order_event_count, 0)
+
+    def test_capacity_does_not_clear_the_orchestration_capacity_blocker(self) -> None:
+        evidence = self._mixed()
+        # This mirrors exactly what the orchestration does with a capacity
+        # artifact: a non-AVAILABLE status contributes blocking reasons.
+        blocking = [
+            f"CAPACITY_{evidence.status}:{reason}"
+            for reason in evidence.unavailable_reasons
+            if evidence.status != STATUS_AVAILABLE
+        ]
+        self.assertEqual(
+            blocking, [f"CAPACITY_{STATUS_UNAVAILABLE}:{REASON_INSUFFICIENT_PRIOR_LIQUIDITY_HISTORY}"]
+        )
+
+    def test_available_implies_the_full_coverage_invariants(self) -> None:
+        evidence = self._evidence(((ENTRY_AT, EXIT_AT, EXPOSURE),))
+        self.assertEqual(evidence.status, STATUS_AVAILABLE)
+        envelope = evidence.baseline_envelope
+        self.assertIsNotNone(envelope)
+        assert envelope is not None
+        self.assertGreater(evidence.required_order_event_count, 0)
+        self.assertEqual(evidence.uncovered_order_event_count, 0)
+        for item in (envelope, *evidence.stress_envelopes):
+            self.assertTrue(item.capital_ceiling_covers_every_order_event)
+            for level in item.levels:
+                self.assertEqual(level.unavailable_order_event_count, 0)
+                self.assertEqual(level.evaluated_order_event_count, 2)
+
+
+# ---------------------------------------------------------------------------
+# Blocker 2 -- assets bound to an authorized instrument contract
+# ---------------------------------------------------------------------------
+
+
+class InstrumentContractBindingTests(unittest.TestCase):
+    """Intra-series agreement is not enough: the assets must be the right ones."""
+
+    def _evaluate(self, bars, *, contract=CONTRACT):
+        return _evaluate_capacity(
+            bar_series=_series(bars),
+            run=_run(),
+            capital_levels=CAPITAL_LEVELS,
+            policy=POLICY,
+            instrument_contract=contract,
+        )
+
+    def test_consistently_wrong_base_asset_fails_closed(self) -> None:
+        evidence = self._evaluate(_day_bars(DAYS[0], volume_asset="ETH"))
+        self.assertEqual(evidence.status, STATUS_UNAVAILABLE)
+        self.assertEqual(evidence.unavailable_reasons, (REASON_INSTRUMENT_BASE_ASSET_MISMATCH,))
+        self.assertIsNone(evidence.baseline_envelope)
+
+    def test_consistently_wrong_quote_asset_fails_closed(self) -> None:
+        evidence = self._evaluate(_day_bars(DAYS[0], turnover_asset="USDC"))
+        self.assertEqual(evidence.status, STATUS_UNAVAILABLE)
+        self.assertEqual(evidence.unavailable_reasons, (REASON_INSTRUMENT_QUOTE_ASSET_MISMATCH,))
+        self.assertIsNone(evidence.baseline_envelope)
+
+    def test_consistently_wrong_on_both_sides_fails_closed(self) -> None:
+        evidence = self._evaluate(
+            _day_bars(DAYS[0], volume_asset="ETH", turnover_asset="USDC")
+        )
+        self.assertEqual(evidence.status, STATUS_UNAVAILABLE)
+        self.assertEqual(
+            set(evidence.unavailable_reasons),
+            {REASON_INSTRUMENT_QUOTE_ASSET_MISMATCH, REASON_INSTRUMENT_BASE_ASSET_MISMATCH},
+        )
+        self.assertIsNone(evidence.baseline_envelope)
+
+    def test_correct_btc_usdt_is_accepted(self) -> None:
+        evidence = self._evaluate(_day_bars(DAYS[0]))
+        self.assertEqual(evidence.volume_asset, "BTC")
+        self.assertEqual(evidence.turnover_asset, "USDT")
+        self.assertEqual(evidence.instrument_contract_reference, CONTRACT.contract_reference)
+        self.assertEqual(evidence.instrument_contract_content_hash, CONTRACT.content_hash())
+        self.assertEqual(evidence.instrument_venue, CONTRACT.venue)
+        self.assertNotIn(REASON_INSTRUMENT_BASE_ASSET_MISMATCH, evidence.unavailable_reasons)
+        self.assertNotIn(REASON_INSTRUMENT_QUOTE_ASSET_MISMATCH, evidence.unavailable_reasons)
+
+    def test_an_unregistered_instrument_with_no_contract_is_unavailable(self) -> None:
+        evidence = evaluate_crypto_liquidity_capacity_v1(
+            bar_series=_series(_day_bars(DAYS[0])),
+            run=_run(),
+            capital_levels=CAPITAL_LEVELS,
+            policy=POLICY,
+        )
+        self.assertEqual(evidence.status, STATUS_UNAVAILABLE)
+        self.assertEqual(
+            evidence.unavailable_reasons, (REASON_MISSING_AUTHORIZED_INSTRUMENT_CONTRACT,)
+        )
+        self.assertIsNone(evidence.instrument_contract_content_hash)
+
+    def test_legacy_bars_still_report_the_data_gap_not_the_contract_gap(self) -> None:
+        evidence = evaluate_crypto_liquidity_capacity_v1(
+            bar_series=_series(_day_bars(DAYS[0], typed=False)),
+            run=_run(),
+            capital_levels=CAPITAL_LEVELS,
+            policy=POLICY,
+        )
+        self.assertEqual(
+            evidence.unavailable_reasons, (REASON_MISSING_CANONICAL_QUOTE_TURNOVER,)
+        )
+
+    def test_a_contract_for_another_instrument_fails_closed(self) -> None:
+        with self.assertRaises(CryptoLiquidityCapacityV1Error):
+            self._evaluate(
+                _day_bars(DAYS[0]),
+                contract=replace(CONTRACT, instrument_id="TESTFIXTURE:3B3:ETHUSDT:PERP"),
+            )
+
+    def test_assets_are_never_parsed_out_of_the_instrument_id_string(self) -> None:
+        # The fixture instrument is literally named "...BTCUSDT:PERP", yet an
+        # authorization declaring ETH/USDC is what governs -- proving the string
+        # is never consulted in either direction.
+        eth_contract = replace(CONTRACT, base_asset="ETH", quote_asset="USDC")
+        evidence = self._evaluate(
+            _day_bars(DAYS[0], volume_asset="ETH", turnover_asset="USDC"),
+            contract=eth_contract,
+        )
+        self.assertNotIn(REASON_INSTRUMENT_BASE_ASSET_MISMATCH, evidence.unavailable_reasons)
+        self.assertNotIn(REASON_INSTRUMENT_QUOTE_ASSET_MISMATCH, evidence.unavailable_reasons)
+        self.assertEqual(evidence.volume_asset, "ETH")
+
+    def test_invalid_contracts_are_rejected(self) -> None:
+        for changed in (
+            replace(CONTRACT, instrument_id=" "),
+            replace(CONTRACT, venue=" "),
+            replace(CONTRACT, contract_reference=" "),
+            replace(CONTRACT, base_asset="btc"),
+            replace(CONTRACT, quote_asset="U"),
+            replace(CONTRACT, base_asset="USDT"),
+        ):
+            with self.subTest(changed.base_asset), self.assertRaises(
+                CryptoLiquidityCapacityV1Error
+            ):
+                changed.validate()
+
+
+class CanonicalBybitContractRegistryTests(unittest.TestCase):
+    def test_frozen_literals_equal_the_real_onboarding_authority(self) -> None:
+        from trade_platform.bybit_crypto_provider import BYBIT_EXCHANGE
+        from trade_platform.bybit_instrument_onboarding import (
+            BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID,
+            captured_btcusdt_snapshot_v1,
+        )
+
+        snapshot = captured_btcusdt_snapshot_v1()
+        contract = BYBIT_BTCUSDT_PERPETUAL_LIQUIDITY_CONTRACT_V1
+        self.assertEqual(contract.instrument_id, BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID)
+        self.assertEqual(contract.venue, BYBIT_EXCHANGE)
+        self.assertEqual(contract.base_asset, snapshot.base_coin)
+        self.assertEqual(contract.quote_asset, snapshot.quote_coin)
+        contract.validate()
+
+    def test_the_canonical_instrument_resolves_without_an_explicit_contract(self) -> None:
+        from trade_platform.bybit_instrument_onboarding import (
+            BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID,
+        )
+
+        self.assertIs(
+            liquidity.authorized_instrument_liquidity_contract(
+                BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID
+            ),
+            BYBIT_BTCUSDT_PERPETUAL_LIQUIDITY_CONTRACT_V1,
+        )
+        self.assertIsNone(liquidity.authorized_instrument_liquidity_contract(INSTRUMENT))
+
+
+class ContractFromCanonicalSpecificationTests(unittest.TestCase):
+    """The strongest binding: the assets come from the crypto-instrument authority."""
+
+    @staticmethod
+    def _specification(**overrides):
+        from trade_platform.crypto_instruments import (
+            CryptoInstrumentKind,
+            CryptoInstrumentSpecification,
+            CryptoSettlementType,
+            ReferencePriceRequirement,
+            SettlementStyle,
+        )
+
+        base = {
+            "instrument_id": INSTRUMENT,
+            "venue": "TESTFIXTUREVENUE",
+            "kind": CryptoInstrumentKind.PERPETUAL,
+            "base_asset": "BTC",
+            "quote_asset": "USDT",
+            "settlement_asset": "USDT",
+            "settlement_style": SettlementStyle.LINEAR,
+            "settlement_type": CryptoSettlementType.CASH_SETTLED,
+            "contract_multiplier": Decimal(1),
+            "contract_size": Decimal(1),
+            "reference_price_requirement": ReferencePriceRequirement.MARK_AND_INDEX,
+            "index_reference": "fixture-index",
+            "registered_at": datetime(2026, 2, 1, tzinfo=UTC),
+            "source_reference": "fixture:crypto-specification",
+        }
+        base.update(overrides)
+        return CryptoInstrumentSpecification(**base)  # type: ignore[arg-type]
+
+    def test_a_linear_perpetual_specification_yields_its_own_assets(self) -> None:
+        contract = instrument_liquidity_contract_from_specification(
+            self._specification(), contract_reference="fixture://from-specification"
+        )
+        self.assertEqual(contract.instrument_id, INSTRUMENT)
+        self.assertEqual(contract.base_asset, "BTC")
+        self.assertEqual(contract.quote_asset, "USDT")
+        self.assertEqual(contract.venue, "TESTFIXTUREVENUE")
+
+    def test_a_non_perpetual_specification_fails_closed(self) -> None:
+        from trade_platform.crypto_instruments import (
+            CryptoInstrumentKind,
+            CryptoSettlementType,
+            ReferencePriceRequirement,
+        )
+
+        spot = self._specification(
+            kind=CryptoInstrumentKind.SPOT,
+            settlement_asset=None,
+            settlement_style=None,
+            settlement_type=CryptoSettlementType.PHYSICAL_DELIVERY,
+            reference_price_requirement=ReferencePriceRequirement.NONE,
+            index_reference=None,
+        )
+        with self.assertRaises(CryptoLiquidityCapacityV1Error):
+            instrument_liquidity_contract_from_specification(
+                spot, contract_reference="fixture://from-specification"
+            )
+
+    def test_a_specification_derived_contract_governs_evaluation(self) -> None:
+        contract = instrument_liquidity_contract_from_specification(
+            self._specification(), contract_reference="fixture://from-specification"
+        )
+        wrong = _evaluate_capacity(
+            bar_series=_series(_day_bars(DAYS[0], volume_asset="ETH")),
+            run=_run(),
+            capital_levels=CAPITAL_LEVELS,
+            policy=POLICY,
+            instrument_contract=contract,
+        )
+        self.assertEqual(wrong.unavailable_reasons, (REASON_INSTRUMENT_BASE_ASSET_MISMATCH,))
+
+
+# ---------------------------------------------------------------------------
+# Blocker 3 -- exactly one proven dataset content hash
+# ---------------------------------------------------------------------------
+
+
+class DatasetContentHashProofTests(_FiveCompleteDaysFixture):
+    def test_a_coherent_series_proves_its_single_hash(self) -> None:
+        self.assertEqual(proven_dataset_content_hash(self.series.bars), DATASET_CONTENT_HASH)
+        self.assertIsNone(proven_dataset_content_hash(()))
+
+    def test_one_divergent_bar_fails_closed_and_never_yields_capacity(self) -> None:
+        bars = list(self.series.bars)
+        # An otherwise perfectly valid complete canonical series; only the LAST
+        # bar's content hash differs, so a "first bar wins" rule would miss it.
+        bars[-1] = _bar(
+            bars[-1].bar_open_at, turnover=bars[-1].turnover, dataset_content_hash="9" * 64
+        )
+        tampered = _series(bars)
+        with self.assertRaises(CryptoLiquidityCapacityV1Error):
+            proven_dataset_content_hash(tampered.bars)
+        with self.assertRaises(CryptoLiquidityCapacityV1Error):
+            _evaluate_capacity(
+                bar_series=tampered,
+                run=self.research_run,
+                capital_levels=CAPITAL_LEVELS,
+                policy=POLICY,
+            )
+
+    def test_a_non_canonical_content_hash_fails_closed(self) -> None:
+        for bad in ("A" * 64, "a" * 63, "", "z" * 64):
+            with self.subTest(bad[:4]), self.assertRaises(CryptoLiquidityCapacityV1Error):
+                proven_dataset_content_hash(
+                    _series(_day_bars(DAYS[0], dataset_content_hash=bad)).bars
+                )
+
+
+# ---------------------------------------------------------------------------
+# Hardening -- status precedence and the exact-midnight boundary
+# ---------------------------------------------------------------------------
+
+
+class StatusPrecedenceTests(_FiveCompleteDaysFixture):
+    def test_a_run_with_no_orders_reports_that_before_a_missing_policy(self) -> None:
+        # Whether the strategy placed an order is a property of the run, not of
+        # anyone's risk policy, so it is decided first and reports the same
+        # reason with or without a policy.
+        for policy in (None, POLICY):
+            with self.subTest(policy=None if policy is None else policy.policy_version):
+                evidence = _evaluate_capacity(
+                    bar_series=self.series,
+                    run=_run(trades=()),
+                    capital_levels=CAPITAL_LEVELS,
+                    policy=policy,
+                )
+                self.assertEqual(evidence.status, STATUS_UNAVAILABLE)
+                self.assertEqual(
+                    evidence.unavailable_reasons, (REASON_NO_CANONICAL_ORDER_EVENTS,)
+                )
+
+
+class ExactMidnightBoundaryTests(_FiveCompleteDaysFixture):
+    """"Knowable before T" is strict, including at the day boundary itself."""
+
+    MIDNIGHT = datetime(DAYS[3].year, DAYS[3].month, DAYS[3].day, tzinfo=UTC)
+
+    def _days_used(self, entry_at: datetime):
+        evidence = _evaluate_capacity(
+            bar_series=self.series,
+            run=_run(trades=((entry_at, entry_at + timedelta(minutes=2), EXPOSURE),)),
+            capital_levels=CAPITAL_LEVELS,
+            policy=POLICY,
+        )
+        self.assertEqual(evidence.status, STATUS_AVAILABLE)
+        reference = evidence.order_events[0].trailing_liquidity
+        assert reference is not None
+        return reference.days_used
+
+    def test_a_day_whose_last_bar_closes_exactly_at_t_is_not_yet_knowable(self) -> None:
+        # DAYS[2]'s 23:59 bar closes at exactly DAYS[3] 00:00:00, so at that
+        # instant the day's figure is simultaneous with the order, not prior.
+        self.assertEqual(self._days_used(self.MIDNIGHT), (DAYS[0], DAYS[1]))
+
+    def test_one_second_later_the_day_is_knowable(self) -> None:
+        self.assertEqual(
+            self._days_used(self.MIDNIGHT + timedelta(seconds=1)), (DAYS[1], DAYS[2])
+        )
+
+    def test_complete_days_carry_their_proven_close_instant(self) -> None:
+        complete, _ = complete_liquidity_days(_day_bars(DAYS[2]))
+        self.assertEqual(
+            complete[0].last_bar_close_at,
+            datetime(DAYS[3].year, DAYS[3].month, DAYS[3].day, tzinfo=UTC),
+        )
 
 
 # ---------------------------------------------------------------------------

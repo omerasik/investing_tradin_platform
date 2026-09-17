@@ -253,7 +253,7 @@ class CanonicalBybitLiquidityCapacityPostgresTests(unittest.TestCase):
         )
 
     @classmethod
-    def _run(cls, series, entry_at: datetime, *, exposure=Decimal("0.5")):
+    def _run(cls, series, entry_at: datetime, *, also: datetime | None = None, exposure=Decimal("0.5")):
         from trade_platform.crypto_basis_mean_reversion_v1 import (
             BasisMeanReversionDecisionV1,
             BasisMeanReversionOutcomeV1,
@@ -263,36 +263,51 @@ class CanonicalBybitLiquidityCapacityPostgresTests(unittest.TestCase):
         )
         from trade_platform.signed_research_exposure_v2 import SignedResearchSignalObservationV2
 
-        exit_at = entry_at + timedelta(minutes=2)
-        entry_bar = series.bar_at_open_time(entry_at)
-        exit_bar = series.bar_at_open_time(exit_at)
-        assert entry_bar is not None and exit_bar is not None
-        trade = BasisMeanReversionTradeV1(
-            feature_materialization_id=uuid5(NAMESPACE_URL, f"phase3b3-mat:{entry_at.isoformat()}"),
-            feature_materialization_content_hash="c" * 64,
-            decision_at=entry_at - timedelta(minutes=1),
-            basis_value=Decimal("0.002"),
-            exposure=exposure,
-            entry_bar=entry_bar,
-            exit_bar=exit_bar,
-            entry_time=entry_bar.bar_open_at,
-            exit_time=exit_bar.bar_open_at,
-            entry_open=entry_bar.open,
-            exit_open=exit_bar.open,
-            cost_model_version="fixture-cost-v1",
-            gross_return=Decimal("0"),
-            entry_cost=Decimal("0"),
-            exit_cost=Decimal("0"),
-            net_return=Decimal("0"),
-        )
-        observation = SignedResearchSignalObservationV2(
-            instrument_id=INSTRUMENT_ID,
-            decision_at=trade.decision_at,
-            exposure=exposure,
-            maximum_absolute_exposure=Decimal("0.5"),
-            evidence_content_hash="e" * 64,
-        )
-        content_hash = f"{entry_at.isoformat()}".ljust(64, "0")[:64]
+        entries = [entry_at] if also is None else [entry_at, also]
+        decisions = []
+        for opened_at in entries:
+            exit_at = opened_at + timedelta(minutes=2)
+            entry_bar = series.bar_at_open_time(opened_at)
+            exit_bar = series.bar_at_open_time(exit_at)
+            assert entry_bar is not None and exit_bar is not None
+            trade = BasisMeanReversionTradeV1(
+                feature_materialization_id=uuid5(
+                    NAMESPACE_URL, f"phase3b3-mat:{opened_at.isoformat()}"
+                ),
+                feature_materialization_content_hash="c" * 64,
+                decision_at=opened_at - timedelta(minutes=1),
+                basis_value=Decimal("0.002"),
+                exposure=exposure,
+                entry_bar=entry_bar,
+                exit_bar=exit_bar,
+                entry_time=entry_bar.bar_open_at,
+                exit_time=exit_bar.bar_open_at,
+                entry_open=entry_bar.open,
+                exit_open=exit_bar.open,
+                cost_model_version="fixture-cost-v1",
+                gross_return=Decimal("0"),
+                entry_cost=Decimal("0"),
+                exit_cost=Decimal("0"),
+                net_return=Decimal("0"),
+            )
+            observation = SignedResearchSignalObservationV2(
+                instrument_id=INSTRUMENT_ID,
+                decision_at=trade.decision_at,
+                exposure=exposure,
+                maximum_absolute_exposure=Decimal("0.5"),
+                evidence_content_hash="e" * 64,
+            )
+            decisions.append(
+                BasisMeanReversionDecisionV1(
+                    feature_materialization_id=trade.feature_materialization_id,
+                    feature_materialization_content_hash=trade.feature_materialization_content_hash,
+                    basis_value=trade.basis_value,
+                    outcome=BasisMeanReversionOutcomeV1.EXECUTED,
+                    signal_observation=observation,
+                    trade=trade,
+                )
+            )
+        content_hash = "|".join(item.isoformat() for item in entries).ljust(64, "0")[:64]
         return BasisMeanReversionResearchRunV1(
             definition=CryptoBasisMeanReversionDefinitionV1(
                 basis_entry_threshold=Decimal("0.001"),
@@ -303,16 +318,7 @@ class CanonicalBybitLiquidityCapacityPostgresTests(unittest.TestCase):
             dataset_version_id=series.dataset_version_id,
             instrument_id=INSTRUMENT_ID,
             cost_model_version="fixture-cost-v1",
-            decisions=(
-                BasisMeanReversionDecisionV1(
-                    feature_materialization_id=trade.feature_materialization_id,
-                    feature_materialization_content_hash=trade.feature_materialization_content_hash,
-                    basis_value=trade.basis_value,
-                    outcome=BasisMeanReversionOutcomeV1.EXECUTED,
-                    signal_observation=observation,
-                    trade=trade,
-                ),
-            ),
+            decisions=tuple(decisions),
             content_hash=content_hash,
             run_id=uuid5(NAMESPACE_URL, f"phase3b3-run:{content_hash}"),
         )
@@ -349,6 +355,126 @@ class CanonicalBybitLiquidityCapacityPostgresTests(unittest.TestCase):
                 bar.volume_semantic_version, BYBIT_LINEAR_KLINE_VOLUME_SEMANTIC_VERSION
             )
 
+    def test_the_frozen_bybit_contract_matches_the_onboarded_database_record(self) -> None:
+        """The strongest asset binding: the canonical authority's own record.
+
+        The frozen ``BYBIT_BTCUSDT_PERPETUAL_LIQUIDITY_CONTRACT_V1`` literals are
+        proved here against the ``CryptoInstrumentSpecification`` the real
+        onboarding actually persisted, so a drift between the two cannot survive.
+        """
+        from trade_platform.crypto_instruments import PostgresCryptoInstrumentAuthority
+        from trade_platform.crypto_liquidity_capacity_v1 import (
+            BYBIT_BTCUSDT_PERPETUAL_LIQUIDITY_CONTRACT_V1,
+            authorized_instrument_liquidity_contract,
+            instrument_liquidity_contract_from_specification,
+        )
+
+        specification = PostgresCryptoInstrumentAuthority(self.database).get_specification(
+            INSTRUMENT_ID, known_at=DATASET_CREATED_AT
+        )
+        derived = instrument_liquidity_contract_from_specification(
+            specification, contract_reference="fixture://from-postgres-specification"
+        )
+        frozen = authorized_instrument_liquidity_contract(INSTRUMENT_ID)
+        self.assertIs(frozen, BYBIT_BTCUSDT_PERPETUAL_LIQUIDITY_CONTRACT_V1)
+        assert frozen is not None
+        self.assertEqual(derived.instrument_id, frozen.instrument_id)
+        self.assertEqual(derived.venue, frozen.venue)
+        self.assertEqual(derived.base_asset, frozen.base_asset)
+        self.assertEqual(derived.quote_asset, frozen.quote_asset)
+        self.assertEqual((derived.base_asset, derived.quote_asset), ("BTC", "USDT"))
+
+    def test_wrong_assets_fail_closed_against_the_database_resolved_contract(self) -> None:
+        from dataclasses import replace
+
+        from trade_platform.crypto_instruments import PostgresCryptoInstrumentAuthority
+        from trade_platform.crypto_liquidity_capacity_v1 import (
+            REASON_INSTRUMENT_BASE_ASSET_MISMATCH,
+            REASON_INSTRUMENT_QUOTE_ASSET_MISMATCH,
+            STATUS_UNAVAILABLE,
+            evaluate_crypto_liquidity_capacity_v1,
+            instrument_liquidity_contract_from_specification,
+        )
+
+        specification = PostgresCryptoInstrumentAuthority(self.database).get_specification(
+            INSTRUMENT_ID, known_at=DATASET_CREATED_AT
+        )
+        contract = instrument_liquidity_contract_from_specification(
+            specification, contract_reference="fixture://from-postgres-specification"
+        )
+        # Same sealed dataset, same typed sidecars -- only the asset labels on
+        # the projected bars are consistently wrong, which no intra-series check
+        # could ever catch.
+        mislabelled = replace(
+            self.series,
+            bars=tuple(
+                replace(bar, volume_asset="ETH", turnover_asset="USDC")
+                for bar in self.series.bars
+            ),
+        )
+        evidence = evaluate_crypto_liquidity_capacity_v1(
+            bar_series=mislabelled,
+            run=self._run(self.series, self._midnight(COMPLETE_DAYS[2]) + timedelta(minutes=5)),
+            capital_levels=(Decimal("1000000"),),
+            policy=self._policy(),
+            instrument_contract=contract,
+        )
+        self.assertEqual(evidence.status, STATUS_UNAVAILABLE)
+        self.assertEqual(
+            set(evidence.unavailable_reasons),
+            {REASON_INSTRUMENT_BASE_ASSET_MISMATCH, REASON_INSTRUMENT_QUOTE_ASSET_MISMATCH},
+        )
+        self.assertIsNone(evidence.baseline_envelope)
+
+    def test_one_divergent_dataset_content_hash_fails_closed(self) -> None:
+        from dataclasses import replace
+
+        from trade_platform.crypto_liquidity_capacity_v1 import (
+            CryptoLiquidityCapacityV1Error,
+            evaluate_crypto_liquidity_capacity_v1,
+            proven_dataset_content_hash,
+        )
+
+        self.assertEqual(
+            proven_dataset_content_hash(self.series.bars), self.dataset.content_hash
+        )
+        bars = list(self.series.bars)
+        bars[-1] = replace(bars[-1], dataset_content_hash="9" * 64)
+        tampered = replace(self.series, bars=tuple(bars))
+        with self.assertRaises(CryptoLiquidityCapacityV1Error):
+            evaluate_crypto_liquidity_capacity_v1(
+                bar_series=tampered,
+                run=self._run(
+                    self.series, self._midnight(COMPLETE_DAYS[2]) + timedelta(minutes=5)
+                ),
+                capital_levels=(Decimal("1000000"),),
+                policy=self._policy(),
+            )
+
+    def test_a_partly_uncovered_order_path_is_never_available(self) -> None:
+        from trade_platform.crypto_liquidity_capacity_v1 import (
+            REASON_INSUFFICIENT_PRIOR_LIQUIDITY_HISTORY,
+            STATUS_UNAVAILABLE,
+            evaluate_crypto_liquidity_capacity_v1,
+        )
+
+        early = self._midnight(COMPLETE_DAYS[1]) + timedelta(minutes=5)
+        late = self._midnight(COMPLETE_DAYS[2]) + timedelta(minutes=5)
+        evidence = evaluate_crypto_liquidity_capacity_v1(
+            bar_series=self.series,
+            run=self._run(self.series, early, also=late),
+            capital_levels=(Decimal("1000000"),),
+            policy=self._policy(),
+        )
+        self.assertEqual(evidence.status, STATUS_UNAVAILABLE)
+        self.assertEqual(
+            evidence.unavailable_reasons, (REASON_INSUFFICIENT_PRIOR_LIQUIDITY_HISTORY,)
+        )
+        self.assertIsNone(evidence.baseline_envelope)
+        self.assertEqual(evidence.stress_envelopes, ())
+        self.assertEqual(evidence.required_order_event_count, 4)
+        self.assertEqual(evidence.uncovered_order_event_count, 2)
+
     def test_capacity_becomes_available_with_complete_history_and_a_policy(self) -> None:
         from trade_platform.crypto_liquidity_capacity_v1 import (
             CRYPTO_LIQUIDITY_BASIS,
@@ -366,6 +492,13 @@ class CanonicalBybitLiquidityCapacityPostgresTests(unittest.TestCase):
             policy=policy,
         )
         self.assertEqual(evidence.status, STATUS_AVAILABLE)
+        # The canonical instrument resolved from the frozen registry: no explicit
+        # contract was passed above and the assets were still proven.
+        self.assertEqual(evidence.instrument_venue, "BYBIT")
+        self.assertIsNotNone(evidence.instrument_contract_content_hash)
+        # AVAILABLE covers the whole required order path.
+        self.assertEqual(evidence.required_order_event_count, 2)
+        self.assertEqual(evidence.uncovered_order_event_count, 0)
         self.assertEqual(evidence.liquidity_basis, CRYPTO_LIQUIDITY_BASIS)
         self.assertFalse(evidence.order_book_evidence)
         self.assertEqual(evidence.turnover_asset, "USDT")
@@ -412,6 +545,7 @@ class CanonicalBybitLiquidityCapacityPostgresTests(unittest.TestCase):
             level.maximum_participation, _CHECK.divide(expected_notional, expected_liquidity)
         )
         self.assertEqual(level.unavailable_order_event_count, 0)
+        self.assertTrue(envelope.capital_ceiling_covers_every_order_event)
         self.assertEqual(
             envelope.capital_ceiling,
             _CHECK.divide(
