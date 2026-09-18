@@ -15,6 +15,7 @@ from uuid import UUID
 from .data_providers import (
     HttpResponse,
     HttpTransport,
+    MinimumIntervalRequestPacer,
     ProviderConfiguration,
     ProviderConfigurationError,
     ProviderError,
@@ -345,16 +346,24 @@ class BybitCryptoHistoricalAdapter:
         retry_policy: RetryPolicy = RetryPolicy(),
         now: Callable[[], datetime] | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        pacer: MinimumIntervalRequestPacer | None = None,
     ) -> None:
         configuration.validate()
         retry_policy.validate()
         if configuration.provider != self.name:
             raise ProviderConfigurationError("invalid_bybit_configuration")
+        # A shared pacer must enforce exactly the configured interval; a second,
+        # differently-configured limiter would be a conflicting hidden policy.
+        if pacer is not None and pacer.minimum_interval != configuration.minimum_request_interval:
+            raise ProviderConfigurationError("bybit_pacer_interval_mismatch")
         self._configuration = configuration
         self._transport: HttpTransport = transport or UrlLibBybitTransport()
         self._retry_policy = retry_policy
         self._now = now or (lambda: datetime.now(UTC))
         self._sleep = sleep
+        self._pacer = pacer or MinimumIntervalRequestPacer(
+            configuration.minimum_request_interval, sleep=sleep
+        )
 
     def fetch_raw_page(
         self, source_id: UUID, scope: dict[str, object], cursor: str | None
@@ -534,6 +543,7 @@ class BybitCryptoHistoricalAdapter:
     def _http_with_retry(self, url: str) -> HttpResponse:
         last_status = "network"
         for attempt in range(self._retry_policy.maximum_attempts):
+            self._pacer.before_request()
             response = self._transport.get(url, self._configuration.request_timeout_seconds)
             if response.status_code == 200:
                 return response

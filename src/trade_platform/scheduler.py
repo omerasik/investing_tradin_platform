@@ -52,6 +52,7 @@ from .retention_evidence import PostgresRetentionEvidenceStore, RetentionDisposi
 
 __all__ = [
     "JobContext",
+    "JobExecutionFailed",
     "JobRunner",
     "SchedulerWorker",
     "default_job_registry",
@@ -82,6 +83,20 @@ class JobContext:
 
 
 JobRunner = Callable[[JobContext, datetime], Mapping[str, str]]
+
+
+class JobExecutionFailed(Exception):
+    """A runner's own terminal failure that carries structured evidence.
+
+    Raising this (rather than an arbitrary exception) keeps the runner's
+    ``summary`` on the durable ``FAILED`` run, so the failure boundary stays
+    visible instead of collapsing to an exception type and message.
+    """
+
+    def __init__(self, code: str, summary: Mapping[str, str]) -> None:
+        super().__init__(code)
+        self.code = code
+        self.summary = dict(summary)
 
 
 def run_operational_job_monitor(context: JobContext, as_of: datetime) -> Mapping[str, str]:
@@ -239,6 +254,11 @@ def default_job_registry() -> dict[str, JobRunner]:
     ``operational_job_monitor`` job, but nothing executes it. Adding a new safe,
     internal-only job means registering it here; nothing about the worker loop itself
     needs to change.
+
+    Provider network acquisition is deliberately never registered here: the
+    scheduled Bybit runner (:mod:`trade_platform.scheduled_historical_acquisition_v1`)
+    exists only when a deployment explicitly composes it, and then still requires
+    an enabled durable job policy at its authorized version.
     """
     return {
         "operational_job_monitor": run_operational_job_monitor,
@@ -306,6 +326,13 @@ class SchedulerWorker:
         try:
             summary = dict(runner(self.context, as_of))
             status = OperationalJobStatus.SUCCEEDED
+        except JobExecutionFailed as error:
+            status = OperationalJobStatus.FAILED
+            summary = {
+                **error.summary,
+                "error_type": type(error).__name__,
+                "error": error.code[:500],
+            }
         except Exception as error:  # noqa: BLE001 - a runner's own failure must never crash the tick loop
             status = OperationalJobStatus.FAILED
             summary = {"error_type": type(error).__name__, "error": str(error)[:500]}

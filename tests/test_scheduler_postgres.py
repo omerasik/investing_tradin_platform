@@ -144,6 +144,26 @@ class SchedulerWorkerPostgresTests(unittest.TestCase):
         )
         self.assertTrue(state.due)
 
+    def test_structured_runner_failure_keeps_its_evidence_on_the_failed_run(self) -> None:
+        from trade_platform.scheduler import JobExecutionFailed, SchedulerWorker
+
+        def _fails_with_evidence(context, as_of):
+            raise JobExecutionFailed(
+                "window_failed", {"first_failed_window": "[a,b)", "backlog_remaining": "2"}
+            )
+
+        policy = self._policy("structured-failing-job")
+        worker = SchedulerWorker(
+            context=self.context, registry={policy.job_name: _fails_with_evidence}, clock=lambda: self.now
+        )
+        completed = worker.run_tick(self.now)
+        self.assertEqual(len(completed), 1)
+        self.assertEqual(completed[0].status.value, "FAILED")
+        self.assertEqual(completed[0].summary["first_failed_window"], "[a,b)")
+        self.assertEqual(completed[0].summary["backlog_remaining"], "2")
+        self.assertEqual(completed[0].summary["error_type"], "JobExecutionFailed")
+        self.assertEqual(completed[0].summary["error"], "window_failed")
+
     def test_a_held_advisory_lock_blocks_a_concurrent_claim_and_releases_cleanly(self) -> None:
         from trade_platform.persistence import PostgresDatabase
         from trade_platform.scheduler import _release, _try_claim, run_operational_job_monitor
