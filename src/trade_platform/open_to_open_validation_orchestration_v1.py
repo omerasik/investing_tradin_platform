@@ -19,6 +19,16 @@ from .crypto_basis_mean_reversion_v1 import (
     run_crypto_basis_mean_reversion_research,
 )
 from .crypto_instruments import CryptoInstrumentKind
+from .crypto_liquidity_capacity_v1 import (
+    AuthorizedInstrumentLiquidityContractV1,
+    CryptoLiquidityCapacityEvidenceV1,
+    CryptoReducedLiquidityStressEvidenceV1,
+    LiquidityCapacityPolicyV1,
+    authorized_instrument_liquidity_contract,
+    build_reduced_liquidity_stress_evidence_v1,
+    canonical_contract_conflicts,
+    evaluate_crypto_liquidity_capacity_v1,
+)
 from .feature_authority import FeatureMaterializationV2
 from .open_to_open_validation_v1 import (
     CSCV_BLOCKS,
@@ -28,7 +38,6 @@ from .open_to_open_validation_v1 import (
     STATUS_UNAVAILABLE,
     AdverseExitShockEvidenceV1,
     CanonicalCscvPboEvidenceV1,
-    CapacityBlockedEvidenceV1,
     CircularShiftNullControlEvidenceV1,
     DeflatedSharpeEvidenceV1,
     MissingBarStressEvidenceV1,
@@ -36,16 +45,13 @@ from .open_to_open_validation_v1 import (
     OpenToOpenLatencySensitivityEvidenceV1,
     OpenToOpenReconciliationEvidenceV1,
     RealizedExitDailyReturnSeriesV1,
-    ReducedLiquidityBlockedEvidenceV1,
     ResearchTrialDispositionV1,
     ResearchTrialLedgerV1,
     ResearchTrialRoleV1,
     ResearchTrialV1,
     TradeReturnMetricsV1,
     _direction,
-    build_capacity_blocked_evidence_v1,
     build_realized_exit_daily_return_series_v1,
-    build_reduced_liquidity_blocked_evidence_v1,
     build_research_trial_ledger_v1,
     build_research_trial_v1,
     canonical_trade_returns_for_monte_carlo,
@@ -998,6 +1004,7 @@ def build_open_to_open_multiple_testing_summary_v1(
 class OpenToOpenStressSummaryV1:
     synthetic_validation_evidence: bool
     reduced_liquidity_status: str
+    reduced_liquidity_reason: str
     cost_sensitivity_evidence_id: UUID
     cost_sensitivity_content_hash: str
     adverse_exit_shock_evidence_id: UUID
@@ -1015,17 +1022,28 @@ def build_open_to_open_stress_summary_v1(
     cost_sensitivity: OpenToOpenCostSensitivityEvidenceV1,
     adverse_exit_shock: AdverseExitShockEvidenceV1,
     missing_bar_stress: MissingBarStressEvidenceV1,
-    reduced_liquidity: ReducedLiquidityBlockedEvidenceV1,
+    reduced_liquidity: CryptoReducedLiquidityStressEvidenceV1,
 ) -> OpenToOpenStressSummaryV1:
     if not adverse_exit_shock.synthetic_validation_evidence:
         raise OpenToOpenValidationOrchestrationV1Error("adverse_shock_must_stay_synthetic_evidence")
     if not missing_bar_stress.synthetic_validation_evidence:
         raise OpenToOpenValidationOrchestrationV1Error("missing_bar_stress_must_stay_synthetic_evidence")
-    if reduced_liquidity.status != STATUS_BLOCKED:
-        raise OpenToOpenValidationOrchestrationV1Error("reduced_liquidity_must_remain_blocked")
+    # Module 3B.3 replaced the unconditional "reduced liquidity is blocked"
+    # assertion: the stress ladder is now real evidence whenever canonical
+    # quote-turnover liquidity and an explicit policy exist. What must still
+    # hold is that it stays synthetic validation evidence, and that an
+    # AVAILABLE ladder actually carries the policy's multipliers rather than
+    # claiming availability with nothing in it.
+    if not reduced_liquidity.synthetic_validation_evidence:
+        raise OpenToOpenValidationOrchestrationV1Error("reduced_liquidity_must_stay_synthetic_evidence")
+    if reduced_liquidity.status not in (STATUS_AVAILABLE, STATUS_UNAVAILABLE, STATUS_BLOCKED):
+        raise OpenToOpenValidationOrchestrationV1Error("reduced_liquidity_status_invalid")
+    if reduced_liquidity.status == STATUS_AVAILABLE and not reduced_liquidity.envelopes:
+        raise OpenToOpenValidationOrchestrationV1Error("available_reduced_liquidity_requires_envelopes")
     payload = {
         "synthetic_validation_evidence": True,
         "reduced_liquidity_status": reduced_liquidity.status,
+        "reduced_liquidity_reason": reduced_liquidity.reason,
         "cost_sensitivity_evidence_id": cost_sensitivity.evidence_id,
         "cost_sensitivity_content_hash": cost_sensitivity.content_hash,
         "adverse_exit_shock_evidence_id": adverse_exit_shock.evidence_id,
@@ -1039,6 +1057,7 @@ def build_open_to_open_stress_summary_v1(
     return OpenToOpenStressSummaryV1(
         synthetic_validation_evidence=True,
         reduced_liquidity_status=reduced_liquidity.status,
+        reduced_liquidity_reason=reduced_liquidity.reason,
         cost_sensitivity_evidence_id=cost_sensitivity.evidence_id,
         cost_sensitivity_content_hash=cost_sensitivity.content_hash,
         adverse_exit_shock_evidence_id=adverse_exit_shock.evidence_id,
@@ -1326,6 +1345,19 @@ class OpenToOpenProfessionalValidationRequestV1:
     missing_exit_stress_bar_open_times: tuple[datetime, ...]
     validation_dataset_id: UUID
     evaluated_at: datetime
+    #: Module 3B.3. Both are optional and default to "absent" so every caller
+    #: written before this phase keeps its exact request identity (see
+    #: ``content_hash()``) and never silently acquires an economic risk policy
+    #: it did not authorize. Without a policy the canonical capacity path
+    #: returns BLOCKED/MISSING_AUTHORIZED_CAPACITY_POLICY, which is the correct
+    #: answer, not a failure.
+    capacity_policy: LiquidityCapacityPolicyV1 | None = None
+    capacity_capital_levels: tuple[Decimal, ...] = ()
+    #: The authorized base/quote identity the bar series' typed semantics must
+    #: prove against. Omitted means "use the frozen registry of already-authorized
+    #: instruments"; an instrument outside it then stays UNAVAILABLE rather than
+    #: having its assets guessed.
+    capacity_instrument_contract: AuthorizedInstrumentLiquidityContractV1 | None = None
 
     def validate(self) -> None:
         self.evidence.feature_bundle.validate()
@@ -1365,10 +1397,60 @@ class OpenToOpenProfessionalValidationRequestV1:
         for timestamp in self.missing_exit_stress_bar_open_times:
             _require_aware(timestamp, "missing_exit_stress_bar_open_at")
         _require_aware(self.evaluated_at, "evaluated_at")
+        if self.capacity_policy is not None:
+            self.capacity_policy.validate()
+            if not self.capacity_capital_levels:
+                raise OpenToOpenValidationOrchestrationV1Error(
+                    "capacity_policy_requires_capital_levels"
+                )
+        for capital in self.capacity_capital_levels:
+            if not capital.is_finite() or capital <= 0:
+                raise OpenToOpenValidationOrchestrationV1Error(
+                    "capacity_capital_levels_must_be_positive"
+                )
+        if tuple(sorted(set(self.capacity_capital_levels))) != self.capacity_capital_levels:
+            raise OpenToOpenValidationOrchestrationV1Error(
+                "capacity_capital_levels_must_be_sorted_unique"
+            )
+        if self.capacity_instrument_contract is not None:
+            self.capacity_instrument_contract.validate()
+            instrument_id = self.evidence.bar_series.instrument_id
+            if self.capacity_instrument_contract.instrument_id != instrument_id:
+                raise OpenToOpenValidationOrchestrationV1Error(
+                    "capacity_instrument_contract_instrument_mismatch"
+                )
+            # Request data must never self-authorize a different canonical
+            # economic identity for an instrument this repository already
+            # authorized independently. The evaluator enforces this too; failing
+            # at request validation means a conflicting request cannot even start
+            # a professional-validation run.
+            registered = authorized_instrument_liquidity_contract(instrument_id)
+            if registered is not None:
+                conflicts = canonical_contract_conflicts(
+                    explicit=self.capacity_instrument_contract, registered=registered
+                )
+                if conflicts:
+                    raise OpenToOpenValidationOrchestrationV1Error(
+                        f"capacity_instrument_contract_conflicts_canonical_registry:"
+                        f"{','.join(conflicts)}"
+                    )
 
     def content_hash(self) -> str:
+        # The Module 3B.3 fields are contributed only when they are actually
+        # supplied, so a request written before this phase hashes to exactly the
+        # same value it always did.
+        capacity: dict[str, Any] = {}
+        if self.capacity_policy is not None:
+            capacity["capacity_policy_content_hash"] = self.capacity_policy.content_hash()
+        if self.capacity_capital_levels:
+            capacity["capacity_capital_levels"] = self.capacity_capital_levels
+        if self.capacity_instrument_contract is not None:
+            capacity["capacity_instrument_contract_content_hash"] = (
+                self.capacity_instrument_contract.content_hash()
+            )
         return _content_hash(
             {
+                **capacity,
                 "evidence_content_hash": self.evidence.content_hash,
                 "baseline_definition_content_hash": self.baseline_definition.content_hash(),
                 "instrument_kind": self.instrument_kind.value,
@@ -1416,8 +1498,8 @@ class OpenToOpenProfessionalValidationRunV1:
     latency_sensitivity: OpenToOpenLatencySensitivityEvidenceV1
     adverse_exit_shock: AdverseExitShockEvidenceV1
     missing_bar_stress: MissingBarStressEvidenceV1
-    reduced_liquidity: ReducedLiquidityBlockedEvidenceV1
-    capacity: CapacityBlockedEvidenceV1
+    reduced_liquidity: CryptoReducedLiquidityStressEvidenceV1
+    capacity: CryptoLiquidityCapacityEvidenceV1
     bootstrap: BootstrapEvidence
     monte_carlo: MonteCarloEvidence
     stress_summary: OpenToOpenStressSummaryV1
@@ -1826,8 +1908,21 @@ def run_open_to_open_professional_validation_v1(
         base_cost_model=cost_model,
         omitted_exit_bar_open_times=request.missing_exit_stress_bar_open_times,
     )
-    reduced_liquidity = build_reduced_liquidity_blocked_evidence_v1(run=baseline_run)
-    capacity = build_capacity_blocked_evidence_v1(run=baseline_run)
+    # Module 3B.3. Canonical liquidity/participation/capacity evidence, judged
+    # over the SAME pre-holdout window the baseline run was produced from, so a
+    # trade can never be justified by liquidity from a segment the run itself
+    # never saw. The evaluator decides its own status: legacy/unitless bars stay
+    # UNAVAILABLE, typed bars with too little complete history stay UNAVAILABLE,
+    # typed bars with no explicit owner policy stay BLOCKED, and only a fully
+    # proven case becomes AVAILABLE.
+    capacity = evaluate_crypto_liquidity_capacity_v1(
+        bar_series=pre_holdout_bar_series,
+        run=baseline_run,
+        capital_levels=request.capacity_capital_levels,
+        policy=request.capacity_policy,
+        instrument_contract=request.capacity_instrument_contract,
+    )
+    reduced_liquidity = build_reduced_liquidity_stress_evidence_v1(capacity=capacity)
     execution_realism = build_execution_realism_blocked_evidence_v1(run=baseline_run)
     data_quality = build_fixture_market_data_quality_evidence_v1(bar_series=bar_series, span=span)
     bootstrap = evaluate_bootstrap(
@@ -2048,6 +2143,11 @@ def run_open_to_open_professional_validation_v1(
         "parameter_selection_before_holdout": True,
         "baseline_remained_selected": True,
         "capacity_status": capacity.status,
+        "capacity_reason": capacity.reason,
+        "capacity_liquidity_basis": capacity.liquidity_basis,
+        "capacity_policy_version": capacity.policy_version,
+        "reduced_liquidity_status": reduced_liquidity.status,
+        "automatic_live_capacity_gating": False,
         "execution_realism_status": execution_realism.status,
     }
     validation_package = build_validation_package(
@@ -2071,9 +2171,15 @@ def run_open_to_open_professional_validation_v1(
     blocking_reasons = [
         DATA_QUALITY_BLOCKED_REASON,
         EXECUTION_REALISM_BLOCKED_REASON,
-        f"CAPACITY_{capacity.status}:{capacity.reason}",
         "RESEARCH_ONLY_NO_PAPER_OR_LIVE_AUTHORITY",
     ]
+    # Module 3B.3: capacity is a blocking reason only when it is actually not
+    # established. Proven canonical capacity evidence is not a blocker -- and it
+    # is not a promotion either: the run stays BLOCKED on the reasons above.
+    if capacity.status != STATUS_AVAILABLE:
+        blocking_reasons.extend(
+            f"CAPACITY_{capacity.status}:{reason}" for reason in capacity.unavailable_reasons
+        )
     if reconciliation.status != STATUS_RECONCILED:
         blocking_reasons.append("GOLDEN_RECONCILIATION_NOT_RECONCILED")
     if holdout.status != STATUS_AVAILABLE:

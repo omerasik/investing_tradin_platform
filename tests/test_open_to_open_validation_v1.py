@@ -7,9 +7,11 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from itertools import combinations
 from math import log, sqrt
+from pathlib import Path
 from statistics import NormalDist, mean, stdev
 from uuid import uuid4
 
+from trade_platform import open_to_open_validation_v1
 from trade_platform.crypto_basis_mean_reversion_v1 import (
     BasisMeanReversionOutcomeV1,
     BasisMeanReversionResearchRunV1,
@@ -24,7 +26,6 @@ from trade_platform.feature_authority import (
 )
 from trade_platform.ohlcv_volume_semantics import BarVolumeUnit
 from trade_platform.open_to_open_validation_v1 import (
-    CAPACITY_BLOCKED_REASON,
     COARSE_1M_GRID_LATENCY_STRESS,
     REALIZED_EXIT_DAILY_RETURN_SERIES_KIND,
     OpenToOpenValidationV1Error,
@@ -38,9 +39,7 @@ from trade_platform.open_to_open_validation_v1 import (
     _verify_zero_latency_reconciles_canonical_run,
     bias_corrected_pearson_kurtosis,
     bias_corrected_sample_skewness,
-    build_capacity_blocked_evidence_v1,
     build_realized_exit_daily_return_series_v1,
-    build_reduced_liquidity_blocked_evidence_v1,
     build_research_trial_ledger_v1,
     build_research_trial_v1,
     canonical_trade_returns_for_monte_carlo,
@@ -592,21 +591,30 @@ class MissingBarStressTests(unittest.TestCase):
             )
 
 
-class BlockedEvidenceTests(unittest.TestCase):
-    def test_capacity_blocked_no_numeric_estimate(self) -> None:
-        run, _ = _two_trade_run()
-        evidence = build_capacity_blocked_evidence_v1(run=run)
-        self.assertEqual(evidence.status, "BLOCKED")
-        self.assertEqual(evidence.reason, CAPACITY_BLOCKED_REASON)
-        forbidden = ("adv", "participation", "usable_capital", "market_impact", "capacity_estimate")
-        for name in forbidden:
-            self.assertFalse(hasattr(evidence, name))
+class RetiredCapacityBlockerTests(unittest.TestCase):
+    """Module 3B.3 retired this module's obsolete capacity/liquidity blockers.
 
-    def test_reduced_liquidity_blocked(self) -> None:
-        run, _ = _two_trade_run()
-        evidence = build_reduced_liquidity_blocked_evidence_v1(run=run)
-        self.assertEqual(evidence.status, "BLOCKED")
-        self.assertEqual(evidence.reason, CAPACITY_BLOCKED_REASON)
+    Their single reason, ``MISSING_AUTHORIZED_VOLUME_UNIT_SEMANTICS``, was a
+    DATA claim that Module 3B.2 answered. Leaving the builders in place would
+    let a caller keep asserting a data gap that no longer exists, so they are
+    gone and ``crypto_liquidity_capacity_v1`` owns the question instead.
+    """
+
+    def test_obsolete_volume_unit_data_blocker_is_gone(self) -> None:
+        for name in (
+            "CAPACITY_BLOCKED_STATUS",
+            "CAPACITY_BLOCKED_REASON",
+            "REDUCED_LIQUIDITY_BLOCKED_REASON",
+            "CapacityBlockedEvidenceV1",
+            "ReducedLiquidityBlockedEvidenceV1",
+            "build_capacity_blocked_evidence_v1",
+            "build_reduced_liquidity_blocked_evidence_v1",
+        ):
+            self.assertFalse(hasattr(open_to_open_validation_v1, name), name)
+
+    def test_module_no_longer_claims_missing_volume_unit_semantics(self) -> None:
+        source = Path(open_to_open_validation_v1.__file__).read_text(encoding="utf-8")
+        self.assertNotIn('"MISSING_AUTHORIZED_VOLUME_UNIT_SEMANTICS"', source)
 
 
 class CostModelValidationTests(unittest.TestCase):

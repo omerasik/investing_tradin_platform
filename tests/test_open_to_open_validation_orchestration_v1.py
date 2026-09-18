@@ -15,6 +15,13 @@ from trade_platform.crypto_basis_mean_reversion_v1 import (
     CryptoBasisMeanReversionV1Error,
 )
 from trade_platform.crypto_instruments import CryptoInstrumentKind
+from trade_platform.crypto_liquidity_capacity_v1 import (
+    BYBIT_BTCUSDT_PERPETUAL_LIQUIDITY_CONTRACT_V1,
+    REASON_MISSING_CANONICAL_QUOTE_TURNOVER,
+    AuthorizedInstrumentLiquidityContractV1,
+    CryptoLiquidityCapacityV1Error,
+    LiquidityCapacityPolicyV1,
+)
 from trade_platform.feature_authority import (
     FeatureMaterializationV2,
     FeatureQualityStatus,
@@ -1103,7 +1110,14 @@ class ChronologicalOrchestrationTests(unittest.TestCase):
         self.assertEqual(self.result.reconciliation.mismatched_decision_count, 0)
         summary = self.result.stress_summary
         self.assertTrue(summary.synthetic_validation_evidence)
-        self.assertEqual(summary.reduced_liquidity_status, STATUS_BLOCKED)
+        # Module 3B.3: this fixture's bars are legacy/unitless, so the canonical
+        # reduced-liquidity ladder is UNAVAILABLE (a data gap) rather than the
+        # retired unconditional BLOCKED.
+        self.assertEqual(summary.reduced_liquidity_status, STATUS_UNAVAILABLE)
+        self.assertEqual(
+            summary.reduced_liquidity_reason, REASON_MISSING_CANONICAL_QUOTE_TURNOVER
+        )
+        self.assertEqual(self.result.reduced_liquidity.envelopes, ())
         self.assertEqual(
             summary.cost_sensitivity_content_hash, self.result.cost_sensitivity.content_hash
         )
@@ -1144,11 +1158,26 @@ class ChronologicalOrchestrationTests(unittest.TestCase):
         self.assertFalse(hasattr(self.result.execution_realism, "spread_estimate"))
         self.assertFalse(hasattr(self.result.execution_realism, "fill_quality"))
 
-    def test_capacity_and_data_quality_are_blocked(self) -> None:
-        self.assertEqual(self.result.capacity.status, STATUS_BLOCKED)
+    def test_capacity_is_unavailable_on_legacy_bars_and_data_quality_is_blocked(self) -> None:
+        # Module 3B.3 case A: these fixture bars carry no Phase 3B.2 typed
+        # volume/turnover semantics, so no canonical quote-turnover liquidity
+        # exists and capacity must stay UNAVAILABLE -- never a numeric estimate,
+        # and never the retired MISSING_AUTHORIZED_VOLUME_UNIT_SEMANTICS claim.
+        self.assertEqual(self.result.capacity.status, STATUS_UNAVAILABLE)
+        self.assertEqual(
+            self.result.capacity.unavailable_reasons, (REASON_MISSING_CANONICAL_QUOTE_TURNOVER,)
+        )
+        self.assertIsNone(self.result.capacity.baseline_envelope)
+        self.assertEqual(self.result.capacity.complete_days, ())
+        self.assertFalse(self.result.capacity.order_book_evidence)
+        self.assertIsNone(self.result.capacity.policy_version)
         self.assertEqual(self.result.data_quality.status, STATUS_BLOCKED)
         self.assertEqual(self.result.data_quality.reason, "FIXTURE_ONLY_MARKET_DATA")
-        self.assertEqual(self.result.reduced_liquidity.status, STATUS_BLOCKED)
+        self.assertEqual(self.result.reduced_liquidity.status, STATUS_UNAVAILABLE)
+        self.assertIn(
+            f"CAPACITY_{STATUS_UNAVAILABLE}:{REASON_MISSING_CANONICAL_QUOTE_TURNOVER}",
+            self.result.blocking_reasons,
+        )
 
     def test_methodology_freeze_binds_every_pre_holdout_artifact(self) -> None:
         freeze = self.result.methodology_freeze
@@ -1447,7 +1476,10 @@ class ChronologicalOrchestrationTests(unittest.TestCase):
         self.assertEqual(metadata["trial_count"], 7)
         self.assertIs(metadata["parameter_selection_before_holdout"], True)
         self.assertIs(metadata["baseline_remained_selected"], True)
-        self.assertEqual(metadata["capacity_status"], STATUS_BLOCKED)
+        self.assertEqual(metadata["capacity_status"], STATUS_UNAVAILABLE)
+        self.assertEqual(metadata["capacity_reason"], REASON_MISSING_CANONICAL_QUOTE_TURNOVER)
+        self.assertIsNone(metadata["capacity_policy_version"])
+        self.assertIs(metadata["automatic_live_capacity_gating"], False)
         self.assertEqual(metadata["execution_realism_status"], STATUS_BLOCKED)
         self.assertEqual(
             metadata["methodology_freeze_hash"], self.result.methodology_freeze.content_hash
@@ -1617,6 +1649,163 @@ class DeterminismAndIsolationTests(unittest.TestCase):
             "evaluate_stress",
         ):
             self.assertNotIn(legacy, source)
+
+
+class CapacityPolicyPlumbingTests(unittest.TestCase):
+    """Module 3B.3's optional capacity policy: wired, but never self-authorizing.
+
+    The orchestration fixture's bars are legacy/unitless, so supplying a policy
+    must NOT make capacity available -- the phase's explicit requirement that a
+    data-authority fix does not silently turn into an economic claim. What a
+    supplied policy does do is reach the evidence and change request identity.
+    """
+
+    policy = LiquidityCapacityPolicyV1(
+        policy_version="fixture-orchestration-capacity-policy-v1",
+        lookback_complete_days=2,
+        minimum_complete_days=2,
+        maximum_participation=Decimal("0.05"),
+        reduced_liquidity_multipliers=(Decimal("0.25"), Decimal("0.50")),
+    )
+    capital_levels = (Decimal("1000000"),)
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.evidence = _fixture_evidence()
+        cls.without_policy = _request(cls.evidence)
+        cls.with_policy = replace(
+            cls.without_policy,
+            capacity_policy=cls.policy,
+            capacity_capital_levels=cls.capital_levels,
+        )
+
+    def test_a_request_written_before_this_phase_keeps_its_exact_identity(self) -> None:
+        self.assertIsNone(self.without_policy.capacity_policy)
+        self.assertEqual(self.without_policy.capacity_capital_levels, ())
+        self.assertNotEqual(
+            self.with_policy.content_hash(), self.without_policy.content_hash()
+        )
+
+    def test_a_policy_reaches_the_capacity_evidence_without_authorizing_it(self) -> None:
+        result = run_open_to_open_professional_validation_v1(self.with_policy)
+        self.assertEqual(result.capacity.policy_version, self.policy.policy_version)
+        self.assertEqual(result.capacity.policy_content_hash, self.policy.content_hash())
+        self.assertEqual(result.capacity.capital_levels, self.capital_levels)
+        # Legacy/unitless bars: still UNAVAILABLE, policy or no policy.
+        self.assertEqual(result.capacity.status, STATUS_UNAVAILABLE)
+        self.assertEqual(
+            result.capacity.unavailable_reasons, (REASON_MISSING_CANONICAL_QUOTE_TURNOVER,)
+        )
+        self.assertIsNone(result.capacity.baseline_envelope)
+        self.assertEqual(result.reduced_liquidity.envelopes, ())
+        self.assertEqual(result.status, STATUS_BLOCKED)
+
+    def test_capacity_policy_requires_capital_levels(self) -> None:
+        with self.assertRaises(OpenToOpenValidationOrchestrationV1Error):
+            replace(self.without_policy, capacity_policy=self.policy).validate()
+
+    def test_invalid_capacity_capital_levels_rejected(self) -> None:
+        for levels in ((Decimal("0"),), (Decimal("5"), Decimal("1")), (Decimal("1"), Decimal("1"))):
+            with (
+                self.subTest(str(levels)),
+                self.assertRaises(OpenToOpenValidationOrchestrationV1Error),
+            ):
+                replace(
+                    self.without_policy,
+                    capacity_policy=self.policy,
+                    capacity_capital_levels=levels,
+                ).validate()
+
+    def test_instrument_contract_is_optional_and_bound_to_request_identity(self) -> None:
+        contract = AuthorizedInstrumentLiquidityContractV1(
+            instrument_id=INSTRUMENT,
+            venue="TESTFIXTUREVENUE",
+            base_asset="BTC",
+            quote_asset="USDT",
+            contract_reference="fixture://orchestration-instrument-contract-v1",
+        )
+        with_contract = replace(self.without_policy, capacity_instrument_contract=contract)
+        with_contract.validate()
+        self.assertNotEqual(
+            with_contract.content_hash(), self.without_policy.content_hash()
+        )
+        result = run_open_to_open_professional_validation_v1(with_contract)
+        # The contract is now known, so the reason is the one that actually
+        # describes these bars: they carry no typed semantics at all.
+        self.assertEqual(result.capacity.status, STATUS_UNAVAILABLE)
+        self.assertEqual(
+            result.capacity.unavailable_reasons, (REASON_MISSING_CANONICAL_QUOTE_TURNOVER,)
+        )
+
+    def test_instrument_contract_for_another_instrument_rejected(self) -> None:
+        contract = AuthorizedInstrumentLiquidityContractV1(
+            instrument_id="TESTFIXTURE:3J2B2B2:ETHUSDT:PERP",
+            venue="TESTFIXTUREVENUE",
+            base_asset="ETH",
+            quote_asset="USDT",
+            contract_reference="fixture://orchestration-instrument-contract-v1",
+        )
+        with self.assertRaises(OpenToOpenValidationOrchestrationV1Error):
+            replace(self.without_policy, capacity_instrument_contract=contract).validate()
+
+    def _canonical_instrument_request(self):
+        """The same fixture request, retargeted at the canonical Bybit instrument.
+
+        Only the instrument identity is swapped -- every bar, the span and the
+        protocol are the fixture's own -- which is enough to reach the request's
+        canonical-registry check.
+        """
+        from trade_platform.bybit_instrument_onboarding import (
+            BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID,
+        )
+
+        series = self.without_policy.evidence.bar_series
+        retargeted = replace(
+            series,
+            instrument_id=BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID,
+            bars=tuple(
+                replace(bar, instrument_id=BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID)
+                for bar in series.bars
+            ),
+        )
+        request = replace(
+            self.without_policy,
+            evidence=replace(self.without_policy.evidence, bar_series=retargeted),
+        )
+        return BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID, request
+
+    def test_request_data_cannot_self_authorize_another_canonical_contract(self) -> None:
+        canonical_id, request = self._canonical_instrument_request()
+        hijack = AuthorizedInstrumentLiquidityContractV1(
+            instrument_id=canonical_id,
+            venue="OTHER",
+            base_asset="ETH",
+            quote_asset="USDC",
+            contract_reference="fixture://attempted-override",
+        )
+        with self.assertRaises(OpenToOpenValidationOrchestrationV1Error) as caught:
+            replace(request, capacity_instrument_contract=hijack).validate()
+        message = str(caught.exception)
+        self.assertIn("capacity_instrument_contract_conflicts_canonical_registry", message)
+        for field in ("venue", "base_asset", "quote_asset"):
+            self.assertIn(field, message)
+
+    def test_a_restated_canonical_contract_is_accepted_by_the_request(self) -> None:
+        canonical_id, request = self._canonical_instrument_request()
+        restated = replace(
+            BYBIT_BTCUSDT_PERPETUAL_LIQUIDITY_CONTRACT_V1,
+            contract_reference="fixture://restated-canonical-contract",
+        )
+        self.assertEqual(restated.instrument_id, canonical_id)
+        replace(request, capacity_instrument_contract=restated).validate()
+
+    def test_invalid_capacity_policy_rejected_by_the_request(self) -> None:
+        with self.assertRaises(CryptoLiquidityCapacityV1Error):
+            replace(
+                self.without_policy,
+                capacity_policy=replace(self.policy, maximum_participation=Decimal("2")),
+                capacity_capital_levels=self.capital_levels,
+            ).validate()
 
 
 class UnavailableHoldoutOrchestrationTests(unittest.TestCase):
