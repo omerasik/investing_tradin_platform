@@ -78,6 +78,38 @@ class RetryPolicy:
             raise ProviderConfigurationError("invalid_retry_policy")
 
 
+class MinimumIntervalRequestPacer:
+    """Enforces ``ProviderConfiguration.minimum_request_interval`` between outbound requests.
+
+    Same semantics as the Stooq adapter's inline pacing: before each request, sleep for
+    whatever remains of the minimum interval since the previous request started. One
+    pacer instance may be shared by several adapter instances so that pacing also holds
+    across them (e.g. consecutive acquisition windows of one scheduled invocation); it
+    never retries, reorders or drops a request.
+    """
+
+    def __init__(
+        self,
+        minimum_interval: timedelta,
+        *,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        if minimum_interval < timedelta(0):
+            raise ProviderConfigurationError("invalid_provider_configuration")
+        self.minimum_interval = minimum_interval
+        self._monotonic = monotonic
+        self._sleep = sleep
+        self._last_request_at: float | None = None
+
+    def before_request(self) -> None:
+        if self._last_request_at is not None:
+            delay = self.minimum_interval.total_seconds() - (self._monotonic() - self._last_request_at)
+            if delay > 0:
+                self._sleep(delay)
+        self._last_request_at = self._monotonic()
+
+
 @dataclass(frozen=True, slots=True)
 class HttpResponse:
     status_code: int
