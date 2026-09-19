@@ -98,7 +98,7 @@ ENGINEERING EVIDENCE`.
 
 ## Architecture & Verification
 
-The authoritative requirements are recorded in `docs/MASTER_ROADMAP.md`. Technical details for Module 1A are in `docs/MODULE_1A_RUNNABLE_LOCAL_AUTH.md`.
+The authoritative requirements are recorded in `docs/MASTER_ROADMAP.md`. Technical details for Module 1A are in `docs/MODULE_1A_RUNNABLE_LOCAL_AUTH.md`. For what is being worked on right now, read `docs/current-phase.yaml` rather than the roadmap — `docs/CURRENT_STATUS.md` is a superseded 2026-08-31 snapshot.
 
 To run quality gates manually:
 ```bash

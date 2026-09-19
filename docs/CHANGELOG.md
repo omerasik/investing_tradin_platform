@@ -1,5 +1,8 @@
 # Changelog
 
+> Entries stop at 2026-08-31. Work merged after that date is recorded in commit
+> messages and module docstrings rather than here; use `git log` for it.
+
 ## 2026-08-31
 
 - Verified Cycle 230 unchanged on exact merged main commit

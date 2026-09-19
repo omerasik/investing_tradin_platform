@@ -1,5 +1,13 @@
 # Current Status
 
+> **SUPERSEDED — historical snapshot, not current state.** This document was last
+> synchronized on 2026-08-31 and has not tracked the work merged since (the Bybit
+> V5 public adapter, instrument onboarding, and phases 3B.1, 3B.2, 3B.3 and 3C).
+> Its counts are stale: it reports 459 tests, the suite now has 1708. It is
+> retained as dated evidence. For current state use
+> [`current-phase.yaml`](current-phase.yaml) and `git log`; for requirements use
+> [`MASTER_ROADMAP.md`](MASTER_ROADMAP.md).
+
 Last synchronized: 2026-08-31. The requirement-level source of truth is
 [`MASTER_ROADMAP.md`](MASTER_ROADMAP.md); this document is a concise operational
 snapshot, not a second roadmap.
