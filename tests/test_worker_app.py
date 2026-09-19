@@ -126,7 +126,7 @@ class WorkerScheduledAcquisitionOptInFailClosedTests(unittest.TestCase):
         )
 
         document = json.loads(_scheduled_authorization_document())
-        document["secret_reference"] = "vault://bybit/key"
+        document["secret_reference"] = "vault://bybit/key"  # pragma: allowlist secret
         for overrides in (
             {SCHEDULED_ACQUISITION_TERMS_ENV: "true"},
             {SCHEDULED_ACQUISITION_AUTHORIZATION_ENV: json.dumps(document)},

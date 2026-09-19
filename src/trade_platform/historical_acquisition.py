@@ -53,7 +53,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID
 
 from .bybit_crypto_provider import (
@@ -131,6 +131,7 @@ __all__ = [
     "SealedDatasetView",
     "SourceProfile",
     "acquisition_fingerprint",
+    "sealed_dataset_matches_request",
 ]
 
 
@@ -596,6 +597,44 @@ def _expected_feature_counts(
     return expected_basis, expected_open_interest
 
 
+def sealed_dataset_matches_request(
+    existing: SealedDatasetView, request: HistoricalAcquisitionRequest
+) -> bool:
+    """Whether an already-sealed dataset is exactly this request's logical acquisition.
+
+    The single authority for idempotent-replay identity, shared by
+    :meth:`HistoricalAcquisitionService.acquire` and any caller (e.g. scheduled
+    completion discovery) that must decide whether a sealed dataset proves a
+    request complete. A dataset *version name* proves nothing on its own.
+
+    Full member-identity proof, not merely counts/min-max timestamps: the
+    normalization version, exact instrument, provider identifiers/symbols and
+    per-kind event set the sealed dataset actually carries must match this
+    request's own semantics exactly, or replay would silently accept a dataset
+    that happens to share a shape with a completely different acquisition.
+    Timestamp-set equality alone cannot detect an extra revision/member at an
+    already-covered timestamp, so the actual persisted member count per kind
+    must also equal the expected event count per kind -- the same invariant
+    fresh acquisition enforces via ``_reject_duplicate_timestamps``.
+    """
+    expected_events_by_kind = {
+        kind: frozenset(_expected_event_ats(kind, request.start, request.end))
+        for kind in request.ordered_kinds()
+    }
+    member_counts_match = all(
+        existing.member_count_by_kind.get(kind, 0) == len(expected)
+        for kind, expected in expected_events_by_kind.items()
+    )
+    return not (
+        existing.normalization_version != request.normalization_version
+        or existing.instrument_ids != frozenset({request.instrument_id})
+        or existing.provider_identifiers != frozenset({request.provider_symbol})
+        or existing.provider_symbols != frozenset({request.provider_symbol})
+        or dict(existing.event_ats_by_kind) != expected_events_by_kind
+        or not member_counts_match
+    )
+
+
 def _validate_window_alignment(request: HistoricalAcquisitionRequest) -> None:
     """Reject any window that is not exactly aligned to every requested grid.
 
@@ -903,33 +942,7 @@ class HistoricalAcquisitionService:
         )
         if existing is None:
             return None
-        expected_events_by_kind = {
-            kind: frozenset(_expected_event_ats(kind, request.start, request.end))
-            for kind in request.ordered_kinds()
-        }
-        # Full member-identity proof, not merely counts/min-max timestamps: the
-        # exact instrument, provider identifiers and per-kind event set the
-        # existing sealed dataset actually carries must match this request's
-        # own semantics exactly, or replay would silently accept a dataset that
-        # happens to share a shape with a completely different acquisition.
-        # Timestamp-set equality alone cannot detect an extra revision/member at
-        # an already-covered timestamp, so replay additionally requires the
-        # actual persisted member count per kind to equal the expected event
-        # count per kind -- the same invariant fresh acquisition enforces via
-        # ``_reject_duplicate_timestamps``.
-        member_counts_match = all(
-            existing.member_count_by_kind.get(kind, 0) == len(expected)
-            for kind, expected in expected_events_by_kind.items()
-        )
-        conflicts = (
-            existing.normalization_version != request.normalization_version
-            or existing.instrument_ids != frozenset({request.instrument_id})
-            or existing.provider_identifiers != frozenset({request.provider_symbol})
-            or existing.provider_symbols != frozenset({request.provider_symbol})
-            or dict(existing.event_ats_by_kind) != expected_events_by_kind
-            or not member_counts_match
-        )
-        if conflicts:
+        if not sealed_dataset_matches_request(existing, request):
             raise _Abort(
                 AcquisitionStatus.SEAL_FAILED,
                 "dataset_version_conflict:existing_dataset_semantics_differ",
@@ -1358,36 +1371,48 @@ class PostgresCanonicalAcquisitionEvidence:
                 (dataset_version_id,),
             )
             member_rows = cursor.fetchall()
-        event_ats_by_kind: dict[ObservationKind, set[datetime]] = {}
-        member_count_by_kind: dict[ObservationKind, int] = {}
-        instrument_ids: set[str] = set()
-        provider_identifiers: set[str] = set()
-        provider_symbols: set[str] = set()
+        return _sealed_view_from_rows(row, member_rows)
+
+    def sealed_datasets_by_version_prefix(
+        self, source_id: UUID, version_prefix: str
+    ) -> Mapping[str, SealedDatasetView]:
+        """Every SEALED dataset of one source whose version starts with a prefix.
+
+        Two queries total (datasets, then all their members) instead of one per
+        dataset; each view is built by the same :func:`_sealed_view_from_rows`
+        that :meth:`existing_sealed_dataset` uses, so callers apply exactly the
+        same identity proof (:func:`sealed_dataset_matches_request`).
+        """
+        with self._database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT dataset_version_id,content_hash,normalization_version,valid_from,"
+                "valid_until,created_at,version FROM historical_dataset_versions "
+                "WHERE source_id=%s AND status='SEALED' AND left(version,%s)=%s",
+                (source_id, len(version_prefix), version_prefix),
+            )
+            dataset_rows = cursor.fetchall()
+            if not dataset_rows:
+                return {}
+            cursor.execute(
+                "SELECT m.dataset_version_id,r.observation_kind,r.event_at,n.instrument_id,"
+                "r.provider_identifier,r.provider_symbol "
+                "FROM historical_dataset_members m "
+                "JOIN historical_normalized_observations n "
+                "ON n.normalized_observation_id=m.normalized_observation_id "
+                "JOIN historical_raw_observations r ON r.raw_observation_id=n.raw_observation_id "
+                "WHERE m.dataset_version_id=ANY(%s)",
+                ([row[0] for row in dataset_rows],),
+            )
+            member_rows = cursor.fetchall()
+        members_by_dataset: dict[UUID, list[tuple[Any, ...]]] = {}
         for member_row in member_rows:
-            kind = ObservationKind(str(member_row[0]))
-            # One row per dataset member (the query is keyed by
-            # ``historical_dataset_members``' own primary key), so counting rows
-            # -- not the deduplicated timestamp set -- preserves multiplicity.
-            event_ats_by_kind.setdefault(kind, set()).add(member_row[1])
-            member_count_by_kind[kind] = member_count_by_kind.get(kind, 0) + 1
-            instrument_ids.add(str(member_row[2]))
-            provider_identifiers.add(str(member_row[3]))
-            provider_symbols.add(str(member_row[4]))
-        return SealedDatasetView(
-            dataset_version_id=dataset_version_id,
-            content_hash=str(row[1]),
-            normalization_version=str(row[2]),
-            valid_from=row[3],
-            valid_until=row[4],
-            created_at=row[5],
-            instrument_ids=frozenset(instrument_ids),
-            provider_identifiers=frozenset(provider_identifiers),
-            provider_symbols=frozenset(provider_symbols),
-            event_ats_by_kind={
-                kind: frozenset(events) for kind, events in event_ats_by_kind.items()
-            },
-            member_count_by_kind=dict(member_count_by_kind),
-        )
+            members_by_dataset.setdefault(UUID(str(member_row[0])), []).append(member_row[1:])
+        return {
+            str(row[6]): _sealed_view_from_rows(
+                row, members_by_dataset.get(UUID(str(row[0])), [])
+            )
+            for row in dataset_rows
+        }
 
     def feature_counts(
         self, dataset_version_id: UUID, feature_ids: tuple[UUID, ...]
@@ -1430,6 +1455,46 @@ class PostgresCanonicalAcquisitionEvidence:
             quality_status=QualityStatus(str(row[4])),
             quality_issues=tuple(str(item) for item in row[5]),
         )
+
+
+def _sealed_view_from_rows(
+    row: tuple[Any, ...], member_rows: list[tuple[Any, ...]]
+) -> SealedDatasetView:
+    """Build one :class:`SealedDatasetView` from a dataset row and its member rows.
+
+    Each member row is ``(observation_kind, event_at, instrument_id,
+    provider_identifier, provider_symbol)``.
+    """
+    dataset_version_id = UUID(str(row[0]))
+    dataset_version_id = UUID(str(row[0]))
+    event_ats_by_kind: dict[ObservationKind, set[datetime]] = {}
+    member_count_by_kind: dict[ObservationKind, int] = {}
+    instrument_ids: set[str] = set()
+    provider_identifiers: set[str] = set()
+    provider_symbols: set[str] = set()
+    for member_row in member_rows:
+        kind = ObservationKind(str(member_row[0]))
+        # One row per dataset member (the queries are keyed by
+        # ``historical_dataset_members``' own primary key), so counting rows
+        # -- not the deduplicated timestamp set -- preserves multiplicity.
+        event_ats_by_kind.setdefault(kind, set()).add(member_row[1])
+        member_count_by_kind[kind] = member_count_by_kind.get(kind, 0) + 1
+        instrument_ids.add(str(member_row[2]))
+        provider_identifiers.add(str(member_row[3]))
+        provider_symbols.add(str(member_row[4]))
+    return SealedDatasetView(
+        dataset_version_id=dataset_version_id,
+        content_hash=str(row[1]),
+        normalization_version=str(row[2]),
+        valid_from=row[3],
+        valid_until=row[4],
+        created_at=row[5],
+        instrument_ids=frozenset(instrument_ids),
+        provider_identifiers=frozenset(provider_identifiers),
+        provider_symbols=frozenset(provider_symbols),
+        event_ats_by_kind={kind: frozenset(events) for kind, events in event_ats_by_kind.items()},
+        member_count_by_kind=dict(member_count_by_kind),
+    )
 
 
 class PostgresAcquisitionFeatureMaterializer:

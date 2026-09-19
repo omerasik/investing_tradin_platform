@@ -464,6 +464,82 @@ class ScheduledHistoricalAcquisitionPostgresTests(unittest.TestCase):
         self.assertEqual(len(second_transport.urls), 8)
 
 
+    def test_sealed_dataset_squatting_on_a_scheduled_version_fails_closed_without_fetching(self) -> None:
+        from dataclasses import replace
+
+        from trade_platform.bybit_crypto_provider import BybitCryptoHistoricalAdapter
+        from trade_platform.historical_acquisition import (
+            AcquisitionStatus,
+            HistoricalAcquisitionService,
+            acquisition_fingerprint,
+        )
+        from trade_platform.scheduled_historical_acquisition_v1 import (
+            ScheduledAcquisitionOutcome,
+            build_scheduled_request,
+            plan_scheduled_windows,
+        )
+
+        anchor = datetime(2026, 9, 16, 18, 0, tzinfo=UTC)
+        as_of = anchor + timedelta(minutes=22)  # W0 and W1 eligible
+        authorization = self._authorization("squat", anchor)
+        database = self._database()
+        context = self._context(database)
+        self._approve_policy(context, authorization)
+        window = plan_scheduled_windows(authorization, as_of, ()).pending[0]
+        canonical_request = build_scheduled_request(authorization, window)
+
+        # A genuine sealed dataset whose version name IS the deterministic scheduled
+        # version of W0, but which was acquired under a different normalization version.
+        squat = replace(
+            canonical_request,
+            normalization_version="bybit-v5-md-phase3c-other-normalization",
+            materialize_features=False,
+        )
+        squat = replace(squat, idempotency_key=acquisition_fingerprint(squat))
+        self.assertEqual(squat.dataset_version, canonical_request.dataset_version)
+        seed_transport = SyntheticBybitTransport()
+
+        def seed_adapter_factory(configuration, now):
+            return BybitCryptoHistoricalAdapter(
+                configuration, transport=seed_transport, now=now, sleep=lambda _seconds: None
+            )
+
+        seeded = HistoricalAcquisitionService.for_postgres(
+            database, adapter_factory=seed_adapter_factory, now=lambda: NOW
+        ).acquire(squat, self._configuration())
+        self.assertEqual(seeded.status, AcquisitionStatus.SUCCEEDED, seeded.failure_code)
+        self.assertEqual(len(self._sealed_versions(database, authorization)), 1)
+        raw_rows_before = self._raw_row_count(database)
+
+        transport = SyntheticBybitTransport()
+        result = self._runner(database, context, authorization, transport).run(as_of)
+
+        self.assertEqual(result.outcome, ScheduledAcquisitionOutcome.WINDOW_FAILED)
+        self.assertEqual(result.windows_sealed_conflicting, 1)
+        self.assertEqual(result.windows_completed_before, 0)
+        (failed,) = result.window_outcomes
+        self.assertEqual(failed.window, window)
+        self.assertEqual(failed.status, AcquisitionStatus.SEAL_FAILED)
+        self.assertTrue((failed.failure_code or "").startswith("dataset_version_conflict"))
+        # Zero provider fetches, nothing repaired/overwritten, newer window untouched.
+        self.assertEqual(transport.urls, [])
+        self.assertEqual(self._raw_row_count(database), raw_rows_before)
+        self.assertEqual(self._sealed_versions(database, authorization), {canonical_request.dataset_version})
+        with database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT normalization_version FROM historical_dataset_versions WHERE source_id=%s AND version=%s",
+                (self.source_id, canonical_request.dataset_version),
+            )
+            self.assertEqual(
+                str(cursor.fetchone()[0]), "bybit-v5-md-phase3c-other-normalization"
+            )
+
+    def _raw_row_count(self, database) -> int:
+        with database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM historical_raw_observations WHERE source_id=%s", (self.source_id,))
+            return int(str(cursor.fetchone()[0]))
+
+
 def _ms(value: datetime) -> int:
     return int((value - _EPOCH).total_seconds()) * 1000
 

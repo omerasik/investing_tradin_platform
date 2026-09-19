@@ -65,6 +65,7 @@ from trade_platform.scheduled_historical_acquisition_v1 import (
     SCHEDULED_ACQUISITION_TERMS_ENV,
     ScheduledAcquisitionConfigurationError,
     ScheduledAcquisitionOutcome,
+    ScheduledAcquisitionWindow,
     ScheduledHistoricalAcquisitionAuthorizationV1,
     ScheduledHistoricalAcquisitionRunnerV1,
     authorization_from_json,
@@ -249,6 +250,9 @@ class InMemoryHistoricalStore:
         self.datasets: dict[tuple[UUID, str], tuple[HistoricalDatasetVersion, tuple[UUID, ...]]] = {}
         self.feature_values: dict[tuple[UUID, UUID], int] = {}
         self.checkpoints: list[object] = []
+        # Pre-existing sealed datasets seeded directly (e.g. ones whose persisted
+        # members do not match the deterministic scheduled version they squat on).
+        self.forced_views: dict[tuple[UUID, str], SealedDatasetView] = {}
 
     # pipeline
     def capture_raw(self, observations: list[RawHistoricalObservation]) -> tuple[UUID, ...]:
@@ -321,6 +325,9 @@ class InMemoryHistoricalStore:
         )
 
     def existing_sealed_dataset(self, source_id: UUID, version: str) -> SealedDatasetView | None:
+        forced = self.forced_views.get((source_id, version))
+        if forced is not None:
+            return forced
         entry = self.datasets.get((source_id, version))
         if entry is None:
             return None
@@ -351,13 +358,17 @@ class InMemoryWindowEvidence:
         self._store = store
         self.reads = 0
 
-    def sealed_dataset_ids(self, source_id: UUID, version_prefix: str) -> Mapping[str, UUID]:
+    def sealed_datasets(self, source_id: UUID, version_prefix: str) -> Mapping[str, SealedDatasetView]:
         self.reads += 1
-        return {
-            version: entry[0].dataset_version_id
-            for (source, version), entry in self._store.datasets.items()
-            if source == source_id and version.startswith(version_prefix)
-        }
+        versions = {version for (source, version) in self._store.datasets if source == source_id}
+        versions |= {version for (source, version) in self._store.forced_views if source == source_id}
+        views: dict[str, SealedDatasetView] = {}
+        for version in versions:
+            if version.startswith(version_prefix):
+                view = self._store.existing_sealed_dataset(source_id, version)
+                if view is not None:
+                    views[version] = view
+        return views
 
     def feature_counts(
         self, dataset_version_ids: tuple[UUID, ...], feature_ids: tuple[UUID, ...]
@@ -607,7 +618,7 @@ class DefaultRegistryIsProviderInertTests(unittest.TestCase):
 
     def test_secret_reference_rejected(self) -> None:
         with self.assertRaises(ScheduledAcquisitionConfigurationError) as caught:
-            authorization_from_json(_authorization_document(secret_reference="vault://bybit/api-key"))
+            authorization_from_json(_authorization_document(secret_reference="vault://bybit/api-key"))  # pragma: allowlist secret
         self.assertEqual(
             str(caught.exception), "public_bybit_scheduled_acquisition_rejects_secret_reference"
         )
@@ -1037,6 +1048,164 @@ class RunnerBehaviourTests(unittest.TestCase):
         self.assertEqual(result.failure_code, "unexpected_acquisition_error:RuntimeError")
         self.assertEqual(len(result.window_outcomes), 1)
         self.assertEqual(harness.lock.claimed, harness.lock.released)
+
+
+# ---------------------------------------------------------------------------
+# Sealed-dataset identity is the completion authority (not the version name)
+# ---------------------------------------------------------------------------
+
+
+def _expected_events(kind: ObservationKind, start: datetime, end: datetime) -> list[datetime]:
+    if kind is ObservationKind.OPEN_INTEREST:
+        count = int((end - start) / timedelta(minutes=5))
+        return [start + index * timedelta(minutes=5) for index in range(count)]
+    total = int((end - start) / timedelta(minutes=1))
+    offset = 0 if kind is ObservationKind.OHLCV else 1
+    return [start + (index + offset) * timedelta(minutes=1) for index in range(total)]
+
+
+def _seed_sealed(
+    harness: Harness,
+    index: int,
+    *,
+    normalization_version: str | None = None,
+    instrument_ids: frozenset[str] | None = None,
+    provider_identifiers: frozenset[str] | None = None,
+    provider_symbols: frozenset[str] | None = None,
+    member_count_overrides: Mapping[ObservationKind, int] | None = None,
+    shift_ohlcv_by: timedelta | None = None,
+    features_complete: bool = False,
+) -> ScheduledAcquisitionWindow:
+    """Seal a dataset under window ``index``'s deterministic scheduled version.
+
+    By default its persisted members are exactly what a correct acquisition of
+    that window would have sealed; each override makes one aspect wrong while
+    the *version name* still equals the deterministic scheduled one.
+    """
+    authorization = harness.authorization
+    start = authorization.schedule_anchor + index * authorization.window_size
+    window = ScheduledAcquisitionWindow(index, start, start + authorization.window_size)
+    request = build_scheduled_request(authorization, window)
+    events = {kind: _expected_events(kind, window.start, window.end) for kind in ALL_KINDS}
+    if shift_ohlcv_by is not None:
+        events[ObservationKind.OHLCV] = [item + shift_ohlcv_by for item in events[ObservationKind.OHLCV]]
+    counts = {kind: len(values) for kind, values in events.items()}
+    counts.update(member_count_overrides or {})
+    dataset_id = uuid4()
+    harness.store.forced_views[(SOURCE_ID, request.dataset_version)] = SealedDatasetView(
+        dataset_version_id=dataset_id,
+        content_hash=hashlib.sha256(request.dataset_version.encode()).hexdigest(),
+        normalization_version=normalization_version or authorization.normalization_version,
+        valid_from=window.start,
+        valid_until=window.end,
+        created_at=window.end,
+        instrument_ids=instrument_ids or frozenset({BYBIT_BTCUSDT_PERPETUAL_INSTRUMENT_ID}),
+        provider_identifiers=provider_identifiers or frozenset({BYBIT_BTCUSDT_SYMBOL}),
+        provider_symbols=provider_symbols or frozenset({BYBIT_BTCUSDT_SYMBOL}),
+        event_ats_by_kind={kind: frozenset(values) for kind, values in events.items()},
+        member_count_by_kind=counts,
+    )
+    if features_complete:
+        harness.store.feature_values[(dataset_id, BASIS_FEATURE_ID)] = 10
+        harness.store.feature_values[(dataset_id, OPEN_INTEREST_FEATURE_ID)] = 1
+    return window
+
+
+class SealedDatasetIdentityAuthorityTests(unittest.TestCase):
+    """A predictable version string must never bypass the 3B.1 replay identity proof."""
+
+    def test_exact_sealed_window_without_features_is_complete(self) -> None:
+        harness = Harness(authorization=_authorization(materialize_features=False))
+        _seed_sealed(harness, 0)
+        result = harness.runner().run(_at(12))  # exactly W0 eligible
+        self.assertEqual(result.outcome, ScheduledAcquisitionOutcome.UP_TO_DATE)
+        self.assertEqual(result.windows_completed_before, 1)
+        self.assertEqual(result.windows_sealed_conflicting, 0)
+        self.assertEqual(result.window_outcomes, ())
+        self.assertEqual(harness.transport.urls, [])
+
+    def test_exact_sealed_window_with_complete_features_is_skipped_with_zero_fetches(self) -> None:
+        harness = Harness()
+        _seed_sealed(harness, 0, features_complete=True)
+        result = harness.runner().run(_at(12))
+        self.assertEqual(result.outcome, ScheduledAcquisitionOutcome.UP_TO_DATE)
+        self.assertEqual(result.windows_completed_before, 1)
+        self.assertEqual(result.windows_feature_incomplete, 0)
+        self.assertEqual(result.windows_considered, ())
+        self.assertEqual(harness.transport.urls, [])
+        self.assertEqual(harness.lock.claimed, [])
+
+    def test_exact_sealed_window_with_incomplete_features_resumes_features_only(self) -> None:
+        harness = Harness()
+        window = _seed_sealed(harness, 0)
+        result = harness.runner().run(_at(12))
+        self.assertEqual(result.outcome, ScheduledAcquisitionOutcome.UP_TO_DATE)
+        self.assertEqual(result.windows_feature_incomplete, 1)
+        self.assertEqual(result.windows_sealed_conflicting, 0)
+        (outcome,) = result.window_outcomes
+        self.assertEqual(outcome.window, window)
+        self.assertTrue(outcome.already_completed)
+        self.assertEqual((outcome.basis_feature_count, outcome.open_interest_change_feature_count), (10, 1))
+        self.assertIsNone(outcome.provider_health_status)
+        self.assertEqual(harness.transport.urls, [])
+        self.assertEqual(harness.store.datasets, {})  # nothing re-sealed
+        # Now complete: a later invocation skips it outright.
+        again = harness.runner().run(_at(12))
+        self.assertEqual((again.windows_completed_before, again.windows_considered), (1, ()))
+
+    def test_version_name_alone_never_proves_completion(self) -> None:
+        wrong_instrument = frozenset({"CRYPTO:BYBIT:ETHUSDT:PERP"})
+        wrong_symbol = frozenset({"ETHUSDT"})
+        cases: dict[str, dict[str, object]] = {
+            "normalization_version": {"normalization_version": "some-other-normalization"},
+            "instrument_identity": {"instrument_ids": wrong_instrument},
+            "provider_identifier": {"provider_identifiers": wrong_symbol},
+            "provider_symbol": {"provider_symbols": wrong_symbol},
+            "wrong_window_timestamps": {"shift_ohlcv_by": timedelta(minutes=10)},
+            "extra_member_at_covered_timestamp": {"member_count_overrides": {ObservationKind.OHLCV: 11}},
+        }
+        for name, overrides in cases.items():
+            with self.subTest(name):
+                harness = Harness()
+                window = _seed_sealed(harness, 0, features_complete=True, **overrides)  # type: ignore[arg-type]
+                key = (SOURCE_ID, scheduled_dataset_version(harness.authorization, window))
+                seeded = harness.store.forced_views[key]
+                # Even a perfectly healthy NEWER sealed window must not be reached.
+                _seed_sealed(harness, 1, features_complete=True)
+
+                result = harness.runner().run(_at(22))  # W0 and W1 eligible
+
+                self.assertEqual(result.outcome, ScheduledAcquisitionOutcome.WINDOW_FAILED)
+                self.assertFalse(result.succeeded)
+                self.assertEqual(result.windows_sealed_conflicting, 1)
+                self.assertEqual(result.windows_completed_before, 1)  # only the exact W1
+                (failed,) = result.window_outcomes
+                self.assertEqual(failed.window, window)
+                self.assertEqual(failed.status, AcquisitionStatus.SEAL_FAILED)
+                self.assertTrue((failed.failure_code or "").startswith("dataset_version_conflict"))
+                # Canonical replay refused it without any provider fetch...
+                self.assertEqual(harness.transport.urls, [])
+                self.assertEqual(harness.store.checkpoints, [])
+                # ...never repaired/overwrote/renamed it, and never sealed anything new.
+                self.assertIs(harness.store.forced_views[key], seeded)
+                self.assertEqual(harness.store.datasets, {})
+                self.assertEqual(harness.lock.claimed, [window_lock_key(harness.authorization, window)])
+                summary = result.summary()
+                self.assertEqual(summary["first_failed_status"], "SEAL_FAILED")
+                self.assertEqual(summary["windows_sealed_conflicting"], "1")
+                with self.assertRaises(JobExecutionFailed) as caught:
+                    harness.runner().as_job_runner()(None, _at(22))  # type: ignore[arg-type]
+                self.assertEqual(caught.exception.summary["outcome"], "WINDOW_FAILED")
+                self.assertEqual(harness.transport.urls, [])
+
+    def test_conflicting_window_is_not_skipped_even_when_newer_windows_are_missing(self) -> None:
+        harness = Harness()
+        _seed_sealed(harness, 0, normalization_version="some-other-normalization")
+        result = harness.runner().run(_at(32))  # W0, W1, W2 eligible; W1/W2 unsealed
+        self.assertEqual(result.outcome, ScheduledAcquisitionOutcome.WINDOW_FAILED)
+        self.assertEqual([item.window.index for item in result.window_outcomes], [0])
+        self.assertEqual(harness.transport.urls, [])
+        self.assertEqual(result.backlog_remaining, 3)
 
 
 class BybitAdapterPacingTests(unittest.TestCase):

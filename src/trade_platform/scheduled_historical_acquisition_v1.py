@@ -33,9 +33,13 @@ and the exact window, and the idempotency key is still
 window always resolves to the same request and sealed dataset identity.
 
 **Completed windows are proven by sealed datasets.** No mutable cursor or
-watermark exists: a window is complete iff its deterministic dataset version is
-already SEALED for the source (and, when feature materialization is authorized,
-its canonical feature counts are exact). Catch-up processes the oldest missing
+watermark exists: a window is complete iff a dataset sealed under its
+deterministic version is *exactly* that window's acquisition -- the same
+`sealed_dataset_matches_request` identity proof Phase 3B.1 replay uses (a version
+name alone is never proof) -- and, when feature materialization is authorized,
+its canonical feature counts are exact. A sealed dataset that squats on a
+scheduled version but fails the proof is left missing, so its window is submitted
+to `acquire()` and fails closed there. Catch-up processes the oldest missing
 windows first, at most ``maximum_catchup_windows_per_invocation`` per invocation,
 and stops at the first failed or contended window, so a newer window is never
 acquired past an older gap.
@@ -81,7 +85,10 @@ from .historical_acquisition import (
     HistoricalAcquisitionResult,
     HistoricalAcquisitionService,
     PostgresAcquisitionFeatureMaterializer,
+    PostgresCanonicalAcquisitionEvidence,
+    SealedDatasetView,
     acquisition_fingerprint,
+    sealed_dataset_matches_request,
 )
 from .historical_market_data import ObservationKind
 from .operational_jobs import OperationalJobPolicy, PostgresOperationalJobStore
@@ -598,7 +605,9 @@ def plan_scheduled_windows(
 class ScheduledWindowEvidence(Protocol):
     """Read-only sealed-dataset / feature evidence the planner trusts."""
 
-    def sealed_dataset_ids(self, source_id: UUID, version_prefix: str) -> Mapping[str, UUID]: ...
+    def sealed_datasets(
+        self, source_id: UUID, version_prefix: str
+    ) -> Mapping[str, SealedDatasetView]: ...
 
     def feature_counts(
         self, dataset_version_ids: tuple[UUID, ...], feature_ids: tuple[UUID, ...]
@@ -674,6 +683,7 @@ class ScheduledInvocationResult:
     contended_window: ScheduledAcquisitionWindow | None = None
     failure_code: str | None = None
     windows_feature_incomplete: int = 0
+    windows_sealed_conflicting: int = 0
     worst_case_provider_requests: int = 0
 
     @property
@@ -711,6 +721,7 @@ class ScheduledInvocationResult:
             "windows_eligible": str(self.windows_eligible),
             "windows_completed_before": str(self.windows_completed_before),
             "windows_feature_incomplete": str(self.windows_feature_incomplete),
+            "windows_sealed_conflicting": str(self.windows_sealed_conflicting),
             "windows_considered": ",".join(_window_label(window) for window in self.windows_considered),
             "windows_replayed": str(sum(1 for item in succeeded if item.already_completed)),
             "windows_acquired": str(sum(1 for item in succeeded if not item.already_completed)),
@@ -797,7 +808,7 @@ class ScheduledHistoricalAcquisitionRunnerV1:
         except ScheduledAcquisitionConfigurationError as error:
             return self._not_authorized(as_of, cutoff, policy, str(error))
 
-        completed, feature_incomplete = self._completed_versions(as_of)
+        completed, feature_incomplete, sealed_conflicting = self._completed_versions(as_of)
         plan = plan_scheduled_windows(authorization, as_of, completed)
         outcomes: list[ScheduledWindowOutcome] = []
         contended: ScheduledAcquisitionWindow | None = None
@@ -842,6 +853,7 @@ class ScheduledHistoricalAcquisitionRunnerV1:
             contended_window=contended,
             failure_code=failure_code,
             windows_feature_incomplete=feature_incomplete,
+            windows_sealed_conflicting=sealed_conflicting,
             worst_case_provider_requests=(
                 len(plan.pending)
                 * len(authorization.observation_kinds)
@@ -864,30 +876,52 @@ class ScheduledHistoricalAcquisitionRunnerV1:
 
     # ---- internals ---------------------------------------------------------
 
-    def _completed_versions(self, as_of: datetime) -> tuple[frozenset[str], int]:
-        """Sealed window datasets that are complete (features too, when authorized)."""
+    def _completed_versions(self, as_of: datetime) -> tuple[frozenset[str], int, int]:
+        """Windows proven complete: ``(completed versions, feature-incomplete, conflicting)``.
+
+        A predictable dataset version name is never proof. A sealed dataset counts
+        as complete only if :func:`sealed_dataset_matches_request` -- the exact
+        Phase 3B.1 replay identity proof -- accepts it against this window's own
+        request (and, when features are authorized, its canonical feature counts
+        are exact). A sealed dataset that squats on a scheduled version name but
+        fails that proof stays *missing*, so the oldest such window is submitted to
+        ``acquire()``, whose own replay check then fails closed without a provider
+        fetch; nothing is renamed, overwritten or skipped.
+        """
         authorization = self.authorization
-        sealed = self._evidence.sealed_dataset_ids(
+        sealed = self._evidence.sealed_datasets(
             authorization.source_id, scheduled_dataset_version_prefix(authorization)
         )
-        if not authorization.materialize_features or not sealed:
-            return frozenset(sealed), 0
+        matching: dict[str, UUID] = {}
+        conflicting = 0
+        for version, view in sealed.items():
+            index = _window_index_for_version(authorization, version)
+            if index is None:
+                continue
+            request = build_scheduled_request(authorization, _window(authorization, index))
+            if sealed_dataset_matches_request(view, request):
+                matching[version] = view.dataset_version_id
+            else:
+                conflicting += 1
+        if not authorization.materialize_features or not matching:
+            return frozenset(matching), 0, conflicting
         basis_id = self._feature_identity.resolve_basis_feature_id(as_of)
         open_interest_id = self._feature_identity.resolve_open_interest_feature_id(as_of)
-        dataset_ids = tuple(sealed.values())
-        counts = self._evidence.feature_counts(dataset_ids, (basis_id, open_interest_id))
+        counts = self._evidence.feature_counts(
+            tuple(matching.values()), (basis_id, open_interest_id)
+        )
         expected_basis = authorization.window_size // _MINUTE
         expected_open_interest = authorization.window_size // _OPEN_INTEREST_GRID - 1
         complete = frozenset(
             version
-            for version, dataset_id in sealed.items()
+            for version, dataset_id in matching.items()
             if counts.get((dataset_id, basis_id), 0) == expected_basis
             and counts.get((dataset_id, open_interest_id), 0) == expected_open_interest
         )
-        # A sealed window whose features are incomplete stays "missing": it is
-        # re-submitted in order, and acquire()'s replay path resumes the
-        # features with zero provider calls.
-        return complete, len(sealed) - len(complete)
+        # A sealed, identity-exact window whose features are incomplete stays
+        # "missing": it is re-submitted in order, and acquire()'s replay path
+        # resumes the features with zero provider calls.
+        return complete, len(matching) - len(complete), conflicting
 
     def _acquire_window(self, window: ScheduledAcquisitionWindow) -> ScheduledWindowOutcome:
         request = build_scheduled_request(self.authorization, window)
@@ -1014,20 +1048,16 @@ class PostgresJobPolicyGate:
 
 
 class PostgresScheduledWindowEvidence:
-    """Reads sealed scheduled-window datasets and exact-identity feature counts."""
+    """Reads sealed scheduled-window datasets (full member identity) and feature counts."""
 
     def __init__(self, database: PostgresDatabase) -> None:
         self._database = database
+        self._canonical = PostgresCanonicalAcquisitionEvidence(database)
 
-    def sealed_dataset_ids(self, source_id: UUID, version_prefix: str) -> Mapping[str, UUID]:
-        with self._database.transaction() as connection, connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT version,dataset_version_id FROM historical_dataset_versions "
-                "WHERE source_id=%s AND status='SEALED' AND left(version,%s)=%s",
-                (source_id, len(version_prefix), version_prefix),
-            )
-            rows = cursor.fetchall()
-        return {str(row[0]): UUID(str(row[1])) for row in rows}
+    def sealed_datasets(
+        self, source_id: UUID, version_prefix: str
+    ) -> Mapping[str, SealedDatasetView]:
+        return self._canonical.sealed_datasets_by_version_prefix(source_id, version_prefix)
 
     def feature_counts(
         self, dataset_version_ids: tuple[UUID, ...], feature_ids: tuple[UUID, ...]
