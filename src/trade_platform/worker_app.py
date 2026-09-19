@@ -36,7 +36,13 @@ from .persistence import PersistenceError, PostgresDatabase
 from .postgres_market_data import PostgresHistoricalBarStore
 from .retention_evidence import PostgresRetentionEvidenceStore
 from .runtime_app import RuntimeCompositionError
-from .scheduler import JobContext, SchedulerWorker, default_job_registry
+from .scheduled_historical_acquisition_v1 import (
+    ScheduledAcquisitionConfigurationError,
+    ScheduledHistoricalAcquisitionRunnerV1,
+    build_postgres_scheduled_acquisition_runner,
+    scheduled_acquisition_from_environment,
+)
+from .scheduler import JobContext, JobRunner, SchedulerWorker, default_job_registry
 
 __all__ = ["WorkerRuntime", "app", "create_worker_runtime_from_environment"]
 
@@ -58,6 +64,9 @@ class WorkerRuntime:
     database: PostgresDatabase
     worker: SchedulerWorker
     poll_seconds: int
+    #: ``None`` unless the deployment explicitly opted in to scheduled provider
+    #: acquisition; when ``None`` no object in this runtime can reach a provider.
+    scheduled_acquisition: ScheduledHistoricalAcquisitionRunnerV1 | None = None
     last_tick_at: datetime | None = field(default=None, init=False)
     last_tick_ok: bool = field(default=False, init=False)
     _task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
@@ -108,6 +117,13 @@ def create_worker_runtime_from_environment(
         string. There is no fallback -- this worker never touches SQLite.
       - ``TRADE_PLATFORM_WORKER_POLL_SECONDS``: optional, default 30; the interval
         between due-state checks. Must be at least 5 seconds.
+      - the three ``TRADE_PLATFORM_SCHEDULED_HISTORICAL_ACQUISITION*`` variables
+        (see :func:`~trade_platform.scheduled_historical_acquisition_v1.scheduled_acquisition_from_environment`):
+        all absent (the default) means no provider runner exists at all; all three
+        present and valid registers the scheduled Bybit acquisition runner under its
+        authorized job name, which still executes only while its durable
+        ``OperationalJobPolicy`` is enabled at the authorized version. Anything in
+        between fails startup.
 
     Fail-closed behavior mirrors :func:`trade_platform.runtime_app.create_runtime_app_from_environment`:
     missing or invalid configuration, or an unreachable database, raises
@@ -121,6 +137,12 @@ def create_worker_runtime_from_environment(
         raise RuntimeCompositionError("worker_poll_seconds_must_be_an_integer") from error
     if poll_seconds < _MINIMUM_POLL_SECONDS:
         raise RuntimeCompositionError("worker_poll_seconds_too_small")
+    try:
+        scheduled_config = scheduled_acquisition_from_environment(env)
+    except ScheduledAcquisitionConfigurationError as error:
+        raise RuntimeCompositionError(f"scheduled_acquisition_configuration_invalid:{error}") from error
+    if scheduled_config is not None and scheduled_config.authorization.job_name in default_job_registry():
+        raise RuntimeCompositionError("scheduled_acquisition_job_name_collides_with_internal_job")
 
     try:
         database = PostgresDatabase(dsn)
@@ -137,11 +159,28 @@ def create_worker_runtime_from_environment(
             bar_store=PostgresHistoricalBarStore(database),
             data_health_store=PostgresDataHealthStore(database),
         )
-        worker = SchedulerWorker(context=context, registry=default_job_registry())
+        registry: dict[str, JobRunner] = dict(default_job_registry())
+        scheduled: ScheduledHistoricalAcquisitionRunnerV1 | None = None
+        if scheduled_config is not None:
+            try:
+                scheduled = build_postgres_scheduled_acquisition_runner(
+                    database,
+                    context.job_store,
+                    scheduled_config.authorization,
+                    scheduled_config.configuration,
+                )
+            except ScheduledAcquisitionConfigurationError as error:
+                raise RuntimeCompositionError(
+                    f"scheduled_acquisition_configuration_invalid:{error}"
+                ) from error
+            registry[scheduled_config.authorization.job_name] = scheduled.as_job_runner()
+        worker = SchedulerWorker(context=context, registry=registry)
     except Exception:
         database.close()
         raise
-    return WorkerRuntime(database=database, worker=worker, poll_seconds=poll_seconds)
+    return WorkerRuntime(
+        database=database, worker=worker, poll_seconds=poll_seconds, scheduled_acquisition=scheduled
+    )
 
 
 def _build_app() -> FastAPI:
