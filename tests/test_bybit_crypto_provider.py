@@ -16,6 +16,7 @@ from trade_platform.bybit_crypto_provider import (
 )
 from trade_platform.data_providers import (
     HttpResponse,
+    MinimumIntervalRequestPacer,
     ProviderConfiguration,
     ProviderConfigurationError,
     ProviderError,
@@ -45,6 +46,23 @@ WINDOW_END = datetime(2026, 6, 1, 0, 5, tzinfo=UTC)
 
 def _milliseconds(value: datetime) -> int:
     return int((value - datetime(1970, 1, 1, tzinfo=UTC)).total_seconds()) * 1000
+
+
+def _milliseconds_exact(value: datetime) -> int:
+    delta = value - datetime(1970, 1, 1, tzinfo=UTC)
+    return delta.days * 86_400_000 + delta.seconds * 1000 + delta.microseconds // 1000
+
+
+class RecordingPacer(MinimumIntervalRequestPacer):
+    """Counts pacer admissions so a test can prove every attempt was paced."""
+
+    def __init__(self, minimum_interval: timedelta, **kwargs: object) -> None:
+        super().__init__(minimum_interval, **kwargs)  # type: ignore[arg-type]
+        self.calls = 0
+
+    def before_request(self) -> None:
+        self.calls += 1
+        super().before_request()
 
 
 def _configuration(**overrides: object) -> ProviderConfiguration:
@@ -81,6 +99,11 @@ def _open_interest_result(
     if next_page_cursor is not None:
         result["nextPageCursor"] = next_page_cursor
     return _envelope(result)
+
+
+RATE_LIMITED_BODY = _envelope(
+    {}, return_code=10006, message="Too many visits. Exceeded the API Rate Limit."
+)
 
 
 def _trade_row(bar_open: datetime, close: str, *, volume: str = "12.5") -> list[str]:
@@ -413,6 +436,265 @@ class BybitTransportFailureTests(unittest.TestCase):
         with self.assertRaisesRegex(ProviderError, "bybit_http_status:503"):
             adapter.fetch_raw_page(uuid4(), _scope(), None)
         self.assertEqual(len(transport.urls), 2)
+
+
+class BybitProviderRateLimitRetryTests(unittest.TestCase):
+    """Bybit V5 answers HTTP 200 with retCode 10006 when the API rate limit is hit.
+
+    That exact code is the only provider-envelope condition treated as transient; it
+    stays bounded by RetryPolicy and paced by the shared MinimumIntervalRequestPacer.
+    """
+
+    def _rate_limited_adapter(
+        self,
+        responses: list[HttpResponse],
+        *,
+        sleeps: list[float],
+        maximum_attempts: int = 3,
+        base_delay: timedelta = timedelta(seconds=2),
+        now: datetime = NOW,
+        pacer: MinimumIntervalRequestPacer | None = None,
+    ) -> tuple[BybitCryptoHistoricalAdapter, ScriptedTransport]:
+        transport = ScriptedTransport(responses)
+        adapter = BybitCryptoHistoricalAdapter(
+            _configuration(),
+            transport=transport,  # type: ignore[arg-type]
+            retry_policy=RetryPolicy(maximum_attempts=maximum_attempts, base_delay=base_delay),
+            now=lambda: now,
+            sleep=sleeps.append,
+            pacer=pacer,
+        )
+        return adapter, transport
+
+    def test_rate_limited_envelope_is_retried_once_then_succeeds(self) -> None:
+        sleeps: list[float] = []
+        adapter, transport = self._rate_limited_adapter(
+            [
+                HttpResponse(200, RATE_LIMITED_BODY),
+                HttpResponse(200, _kline_result([_trade_row(WINDOW_START, "27050.0")])),
+            ],
+            sleeps=sleeps,
+        )
+        page = adapter.fetch_raw_page(uuid4(), _scope(), None)
+        self.assertEqual(len(page.records), 1)
+        self.assertEqual(len(transport.urls), 2)
+        self.assertEqual(sleeps, [2.0])
+
+    def test_two_rate_limited_envelopes_succeed_on_the_third_attempt(self) -> None:
+        sleeps: list[float] = []
+        adapter, transport = self._rate_limited_adapter(
+            [
+                HttpResponse(200, RATE_LIMITED_BODY),
+                HttpResponse(200, RATE_LIMITED_BODY),
+                HttpResponse(200, _kline_result([_trade_row(WINDOW_START, "27050.0")])),
+            ],
+            sleeps=sleeps,
+        )
+        page = adapter.fetch_raw_page(uuid4(), _scope(), None)
+        self.assertEqual(len(page.records), 1)
+        self.assertEqual(len(transport.urls), 3)
+        self.assertEqual(sleeps, [2.0, 4.0])
+
+    def test_persistent_rate_limit_exhausts_attempts_and_fails_closed(self) -> None:
+        sleeps: list[float] = []
+        adapter, transport = self._rate_limited_adapter(
+            [HttpResponse(200, RATE_LIMITED_BODY) for _ in range(3)],
+            sleeps=sleeps,
+            base_delay=timedelta(seconds=0),
+        )
+        with self.assertRaisesRegex(
+            ProviderError,
+            r"bybit_provider_error:10006:Too many visits\. Exceeded the API Rate Limit\.",
+        ):
+            adapter.fetch_raw_page(uuid4(), _scope(), None)
+        # Exactly maximum_attempts requests: the transport would raise on a fourth.
+        self.assertEqual(len(transport.urls), 3)
+        self.assertEqual(sleeps, [0.0, 0.0])
+
+    def test_future_reset_header_drives_the_retry_delay(self) -> None:
+        reset_at = NOW + timedelta(seconds=7, milliseconds=500)
+        sleeps: list[float] = []
+        adapter, transport = self._rate_limited_adapter(
+            [
+                HttpResponse(
+                    200,
+                    RATE_LIMITED_BODY,
+                    {
+                        "X-Bapi-Limit": "120",
+                        "X-Bapi-Limit-Status": "0",
+                        "X-Bapi-Limit-Reset-Timestamp": str(_milliseconds_exact(reset_at)),
+                    },
+                ),
+                HttpResponse(200, _kline_result([_trade_row(WINDOW_START, "27050.0")])),
+            ],
+            sleeps=sleeps,
+        )
+        page = adapter.fetch_raw_page(uuid4(), _scope(), None)
+        self.assertEqual(len(page.records), 1)
+        self.assertEqual(sleeps, [7.5])
+        self.assertEqual(len(transport.urls), 2)
+
+    def test_missing_reset_header_falls_back_to_policy_backoff(self) -> None:
+        sleeps: list[float] = []
+        adapter, _ = self._rate_limited_adapter(
+            [
+                HttpResponse(200, RATE_LIMITED_BODY, {"X-Bapi-Limit": "120"}),
+                HttpResponse(200, RATE_LIMITED_BODY, {"X-Bapi-Limit": "120"}),
+                HttpResponse(200, _kline_result([_trade_row(WINDOW_START, "27050.0")])),
+            ],
+            sleeps=sleeps,
+        )
+        adapter.fetch_raw_page(uuid4(), _scope(), None)
+        self.assertEqual(sleeps, [2.0, 4.0])
+
+    def test_malformed_reset_header_falls_back_without_changing_failure_class(self) -> None:
+        for malformed in ("", "  ", "soon", "-1", "17e9", "1780000000000.5", "9" * 40):
+            with self.subTest(header=malformed):
+                sleeps: list[float] = []
+                adapter, transport = self._rate_limited_adapter(
+                    [
+                        HttpResponse(
+                            200, RATE_LIMITED_BODY, {"X-Bapi-Limit-Reset-Timestamp": malformed}
+                        ),
+                        HttpResponse(200, RATE_LIMITED_BODY),
+                    ],
+                    sleeps=sleeps,
+                    maximum_attempts=2,
+                )
+                with self.assertRaisesRegex(ProviderError, "bybit_provider_error:10006:"):
+                    adapter.fetch_raw_page(uuid4(), _scope(), None)
+                self.assertEqual(sleeps, [2.0])
+                self.assertEqual(len(transport.urls), 2)
+
+    def test_elapsed_or_distant_reset_header_never_sleeps_a_negative_duration(self) -> None:
+        cases = (
+            _milliseconds_exact(NOW - timedelta(minutes=1)),
+            _milliseconds_exact(NOW),
+            _milliseconds_exact(NOW + timedelta(hours=9)),
+        )
+        for reset_ms in cases:
+            with self.subTest(reset_ms=reset_ms):
+                sleeps: list[float] = []
+                adapter, transport = self._rate_limited_adapter(
+                    [
+                        HttpResponse(
+                            200,
+                            RATE_LIMITED_BODY,
+                            {"X-Bapi-Limit-Reset-Timestamp": str(reset_ms)},
+                        ),
+                        HttpResponse(200, _kline_result([_trade_row(WINDOW_START, "27050.0")])),
+                    ],
+                    sleeps=sleeps,
+                )
+                page = adapter.fetch_raw_page(uuid4(), _scope(), None)
+                self.assertEqual(len(page.records), 1)
+                self.assertEqual(sleeps, [2.0])
+                self.assertTrue(all(delay >= 0 for delay in sleeps))
+                self.assertEqual(len(transport.urls), 2)
+
+    def test_other_non_zero_return_codes_are_never_retried(self) -> None:
+        for return_code in (10001, 10002, 10003, 10016, 110001):
+            with self.subTest(return_code=return_code):
+                sleeps: list[float] = []
+                adapter, transport = self._rate_limited_adapter(
+                    [
+                        HttpResponse(
+                            200,
+                            _envelope({"list": []}, return_code=return_code, message="nope"),
+                        )
+                    ],
+                    sleeps=sleeps,
+                )
+                with self.assertRaisesRegex(
+                    ProviderError, f"bybit_provider_error:{return_code}:nope"
+                ):
+                    adapter.fetch_raw_page(uuid4(), _scope(), None)
+                self.assertEqual(len(transport.urls), 1)
+                self.assertEqual(sleeps, [])
+
+    def test_malformed_evidence_on_http_200_is_never_a_rate_limit_retry(self) -> None:
+        cases = (
+            ("{not json", "bybit_invalid_json_response"),
+            ('"10006"', "bybit_unexpected_envelope_shape"),
+            (json.dumps({"retCode": "10006", "retMsg": "rate", "time": 1}),
+             "bybit_unexpected_envelope_shape"),
+            (json.dumps({"retCode": 10006, "retMsg": "rate"}), "bybit_unexpected_envelope_shape"),
+        )
+        for body, expected in cases:
+            with self.subTest(expected=expected):
+                sleeps: list[float] = []
+                adapter, transport = self._rate_limited_adapter(
+                    [HttpResponse(200, body)], sleeps=sleeps
+                )
+                with self.assertRaisesRegex(ProviderError, expected):
+                    adapter.fetch_raw_page(uuid4(), _scope(), None)
+                self.assertEqual(len(transport.urls), 1)
+                self.assertEqual(sleeps, [])
+
+    def test_every_rate_limit_retry_passes_through_the_shared_pacer(self) -> None:
+        paced: list[float] = []
+        pacer = RecordingPacer(
+            timedelta(seconds=1), monotonic=lambda: 100.0, sleep=paced.append
+        )
+        sleeps: list[float] = []
+        transport = ScriptedTransport(
+            [
+                HttpResponse(200, RATE_LIMITED_BODY),
+                HttpResponse(200, RATE_LIMITED_BODY),
+                HttpResponse(200, _kline_result([_trade_row(WINDOW_START, "27050.0")])),
+            ]
+        )
+        adapter = BybitCryptoHistoricalAdapter(
+            _configuration(minimum_request_interval=timedelta(seconds=1)),
+            transport=transport,  # type: ignore[arg-type]
+            retry_policy=RetryPolicy(maximum_attempts=3, base_delay=timedelta(seconds=2)),
+            now=lambda: NOW,
+            sleep=sleeps.append,
+            pacer=pacer,
+        )
+        adapter.fetch_raw_page(uuid4(), _scope(), None)
+        self.assertEqual(len(transport.urls), 3)
+        # One pacer admission per outbound attempt, retries included, and the shared
+        # pacer is the only thing enforcing the minimum interval.
+        self.assertEqual(pacer.calls, 3)
+        self.assertEqual(paced, [1.0, 1.0])
+        self.assertEqual(sleeps, [2.0, 4.0])
+
+    def test_rate_limit_retry_applies_to_every_authorized_endpoint_family(self) -> None:
+        cases = (
+            (ObservationKind.OHLCV, "/v5/market/kline", _scope()),
+            (
+                ObservationKind.MARK_PRICE,
+                "/v5/market/mark-price-kline",
+                _scope(observation_kind=ObservationKind.MARK_PRICE.value),
+            ),
+            (
+                ObservationKind.INDEX_PRICE,
+                "/v5/market/index-price-kline",
+                _scope(observation_kind=ObservationKind.INDEX_PRICE.value),
+            ),
+            (ObservationKind.OPEN_INTEREST, "/v5/market/open-interest", _open_interest_scope()),
+        )
+        for kind, path, scope in cases:
+            with self.subTest(kind=kind):
+                if kind is ObservationKind.OHLCV:
+                    success = _kline_result([_trade_row(WINDOW_START, "27050.0")])
+                elif kind is ObservationKind.OPEN_INTEREST:
+                    success = _open_interest_result(
+                        [{"openInterest": "1234.5", "timestamp": str(_milliseconds(WINDOW_START))}]
+                    )
+                else:
+                    success = _kline_result([_reference_row(WINDOW_START, "27050.0")])
+                sleeps: list[float] = []
+                adapter, transport = self._rate_limited_adapter(
+                    [HttpResponse(200, RATE_LIMITED_BODY), HttpResponse(200, success)],
+                    sleeps=sleeps,
+                )
+                page = adapter.fetch_raw_page(uuid4(), scope, None)
+                self.assertEqual(len(page.records), 1)
+                self.assertEqual(len(transport.urls), 2)
+                self.assertTrue(all(path in url for url in transport.urls))
+                self.assertEqual(sleeps, [2.0])
 
 
 class BybitOhlcvMappingTests(unittest.TestCase):
