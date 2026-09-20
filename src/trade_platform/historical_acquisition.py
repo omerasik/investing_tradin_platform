@@ -131,6 +131,8 @@ __all__ = [
     "SealedDatasetView",
     "SourceProfile",
     "acquisition_fingerprint",
+    "expected_event_ats",
+    "expected_feature_plan",
     "sealed_dataset_matches_request",
 ]
 
@@ -595,6 +597,30 @@ def _expected_feature_counts(
         max(len(open_interest_event_ats) - 1, 0) if open_interest_event_ats else 0
     )
     return expected_basis, expected_open_interest
+
+
+def expected_event_ats(
+    kind: ObservationKind, start: datetime, end: datetime
+) -> tuple[datetime, ...]:
+    """Public view of the canonical fixed-grid event set for one kind and window."""
+    return _expected_event_ats(kind, start, end)
+
+
+def expected_feature_plan(
+    request: HistoricalAcquisitionRequest,
+) -> tuple[tuple[datetime, ...], tuple[datetime, ...], int, int]:
+    """``(basis_event_ats, open_interest_event_ats, expected_basis, expected_oi_change)``.
+
+    The same window-derived expectation the acquisition and replay-resume
+    feature steps use, exposed so a dataset built *from* sealed acquisitions
+    (see :mod:`trade_platform.historical_dataset_composition_v1`) derives its
+    feature expectation from its own window and never from a parent's counts.
+    """
+    basis_event_ats, open_interest_event_ats = _expected_feature_event_ats(request)
+    expected_basis, expected_open_interest = _expected_feature_counts(
+        basis_event_ats, open_interest_event_ats
+    )
+    return basis_event_ats, open_interest_event_ats, expected_basis, expected_open_interest
 
 
 def sealed_dataset_matches_request(
