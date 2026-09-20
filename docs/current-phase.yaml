@@ -4,17 +4,14 @@
 
 updated: 2026-09-20
 
-# Recent commits number phases 3B.1/3B.2/3B.3/3C. That series is distinct from
+# Recent commits number phases 3B.1/3B.2/3B.3/3C/3D.x. That series is distinct from
 # docs/MODULE_3B_GOVERNANCE_SECURITY.md, docs/MODULE_3C_POSTGRES_RUNTIME_WIRING.md
 # and from the roadmap's 3G/3H/3I/3J series. Disambiguate before assuming.
 phase:
-  id: "3C"
-  name: Operator-authorized scheduled Bybit historical acquisition
-  status: merged
-  merge_commit: 5d52f95          # PR #133
-  open_item: >-
-    Confirm exact-main CI is green on 5d52f95 (CONTRIBUTING.md step 5) before
-    treating 3C as complete.
+  id: "3D.3"
+  name: Canonical multi-day research dataset composition
+  status: in_review          # PR open, unmerged
+  base_commit: 6f9b98e
 
 next:
   status: not_declared
@@ -22,42 +19,35 @@ next:
     No next module is authorized. Do not begin one. If asked for "the next
     phase", stop and ask the owner to declare its scope first.
 
-# Scope paths of the phase just completed, for follow-up fixes only.
 scope:
-  - src/trade_platform/scheduled_historical_acquisition_v1.py
-  - src/trade_platform/historical_acquisition.py
-  - src/trade_platform/bybit_crypto_provider.py
-  - src/trade_platform/worker_app.py
-  - src/trade_platform/scheduler.py
-  - tests/test_scheduled_historical_acquisition_v1.py
-  - tests/test_scheduled_historical_acquisition_v1_postgres.py
+  - src/trade_platform/historical_dataset_composition_v1.py
+  - src/trade_platform/historical_acquisition.py   # only the two public expected_* wrappers
+  - tests/test_historical_dataset_composition_v1.py
+  - tests/test_historical_dataset_composition_v1_postgres.py
 
-# The module docstring in scheduled_historical_acquisition_v1.py is the
+# The module docstring in historical_dataset_composition_v1.py is the
 # authoritative design record. These are the invariants a change must not break.
 acceptance:
-  - Two independent gates (composed authorization AND an enabled, operator-approved
-    OperationalJobPolicy at the exact job_policy_version) are both required before
-    any provider call. Neither gate alone enables execution.
-  - Windows are fixed UTC slots derived from anchor + k*window_size, never
-    "last run + interval". Eligibility is a pure function of authorization and as_of.
-  - Window completion is proven by sealed-dataset identity
-    (sealed_dataset_matches_request), never by a version name, cursor or watermark.
-  - Catch-up is oldest-first, bounded per invocation, and stops at the first failed
-    or contended window; a newer window is never acquired past an older gap.
-  - Each window is guarded by a PostgreSQL session advisory lock bound to the
-    authorization identity and the exact window.
-  - Absent configuration means no runner exists, so worker_app stays
-    provider-network-inert.
+  - Composition consumes only the exact historical_dataset_members of explicitly
+    authorized SEALED parents; never a source-wide observation scan.
+  - Every parent is proven (declared id + content hash, then the Phase 3B.1
+    sealed_dataset_matches_request) before anything is written.
+  - The target version is a pure function of the composition identity; sealing goes
+    through PostgresHistoricalMarketDataPipeline.seal_dataset only.
+  - Replay of an exactly matching target returns it without resealing; any other
+    dataset at the target version is a fail-closed conflict.
+  - Features are recomputed on the composed dataset, never copied from a parent.
+  - The single-dataset research/capacity binding is not relaxed.
 
 safety_gates:
-  - Public Bybit V5 market data only. Public v1 requires secret_reference is None.
-  - Provider terms acceptance stays explicit on ProviderConfiguration and is never
-    flipped in code.
-  - No broker/account API, no order placement, no paid data, no real funds.
-  - Do not make outbound provider calls during development; tests are fixture-driven.
+  - No provider, broker or account call; no live trading; no capacity policy.
+  - No scheduling, no OperationalJobPolicy change, no migration.
+  - Never touch the real trade_platform_research database in development or tests;
+    the real seven-day composition happens only after review, merge and green
+    exact-main CI.
 
 validation:
-  iterate: python -m unittest tests.test_scheduled_historical_acquisition_v1
+  iterate: python -m unittest tests.test_historical_dataset_composition_v1
   before_done: ruff check src tests migrations scripts && python -m unittest discover -s tests
   postgres: requires POSTGRES_TEST_DSN; without it 185 tests skip and the suite still says OK
   ci_owns: Docker, Trivy, attestations, pip-audit, pg restore drill, staging Compose, next build, Playwright
