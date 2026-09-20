@@ -119,6 +119,17 @@ _BAR_WIDTH: Final = timedelta(minutes=1)
 _NORMALIZED_BAR_INTERVAL: Final = "1m"
 _EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
 _RETRYABLE_STATUS_CODES: Final[frozenset[int]] = frozenset({429, 500, 502, 503, 504})
+
+# Bybit V5 answers HTTP 200 with a non-zero envelope `retCode` for provider-level
+# failures. Exactly one of those codes is a documented transient rate-limit
+# condition; every other code stays a non-retryable contract failure.
+BYBIT_RATE_LIMIT_RETURN_CODE: Final = 10006
+BYBIT_RATE_LIMIT_RESET_HEADER: Final = "X-Bapi-Limit-Reset-Timestamp"
+# The reset header is untrusted provider input. A timestamp further ahead than this
+# is treated as unusable (and falls back to RetryPolicy backoff) rather than parked
+# on for an unbounded sleep.
+_MAXIMUM_RATE_LIMIT_RESET_HORIZON: Final = timedelta(minutes=5)
+_RETRY_AFTER_HEADER: Final = "Retry-After"
 _TRADE_KLINE_FIELDS: Final = 7
 _REFERENCE_KLINE_FIELDS: Final = 5
 _MINIMUM_ASSET_LENGTH: Final = 2
@@ -267,19 +278,44 @@ def _parse_envelope(body: str) -> dict[str, object]:
     return parsed
 
 
-def _envelope_result(body: str, *, category: str, symbol: str) -> dict[str, object]:
+@dataclass(frozen=True, slots=True)
+class _BybitEnvelope:
+    """A structurally valid Bybit V5 envelope; `return_code` may still be a failure."""
+
+    return_code: int
+    message: str
+    result: object
+
+    @property
+    def rate_limited(self) -> bool:
+        return self.return_code == BYBIT_RATE_LIMIT_RETURN_CODE
+
+    def provider_error(self) -> ProviderError:
+        return ProviderError(f"bybit_provider_error:{self.return_code}:{self.message}")
+
+
+def _validated_envelope(body: str) -> _BybitEnvelope:
+    """Parse and structurally validate an envelope; malformed evidence fails closed."""
     envelope = _parse_envelope(body)
     return_code = envelope.get("retCode")
     if not isinstance(return_code, int) or isinstance(return_code, bool):
         raise ProviderError("bybit_unexpected_envelope_shape")
     if not isinstance(envelope.get("time"), int):
         raise ProviderError("bybit_unexpected_envelope_shape")
-    if return_code != 0:
-        message = envelope.get("retMsg")
-        raise ProviderError(
-            f"bybit_provider_error:{return_code}:{message if isinstance(message, str) else ''}"
-        )
-    result = envelope.get("result")
+    message = envelope.get("retMsg")
+    return _BybitEnvelope(
+        return_code=return_code,
+        message=message if isinstance(message, str) else "",
+        result=envelope.get("result"),
+    )
+
+
+def _envelope_result(
+    envelope: _BybitEnvelope, *, category: str, symbol: str
+) -> dict[str, object]:
+    if envelope.return_code != 0:
+        raise envelope.provider_error()
+    result = envelope.result
     if not isinstance(result, dict):
         raise ProviderError("bybit_unexpected_result_shape")
     result_category = result.get("category")
@@ -289,6 +325,15 @@ def _envelope_result(body: str, *, category: str, symbol: str) -> dict[str, obje
     if result_symbol is not None and result_symbol != symbol:
         raise ProviderError(f"bybit_response_symbol_mismatch:{result_symbol}")
     return result
+
+
+def _header(headers: dict[str, str], name: str) -> str | None:
+    """Case-insensitive header lookup; HTTP header casing is server-chosen."""
+    lowered = name.lower()
+    for key, value in headers.items():
+        if key.lower() == lowered and isinstance(value, str):
+            return value
+    return None
 
 
 def _result_rows(result: dict[str, object]) -> list[object]:
@@ -537,30 +582,80 @@ class BybitCryptoHistoricalAdapter:
         self, path: str, query: dict[str, str], *, category: str, symbol: str
     ) -> dict[str, object]:
         url = f"{self._configuration.base_url.rstrip('/')}{path}?{urlencode(query)}"
-        response = self._http_with_retry(url)
-        return _envelope_result(response.body, category=category, symbol=symbol)
+        envelope = self._envelope_with_retry(url)
+        return _envelope_result(envelope, category=category, symbol=symbol)
 
-    def _http_with_retry(self, url: str) -> HttpResponse:
-        last_status = "network"
+    def _envelope_with_retry(self, url: str) -> _BybitEnvelope:
+        """The single bounded request authority for this adapter.
+
+        Exactly two conditions are retryable, both under `RetryPolicy.maximum_attempts`
+        and both paced by the shared `MinimumIntervalRequestPacer`:
+
+        * an authorized transient HTTP status (`_RETRYABLE_STATUS_CODES`), and
+        * an HTTP 200 carrying a structurally valid envelope whose `retCode` is
+          exactly `BYBIT_RATE_LIMIT_RETURN_CODE`.
+
+        Everything else — any other non-zero `retCode`, malformed JSON, a malformed
+        envelope, a non-retryable status — fails closed on the attempt that saw it.
+        Exhaustion re-raises the last failure with its canonical identity intact, so a
+        rate limit that outlives the policy never degrades into an empty or stale page.
+        """
+        failure = ProviderError("bybit_http_status:network")
         for attempt in range(self._retry_policy.maximum_attempts):
             self._pacer.before_request()
             response = self._transport.get(url, self._configuration.request_timeout_seconds)
             if response.status_code == 200:
-                return response
-            last_status = str(response.status_code)
-            if (
-                response.status_code not in _RETRYABLE_STATUS_CODES
-                or attempt + 1 == self._retry_policy.maximum_attempts
-            ):
+                envelope = _validated_envelope(response.body)
+                if not envelope.rate_limited:
+                    return envelope
+                failure = envelope.provider_error()
+                delay = self._rate_limit_delay(response.headers, attempt)
+            else:
+                failure = ProviderError(f"bybit_http_status:{response.status_code}")
+                if response.status_code not in _RETRYABLE_STATUS_CODES:
+                    break
+                delay = self._status_delay(response.headers, attempt)
+            if attempt + 1 == self._retry_policy.maximum_attempts:
                 break
-            retry_after = response.headers.get("Retry-After")
-            delay = (
-                float(retry_after)
-                if retry_after and retry_after.replace(".", "", 1).isdigit()
-                else self._retry_policy.base_delay.total_seconds() * (2**attempt)
-            )
             self._sleep(delay)
-        raise ProviderError(f"bybit_http_status:{last_status}")
+        raise failure
+
+    def _status_delay(self, headers: dict[str, str], attempt: int) -> float:
+        retry_after = _header(headers, _RETRY_AFTER_HEADER)
+        if retry_after is not None and retry_after.replace(".", "", 1).isdigit():
+            return float(retry_after)
+        return self._backoff_delay(attempt)
+
+    def _rate_limit_delay(self, headers: dict[str, str], attempt: int) -> float:
+        reset_delay = self._reset_header_delay(headers)
+        if reset_delay is not None:
+            return reset_delay
+        return self._backoff_delay(attempt)
+
+    def _reset_header_delay(self, headers: dict[str, str]) -> float | None:
+        """Seconds until the provider-published reset instant, or None if unusable.
+
+        Absent, malformed, already-elapsed and implausibly distant reset timestamps all
+        return None so the caller falls back to RetryPolicy backoff. The returned delay
+        is therefore always strictly positive; a negative sleep is unrepresentable here.
+        """
+        raw = _header(headers, BYBIT_RATE_LIMIT_RESET_HEADER)
+        if raw is None:
+            return None
+        text = raw.strip()
+        if not text.isdigit():
+            return None
+        try:
+            reset_at = _from_milliseconds(int(text))
+        except (OverflowError, ValueError, OSError):
+            return None
+        remaining = reset_at - self._now()
+        if remaining <= timedelta(0) or remaining > _MAXIMUM_RATE_LIMIT_RESET_HORIZON:
+            return None
+        return remaining.total_seconds()
+
+    def _backoff_delay(self, attempt: int) -> float:
+        return self._retry_policy.base_delay.total_seconds() * (2**attempt)
 
 
 def _next_time_cursor(
