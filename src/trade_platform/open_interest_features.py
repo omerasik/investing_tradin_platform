@@ -72,17 +72,29 @@ raise :class:`OpenInterestFeatureError` (a definite precondition failure) or,
 for a genuinely absent prior observation, silently produce no
 materialization at all.
 
+**Dataset-scale resolution (Phase 3D.7R.2).**
+:meth:`PostgresOpenInterestFeatureCalculator.iter_open_interest_change`
+resolves a whole sealed dataset's OI evidence in one streamed query carrying
+both per-event rankings, walks it once in ``event_at`` order keeping only the
+latest eligible group per ``(unit, unit_asset)``, and applies the identical
+per-event rule set -- same priors, values, manifests and V2 content hashes.
+``materialize_open_interest_change_batch`` writes it in bounded chunks through
+``PostgresFeatureAuthority.materialize_subject_stream``. The per-event method
+stays the reference path.
+
 **No AI/ML.** The formula is a closed-form deterministic subtraction over
 already-authorized evidence. No provider/network call is made.
 """
 
 from __future__ import annotations
 
+from collections.abc import Generator, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import cast
-from uuid import UUID
+from itertools import groupby, pairwise
+from typing import Any, cast
+from uuid import UUID, uuid4
 
 from .feature_authority import (
     FeatureDefinitionVersion,
@@ -108,6 +120,10 @@ OPEN_INTEREST_CHANGE = "open_interest_change"
 #: actually stores would silently diverge from the one this module hashed.
 #: Same convention as ``derivatives_features._VALUE_SCALE``.
 _VALUE_SCALE = Decimal("1E-12")
+
+#: Rows fetched per round trip from the dataset-scoped evidence stream. Same
+#: convention as ``crypto_derivatives_features._STREAM_FETCH_SIZE``.
+_STREAM_FETCH_SIZE = 10000
 
 _REQUIRED_FIELDS = ("open_interest", "unit", "unit_asset", "event_at", "revision", "ingested_at")
 
@@ -193,6 +209,58 @@ def _manifest_tokens(
     )
 
 
+def _observation_from_row(row: Sequence[Any]) -> _OIObservation:
+    return _OIObservation(
+        UUID(str(row[0])), UUID(str(row[1])), str(row[2]), row[3], row[4], row[5],
+        int(str(row[6])), row[7], Decimal(str(row[8])), str(row[9]),
+        None if row[10] is None else str(row[10]),
+    )
+
+
+def _current_from(rows: Sequence[_OIObservation]) -> _OIObservation:
+    """The current observation: missing or ambiguous identity fails closed."""
+    if not rows:
+        raise OpenInterestFeatureError("current_observation_not_found")
+    if len({row.provider_identifier for row in rows}) > 1:
+        raise OpenInterestFeatureError("ambiguous_current_observation_identity")
+    return rows[0]
+
+
+def _prior_from(rows: Sequence[_OIObservation]) -> _OIObservation | None:
+    """The prior from eligible rows, latest ``event_at`` first; ambiguity fails closed."""
+    if not rows:
+        return None
+    latest_event_at = rows[0].event_at
+    top_group = tuple(row for row in rows if row.event_at == latest_event_at)
+    if len({row.provider_identifier for row in top_group}) > 1:
+        raise OpenInterestFeatureError("ambiguous_prior_observation_identity")
+    return top_group[0]
+
+
+def _stream_rows(
+    database: PostgresDatabase, statement: str, params: tuple[object, ...]
+) -> Generator[tuple[Any, ...], None, None]:
+    """Stream one query's result through a ``WITH HOLD`` server-side cursor.
+
+    Same contract as ``crypto_derivatives_features._stream_rows``: one
+    snapshot, bounded client memory, and feature writes may commit on the same
+    connection between fetches.
+    """
+    with database.transaction() as connection:
+        cursor = connection.cursor(name=f"feature_evidence_{uuid4().hex}", withhold=True)
+        cursor.execute(statement, params)
+    try:
+        while True:
+            with database.transaction():
+                rows = cursor.fetchmany(_STREAM_FETCH_SIZE)
+            if not rows:
+                return
+            yield from rows
+    finally:
+        with database.transaction():
+            cursor.close()
+
+
 class PostgresOpenInterestFeatureCalculator:
     """Computes and materializes the 3J.1b ``open_interest_change`` feature."""
 
@@ -248,14 +316,7 @@ class PostgresOpenInterestFeatureCalculator:
         with self._database.transaction() as connection, connection.cursor() as cursor:
             cursor.execute(statement, params)
             rows = cursor.fetchall()
-        return tuple(
-            _OIObservation(
-                UUID(str(row[0])), UUID(str(row[1])), str(row[2]), row[3], row[4], row[5],
-                int(str(row[6])), row[7], Decimal(str(row[8])), str(row[9]),
-                None if row[10] is None else str(row[10]),
-            )
-            for row in rows
-        )
+        return tuple(_observation_from_row(row) for row in rows)
 
     def _select_current(
         self, *, dataset_version_id: UUID, instrument_id: str, event_at: datetime, decision_at: datetime,
@@ -265,11 +326,7 @@ class PostgresOpenInterestFeatureCalculator:
             decision_at=decision_at, event_at_predicate="r.event_at=%s",
             predicate_params=(event_at,),
         )
-        if not rows:
-            raise OpenInterestFeatureError("current_observation_not_found")
-        if len({row.provider_identifier for row in rows}) > 1:
-            raise OpenInterestFeatureError("ambiguous_current_observation_identity")
-        return rows[0]
+        return _current_from(rows)
 
     def _select_prior(
         self,
@@ -285,13 +342,175 @@ class PostgresOpenInterestFeatureCalculator:
             event_at_predicate="r.event_at<%s AND o.unit=%s AND o.unit_asset IS NOT DISTINCT FROM %s",
             predicate_params=(current.event_at, current.unit, current.unit_asset),
         )
-        if not rows:
-            return None
-        latest_event_at = rows[0].event_at
-        top_group = tuple(row for row in rows if row.event_at == latest_event_at)
-        if len({row.provider_identifier for row in top_group}) > 1:
-            raise OpenInterestFeatureError("ambiguous_prior_observation_identity")
-        return top_group[0]
+        return _prior_from(rows)
+
+    @staticmethod
+    def _change_from_pair(
+        *,
+        feature_id: UUID,
+        instrument_id: str,
+        dataset: _DatasetInfo,
+        event_at: datetime,
+        decision_at: datetime,
+        computed_at: datetime | None,
+        current: _OIObservation,
+        prior: _OIObservation,
+    ) -> FeatureMaterializationV2:
+        """The single change rule set once current and prior are resolved.
+
+        Shared verbatim by the per-event and the dataset-streamed paths.
+        """
+        knowledge_at = max(current.normalized_at, prior.normalized_at, dataset.created_at)
+        if knowledge_at > decision_at:
+            raise OpenInterestFeatureError("knowledge_at_exceeds_decision_at")
+        effective_at = max(current.effective_at, prior.effective_at)
+        resolved_computed_at = knowledge_at if computed_at is None else computed_at
+        value = (current.open_interest - prior.open_interest).quantize(_VALUE_SCALE)
+
+        return FeatureMaterializationV2.create(
+            feature_id=feature_id, subject_type=FeatureSubjectType.INSTRUMENT,
+            subject_id=instrument_id, dataset_version=str(dataset.dataset_version_id),
+            event_at=event_at, effective_at=effective_at, knowledge_at=knowledge_at,
+            computed_at=resolved_computed_at,
+            source_observation_manifest=_manifest_tokens(
+                dataset=dataset, instrument_id=instrument_id, current=current, prior=prior,
+            ),
+            value=value, quality_status=FeatureQualityStatus.VALIDATED,
+        )
+
+    def iter_open_interest_change(
+        self,
+        *,
+        feature_id: UUID,
+        instrument_id: str,
+        dataset_version_id: UUID,
+        event_ats: Sequence[datetime],
+        decision_at: datetime,
+        computed_at: datetime | None = None,
+    ) -> Iterator[FeatureMaterializationV2]:
+        """Read-only, dataset-streamed form of :meth:`materialize_open_interest_change`.
+
+        Yields, in ``event_ats`` order, exactly what the per-event method would
+        build (raising where and with what it would raise), but resolves the
+        sealed dataset's OI evidence in ONE ``event_at``-ordered query streamed
+        through a server-side cursor instead of a current lookup plus a full
+        historical prior search per event. ``event_ats`` must be strictly
+        increasing.
+
+        Each streamed row carries both per-event rankings, computed over the
+        identical PIT-visible, ``VALIDATED``, exact-instrument dataset members:
+
+        * ``current_rank`` -- ``(provider_identifier, event_at)`` partitions, the
+          current-observation query's ranking;
+        * ``unit_rank`` -- ``(unit, unit_asset, provider_identifier, event_at)``
+          partitions, the prior query's ranking, which filters on the current
+          unit/``unit_asset`` *before* ranking (``PARTITION BY`` groups NULL
+          ``unit_asset`` together, exactly ``IS NOT DISTINCT FROM``).
+
+        The walk keeps, per ``(unit, unit_asset)``, only the latest
+        ``unit_rank = 1`` group strictly before the current event -- every
+        eligible observation, requested or not, so predecessor continuity spans
+        any day boundary and never resets. That group is exactly the per-event
+        prior query's top ``event_at`` group, judged by the same ambiguity rule.
+        """
+        _aware(decision_at, "decision_at")
+        if computed_at is not None:
+            _aware(computed_at, "computed_at")
+        requested = tuple(event_ats)
+        for event_at in requested:
+            _aware(event_at, "event_at")
+        if any(later <= earlier for earlier, later in pairwise(requested)):
+            raise OpenInterestFeatureError("event_ats_must_be_strictly_increasing")
+        if not requested:
+            return
+        dataset = self._load_dataset(dataset_version_id, decision_at)
+
+        statement = (
+            "SELECT normalized_observation_id, raw_observation_id, provider_identifier, "
+            "event_at, effective_at, ingested_at, revision, normalized_at, open_interest, "
+            "unit, unit_asset, current_rank, unit_rank FROM (SELECT n.normalized_observation_id, "
+            "r.raw_observation_id, r.provider_identifier, r.event_at, r.effective_at, "
+            "r.ingested_at, r.revision, n.normalized_at, o.open_interest, o.unit, o.unit_asset, "
+            "ROW_NUMBER() OVER (PARTITION BY r.provider_identifier, r.event_at "
+            "ORDER BY r.revision DESC, r.ingested_at DESC) AS current_rank, "
+            "ROW_NUMBER() OVER (PARTITION BY o.unit, o.unit_asset, r.provider_identifier, r.event_at "
+            "ORDER BY r.revision DESC, r.ingested_at DESC) AS unit_rank "
+            "FROM historical_dataset_members m "
+            "JOIN historical_normalized_observations n ON n.normalized_observation_id=m.normalized_observation_id "
+            "JOIN historical_raw_observations r ON r.raw_observation_id=n.raw_observation_id "
+            "JOIN open_interest_observations o ON o.normalized_observation_id=n.normalized_observation_id "
+            "WHERE m.dataset_version_id=%s AND n.instrument_id=%s "
+            "AND r.observation_kind='OPEN_INTEREST' AND n.quality_status='VALIDATED' "
+            "AND n.normalized_at<=%s AND r.ingested_at<=%s AND r.event_at<=%s) ranked "
+            "WHERE current_rank=1 OR unit_rank=1 ORDER BY event_at"
+        )
+        params = (dataset_version_id, instrument_id, decision_at, decision_at, requested[-1])
+        stream = _stream_rows(self._database, statement, params)
+        groups = groupby(stream, key=lambda row: cast(datetime, row[3]))
+        #: (unit, unit_asset) -> the latest unit_rank=1 group strictly before
+        #: the event being resolved. Bounded by the number of distinct units.
+        latest_by_unit: dict[tuple[str, str | None], list[_OIObservation]] = {}
+
+        def absorb(group_rows: list[tuple[Any, ...]]) -> None:
+            by_unit: dict[tuple[str, str | None], list[_OIObservation]] = {}
+            for row in group_rows:
+                if int(str(row[12])) == 1:
+                    observation = _observation_from_row(row)
+                    by_unit.setdefault((observation.unit, observation.unit_asset), []).append(
+                        observation
+                    )
+            latest_by_unit.update(by_unit)
+
+        try:
+            pending = next(groups, None)
+            for event_at in requested:
+                while pending is not None and pending[0] < event_at:
+                    absorb(list(pending[1]))
+                    pending = next(groups, None)
+                current_rows: list[_OIObservation] = []
+                group_rows: list[tuple[Any, ...]] = []
+                if pending is not None and pending[0] == event_at:
+                    group_rows = list(pending[1])
+                    current_rows = [
+                        _observation_from_row(row) for row in group_rows if int(str(row[11])) == 1
+                    ]
+                    pending = next(groups, None)
+                current = _current_from(current_rows)
+                prior = _prior_from(latest_by_unit.get((current.unit, current.unit_asset), ()))
+                absorb(group_rows)
+                if prior is None:
+                    continue
+                yield self._change_from_pair(
+                    feature_id=feature_id, instrument_id=instrument_id, dataset=dataset,
+                    event_at=event_at, decision_at=decision_at, computed_at=computed_at,
+                    current=current, prior=prior,
+                )
+        finally:
+            stream.close()
+
+    def materialize_open_interest_change_batch(
+        self,
+        *,
+        feature_id: UUID,
+        instrument_id: str,
+        dataset_version_id: UUID,
+        event_ats: Sequence[datetime],
+        decision_at: datetime,
+        computed_at: datetime | None = None,
+    ) -> int:
+        """Materialize :meth:`iter_open_interest_change` in bounded chunks.
+
+        Writes only through the canonical
+        :meth:`PostgresFeatureAuthority.materialize_subject_stream`; returns the
+        number of materializations written or reconciled as identical.
+        """
+        return self._feature_authority.materialize_subject_stream(
+            self.iter_open_interest_change(
+                feature_id=feature_id, instrument_id=instrument_id,
+                dataset_version_id=dataset_version_id, event_ats=event_ats,
+                decision_at=decision_at, computed_at=computed_at,
+            )
+        )
 
     def materialize_open_interest_change(
         self,
@@ -320,22 +539,10 @@ class PostgresOpenInterestFeatureCalculator:
         if prior is None:
             return None
 
-        knowledge_at = max(current.normalized_at, prior.normalized_at, dataset.created_at)
-        if knowledge_at > decision_at:
-            raise OpenInterestFeatureError("knowledge_at_exceeds_decision_at")
-        effective_at = max(current.effective_at, prior.effective_at)
-        resolved_computed_at = knowledge_at if computed_at is None else computed_at
-        value = (current.open_interest - prior.open_interest).quantize(_VALUE_SCALE)
-
-        materialization = FeatureMaterializationV2.create(
-            feature_id=feature_id, subject_type=FeatureSubjectType.INSTRUMENT,
-            subject_id=instrument_id, dataset_version=str(dataset_version_id),
-            event_at=event_at, effective_at=effective_at, knowledge_at=knowledge_at,
-            computed_at=resolved_computed_at,
-            source_observation_manifest=_manifest_tokens(
-                dataset=dataset, instrument_id=instrument_id, current=current, prior=prior,
-            ),
-            value=value, quality_status=FeatureQualityStatus.VALIDATED,
+        materialization = self._change_from_pair(
+            feature_id=feature_id, instrument_id=instrument_id, dataset=dataset,
+            event_at=event_at, decision_at=decision_at, computed_at=computed_at,
+            current=current, prior=prior,
         )
         self._feature_authority.materialize_subject(materialization)
         return materialization

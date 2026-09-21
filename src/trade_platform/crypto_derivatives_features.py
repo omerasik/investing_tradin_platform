@@ -71,6 +71,15 @@ observation, timestamp mismatch, cross-dataset pair, wrong kind, convention
 mismatch, ineligible instrument kind) silently produces no materialization at
 all -- never a fabricated ``DEGRADED``/``REJECTED`` row.
 
+**Dataset-scale basis (Phase 3D.7R.2).** :meth:`PostgresCryptoDerivativesFeatureCalculator.
+iter_crypto_mark_index_basis` resolves a whole sealed dataset's MARK/INDEX
+evidence in one ranked, streamed query and applies the identical per-event
+rule set (:meth:`~PostgresCryptoDerivativesFeatureCalculator._basis_from_pair`)
+the per-event method uses -- same values, manifests and V2 content hashes --
+and ``materialize_crypto_mark_index_basis_batch`` writes it in bounded chunks
+through ``PostgresFeatureAuthority.materialize_subject_stream``. The per-event
+method stays the reference path.
+
 **No AI/ML.** Every formula is a closed-form deterministic arithmetic
 expression over already-authorized evidence. No provider/network call is
 made.
@@ -78,11 +87,13 @@ made.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Generator, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import cast
-from uuid import UUID
+from itertools import groupby, pairwise
+from typing import Any, cast
+from uuid import UUID, uuid4
 
 from .crypto_instruments import (
     CryptoInstrumentError,
@@ -128,6 +139,10 @@ _ANNUALIZATION_YEAR_SECONDS = 365 * 24 * 60 * 60
 #: ``open_interest_features._VALUE_SCALE``.
 _VALUE_SCALE = Decimal("1E-12")
 
+#: Rows fetched per round trip from a dataset-scoped evidence stream. Bounds
+#: client memory; the ranked result itself is held by the server-side cursor.
+_STREAM_FETCH_SIZE = 10000
+
 _MARK_INDEX_REQUIRED_FIELDS = ("price", "price_asset", "event_at", "revision", "ingested_at")
 _REALIZED_FUNDING_REQUIRED_FIELDS = (
     "funding_rate", "target_funding_at", "convention_id", "convention_version",
@@ -146,6 +161,53 @@ class CryptoDerivativesFeatureError(ValueError):
 def _aware(value: datetime, name: str) -> None:
     if value.tzinfo is None or value.utcoffset() is None:
         raise CryptoDerivativesFeatureError(f"{name}_must_be_timezone_aware")
+
+
+def _strictly_increasing(event_ats: Sequence[datetime]) -> tuple[datetime, ...]:
+    """Validate a batch's requested events: timezone-aware and strictly increasing."""
+    requested = tuple(event_ats)
+    for event_at in requested:
+        _aware(event_at, "event_at")
+    if any(later <= earlier for earlier, later in pairwise(requested)):
+        raise CryptoDerivativesFeatureError("event_ats_must_be_strictly_increasing")
+    return requested
+
+
+def _select_single_identity(
+    rows: Sequence[_ReferencePriceObservation], ambiguous_message: str
+) -> _ReferencePriceObservation | None:
+    """No eligible row -> ``None``; more than one provider identity -> fail closed."""
+    if not rows:
+        return None
+    if len({row.provider_identifier for row in rows}) > 1:
+        raise CryptoDerivativesFeatureError(ambiguous_message)
+    return rows[0]
+
+
+def _stream_rows(
+    database: PostgresDatabase, statement: str, params: tuple[object, ...]
+) -> Generator[tuple[Any, ...], None, None]:
+    """Stream one query's result through a ``WITH HOLD`` server-side cursor.
+
+    The query is evaluated once, in one snapshot, when its declaring
+    transaction commits; every fetch and the final ``CLOSE`` then run in their
+    own short transactions. The caller can therefore commit feature writes on
+    the same connection between fetches while client memory stays bounded to
+    one fetch.
+    """
+    with database.transaction() as connection:
+        cursor = connection.cursor(name=f"feature_evidence_{uuid4().hex}", withhold=True)
+        cursor.execute(statement, params)
+    try:
+        while True:
+            with database.transaction():
+                rows = cursor.fetchmany(_STREAM_FETCH_SIZE)
+            if not rows:
+                return
+            yield from rows
+    finally:
+        with database.transaction():
+            cursor.close()
 
 
 def _validate_and_convert_interval(interval_hours: Decimal) -> Decimal:
@@ -300,6 +362,13 @@ def _mark_index_basis_manifest_tokens(
     )
 
 
+def _reference_price_from_row(row: Sequence[Any]) -> _ReferencePriceObservation:
+    return _ReferencePriceObservation(
+        UUID(str(row[0])), UUID(str(row[1])), str(row[2]), row[3], row[4], row[5],
+        int(str(row[6])), row[7], Decimal(str(row[8])), str(row[9]),
+    )
+
+
 def _realized_funding_annualized_manifest_tokens(
     *, dataset: _DatasetInfo, instrument_id: str,
     realized: _FundingObservation, convention: _ConventionInfo,
@@ -384,6 +453,53 @@ class PostgresCryptoDerivativesFeatureCalculator:
 
     # ---- crypto_mark_index_basis -------------------------------------------
 
+    def _basis_from_pair(
+        self,
+        *,
+        feature_id: UUID,
+        instrument_id: str,
+        dataset: _DatasetInfo,
+        event_at: datetime,
+        decision_at: datetime,
+        computed_at: datetime | None,
+        mark: _ReferencePriceObservation,
+        index: _ReferencePriceObservation,
+        specification: Callable[[], CryptoInstrumentSpecification | None],
+    ) -> FeatureMaterializationV2 | None:
+        """The single basis rule set once the mark/index pair is resolved.
+
+        Shared verbatim by the per-event and the dataset-streamed paths, so both
+        apply the identical coherence checks, PIT rule, formula, quantization and
+        manifest -- only the evidence source differs.
+        """
+        if mark.price_asset != index.price_asset:
+            return None
+        resolved_specification = specification()
+        if (
+            resolved_specification is None
+            or resolved_specification.reference_price_requirement
+            is not ReferencePriceRequirement.MARK_AND_INDEX
+        ):
+            return None
+
+        knowledge_at = max(mark.normalized_at, index.normalized_at, dataset.created_at)
+        if knowledge_at > decision_at:
+            raise CryptoDerivativesFeatureError("knowledge_at_exceeds_decision_at")
+        effective_at = max(mark.effective_at, index.effective_at)
+        resolved_computed_at = knowledge_at if computed_at is None else computed_at
+        value = ((mark.price - index.price) / index.price).quantize(_VALUE_SCALE)
+
+        return FeatureMaterializationV2.create(
+            feature_id=feature_id, subject_type=FeatureSubjectType.INSTRUMENT,
+            subject_id=instrument_id, dataset_version=str(dataset.dataset_version_id),
+            event_at=event_at, effective_at=effective_at, knowledge_at=knowledge_at,
+            computed_at=resolved_computed_at,
+            source_observation_manifest=_mark_index_basis_manifest_tokens(
+                dataset=dataset, instrument_id=instrument_id, mark=mark, index=index,
+            ),
+            value=value, quality_status=FeatureQualityStatus.VALIDATED,
+        )
+
     def _reference_price_rows(
         self, *, dataset_version_id: UUID, instrument_id: str, kind: str,
         event_at: datetime, decision_at: datetime,
@@ -408,13 +524,7 @@ class PostgresCryptoDerivativesFeatureCalculator:
         with self._database.transaction() as connection, connection.cursor() as cursor:
             cursor.execute(statement, params)
             rows = cursor.fetchall()
-        return tuple(
-            _ReferencePriceObservation(
-                UUID(str(row[0])), UUID(str(row[1])), str(row[2]), row[3], row[4], row[5],
-                int(str(row[6])), row[7], Decimal(str(row[8])), str(row[9]),
-            )
-            for row in rows
-        )
+        return tuple(_reference_price_from_row(row) for row in rows)
 
     def _select_reference_price(
         self, *, dataset_version_id: UUID, instrument_id: str, kind: str, event_at: datetime,
@@ -424,11 +534,126 @@ class PostgresCryptoDerivativesFeatureCalculator:
             dataset_version_id=dataset_version_id, instrument_id=instrument_id, kind=kind,
             event_at=event_at, decision_at=decision_at,
         )
-        if not rows:
-            return None
-        if len({row.provider_identifier for row in rows}) > 1:
-            raise CryptoDerivativesFeatureError(ambiguous_message)
-        return rows[0]
+        return _select_single_identity(rows, ambiguous_message)
+
+    def iter_crypto_mark_index_basis(
+        self,
+        *,
+        feature_id: UUID,
+        instrument_id: str,
+        dataset_version_id: UUID,
+        event_ats: Sequence[datetime],
+        decision_at: datetime,
+        computed_at: datetime | None = None,
+    ) -> Iterator[FeatureMaterializationV2]:
+        """Read-only, dataset-streamed form of :meth:`materialize_crypto_mark_index_basis`.
+
+        Yields, in ``event_ats`` order, exactly the materialization the per-event
+        method would build for each event (skipping the events it would skip,
+        raising where and with what it would raise) -- but resolves the sealed
+        dataset's MARK/INDEX evidence in ONE ranked, ``event_at``-ordered query
+        streamed through a server-side cursor, instead of two dataset-wide
+        lookups per event. ``event_ats`` must be strictly increasing (every
+        canonical caller passes a fixed grid) so the evidence stream and the
+        requested events merge in a single pass with bounded memory. Nothing is
+        written; see :meth:`materialize_crypto_mark_index_basis_batch`.
+
+        Ranking is identical to the per-event query -- one partition per
+        ``(observation_kind, provider_identifier, event_at)`` ordered
+        ``revision DESC, ingested_at DESC`` over the same PIT-visible,
+        ``VALIDATED``, exact-instrument dataset members -- so the per-event
+        ambiguity rule is judged over the identical candidate set. The
+        instrument specification is resolved once at ``decision_at`` (lazily,
+        at the first event that needs it) instead of once per event.
+        """
+        _aware(decision_at, "decision_at")
+        if computed_at is not None:
+            _aware(computed_at, "computed_at")
+        requested = _strictly_increasing(event_ats)
+        if not requested:
+            return
+        dataset = self._load_dataset(dataset_version_id, decision_at)
+        specification_cache: list[CryptoInstrumentSpecification | None] = []
+
+        def specification() -> CryptoInstrumentSpecification | None:
+            if not specification_cache:
+                specification_cache.append(self._specification_or_none(instrument_id, decision_at))
+            return specification_cache[0]
+
+        statement = (
+            "SELECT observation_kind, normalized_observation_id, raw_observation_id, "
+            "provider_identifier, event_at, effective_at, ingested_at, revision, normalized_at, "
+            "price, price_asset FROM (SELECT r.observation_kind, n.normalized_observation_id, "
+            "r.raw_observation_id, r.provider_identifier, r.event_at, r.effective_at, "
+            "r.ingested_at, r.revision, n.normalized_at, p.price, p.price_asset, ROW_NUMBER() OVER ("
+            "PARTITION BY r.observation_kind, r.provider_identifier, r.event_at "
+            "ORDER BY r.revision DESC, r.ingested_at DESC) AS rnk "
+            "FROM historical_dataset_members m "
+            "JOIN historical_normalized_observations n ON n.normalized_observation_id=m.normalized_observation_id "
+            "JOIN historical_raw_observations r ON r.raw_observation_id=n.raw_observation_id "
+            "JOIN crypto_reference_price_observations p ON p.normalized_observation_id=n.normalized_observation_id "
+            "WHERE m.dataset_version_id=%s AND n.instrument_id=%s "
+            "AND r.observation_kind IN ('MARK_PRICE','INDEX_PRICE') "
+            "AND n.quality_status='VALIDATED' AND n.normalized_at<=%s AND r.ingested_at<=%s "
+            "AND r.event_at>=%s AND r.event_at<=%s) ranked WHERE rnk=1 ORDER BY event_at"
+        )
+        params = (
+            dataset_version_id, instrument_id, decision_at, decision_at, requested[0], requested[-1],
+        )
+        stream = _stream_rows(self._database, statement, params)
+        groups = groupby(stream, key=lambda row: cast(datetime, row[4]))
+        try:
+            pending = next(groups, None)
+            for event_at in requested:
+                while pending is not None and pending[0] < event_at:
+                    pending = next(groups, None)
+                marks: list[_ReferencePriceObservation] = []
+                indexes: list[_ReferencePriceObservation] = []
+                if pending is not None and pending[0] == event_at:
+                    for row in pending[1]:
+                        target = marks if str(row[0]) == "MARK_PRICE" else indexes
+                        target.append(_reference_price_from_row(row[1:]))
+                    pending = next(groups, None)
+                mark = _select_single_identity(marks, "ambiguous_mark_observation_identity")
+                if mark is None:
+                    continue
+                index = _select_single_identity(indexes, "ambiguous_index_observation_identity")
+                if index is None:
+                    continue
+                materialization = self._basis_from_pair(
+                    feature_id=feature_id, instrument_id=instrument_id, dataset=dataset,
+                    event_at=event_at, decision_at=decision_at, computed_at=computed_at,
+                    mark=mark, index=index, specification=specification,
+                )
+                if materialization is not None:
+                    yield materialization
+        finally:
+            stream.close()
+
+    def materialize_crypto_mark_index_basis_batch(
+        self,
+        *,
+        feature_id: UUID,
+        instrument_id: str,
+        dataset_version_id: UUID,
+        event_ats: Sequence[datetime],
+        decision_at: datetime,
+        computed_at: datetime | None = None,
+    ) -> int:
+        """Materialize :meth:`iter_crypto_mark_index_basis` in bounded chunks.
+
+        Writes only through the canonical
+        :meth:`PostgresFeatureAuthority.materialize_subject_stream`; returns the
+        number of materializations written or reconciled as identical -- the same
+        count the per-event loop's non-``None`` results would give.
+        """
+        return self._feature_authority.materialize_subject_stream(
+            self.iter_crypto_mark_index_basis(
+                feature_id=feature_id, instrument_id=instrument_id,
+                dataset_version_id=dataset_version_id, event_ats=event_ats,
+                decision_at=decision_at, computed_at=computed_at,
+            )
+        )
 
     def materialize_crypto_mark_index_basis(
         self,
@@ -460,32 +685,14 @@ class PostgresCryptoDerivativesFeatureCalculator:
         )
         if index is None:
             return None
-        if mark.price_asset != index.price_asset:
-            return None
-        specification = self._specification_or_none(instrument_id, decision_at)
-        if (
-            specification is None
-            or specification.reference_price_requirement is not ReferencePriceRequirement.MARK_AND_INDEX
-        ):
-            return None
-
-        knowledge_at = max(mark.normalized_at, index.normalized_at, dataset.created_at)
-        if knowledge_at > decision_at:
-            raise CryptoDerivativesFeatureError("knowledge_at_exceeds_decision_at")
-        effective_at = max(mark.effective_at, index.effective_at)
-        resolved_computed_at = knowledge_at if computed_at is None else computed_at
-        value = ((mark.price - index.price) / index.price).quantize(_VALUE_SCALE)
-
-        materialization = FeatureMaterializationV2.create(
-            feature_id=feature_id, subject_type=FeatureSubjectType.INSTRUMENT,
-            subject_id=instrument_id, dataset_version=str(dataset_version_id),
-            event_at=event_at, effective_at=effective_at, knowledge_at=knowledge_at,
-            computed_at=resolved_computed_at,
-            source_observation_manifest=_mark_index_basis_manifest_tokens(
-                dataset=dataset, instrument_id=instrument_id, mark=mark, index=index,
-            ),
-            value=value, quality_status=FeatureQualityStatus.VALIDATED,
+        materialization = self._basis_from_pair(
+            feature_id=feature_id, instrument_id=instrument_id, dataset=dataset,
+            event_at=event_at, decision_at=decision_at, computed_at=computed_at,
+            mark=mark, index=index,
+            specification=lambda: self._specification_or_none(instrument_id, decision_at),
         )
+        if materialization is None:
+            return None
         self._feature_authority.materialize_subject(materialization)
         return materialization
 
