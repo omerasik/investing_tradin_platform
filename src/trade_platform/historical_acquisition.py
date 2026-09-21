@@ -1566,40 +1566,35 @@ class PostgresAcquisitionFeatureMaterializer:
         decision_at: datetime,
         definition_created_at: datetime,
     ) -> MaterializedFeatureCounts:
+        # Phase 3D.7R.2: each feature's sealed-dataset evidence is resolved in one
+        # streamed, set-based pass and written in bounded chunks through the
+        # canonical authority -- the identical per-event rules, values, manifests
+        # and content hashes as the per-event calculators, without one
+        # dataset-wide lookup and one transaction per event.
         basis_count = 0
         if basis_event_ats:
             feature_id = self._feature_id(
                 self._basis_definition_factory(definition_created_at)
             )
-            for event_at in basis_event_ats:
-                if (
-                    self._basis.materialize_crypto_mark_index_basis(
-                        feature_id=feature_id,
-                        instrument_id=instrument_id,
-                        dataset_version_id=dataset_version_id,
-                        event_at=event_at,
-                        decision_at=decision_at,
-                    )
-                    is not None
-                ):
-                    basis_count += 1
+            basis_count = self._basis.materialize_crypto_mark_index_basis_batch(
+                feature_id=feature_id,
+                instrument_id=instrument_id,
+                dataset_version_id=dataset_version_id,
+                event_ats=basis_event_ats,
+                decision_at=decision_at,
+            )
         open_interest_count = 0
         if open_interest_event_ats:
             feature_id = self._feature_id(
                 self._open_interest_definition_factory(definition_created_at)
             )
-            for event_at in open_interest_event_ats:
-                if (
-                    self._open_interest.materialize_open_interest_change(
-                        feature_id=feature_id,
-                        instrument_id=instrument_id,
-                        dataset_version_id=dataset_version_id,
-                        event_at=event_at,
-                        decision_at=decision_at,
-                    )
-                    is not None
-                ):
-                    open_interest_count += 1
+            open_interest_count = self._open_interest.materialize_open_interest_change_batch(
+                feature_id=feature_id,
+                instrument_id=instrument_id,
+                dataset_version_id=dataset_version_id,
+                event_ats=open_interest_event_ats,
+                decision_at=decision_at,
+            )
         return MaterializedFeatureCounts(
             crypto_mark_index_basis=basis_count, open_interest_change=open_interest_count
         )

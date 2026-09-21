@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
@@ -22,6 +22,13 @@ from .persistence import PostgresDatabase
 
 class FeatureAuthorityError(ValueError):
     pass
+
+
+#: Upper bound on one :meth:`PostgresFeatureAuthority.materialize_subjects`
+#: chunk -- one transaction, one array-bound INSERT and one array-bound
+#: reconciliation read. Every column travels as a single array parameter, so
+#: the statement's bind-parameter count is constant, never per-row.
+FEATURE_MATERIALIZATION_BATCH_MAX = 5000
 
 
 class FeatureFamily(StrEnum):
@@ -503,6 +510,138 @@ class PostgresFeatureAuthority:
             raise
         except Exception as error:
             raise FeatureAuthorityError("feature_materialization_failed") from error
+
+    def materialize_subjects(self, values: Sequence[FeatureMaterializationV2]) -> None:
+        """Bounded batch form of :meth:`materialize_subject` -- the same contract per row.
+
+        One transaction per call (at most :data:`FEATURE_MATERIALIZATION_BATCH_MAX`
+        rows). Every value is validated exactly as :meth:`materialize_subject`
+        validates it before anything is written; rows are written ``hash_version
+        ='V2'`` with the same subject/legacy-``instrument_id`` coherence, through
+        the same natural-identity ``ON CONFLICT ... DO NOTHING``. The ``DO
+        NOTHING`` is never trusted on its own: every row's stored
+        ``content_hash`` is then re-read by that exact natural identity and must
+        equal the row's own hash, so an identical replay is idempotent and a
+        same-identity/different-hash row fails closed with
+        ``feature_materialization_conflict`` -- rolling back the whole chunk.
+        Deferred subject constraints are proved at this transaction's COMMIT,
+        exactly as for a single row.
+        """
+        if len(values) > FEATURE_MATERIALIZATION_BATCH_MAX:
+            raise FeatureAuthorityError("feature_materialization_batch_too_large")
+        if not values:
+            return
+        for value in values:
+            value.validate()
+        instrument_ids = [
+            value.subject_id if value.subject_type is FeatureSubjectType.INSTRUMENT else None
+            for value in values
+        ]
+        feature_ids = [value.feature_id for value in values]
+        subject_types = [value.subject_type.value for value in values]
+        subject_ids = [value.subject_id for value in values]
+        dataset_versions = [value.dataset_version for value in values]
+        event_ats = [value.event_at for value in values]
+        effective_ats = [value.effective_at for value in values]
+        knowledge_ats = [value.knowledge_at for value in values]
+        try:
+            with self._database.transaction() as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "INSERT INTO feature_materializations "
+                    "(materialization_id,feature_id,instrument_id,dataset_version,event_at,"
+                    "effective_at,knowledge_at,computed_at,source_observation_manifest,value,"
+                    "quality_status,content_hash,subject_type,subject_id,hash_version) "
+                    "SELECT materialization_id,feature_id,instrument_id,dataset_version,event_at,"
+                    "effective_at,knowledge_at,computed_at,source_observation_manifest::jsonb,value,"
+                    "quality_status,content_hash,subject_type,subject_id,%s FROM unnest("
+                    "%s::uuid[],%s::uuid[],%s::text[],%s::text[],%s::timestamptz[],"
+                    "%s::timestamptz[],%s::timestamptz[],%s::timestamptz[],%s::text[],"
+                    "%s::numeric[],%s::text[],%s::text[],%s::text[],%s::text[]) AS v("
+                    "materialization_id,feature_id,instrument_id,dataset_version,event_at,"
+                    "effective_at,knowledge_at,computed_at,source_observation_manifest,value,"
+                    "quality_status,content_hash,subject_type,subject_id) "
+                    "ON CONFLICT (feature_id,subject_type,subject_id,dataset_version,event_at,"
+                    "effective_at,knowledge_at) DO NOTHING",
+                    (
+                        FeatureHashVersion.V2.value,
+                        [value.materialization_id for value in values], feature_ids,
+                        instrument_ids, dataset_versions, event_ats, effective_ats,
+                        knowledge_ats, [value.computed_at for value in values],
+                        [json.dumps(value.source_observation_manifest) for value in values],
+                        [value.value for value in values],
+                        [value.quality_status.value for value in values],
+                        [value.content_hash for value in values], subject_types, subject_ids,
+                    ),
+                )
+                cursor.execute(
+                    "SELECT v.ordinal, f.content_hash FROM unnest("
+                    "%s::uuid[],%s::text[],%s::text[],%s::text[],%s::timestamptz[],"
+                    "%s::timestamptz[],%s::timestamptz[]) WITH ORDINALITY AS v("
+                    "feature_id,subject_type,subject_id,dataset_version,event_at,effective_at,"
+                    "knowledge_at,ordinal) LEFT JOIN feature_materializations f ON "
+                    "f.feature_id=v.feature_id AND f.subject_type=v.subject_type AND "
+                    "f.subject_id=v.subject_id AND f.dataset_version=v.dataset_version AND "
+                    "f.event_at=v.event_at AND f.effective_at=v.effective_at AND "
+                    "f.knowledge_at=v.knowledge_at ORDER BY v.ordinal",
+                    (
+                        feature_ids, subject_types, subject_ids, dataset_versions, event_ats,
+                        effective_ats, knowledge_ats,
+                    ),
+                )
+                stored = cursor.fetchall()
+                if len(stored) != len(values) or any(
+                    row[1] is None or str(row[1]) != values[int(row[0]) - 1].content_hash
+                    for row in stored
+                ):
+                    raise FeatureAuthorityError("feature_materialization_conflict")
+        except FeatureAuthorityError:
+            raise
+        except Exception as error:
+            raise FeatureAuthorityError("feature_materialization_failed") from error
+
+    def materialize_subject_stream(
+        self,
+        values: Iterable[FeatureMaterializationV2],
+        *,
+        batch_size: int = FEATURE_MATERIALIZATION_BATCH_MAX,
+    ) -> int:
+        """Write an ordered stream of materializations in bounded chunks.
+
+        Holds at most ``batch_size`` materializations in memory and writes each
+        full chunk through :meth:`materialize_subjects` (one transaction per
+        chunk). If the *source* stream raises -- a calculator's fail-closed
+        precondition at a later event -- every materialization it had already
+        produced is written first and the original error is then re-raised,
+        which is exactly the durable state the per-row
+        :meth:`materialize_subject` loop leaves behind. Returns the number of
+        materializations written or reconciled as identical.
+        """
+        if not 1 <= batch_size <= FEATURE_MATERIALIZATION_BATCH_MAX:
+            raise FeatureAuthorityError("invalid_feature_materialization_batch_size")
+        iterator = iter(values)
+        pending: list[FeatureMaterializationV2] = []
+        count = 0
+        try:
+            while True:
+                try:
+                    value = next(iterator)
+                except StopIteration:
+                    break
+                except Exception:
+                    self.materialize_subjects(pending)
+                    raise
+                pending.append(value)
+                if len(pending) == batch_size:
+                    self.materialize_subjects(pending)
+                    count += len(pending)
+                    pending = []
+            self.materialize_subjects(pending)
+            count += len(pending)
+        finally:
+            close = getattr(iterator, "close", None)
+            if close is not None:
+                close()
+        return count
 
     def definition(self, feature_id: UUID) -> FeatureDefinitionVersion:
         """Resolve the immutable definition instead of trusting caller metadata."""

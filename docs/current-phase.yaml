@@ -2,50 +2,52 @@
 # This is NOT a second roadmap: requirements stay in MASTER_ROADMAP.md, design
 # stays in module docstrings, history stays in git.
 
-updated: 2026-09-21
+updated: 2026-09-22
 
 # Recent commits number phases 3B.1/3B.2/3B.3/3C/3D.x. That series is distinct from
 # docs/MODULE_3B_GOVERNANCE_SECURITY.md, docs/MODULE_3C_POSTGRES_RUNTIME_WIRING.md
 # and from the roadmap's 3G/3H/3I/3J series. Disambiguate before assuming.
 phase:
-  id: "3D.7R.1"
-  name: Scalable canonical dataset sealing
+  id: "3D.7R.2"
+  name: Scalable canonical feature materialization
   status: in_review          # PR open
-  base_commit: c89b561
+  base_commit: 1488856       # 3D.7R.1 (PR #138) merged, exact-main CI green
 
-# Why this phase exists: 3D.6R.1 (Bybit retCode 10006 bounded retry) merged, and the
-# 3D.6R.x recoveries sealed all 150 real daily datasets for [2026-04-22, 2026-09-19).
-# Composing them (Phase 3D.7, 691,200 members) failed closed before any write:
-# seal_dataset() bound one SQL placeholder per member, above PostgreSQL's 65,535
-# bind-parameter limit.
+# Why this phase exists: the 150-day composite f07ebfc1-... is SEALED, but its
+# canonical features ran at ~26/min (~7 days): every basis event ran two dataset-wide
+# ranked lookups (~450 ms each), every OI event a current lookup plus a full
+# historical prior search, and every feature its own write transaction. Stopped at
+# basis 491/216,000 and OI change 0/43,199.
 
 next:
   id: "3D.7"
-  name: Canonical real 150-day composite over [2026-04-22, 2026-09-19)
+  name: Complete canonical features on the existing 150-day composite
   rule: >-
     Operational only, after this PR is merged and exact-main CI is green. No
-    provider call. Expected content hash (derived read-only from the frozen
-    parents): cfd0f8fe940fe40a631fa2370956370808f0d8dd036b58841578e7335d902b30.
+    provider call, no reseal, no second composite; the 491 existing basis rows
+    must reconcile as identical evidence.
 
 scope:
-  - src/trade_platform/historical_market_data.py
-  - tests/test_historical_dataset_sealing_scale_postgres.py
+  - src/trade_platform/crypto_derivatives_features.py
+  - src/trade_platform/open_interest_features.py
+  - src/trade_platform/feature_authority.py
+  - src/trade_platform/historical_acquisition.py
+  - tests/test_feature_materialization_batch_postgres.py
 
 acceptance:
-  - No seal_dataset() statement carries one bind parameter per member; the member
-    set travels as a single uuid[] parameter for both the proof read and the insert.
-  - Content hash is byte-identical to the pre-3D.7R.1 algorithm for identical inputs,
-    independent of member input order; no new hash version.
-  - Every fail-closed check (missing, source, normalization version, rejected,
-    availability, duplicates) raises the same error and writes nothing.
-  - A dataset above 65,535 members seals with its exact member set persisted.
+  - Evidence resolves in one streamed dataset-scoped query per feature, not per event.
+  - Writes commit in bounded chunks through PostgresFeatureAuthority, with exact
+    per-row content-hash reconciliation; identical replay idempotent, conflict fails closed.
+  - Values, manifests, PIT/revision/ambiguity rules and V2 hashes identical to the
+    per-event path; no formula, semantic or calculation version change; no migration.
+  - All 491 existing 150-day basis rows and the complete seven-day composite
+    (10,080 basis, 2,015 OI change) reproduce exactly, read-only.
 
 safety_gates:
   - No schema migration, no provider call, no broker/account/order call.
-  - No change to composition semantics, dataset identities or content-hash inputs.
 
 validation:
-  iterate: python -m unittest tests.test_historical_dataset_sealing_scale_postgres
-  adjacent: every tests/*_postgres.py module that calls seal_dataset, on a fresh DB
-  before_done: ruff check src tests migrations scripts && python scripts/check_mypy_baseline.py
+  iterate: python -m unittest tests.test_feature_materialization_batch_postgres
+  adjacent: feature, acquisition and composition *_postgres modules on a disposable DB
+  before_done: ruff check src tests migrations scripts && python scripts/check_mypy_baseline.py && bandit -q -r src/trade_platform
   ci_owns: full suite, Docker, Trivy, attestations, pip-audit, pg restore drill, staging Compose, next build, Playwright
