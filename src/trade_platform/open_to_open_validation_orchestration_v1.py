@@ -77,6 +77,7 @@ from .quant_validation import (
     evaluate_monte_carlo_trade_sequence,
     evaluate_parameter_stability,
 )
+from .real_market_data_provenance_v1 import RealMarketDataProvenanceV1
 from .research import CostModel
 from .research_validation import benjamini_hochberg
 from .strategy_feature_binding_v2 import (
@@ -155,6 +156,15 @@ REQUIRED_SCORECARD_LIMITATIONS = (
     "REALIZED_ON_EXIT_NOT_MARK_TO_MARKET",
     "NO_INTRATRADE_DRAWDOWN_VISIBILITY",
     "RESEARCH_ONLY_NO_PAPER_OR_LIVE_AUTHORITY",
+)
+
+#: Phase 3D.8A. Positively proven canonical real market data removes exactly one
+#: limitation -- the fixture-data one. Real OHLCV/mark/index/OI history proves
+#: nothing about top of book, fills, execution realism, funding accounting or
+#: authority, so every other limitation stays.
+REAL_MARKET_DATA_QUALITY_REASON = "CANONICAL_REAL_MARKET_DATA_PROVENANCE"
+REAL_DATA_SCORECARD_LIMITATIONS = tuple(
+    item for item in REQUIRED_SCORECARD_LIMITATIONS if item != DATA_QUALITY_BLOCKED_REASON
 )
 
 PARAMETER_NAME_ORDER = (
@@ -1100,6 +1110,17 @@ def build_execution_realism_blocked_evidence_v1(
 
 @dataclass(frozen=True, slots=True)
 class FixtureMarketDataQualityEvidenceV1:
+    """Market-data provenance/quality evidence for one validation run.
+
+    Historically always ``BLOCKED``/``FIXTURE_ONLY_MARKET_DATA`` (hence the
+    name, kept for compatibility). Phase 3D.8A: it is ``AVAILABLE`` with
+    ``CANONICAL_REAL_MARKET_DATA_PROVENANCE`` only when the request carries a
+    :class:`RealMarketDataProvenanceV1` that is positively proven real for the
+    exact dataset. The two provenance fields are ``None`` -- and absent from the
+    hashed payload -- when no provenance was supplied, so every pre-3D.8A
+    evidence hash is unchanged.
+    """
+
     status: str
     reason: str
     dataset_version_id: UUID
@@ -1110,17 +1131,29 @@ class FixtureMarketDataQualityEvidenceV1:
     evaluation_end: datetime
     content_hash: str
     evidence_id: UUID
+    market_data_provenance_status: str | None = None
+    market_data_provenance_content_hash: str | None = None
+
+    @property
+    def proven_real_market_data(self) -> bool:
+        return self.status == STATUS_AVAILABLE and self.reason == REAL_MARKET_DATA_QUALITY_REASON
 
 
 def build_fixture_market_data_quality_evidence_v1(
-    *, bar_series: AuthoritativeTradableBarSeriesV2, span: OpenToOpenEvaluationSpanV1
+    *,
+    bar_series: AuthoritativeTradableBarSeriesV2,
+    span: OpenToOpenEvaluationSpanV1,
+    market_data_provenance: RealMarketDataProvenanceV1 | None = None,
 ) -> FixtureMarketDataQualityEvidenceV1:
     scoped = slice_authoritative_bar_series_v1(
         bar_series, window_start=span.evaluation_start, window_end=span.evaluation_end
     )
-    payload = {
-        "status": STATUS_BLOCKED,
-        "reason": DATA_QUALITY_BLOCKED_REASON,
+    proven_real = market_data_provenance is not None and market_data_provenance.is_proven_real()
+    status = STATUS_AVAILABLE if proven_real else STATUS_BLOCKED
+    reason = REAL_MARKET_DATA_QUALITY_REASON if proven_real else DATA_QUALITY_BLOCKED_REASON
+    payload: dict[str, Any] = {
+        "status": status,
+        "reason": reason,
         "dataset_version_id": bar_series.dataset_version_id,
         "instrument_id": bar_series.instrument_id,
         "interval": bar_series.interval,
@@ -1128,10 +1161,22 @@ def build_fixture_market_data_quality_evidence_v1(
         "evaluation_start": span.evaluation_start,
         "evaluation_end": span.evaluation_end,
     }
+    provenance_status: str | None = None
+    provenance_hash: str | None = None
+    if market_data_provenance is not None:
+        provenance_status = market_data_provenance.status
+        provenance_hash = market_data_provenance.content_hash
+        payload["market_data_provenance_status"] = provenance_status
+        payload["market_data_provenance_content_hash"] = provenance_hash
     content_hash = _content_hash(payload)
+    kind = (
+        "open-to-open-real-market-data-quality-v1"
+        if proven_real
+        else "open-to-open-fixture-data-quality-blocked-v1"
+    )
     return FixtureMarketDataQualityEvidenceV1(
-        status=STATUS_BLOCKED,
-        reason=DATA_QUALITY_BLOCKED_REASON,
+        status=status,
+        reason=reason,
         dataset_version_id=bar_series.dataset_version_id,
         instrument_id=bar_series.instrument_id,
         interval=bar_series.interval,
@@ -1139,7 +1184,9 @@ def build_fixture_market_data_quality_evidence_v1(
         evaluation_start=span.evaluation_start,
         evaluation_end=span.evaluation_end,
         content_hash=content_hash,
-        evidence_id=_identity("open-to-open-fixture-data-quality-blocked-v1", content_hash),
+        evidence_id=_identity(kind, content_hash),
+        market_data_provenance_status=provenance_status,
+        market_data_provenance_content_hash=provenance_hash,
     )
 
 
@@ -1358,6 +1405,44 @@ class OpenToOpenProfessionalValidationRequestV1:
     #: instruments"; an instrument outside it then stays UNAVAILABLE rather than
     #: having its assets guessed.
     capacity_instrument_contract: AuthorizedInstrumentLiquidityContractV1 | None = None
+    #: Phase 3D.8A. Canonical real-market-data provenance for the evidence's
+    #: dataset, issued only by
+    #: :class:`~trade_platform.real_market_data_provenance_v1.PostgresRealMarketDataProvenanceAuthorityV1`.
+    #: Absent keeps the pre-3D.8A request identity and the fixture-data limitation.
+    market_data_provenance: RealMarketDataProvenanceV1 | None = None
+
+    def _validate_market_data_provenance(self) -> None:
+        """Bind supplied provenance to the exact evidence it describes, or fail closed.
+
+        A verdict for another dataset, an edited copy, or a real verdict whose
+        source/content identity differs from the bars actually used can never
+        be attached to this run.
+        """
+        provenance = self.market_data_provenance
+        if provenance is None:
+            return
+        if not provenance.integrity_verified():
+            raise OpenToOpenValidationOrchestrationV1Error("market_data_provenance_integrity_failed")
+        bar_series = self.evidence.bar_series
+        if (
+            provenance.dataset_version_id != self.evidence.feature_bundle.dataset_version_id
+            or provenance.dataset_version_id != bar_series.dataset_version_id
+        ):
+            raise OpenToOpenValidationOrchestrationV1Error("market_data_provenance_dataset_mismatch")
+        if not provenance.is_proven_real():
+            return
+        if bar_series.instrument_id not in provenance.instrument_ids:
+            raise OpenToOpenValidationOrchestrationV1Error(
+                "market_data_provenance_instrument_mismatch"
+            )
+        for bar in bar_series.bars:
+            if (
+                bar.source_id != provenance.source_id
+                or bar.dataset_content_hash.strip() != provenance.dataset_content_hash
+            ):
+                raise OpenToOpenValidationOrchestrationV1Error(
+                    "market_data_provenance_bar_lineage_mismatch"
+                )
 
     def validate(self) -> None:
         self.evidence.feature_bundle.validate()
@@ -1434,6 +1519,7 @@ class OpenToOpenProfessionalValidationRequestV1:
                         f"capacity_instrument_contract_conflicts_canonical_registry:"
                         f"{','.join(conflicts)}"
                     )
+        self._validate_market_data_provenance()
 
     def content_hash(self) -> str:
         # The Module 3B.3 fields are contributed only when they are actually
@@ -1447,6 +1533,12 @@ class OpenToOpenProfessionalValidationRequestV1:
         if self.capacity_instrument_contract is not None:
             capacity["capacity_instrument_contract_content_hash"] = (
                 self.capacity_instrument_contract.content_hash()
+            )
+        # Phase 3D.8A: provenance is provenance-significant identity, contributed
+        # only when supplied (pre-3D.8A requests hash exactly as before).
+        if self.market_data_provenance is not None:
+            capacity["market_data_provenance_content_hash"] = (
+                self.market_data_provenance.content_hash
             )
         return _content_hash(
             {
@@ -1924,7 +2016,14 @@ def run_open_to_open_professional_validation_v1(
     )
     reduced_liquidity = build_reduced_liquidity_stress_evidence_v1(capacity=capacity)
     execution_realism = build_execution_realism_blocked_evidence_v1(run=baseline_run)
-    data_quality = build_fixture_market_data_quality_evidence_v1(bar_series=bar_series, span=span)
+    data_quality = build_fixture_market_data_quality_evidence_v1(
+        bar_series=bar_series, span=span, market_data_provenance=request.market_data_provenance
+    )
+    limitations = (
+        REAL_DATA_SCORECARD_LIMITATIONS
+        if data_quality.proven_real_market_data
+        else REQUIRED_SCORECARD_LIMITATIONS
+    )
     bootstrap = evaluate_bootstrap(
         strategy_version=strategy_version,
         dataset_version=dataset_version,
@@ -2117,7 +2216,7 @@ def run_open_to_open_professional_validation_v1(
         evaluated_at=request.evaluated_at,
         knowledge_cutoff=knowledge_cutoff,
         status=ScorecardStatus.BLOCKED,
-        limitations=REQUIRED_SCORECARD_LIMITATIONS,
+        limitations=limitations,
         metrics=metrics,
         components=components,
         dataset_health_status=STATUS_BLOCKED,
@@ -2130,7 +2229,7 @@ def run_open_to_open_professional_validation_v1(
 
     validation_metadata: dict[str, Any] = {
         "research_mode": RESEARCH_MODE,
-        "fixture_only": True,
+        "fixture_only": not data_quality.proven_real_market_data,
         "scorecard_status": ScorecardStatus.BLOCKED.value,
         "maximum_automatic_state": STATUS_BLOCKED,
         "paper_authority": False,
@@ -2150,6 +2249,13 @@ def run_open_to_open_professional_validation_v1(
         "automatic_live_capacity_gating": False,
         "execution_realism_status": execution_realism.status,
     }
+    if data_quality.market_data_provenance_status is not None:
+        validation_metadata["market_data_provenance_status"] = (
+            data_quality.market_data_provenance_status
+        )
+        validation_metadata["market_data_provenance_content_hash"] = (
+            data_quality.market_data_provenance_content_hash
+        )
     validation_package = build_validation_package(
         strategy_id=CANONICAL_STRATEGY_ID,
         strategy_version_id=baseline_definition.definition_id,
@@ -2161,15 +2267,17 @@ def run_open_to_open_professional_validation_v1(
         cost_model_version=cost_model_version,
         evidence_ids=evidence_ids,
         evidence_hashes=evidence_hashes,
-        limitations=REQUIRED_SCORECARD_LIMITATIONS,
+        limitations=limitations,
         validation_metadata=validation_metadata,
         evaluated_at=request.evaluated_at,
     )
     if validation_package.promotion_status != PROMOTION_STATUS_REVIEW_REQUIRED_OR_BLOCKED:
         raise OpenToOpenValidationOrchestrationV1Error("validation_package_promotion_status_invalid")
 
+    # Phase 3D.8A: only positively proven canonical real market data lifts the
+    # fixture-data blocker; execution realism and research-only authority stay.
     blocking_reasons = [
-        DATA_QUALITY_BLOCKED_REASON,
+        *(() if data_quality.proven_real_market_data else (DATA_QUALITY_BLOCKED_REASON,)),
         EXECUTION_REALISM_BLOCKED_REASON,
         "RESEARCH_ONLY_NO_PAPER_OR_LIVE_AUTHORITY",
     ]
