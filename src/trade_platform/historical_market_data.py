@@ -1079,8 +1079,75 @@ class PostgresHistoricalMarketDataPipeline:
         _aware(created_at, "dataset_created_at")
         if not normalized_ids or len(set(normalized_ids)) != len(normalized_ids):
             raise HistoricalMarketDataError("invalid_dataset_members")
-        placeholders = ",".join(["%s"] * len(normalized_ids))
-        with self._database.transaction() as connection, connection.cursor() as cursor:
+        member_ids = list(normalized_ids)
+        content_hash, valid_from, valid_until = self._proven_member_digest(
+            source_id, normalization_version, member_ids, created_at
+        )
+        result = HistoricalDatasetVersion(
+            uuid4(), source_id, version, normalization_version, content_hash,
+            valid_from, valid_until, created_at,
+        )
+        try:
+            with self._database.transaction() as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "INSERT INTO historical_dataset_versions VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'SEALED')",
+                    (result.dataset_version_id, result.source_id, result.version,
+                     result.normalization_version, result.content_hash, result.valid_from,
+                     result.valid_until, result.created_at),
+                )
+                # One set-based statement with two parameters, not one round trip
+                # per member. Every uniqueness/foreign-key constraint still applies
+                # and there is no conflict clause: any violation aborts the whole
+                # seal transaction, exactly as the per-row inserts did.
+                cursor.execute(
+                    "INSERT INTO historical_dataset_members (dataset_version_id,normalized_observation_id) "
+                    "SELECT %s, member FROM unnest(%s::uuid[]) AS member",
+                    (result.dataset_version_id, member_ids),
+                )
+                if cursor.rowcount != len(member_ids):
+                    raise HistoricalMarketDataError("historical_dataset_member_insert_incomplete")
+        except Exception as error:
+            raise HistoricalMarketDataError("historical_dataset_seal_failed") from error
+        return result
+
+    def _proven_member_digest(
+        self, source_id: UUID, normalization_version: str, member_ids: list[UUID],
+        created_at: datetime,
+    ) -> tuple[str, datetime, datetime]:
+        """Prove every requested member and return ``(content_hash, valid_from, valid_until)``.
+
+        Read-only. Phase 3D.7R.1: the member set travels as ONE ``uuid[]``
+        parameter, never one placeholder per member -- PostgreSQL rejects a
+        statement with more than 65,535 bind parameters, which a 150-day
+        composite (691,200 members) exceeds. Rows are streamed through a
+        server-side cursor and folded into the digest one at a time, so neither
+        the wide rows nor their canonical lines are ever held in memory.
+
+        Semantics are unchanged: one statement (one snapshot), the same
+        fail-closed checks raised in the same order, and the same SHA-256 over
+        the same canonical lines in the same ``str(normalized_observation_id)``
+        order. The rows are requested in byte order of the id text
+        (``COLLATE "C"``, identical to Python ``str`` order for canonical
+        lowercase UUID text), but that order is only an optimization, never an
+        authority: every key must be strictly greater than the previous one in
+        Python's own ordering, or the seal fails closed -- row-return order can
+        therefore never influence the hash.
+        """
+        row_count = 0
+        source_mismatch = normalization_mismatch = not_validated = not_available = False
+        order_violation = False
+        valid_from: datetime | None = None
+        valid_until: datetime | None = None
+        previous_key: str | None = None
+        digest = hashlib.sha256()
+        # A malformed typed row fails only after every check passes, and only the
+        # first such row in hash order raises -- exactly as the sorted hash loop
+        # did. Rows arrive in hash order, so the first failure seen is that row.
+        line_failure: Exception | None = None
+        with self._database.transaction() as connection, connection.cursor(
+            name="historical_dataset_seal_members"
+        ) as cursor:
+            cursor.itersize = 10_000
             cursor.execute(
                 # The typed payload columns are joined in so the sealed content
                 # hash covers the canonical financial value itself. Hashing
@@ -1094,58 +1161,65 @@ class PostgresHistoricalMarketDataPipeline:
                 "FROM historical_normalized_observations n "
                 "JOIN historical_raw_observations r ON r.raw_observation_id=n.raw_observation_id "
                 f"{_TYPED_PAYLOAD_JOINS} {_VOLUME_SEMANTICS_JOIN} "
-                f"WHERE n.normalized_observation_id IN ({placeholders})",  # nosec B608 - fixed fragments and placeholders only
-                normalized_ids,
+                "WHERE n.normalized_observation_id = ANY(%s::uuid[]) "
+                'ORDER BY n.normalized_observation_id::text COLLATE "C"',  # nosec B608 - fixed fragments and one array parameter only
+                (member_ids,),
             )
-            rows = cursor.fetchall()
-        if len(rows) != len(normalized_ids):
-            raise HistoricalMarketDataError("dataset_member_not_found")
-        if any(UUID(str(row[5])) != source_id for row in rows):
-            raise HistoricalMarketDataError("dataset_source_mismatch")
-        if any(str(row[1]) != normalization_version for row in rows):
-            raise HistoricalMarketDataError("dataset_normalization_version_mismatch")
-        if any(str(row[2]) != QualityStatus.VALIDATED.value for row in rows):
-            raise HistoricalDataQualityError("rejected_observation_cannot_enter_dataset")
-        if any(cast(datetime, row[4]) > created_at or cast(datetime, row[7]) > created_at for row in rows):
-            raise HistoricalMarketDataError("dataset_created_before_member_available")
-        digest = hashlib.sha256()
-        for row in sorted(rows, key=lambda item: str(item[0])):
-            canonical = "|".join(
-                (
-                    str(row[0]),
-                    str(row[8]),
-                    str(row[9]),
-                    _canonical(cast(dict[str, object], row[3])),
-                    *_sealed_typed_components(row),
-                    # The typed payload columns occupy offsets 10..29; the
-                    # volume-semantics sidecar columns follow at offset 30. A
-                    # legacy OHLCV row with no sidecar contributes nothing here,
-                    # so its content hash is unchanged.
-                    *_sealed_volume_semantics_components(row, 30),
+            for row in cursor:
+                row_count += 1
+                source_mismatch = source_mismatch or UUID(str(row[5])) != source_id
+                normalization_mismatch = normalization_mismatch or str(row[1]) != normalization_version
+                not_validated = not_validated or str(row[2]) != QualityStatus.VALIDATED.value
+                not_available = not_available or (
+                    cast(datetime, row[4]) > created_at or cast(datetime, row[7]) > created_at
                 )
-            )
-            digest.update(canonical.encode())
-        result = HistoricalDatasetVersion(
-            uuid4(), source_id, version, normalization_version, digest.hexdigest(),
-            min(cast(datetime, row[6]) for row in rows),
-            max(cast(datetime, row[6]) for row in rows), created_at,
-        )
-        try:
-            with self._database.transaction() as connection, connection.cursor() as cursor:
-                cursor.execute(
-                    "INSERT INTO historical_dataset_versions VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'SEALED')",
-                    (result.dataset_version_id, result.source_id, result.version,
-                     result.normalization_version, result.content_hash, result.valid_from,
-                     result.valid_until, result.created_at),
-                )
-                for normalized_id in normalized_ids:
-                    cursor.execute(
-                        "INSERT INTO historical_dataset_members VALUES (%s,%s)",
-                        (result.dataset_version_id, normalized_id),
+                event_at = cast(datetime, row[6])
+                valid_from = event_at if valid_from is None or event_at < valid_from else valid_from
+                valid_until = event_at if valid_until is None or event_at > valid_until else valid_until
+                key = str(row[0])
+                if previous_key is not None and key <= previous_key:
+                    order_violation = True
+                previous_key = key
+                if line_failure is not None:
+                    continue
+                try:
+                    canonical = "|".join(
+                        (
+                            key,
+                            str(row[8]),
+                            str(row[9]),
+                            _canonical(cast(dict[str, object], row[3])),
+                            *_sealed_typed_components(row),
+                            # The typed payload columns occupy offsets 10..29; the
+                            # volume-semantics sidecar columns follow at offset 30. A
+                            # legacy OHLCV row with no sidecar contributes nothing here,
+                            # so its content hash is unchanged.
+                            *_sealed_volume_semantics_components(row, 30),
+                        )
                     )
-        except Exception as error:
-            raise HistoricalMarketDataError("historical_dataset_seal_failed") from error
-        return result
+                except Exception as error:  # noqa: BLE001 - re-raised below in the original order
+                    line_failure = error
+                    continue
+                digest.update(canonical.encode())
+        if row_count != len(member_ids):
+            raise HistoricalMarketDataError("dataset_member_not_found")
+        if source_mismatch:
+            raise HistoricalMarketDataError("dataset_source_mismatch")
+        if normalization_mismatch:
+            raise HistoricalMarketDataError("dataset_normalization_version_mismatch")
+        if not_validated:
+            raise HistoricalDataQualityError("rejected_observation_cannot_enter_dataset")
+        if not_available:
+            raise HistoricalMarketDataError("dataset_created_before_member_available")
+        if order_violation:
+            # The digest was folded in arrival order; if that was not strictly
+            # the canonical str(id) order it cannot be trusted. Never re-sort.
+            raise HistoricalMarketDataError("dataset_member_hash_order_violation")
+        if line_failure is not None:
+            raise line_failure
+        if valid_from is None or valid_until is None:  # unreachable: row_count > 0 was proven
+            raise HistoricalMarketDataError("dataset_member_not_found")
+        return digest.hexdigest(), valid_from, valid_until
 
     def research_query(
         self, dataset_version_id: UUID, instrument_id: str, start: datetime, end: datetime,

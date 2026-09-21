@@ -8,52 +8,44 @@ updated: 2026-09-21
 # docs/MODULE_3B_GOVERNANCE_SECURITY.md, docs/MODULE_3C_POSTGRES_RUNTIME_WIRING.md
 # and from the roadmap's 3G/3H/3I/3J series. Disambiguate before assuming.
 phase:
-  id: "3D.6R.1"
-  name: Bybit V5 provider-rate-limit recovery semantics
-  status: in_review          # PR open, unmerged
-  base_commit: 0daed0e
+  id: "3D.7R.1"
+  name: Scalable canonical dataset sealing
+  status: in_review          # PR open
+  base_commit: c89b561
 
-# Why this phase exists: the Phase 3D.6 validation-horizon backfill sealed 8 daily
-# windows (2026-04-22 -> 2026-04-30) and then failed closed on the next window with
-# bybit_provider_error:10006 under HTTP 200. No evidence was corrupted. The adapter
-# retried transport/status failures but treated every non-zero envelope retCode as an
-# immediate ProviderError, so a documented transient rate limit was unrecoverable.
+# Why this phase exists: 3D.6R.1 (Bybit retCode 10006 bounded retry) merged, and the
+# 3D.6R.x recoveries sealed all 150 real daily datasets for [2026-04-22, 2026-09-19).
+# Composing them (Phase 3D.7, 691,200 members) failed closed before any write:
+# seal_dataset() bound one SQL placeholder per member, above PostgreSQL's 65,535
+# bind-parameter limit.
 
 next:
-  status: declared_not_authorized
-  id: "3D.6R.2"
-  name: Controlled recovery of the remaining 135 windows
+  id: "3D.7"
+  name: Canonical real 150-day composite over [2026-04-22, 2026-09-19)
   rule: >-
-    Do not begin it. The recovery operation runs only after this PR is reviewed,
-    merged and green on exact-main CI, and only under a fresh owner authorization.
+    Operational only, after this PR is merged and exact-main CI is green. No
+    provider call. Expected content hash (derived read-only from the frozen
+    parents): cfd0f8fe940fe40a631fa2370956370808f0d8dd036b58841578e7335d902b30.
 
 scope:
-  - src/trade_platform/bybit_crypto_provider.py
-  - tests/test_bybit_crypto_provider.py
+  - src/trade_platform/historical_market_data.py
+  - tests/test_historical_dataset_sealing_scale_postgres.py
 
 acceptance:
-  - Exactly retCode 10006 on HTTP 200 is a retryable provider-rate-limit condition;
-    every other non-zero retCode still fails on the attempt that saw it.
-  - RetryPolicy.maximum_attempts is the absolute attempt bound; there is no retry
-    loop outside that single authority.
-  - A valid, future, plausible X-Bapi-Limit-Reset-Timestamp drives the delay through
-    the injected clock; absent/malformed/elapsed/distant values fall back to
-    RetryPolicy exponential backoff. No negative sleep is representable.
-  - The shared MinimumIntervalRequestPacer admits every outbound attempt, retries
-    included. No second hidden rate limiter.
-  - Exhaustion re-raises the canonical bybit_provider_error:10006 identity; never an
-    empty page, stale data or success.
-  - Malformed JSON and malformed envelopes stay fail-closed and are never retried.
-  - HTTP-status retry semantics are unchanged.
+  - No seal_dataset() statement carries one bind parameter per member; the member
+    set travels as a single uuid[] parameter for both the proof read and the insert.
+  - Content hash is byte-identical to the pre-3D.7R.1 algorithm for identical inputs,
+    independent of member input order; no new hash version.
+  - Every fail-closed check (missing, source, normalization version, rejected,
+    availability, duplicates) raises the same error and writes nothing.
+  - A dataset above 65,535 members seals with its exact member set persisted.
 
 safety_gates:
-  - No live Bybit call, no credentials, no broker/account/order call, no live trading.
-  - No scheduling, no OperationalJobPolicy change, no migration, no capacity policy.
-  - Never touch the real trade_platform_research database; the recovery of the
-    remaining windows is Phase 3D.6R.2, not this phase.
+  - No schema migration, no provider call, no broker/account/order call.
+  - No change to composition semantics, dataset identities or content-hash inputs.
 
 validation:
-  iterate: python -m unittest tests.test_bybit_crypto_provider
-  adjacent: python -m unittest tests.test_historical_acquisition tests.test_scheduled_historical_acquisition_v1 tests.test_provider_ingestion tests.test_data_providers
+  iterate: python -m unittest tests.test_historical_dataset_sealing_scale_postgres
+  adjacent: every tests/*_postgres.py module that calls seal_dataset, on a fresh DB
   before_done: ruff check src tests migrations scripts && python scripts/check_mypy_baseline.py
   ci_owns: full suite, Docker, Trivy, attestations, pip-audit, pg restore drill, staging Compose, next build, Playwright
