@@ -16,6 +16,13 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from .persistence import PostgresDatabase
+from .real_market_data_provenance_v1 import (
+    STATUS_SYNTHETIC as PROVENANCE_STATUS_SYNTHETIC,
+)
+from .real_market_data_provenance_v1 import (
+    PostgresRealMarketDataProvenanceAuthorityV1,
+    RealMarketDataProvenanceV1,
+)
 
 Availability = Literal["AVAILABLE", "UNAVAILABLE", "STALE", "BLOCKED", "ERROR", "EXTERNAL_BLOCKED"]
 MetricEvidence = Literal["MEASURED", "ASSUMED", "UNAVAILABLE"]
@@ -185,6 +192,14 @@ class HistoricalDatasetView(BaseModel):
     observation_count: int
     checkpoint_state: str | None
     synthetic_demo: bool
+    #: Phase 3D.8C: derived only by the canonical Phase 3D.8A provenance
+    #: authority for this exact ``dataset_version_id`` (never from ``provider``
+    #: text); the ``provenance_*`` fields identify that verdict and its
+    #: fail-closed reasons (empty only when proven real).
+    evidence_classification: str = "UNAVAILABLE"
+    provenance_evidence_id: UUID | None = None
+    provenance_content_hash: str | None = None
+    provenance_reasons: list[str] = []
 
 
 class HistoricalDatasetPage(BaseModel):
@@ -220,6 +235,13 @@ class DataHealthAssessmentView(BaseModel):
     summary: dict[str, Any]
     findings: list[DataHealthFindingView]
     synthetic_demo: bool
+    #: Phase 3D.8C: real-data *provenance* of the assessed historical dataset,
+    #: independent of health (``blocking``/``max_action``): a healthy dataset is
+    #: not thereby real, and a real one is not thereby healthy.
+    evidence_classification: str = "UNAVAILABLE"
+    provenance_evidence_id: UUID | None = None
+    provenance_content_hash: str | None = None
+    provenance_reasons: list[str] = []
 
 
 class DataHealthAssessmentPage(BaseModel):
@@ -921,6 +943,9 @@ _SYNTHETIC_EVIDENCE_MARKERS = ("demo", "synthetic", "fixture", "module1b")
 # a provider name here is the *only* way classify_research_evidence() can ever return
 # REAL_DATA_RESEARCH_EVIDENCE for it, so it must never be populated to make a demo/test
 # fixture pass -- only when a real provider is actually integrated and authorized.
+# Phase 3D.8C: it stays empty. Surfaces holding an exact historical dataset id
+# (historical datasets, data health) are classified by the canonical Phase 3D.8A
+# authority instead; legacy surfaces keep this fail-closed path.
 _AUTHORIZED_REAL_MARKET_DATA_PROVIDERS: frozenset[str] = frozenset()
 
 
@@ -980,12 +1005,81 @@ def classify_research_evidence_from_markers(*values: str | None) -> str:
     )
 
 
+def classify_canonical_historical_dataset_evidence(
+    verdict: RealMarketDataProvenanceV1 | None, *, synthetic_marker: bool,
+) -> str:
+    """Phase 3D.8C classification for a surface holding an exact historical dataset id.
+
+    ``verdict`` must come from :class:`PostgresRealMarketDataProvenanceAuthorityV1`
+    for that exact ``historical_dataset_versions.dataset_version_id``; ``None``
+    means the surface has no such identity. Real status requires
+    :meth:`RealMarketDataProvenanceV1.is_proven_real` (which re-verifies the
+    verdict's own hash) -- never a provider name, and never the legacy
+    ``_AUTHORIZED_REAL_MARKET_DATA_PROVIDERS`` allowlist. A synthetic marker on
+    the surface itself, or a synthetic verdict, always wins.
+    """
+    synthetic = synthetic_marker or (
+        verdict is not None and verdict.status == PROVENANCE_STATUS_SYNTHETIC
+    )
+    return classify_research_evidence(
+        synthetic_provenance=synthetic,
+        real_data_provenance_verified=verdict is not None and verdict.is_proven_real(),
+        lineage_complete=verdict is not None,
+    )
+
+
+class _RequestScopedProvenance:
+    """Canonical provenance verdicts for ONE dashboard read, deduplicated by dataset id.
+
+    A page may reference one historical dataset from many rows (e.g. several
+    health assessments of the 691,200-member composite); each distinct
+    ``dataset_version_id`` is proven once per request. Nothing is cached
+    across requests and nothing is persisted -- the immutable canonical tables
+    stay the only source of truth. Read-only: the authority only SELECTs.
+    """
+
+    def __init__(self, authority: PostgresRealMarketDataProvenanceAuthorityV1) -> None:
+        self._authority = authority
+        self._verdicts: dict[UUID, RealMarketDataProvenanceV1] = {}
+
+    def resolve(self, dataset_version_id: UUID | None) -> RealMarketDataProvenanceV1 | None:
+        if dataset_version_id is None:
+            return None
+        verdict = self._verdicts.get(dataset_version_id)
+        if verdict is None:
+            verdict = self._authority.prove(dataset_version_id)
+            self._verdicts[dataset_version_id] = verdict
+        return verdict
+
+
+def _provenance_fields(
+    verdict: RealMarketDataProvenanceV1 | None, *, synthetic_marker: bool,
+) -> dict[str, Any]:
+    return {
+        "evidence_classification": classify_canonical_historical_dataset_evidence(
+            verdict, synthetic_marker=synthetic_marker,
+        ),
+        "provenance_evidence_id": None if verdict is None else verdict.evidence_id,
+        "provenance_content_hash": None if verdict is None else verdict.content_hash,
+        "provenance_reasons": (
+            ["no_historical_dataset_lineage"] if verdict is None else list(verdict.reasons)
+        ),
+    }
+
+
 class PostgresOperatorDashboardQueries:
     """Centralized bounded projections over existing immutable PostgreSQL tables."""
 
-    def __init__(self, database: PostgresDatabase) -> None:
+    def __init__(
+        self, database: PostgresDatabase,
+        provenance_authority: PostgresRealMarketDataProvenanceAuthorityV1 | None = None,
+    ) -> None:
         self._database = database
         self._read_lock = RLock()
+        self._provenance_authority = (
+            PostgresRealMarketDataProvenanceAuthorityV1(database)
+            if provenance_authority is None else provenance_authority
+        )
 
     def _read(self, operation: Any) -> Any:
         try:
@@ -1157,6 +1251,9 @@ class PostgresOperatorDashboardQueries:
                 (limit + 1, offset),
             )
             rows, page = _page(cursor.fetchall(), limit, offset)
+            # Phase 3D.8C: classification comes from the canonical provenance
+            # authority for the exact dataset id, never from ``s.provider``.
+            provenance = _RequestScopedProvenance(self._provenance_authority)
             items = [HistoricalDatasetView(
                 dataset_version_id=row[0], source_id=row[1], version=str(row[2]),
                 normalization_version=str(row[3]), content_hash=str(row[4]), valid_from=row[5],
@@ -1164,6 +1261,7 @@ class PostgresOperatorDashboardQueries:
                 dataset_name=str(row[10]), asset_scope=str(row[11]), provider_terms_version=str(row[12]),
                 authorization_reference=str(row[13]), authorized_at=row[14], observation_count=int(row[15]),
                 checkpoint_state=None if row[16] is None else str(row[16]), synthetic_demo=bool(row[17]),
+                **_provenance_fields(provenance.resolve(row[0]), synthetic_marker=bool(row[17])),
             ) for row in rows]
             return HistoricalDatasetPage(state="AVAILABLE" if items else "UNAVAILABLE", items=items, page=page)
         return self._read(operation)
@@ -1201,6 +1299,7 @@ class PostgresOperatorDashboardQueries:
                 (scope_type, scope_type, scope_value, scope_value, blocking, blocking, max_action, max_action, limit + 1, offset),
             )
             rows, page = _page(cursor.fetchall(), limit, offset)
+            provenance = _RequestScopedProvenance(self._provenance_authority)
             items: list[DataHealthAssessmentView] = []
             for row in rows:
                 assessment_id = row[0]
@@ -1222,6 +1321,7 @@ class PostgresOperatorDashboardQueries:
                     evaluated_at=row[7], expected_start=row[8], expected_end=row[9], max_action=str(row[10]),
                     blocking=bool(row[11]), content_hash=str(row[12]), summary=_mapping(row[13]),
                     findings=findings, synthetic_demo=bool(row[14]),
+                    **_provenance_fields(provenance.resolve(row[1]), synthetic_marker=bool(row[14])),
                 ))
             overall = "BLOCKING" if blocking_count > 0 else ("HEALTHY" if total_count > 0 else "AVAILABLE")
             return DataHealthAssessmentPage(
@@ -1265,6 +1365,10 @@ class PostgresOperatorDashboardQueries:
                 evaluated_at=row[7], expected_start=row[8], expected_end=row[9], max_action=str(row[10]),
                 blocking=bool(row[11]), content_hash=str(row[12]), summary=_mapping(row[13]),
                 findings=findings, synthetic_demo=bool(row[14]),
+                **_provenance_fields(
+                    _RequestScopedProvenance(self._provenance_authority).resolve(row[1]),
+                    synthetic_marker=bool(row[14]),
+                ),
             )
         return self._read(operation)
 
