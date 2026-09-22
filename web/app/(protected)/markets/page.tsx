@@ -9,6 +9,7 @@ import {
 } from "../../lib/data-access";
 import { WorkspaceToolbar } from "../../components/workspace-toolbar";
 import { QualityStateBadge } from "../../components/quality-state-badge";
+import { ResearchStatusBadge } from "../../components/research-status-badge";
 import { DatasetVersionBadge } from "../../components/dataset-version-badge";
 import { DemoEvidenceBanner } from "../../components/demo-evidence-banner";
 import { DataTable } from "../../components/data-table";
@@ -149,6 +150,7 @@ export default async function MarketsPage({
                   <th scope="col">Sealed At (UTC)</th>
                   <th scope="col">Content Hash (SHA-256)</th>
                   <th scope="col">Status</th>
+                  <th scope="col">Evidence</th>
                 </tr>
               </thead>
               <tbody>
@@ -175,6 +177,9 @@ export default async function MarketsPage({
                     </td>
                     <td>
                       <QualityStateBadge status={dataset.status} />
+                    </td>
+                    <td title={dataset.provenance_reasons.join(", ")}>
+                      <ResearchStatusBadge classification={dataset.evidence_classification} />
                     </td>
                   </tr>
                 ))}

@@ -72,6 +72,9 @@ export type HistoricalDataset = {
   status: string; provider: string; dataset_name: string; asset_scope: string;
   provider_terms_version: string; authorization_reference: string; authorized_at: string;
   observation_count: number; checkpoint_state: string | null; synthetic_demo: boolean;
+  // Phase 3D.8C: canonical real-market-data provenance for this exact dataset id.
+  evidence_classification: string; provenance_evidence_id: string | null;
+  provenance_content_hash: string | null; provenance_reasons: string[];
 };
 export type HistoricalDatasetPage = { state: EvidenceStatus; items: HistoricalDataset[]; page: PageInfo };
 
@@ -85,6 +88,9 @@ export type DataHealthAssessment = {
   expected_start: string; expected_end: string; max_action: string; blocking: boolean;
   content_hash: string; summary: Record<string, unknown>; findings: DataHealthFinding[];
   synthetic_demo: boolean;
+  // Phase 3D.8C: provenance of the assessed dataset, independent of health/blocking.
+  evidence_classification: string; provenance_evidence_id: string | null;
+  provenance_content_hash: string | null; provenance_reasons: string[];
 };
 export type DataHealthAssessmentPage = {
   state: EvidenceStatus; overall_state: string; total_assessments: number;

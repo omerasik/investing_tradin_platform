@@ -8,39 +8,36 @@ updated: 2026-09-22
 # docs/MODULE_3B_GOVERNANCE_SECURITY.md, docs/MODULE_3C_POSTGRES_RUNTIME_WIRING.md
 # and from the roadmap's 3G/3H/3I/3J series. Disambiguate before assuming.
 phase:
-  id: "3D.8A"
-  name: Canonical real-market-data provenance authority
+  id: "3D.8C"
+  name: Canonical real-data provenance on operator surfaces
   status: in_review          # PR open, owner review; do NOT auto-merge
-  base_commit: a43ea55       # 3D.7R.2 (PR #139) merged, exact-main CI green
+  base_commit: 53791f0       # 3D.8A (PR #140) merged, exact-main CI green
 
-# Why this phase exists: 3D.7 completed the real 150-day composite
-# f07ebfc1-19ce-4757-af4b-10525f6a6992 (SEALED, content hash cfd0f8fe...,
-# 691,200 members, 216,000 basis + 43,199 OI-change features), but open-to-open
-# validation still unconditionally carried FIXTURE_ONLY_MARKET_DATA, and the only
-# "real provider" mechanism was a free-text provider-name allowlist.
+# Why this phase exists: 3D.8A added the canonical provenance authority, but the
+# operator dashboard could only classify through the (empty) legacy free-text
+# provider allowlist, so the real 150-day composite f07ebfc1-... never showed real.
 
 scope:
-  - src/trade_platform/real_market_data_provenance_v1.py
-  - src/trade_platform/open_to_open_validation_orchestration_v1.py
-  - tests/test_real_market_data_provenance_v1.py
-  - tests/test_real_market_data_provenance_v1_postgres.py
+  - src/trade_platform/operator_dashboard.py
+  - web/app/operator-contracts.ts
+  - web/app/(protected)/markets/page.tsx
+  - tests/test_operator_dashboard_real_data_provenance.py
+  - tests/test_operator_dashboard_real_data_provenance_postgres.py
 
 acceptance:
-  - REAL_DATA_RESEARCH_EVIDENCE only from persisted canonical lineage: SEALED dataset,
-    deterministic canonical Bybit source id, exact onboarding source contract and
-    capabilities, complete member lineage. Provider names never grant it.
-  - Synthetic markers -> synthetic; unresolved/unsealed/wrong source/contract drift/
-    incomplete lineage -> UNAVAILABLE.
-  - FIXTURE_ONLY_MARKET_DATA disappears only for proven-real provenance bound to the
-    exact evidence; every execution-realism/authority limitation stays.
-  - Provenance is bound into request/run identity; absent provenance hashes as before.
+  - Historical-dataset and data-health surfaces (exact historical_dataset_versions id)
+    classify only via PostgresRealMarketDataProvenanceAuthorityV1; synthetic markers win.
+  - Legacy surfaces (strategies, experiments, scorecards, validation packages, signals)
+    reach only legacy dataset_versions: no authoritative bridge, stay fail-closed.
+  - _AUTHORIZED_REAL_MARKET_DATA_PROVIDERS stays empty; provider text never grants real.
+  - Each distinct dataset id is proven once per request; no cache table, no migration.
 
 safety_gates:
-  - No migration, no second source registry, no provider/broker/account/order call,
-    no capacity policy, no strategy-parameter change, no live authority.
+  - Read-only; no migration, no provider/broker/account/order call, no capacity
+    policy, no execution-authority change.
 
 validation:
-  iterate: python -m unittest tests.test_real_market_data_provenance_v1
-  adjacent: orchestration, classify-research-evidence, onboarding and provenance *_postgres
+  iterate: python -m unittest tests.test_operator_dashboard_real_data_provenance
+  adjacent: operator_dashboard *_postgres, classify-research-evidence, 3D.8A provenance
   before_done: ruff check src tests migrations scripts && python scripts/check_mypy_baseline.py && bandit -q -r src/trade_platform
   ci_owns: full suite, Docker, Trivy, attestations, pip-audit, pg restore drill, staging Compose, next build, Playwright
