@@ -97,6 +97,28 @@ class ProvenanceVerdictTests(unittest.TestCase):
             CONTRACT.observation_kinds, ("INDEX_PRICE", "MARK_PRICE", "OHLCV", "OPEN_INTEREST")
         )
 
+    def test_rest_verdict_identity_is_unchanged_by_the_captured_source_authority(self) -> None:
+        """Phase 3D.9S.2B added a second authority; this one is byte-identical.
+
+        Pinned literals, not a recomputation: a REST verdict's content hash and
+        evidence id are downstream identity and may not drift when an unrelated
+        authority is added beside it.
+        """
+        verdict = evaluate_real_market_data_provenance_v1(_facts())
+        self.assertEqual(
+            CONTRACT.content_hash(),
+            "a48f8dd55e6260027f3f2e1ba2b6f2463141dcaee4dfb142c09e3018fb6c8929",  # pragma: allowlist secret
+        )
+        self.assertEqual(
+            verdict.content_hash,
+            "9286eaa7c9402a35432957f4f2c5fe6fdd4e5ff744cf8f63ab053f664f11ee4e",  # pragma: allowlist secret
+        )
+        self.assertEqual(str(verdict.evidence_id), "e700f2f1-dfc7-5889-bc5a-e4fe6efb45d2")
+        # The captured-source field is absent from a REST identity payload, which
+        # is exactly why the hash above is unchanged.
+        self.assertIsNone(verdict.captured_source_authority_evidence_id)
+        self.assertNotIn("captured_source_authority_evidence_id", verdict.identity_payload())
+
     def test_synthetic_marker_is_synthetic_never_real(self) -> None:
         for field_name, text in (
             ("provider", "TESTFIX_fixture_provider"),

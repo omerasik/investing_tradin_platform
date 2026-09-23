@@ -8,10 +8,10 @@ updated: 2026-09-23
 # docs/MODULE_3B_GOVERNANCE_SECURITY.md, docs/MODULE_3C_POSTGRES_RUNTIME_WIRING.md
 # and from the roadmap's 3G/3H/3I/3J series. Disambiguate before assuming.
 phase:
-  id: "3D.9S.2A"
-  name: Tardis capture zero-cost engineering pilot (research engineering evidence only)
+  id: "3D.9S.2B"
+  name: Canonical captured-source authority and provenance contract
   status: open_for_owner_review
-  base_commit: 4b7d4ca       # 3D.9A (PR #142) merged
+  base_commit: 43d366f       # 3D.9S.2A (PR #143) merged
 
 # 3D.9A froze the preregistration packet. 3D.9B cannot run because of the
 # blocker below, which is an EVIDENCE-SOURCE problem, not a code problem:
@@ -35,15 +35,9 @@ preflight_3d9s1:              # research only; concluded, no adapter, no purchas
     - tickers carries markPrice and indexPrice ASYNCHRONOUSLY, so a causal
       pairing rule is mandatory, not optional.
 
-pilot_3d9s2a:                 # THIS phase; zero-cost, no credentials, no purchase
+pilot_3d9s2a:                 # concluded (PR #143); zero-cost, no purchase
   result: TARDIS_CAPTURE_ENGINEERING_PROVEN
   lifecycle: RESEARCH_ENGINEERING_EVIDENCE_ONLY
-  scope_paths:
-    - src/trade_platform/tardis_capture_evidence_v1.py
-    - src/trade_platform/bybit_ticker_state_reconstruction_v1.py
-    - src/trade_platform/bybit_trade_bar_reconstruction_v1.py
-    - src/trade_platform/tardis_capture_engineering_pilot_v1.py
-    - tests/test_*_v1.py for the four modules above
   evidence: >-
     32,839 tickers and 15,361 publicTrade records replayed from the free
     first-of-month feed over 20 contiguous minutes each on 2026-05-01,
@@ -53,15 +47,44 @@ pilot_3d9s2a:                 # THIS phase; zero-cost, no credentials, no purcha
     OPEN availability and completed-bar availability separately; a completed
     minute is knowable only at max(bar_close_at, last contributing arrival).
     No performance, no P&L, no parameter ranking.
-  not_authorized_by_this_phase:
-    - Tardis is NOT a canonical research source. real_market_data_provenance_v1
-      is unchanged and still hard-binds REAL_DATA_RESEARCH_EVIDENCE to the one
-      Bybit REST source_id.
-    - No second source contract, no effective_at semantics change, no table,
-      no migration. Those are 3D.9S.2B decisions and the owner's.
   local_only: >-
     The free sample is vendor data and is never committed. The integration test
     is skipped unless TARDIS_FREE_SAMPLE_DIR points at a local read-only copy.
+
+authority_3d9s2b:             # THIS phase; contract only, no data, no purchase
+  decision: >-
+    Tardis historical Bybit V5 public WebSocket capture is authorized as a
+    SECOND exact research-data source contract for BTCUSDT linear perpetual,
+    under the fail-closed semantics the zero-cost pilot proved.
+  scope_paths:
+    - src/trade_platform/canonical_captured_source_authority_v1.py
+    - src/trade_platform/real_market_data_provenance_v1.py
+    - tests/test_canonical_captured_source_authority_v1.py
+    - tests/test_real_market_data_provenance_v1.py
+  canonical_captured_source_id: b4f161e8-3ebd-53f5-bfdb-e527f598b08a
+  contract_content_hash: 3fda40738e2ee176dcd7df19b9616c33f636f97181dc4b1a8df8330693c2c105 # pragma: allowlist secret
+  key_facts:
+    - Capture provider (tardis), originating exchange (BYBIT) and Tardis' own
+      exchange label (bybit) are three separate fields; none grants authority.
+    - Channels tickers + publicTrade only; vendor-generated records refused;
+      source_available_at is the recorder clock and is never written into
+      effective_at or ingested_at.
+    - Provider-published (mark, index, public trades) stays separate from
+      platform-derived (PIT basis, reconstructed 1m OHLCV, features).
+    - Provenance widened only through an explicit closed set of two exact
+      contracts; the captured path additionally requires an intact companion
+      capture-authority verdict. No provider allowlist, no caller "real" flag.
+  unchanged:
+    - Bybit REST source_id a337be59-2019-5458-bc17-dd33750fa359 and contract
+      hash a48f8dd5...8929 are byte-for-byte unchanged, as are existing REST
+      provenance content hashes and evidence ids (pinned in tests).
+  not_authorized_by_this_phase:
+    - No paid subscription, no credentials, no acquisition of the 150 days.
+    - No migration, no dataset, no execution/paper/live authority.
+    - >-
+      The blocker above stays UNRESOLVED. It needs acquired, sealed,
+      provenance-proven, materialized full-span evidence with distinct
+      historical decision times. Free samples are not a substitute.
 
 safety_gates:
   - Untouched holdout (>= 2026-08-20T00:00Z) not opened, evaluated or summarized;
