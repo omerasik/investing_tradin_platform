@@ -2,58 +2,71 @@
 # This is NOT a second roadmap: requirements stay in MASTER_ROADMAP.md, design
 # stays in module docstrings, history stays in git.
 
-updated: 2026-09-22
+updated: 2026-09-23
 
 # Recent commits number phases 3B.1/3B.2/3B.3/3C/3D.x. That series is distinct from
 # docs/MODULE_3B_GOVERNANCE_SECURITY.md, docs/MODULE_3C_POSTGRES_RUNTIME_WIRING.md
 # and from the roadmap's 3G/3H/3I/3J series. Disambiguate before assuming.
 phase:
-  id: "3D.9A"
-  name: Real professional-validation preregistration packet
-  status: in_review          # PR open, owner review; do NOT auto-merge
-  base_commit: abd5068       # 3D.8C (PR #141) merged, exact-main CI green
+  id: "3D.9S.2A"
+  name: Tardis capture zero-cost engineering pilot (research engineering evidence only)
+  status: open_for_owner_review
+  base_commit: 4b7d4ca       # 3D.9A (PR #142) merged
 
-# Why this phase exists: the first REAL invocation of
-# OpenToOpenProfessionalValidationRequestV1 over the 150-day composite
-# f07ebfc1-19ce-4757-af4b-10525f6a6992 must have every methodology input frozen,
-# hashed and owner-authorized BEFORE the untouched holdout is opened. This phase
-# is methodology only: no holdout evidence is read, evaluated or summarized.
+# 3D.9A froze the preregistration packet. 3D.9B cannot run because of the
+# blocker below, which is an EVIDENCE-SOURCE problem, not a code problem:
+# the canonical 150-day Bybit REST dataset f07ebfc1-19ce-4757-af4b-10525f6a6992
+# sets effective_at = computed bar_close_at (bybit_crypto_provider.py:463).
+# That is an assumption about when a value became knowable; the V5 REST
+# historical endpoints publish no finality or revision history that proves it.
+blocker:
+  id: UNPROVEN_DISTINCT_FEATURE_DECISION_TIMES
+  consequence: >-
+    All 216,000 canonical basis materializations share one knowledge_at, so
+    every decision_at collapses to a single post-span instant and any
+    open-to-open run would admit zero decisions.
 
-scope:
-  - src/trade_platform/open_to_open_preregistration_v1.py
-  - tests/test_open_to_open_preregistration_v1.py
+preflight_3d9s1:              # research only; concluded, no adapter, no purchase
+  candidate: tardis.dev historical Bybit V5 capture
+  result: TARDIS_PIT_SOURCE_FEASIBLE
+  key_facts:
+    - Capture is the real-time wss://stream.bybit.com/v5/public feed, never
+      rebuilt from REST; per-message recorder arrival timestamp at 100ns.
+    - tickers carries markPrice and indexPrice ASYNCHRONOUSLY, so a causal
+      pairing rule is mandatory, not optional.
 
-derived_span:                # mechanical, from the dataset's own 1m OHLCV bars
-  evaluation: "[2026-04-22T00:00Z, 2026-09-19T00:00Z)"
-  holdout_start: 2026-08-20T00:00:00Z   # raw boundary already UTC midnight
-  pre_holdout_complete_days: 120
-  holdout_complete_days: 30
-
-acceptance:
-  - Every owner-decided input is optional and absent by default; a packet with a
-    gap is DRAFT/NOT_AUTHORIZED_FOR_HOLDOUT and names each gap. Nothing is
-    defaulted, inferred, or copied from a unit-test constant.
-  - An absent LiquidityCapacityPolicyV1 is NOT a gap: the canonical capacity path
-    answers BLOCKED/MISSING_AUTHORIZED_CAPACITY_POLICY and research continues.
-  - require_authorized_for_holdout() is the single gate on holdout evidence.
-  - Deterministic content hash over all bound inputs; no table, no migration.
-
-open_owner_decisions:        # 3D.9B cannot start until these are authorized
-  - CryptoBasisMeanReversionDefinitionV1 threshold / horizon / exposure
-  - CostModel components + cost_model_version (none authorized anywhere in src/)
-  - walk-forward protocol days, neighbor steps, seeds/counts, stress magnitudes
-  - BLOCKER: all 216,000 canonical basis materializations share ONE knowledge_at/
-    computed_at, so every decision_at collapses to a single post-span instant and
-    any run would admit zero decisions. Per-event knowledge time must be resolved
-    before 3D.9B is meaningful.
+pilot_3d9s2a:                 # THIS phase; zero-cost, no credentials, no purchase
+  result: TARDIS_CAPTURE_ENGINEERING_PROVEN
+  lifecycle: RESEARCH_ENGINEERING_EVIDENCE_ONLY
+  scope_paths:
+    - src/trade_platform/tardis_capture_evidence_v1.py
+    - src/trade_platform/bybit_ticker_state_reconstruction_v1.py
+    - src/trade_platform/bybit_trade_bar_reconstruction_v1.py
+    - src/trade_platform/tardis_capture_engineering_pilot_v1.py
+    - tests/test_*_v1.py for the four modules above
+  evidence: >-
+    32,839 tickers and 15,361 publicTrade records replayed from the free
+    first-of-month feed over 20 contiguous minutes each on 2026-05-01,
+    2026-06-01, 2026-07-01 and 2026-08-01 (all pre-holdout): 8,353 basis
+    observations carrying 8,353 DISTINCT research_available_at instants, 80
+    deterministic 1m bars, three represented collection gaps. No performance,
+    no P&L, no parameter ranking.
+  not_authorized_by_this_phase:
+    - Tardis is NOT a canonical research source. real_market_data_provenance_v1
+      is unchanged and still hard-binds REAL_DATA_RESEARCH_EVIDENCE to the one
+      Bybit REST source_id.
+    - No second source contract, no effective_at semantics change, no table,
+      no migration. Those are 3D.9S.2B decisions and the owner's.
+  local_only: >-
+    The free sample is vendor data and is never committed. The integration test
+    is skipped unless TARDIS_FREE_SAMPLE_DIR points at a local read-only copy.
 
 safety_gates:
-  - Untouched holdout (>= 2026-08-20T00:00Z) not opened, evaluated or summarized.
-  - No migration, no provider/broker/account/order call, no capacity policy,
+  - Untouched holdout (>= 2026-08-20T00:00Z) not opened, evaluated or summarized;
+    the pilot itself fails closed on evidence reaching it.
+  - >-
+    Existing REST dataset is NOT deprecated or mutated. It stays
+    provider-asserted evidence as of acquisition, valid for cross-checking and
+    descriptive research, insufficient for decision-time reconstruction.
+  - No migration, no provider/broker/account/order call, no paid activation,
     no execution-authority change, no live trading.
-
-validation:
-  iterate: python -m unittest tests.test_open_to_open_preregistration_v1
-  adjacent: open_to_open_validation_orchestration_v1, real_market_data_provenance_v1
-  before_done: ruff check src tests migrations scripts && python scripts/check_mypy_baseline.py && bandit -q -r src/trade_platform
-  ci_owns: full suite, Docker, Trivy, attestations, pip-audit, pg restore drill, staging Compose, next build, Playwright
