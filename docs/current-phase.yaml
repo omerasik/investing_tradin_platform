@@ -62,7 +62,7 @@ authority_3d9s2b:             # THIS phase; contract only, no data, no purchase
     - tests/test_canonical_captured_source_authority_v1.py
     - tests/test_real_market_data_provenance_v1.py
   canonical_captured_source_id: b4f161e8-3ebd-53f5-bfdb-e527f598b08a
-  contract_content_hash: 3fda40738e2ee176dcd7df19b9616c33f636f97181dc4b1a8df8330693c2c105
+  contract_content_hash: 3fda40738e2ee176dcd7df19b9616c33f636f97181dc4b1a8df8330693c2c105 # pragma: allowlist secret
   key_facts:
     - Capture provider (tardis), originating exchange (BYBIT) and Tardis' own
       exchange label (bybit) are three separate fields; none grants authority.

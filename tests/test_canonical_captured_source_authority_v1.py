@@ -95,7 +95,7 @@ class CapturedSourceContractTests(unittest.TestCase):
         self.assertEqual(str(CONTRACT.source_id), "b4f161e8-3ebd-53f5-bfdb-e527f598b08a")
         self.assertEqual(
             CONTRACT.content_hash(),
-            "3fda40738e2ee176dcd7df19b9616c33f636f97181dc4b1a8df8330693c2c105",
+            "3fda40738e2ee176dcd7df19b9616c33f636f97181dc4b1a8df8330693c2c105",  # pragma: allowlist secret
         )
         self.assertEqual(
             CONTRACT.content_hash(),
@@ -545,7 +545,7 @@ class ExistingBybitRestAuthorityUnchangedTests(unittest.TestCase):
         self.assertEqual(str(rest.source_id), "a337be59-2019-5458-bc17-dd33750fa359")
         self.assertEqual(
             rest.content_hash(),
-            "a48f8dd55e6260027f3f2e1ba2b6f2463141dcaee4dfb142c09e3018fb6c8929",
+            "a48f8dd55e6260027f3f2e1ba2b6f2463141dcaee4dfb142c09e3018fb6c8929",  # pragma: allowlist secret
         )
         self.assertNotEqual(rest.source_id, PROJECTION.source_id)
         self.assertNotEqual(rest.content_hash(), PROJECTION.content_hash())
