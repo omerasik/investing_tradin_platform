@@ -138,6 +138,10 @@ class _WebSocketClient:
 
         raw = socket.create_connection((host, port), timeout=connect_timeout)
         context = ssl.create_default_context()
+        # The default context still negotiates TLS 1.0/1.1. Nothing this
+        # recorder talks to needs them, so the floor is raised rather than
+        # inherited: certificate and hostname verification stay on as well.
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
         self._socket = context.wrap_socket(raw, server_hostname=host)
         self._buffer = b""
         self._handshake(host, path)

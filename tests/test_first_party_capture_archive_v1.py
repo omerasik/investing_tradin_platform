@@ -333,11 +333,13 @@ class PartitionTests(unittest.TestCase):
         writer = self._writer()
         writer.close_without_finalizing()
         relative = writer.directory.relative_to(self.root).as_posix()
-        self.assertEqual(
-            f"v1/exchange=BYBIT/instrument=CRYPTO-BYBIT-BTCUSDT-PERP/"
-            f"date=2026-09-23/session={self.session}",
-            relative,
+        # The partition path reads as a high-entropy token to the secret
+        # scanner. It is a filesystem layout assertion, not a credential.
+        expected = (
+            "v1/exchange=BYBIT/instrument=CRYPTO-BYBIT-BTCUSDT-PERP/"  # pragma: allowlist secret
+            f"date=2026-09-23/session={self.session}"
         )
+        self.assertEqual(expected, relative)
 
 
 class ReplayTests(unittest.TestCase):
