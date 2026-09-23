@@ -34,6 +34,13 @@ web/dashboard.e2e.token
 *.db
 *.db-journal
 
+# First-party capture archive (Phase 3Z.2). Raw exchange WebSocket traffic is
+# high-cardinality vendor data and never belongs in source control. The default
+# archive root is outside the working tree; these patterns are a second guard
+# for anyone who points --root at the repository by mistake.
+capture/
+*.ndjson
+
 # Playwright artifacts (may capture session cookies/tokens from local runs)
 web/test-results/
 web/playwright-report/

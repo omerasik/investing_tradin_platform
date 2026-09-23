@@ -31,9 +31,11 @@ from trade_platform.evidence_tier_authority_v1 import (
     authorized_timing_contracts_v1,
     canonical_bybit_rest_timing_contract_v1,
     evaluate_evidence_tier_v1,
+    first_party_bybit_capture_timing_contract_v1,
     require_conditional_research_tier_v1,
     require_professional_evidence_tier_v1,
 )
+from trade_platform.first_party_capture_authority_v1 import first_party_bybit_source_id_v1
 from trade_platform.open_to_open_preregistration_v1 import (
     UNRESOLVED_FEATURE_DECISION_TIMES,
     OpenToOpenPreregistrationV1Error,
@@ -137,12 +139,20 @@ class TimingContractTests(unittest.TestCase):
                 authorization_reference="forged",
             )
 
-    def test_closed_set_holds_only_the_bybit_rest_timing_contract(self) -> None:
+    def test_closed_set_holds_exactly_the_two_authorized_sources(self) -> None:
         contracts = authorized_timing_contracts_v1()
-        self.assertEqual(1, len(contracts))
+        self.assertEqual(2, len(contracts))
         self.assertEqual(CONTRACT.source_id, contracts[0].source_id)
         self.assertEqual(TimingAuthorityV1.NONE.value, contracts[0].timing_authority)
         self.assertEqual(EvidenceTierV1.T1_RETROSPECTIVE.value, contracts[0].granted_tier)
+        self.assertEqual(first_party_bybit_source_id_v1(), contracts[1].source_id)
+        self.assertEqual(
+            TimingAuthorityV1.PLATFORM_RECORDER_ARRIVAL_TIMESTAMP.value,
+            contracts[1].timing_authority,
+        )
+        self.assertEqual(
+            EvidenceTierV1.T4_FIRST_PARTY_CAPTURE.value, contracts[1].granted_tier
+        )
 
     def test_contract_hash_is_deterministic(self) -> None:
         self.assertEqual(
@@ -155,6 +165,69 @@ class TimingContractTests(unittest.TestCase):
         self.assertNotIn(
             tardis.source_id, {contract.source_id for contract in authorized_timing_contracts_v1()}
         )
+
+
+class FirstPartyT4BoundaryTests(unittest.TestCase):
+    """Phase 3Z.2 registers the recorder's timing authority; it issues no verdict.
+
+    T4 needs proven real provenance over a *sealed* dataset. Phase 3Z.2 creates
+    none, so an evaluation of first-party evidence fails closed today. That is
+    the boundary, and it is deliberately not dodged by fabricating a dataset.
+    """
+
+    def test_first_party_source_is_registered_as_recorder_arrival(self) -> None:
+        contract = first_party_bybit_capture_timing_contract_v1()
+        self.assertEqual(first_party_bybit_source_id_v1(), contract.source_id)
+        self.assertEqual(
+            EvidenceTierV1.T4_FIRST_PARTY_CAPTURE.value, contract.granted_tier
+        )
+        self.assertFalse(contract.requires_declared_publication_lag)
+
+    def test_registration_alone_issues_no_t4_verdict(self) -> None:
+        verdict = evaluate_evidence_tier_v1(
+            _timing_facts(
+                source_id=first_party_bybit_source_id_v1(),
+                declared_timing_authority=(
+                    TimingAuthorityV1.PLATFORM_RECORDER_ARRIVAL_TIMESTAMP.value
+                ),
+                observations_with_knowledge_time=299,
+                distinct_knowledge_time_count=299,
+            ),
+            None,
+        )
+        self.assertEqual(EvidenceTierV1.T4_FIRST_PARTY_CAPTURE.value, verdict.tier)
+        self.assertIn(
+            "evidence_tier_requires_a_real_market_data_provenance_verdict", verdict.reasons
+        )
+        self.assertFalse(verdict.is_professional_evidence())
+
+    def test_an_unsealed_capture_cannot_reach_t4(self) -> None:
+        """A REST-sourced provenance verdict cannot lend its lineage to capture."""
+        verdict = evaluate_evidence_tier_v1(
+            _timing_facts(
+                source_id=first_party_bybit_source_id_v1(),
+                declared_timing_authority=(
+                    TimingAuthorityV1.PLATFORM_RECORDER_ARRIVAL_TIMESTAMP.value
+                ),
+                observations_with_knowledge_time=299,
+                distinct_knowledge_time_count=299,
+            ),
+            _real_provenance(),
+        )
+        self.assertIn("evidence_tier_provenance_source_mismatch", verdict.reasons)
+        self.assertFalse(verdict.is_professional_evidence())
+
+    def test_provider_name_cannot_impersonate_the_first_party_source(self) -> None:
+        verdict = evaluate_evidence_tier_v1(
+            _timing_facts(
+                declared_timing_authority=(
+                    TimingAuthorityV1.PLATFORM_RECORDER_ARRIVAL_TIMESTAMP.value
+                ),
+            ),
+            _real_provenance(source=_source(provider="trade_platform")),
+        )
+        self.assertEqual(EvidenceTierV1.T1_RETROSPECTIVE.value, verdict.tier)
+        self.assertFalse(verdict.is_professional_evidence())
 
 
 class TierDerivationTests(unittest.TestCase):
@@ -531,10 +604,9 @@ class UnchangedIdentityTests(unittest.TestCase):
         with self.assertRaises(OpenToOpenPreregistrationV1Error):
             require_authorized_for_holdout_with_evidence_tier_v1(packet, verdict)
 
-    def test_this_phase_authorizes_no_new_data_source(self) -> None:
-        """One timing contract, over a source that was already authorized."""
+    def test_timing_contracts_cover_only_the_two_intended_sources(self) -> None:
         self.assertEqual(
-            (CONTRACT.source_id,),
+            (CONTRACT.source_id, first_party_bybit_source_id_v1()),
             tuple(contract.source_id for contract in authorized_timing_contracts_v1()),
         )
 
