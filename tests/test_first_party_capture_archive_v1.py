@@ -12,14 +12,15 @@ import dataclasses
 import json
 import tempfile
 import unittest
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
 from trade_platform.first_party_capture_archive_v1 import (
     CLOCK_DIVERGENCE_TOLERANCE_NANOS,
-    END_PROOF_CLEAN_CLOSE,
     END_PROOF_CONNECTION_LOST,
+    END_PROOF_OPERATOR_BOUNDED_STOP,
+    END_PROOF_UTC_DAY_ROLLOVER,
     MANIFEST_FILE_NAME,
     OPEN_MARKER_NAME,
     PARTITION_STATUS_COMPLETE,
@@ -34,13 +35,20 @@ from trade_platform.first_party_capture_archive_v1 import (
     CapturePartitionWriterV1,
     FirstPartyCaptureArchiveError,
     FirstPartyCaptureRecordV1,
+    ProvenWindowV1,
     build_capture_record_v1,
-    derive_session_gaps_v1,
+    derive_archive_availability_v1,
+    derive_capture_gaps_v1,
     find_partitions_v1,
+    knowledge_bound_utc_nanos,
     measure_clock_resolution_nanos,
+    nanos_to_datetime,
     read_lifecycle_v1,
     read_partition_status_v1,
     replay_partition_v1,
+    sha256_file,
+    utc_day_of_nanos,
+    verify_partition_v1,
 )
 from trade_platform.first_party_capture_authority_v1 import (
     first_party_bybit_capture_contract_v1,
@@ -48,6 +56,9 @@ from trade_platform.first_party_capture_authority_v1 import (
 
 CONTRACT = first_party_bybit_capture_contract_v1()
 DAY = date(2026, 9, 23)
+EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+SESSION_A = uuid4()
+SESSION_B = uuid4()
 
 #: Deliberately awkward: unsorted keys, odd spacing and a trailing-zero decimal
 #: that any re-serialization would quietly rewrite.
@@ -69,14 +80,30 @@ def _reading(index: int) -> CaptureClockReadingV1:
     )
 
 
-def _record(session_id, index: int, payload: str = TICKER_PAYLOAD) -> FirstPartyCaptureRecordV1:
+def _record(
+    session_id, index: int, payload: str = TICKER_PAYLOAD, *, sequence: int | None = None
+) -> FirstPartyCaptureRecordV1:
     return build_capture_record_v1(
         contract=CONTRACT,
         session_id=session_id,
-        sequence=index,
+        sequence=index if sequence is None else sequence,
         clock=_reading(index),
         payload_text=payload,
     )
+
+
+def _cover(
+    writer: CapturePartitionWriterV1, first: int, last: int, count: int
+) -> CaptureCoverageIntervalV1:
+    """Declare the window a test's records were written inside."""
+    interval = CaptureCoverageIntervalV1(
+        start_utc_nanos=_reading(first).arrival_utc_nanos,
+        last_proven_utc_nanos=_reading(last).arrival_utc_nanos,
+        end_proof=END_PROOF_OPERATOR_BOUNDED_STOP,
+        record_count=count,
+    )
+    writer.declare_coverage(interval)
+    return interval
 
 
 class RecordIdentityTests(unittest.TestCase):
@@ -259,14 +286,7 @@ class PartitionTests(unittest.TestCase):
         writer = self._writer()
         writer.append_record(_record(self.session, 0))
         writer.append_record(_record(self.session, 1, TRADE_PAYLOAD))
-        writer.declare_coverage(
-            CaptureCoverageIntervalV1(
-                start_utc_nanos=_reading(0).arrival_utc_nanos,
-                end_utc_nanos=_reading(1).arrival_utc_nanos,
-                end_proof=END_PROOF_CLEAN_CLOSE,
-                record_count=2,
-            )
-        )
+        _cover(writer, 0, 1, 2)
         writer.finalize()
         self.assertFalse((writer.directory / OPEN_MARKER_NAME).exists())
         partition = read_partition_status_v1(writer.directory)
@@ -278,6 +298,7 @@ class PartitionTests(unittest.TestCase):
     def test_finalized_partition_cannot_be_reopened(self) -> None:
         writer = self._writer()
         writer.append_record(_record(self.session, 0))
+        _cover(writer, 0, 0, 1)
         writer.finalize()
         with self.assertRaises(FirstPartyCaptureArchiveError):
             self._writer()
@@ -303,6 +324,7 @@ class PartitionTests(unittest.TestCase):
     def test_tampered_records_file_breaks_the_manifest(self) -> None:
         writer = self._writer()
         writer.append_record(_record(self.session, 0))
+        _cover(writer, 0, 0, 1)
         writer.finalize()
         records = writer.directory / "records.ndjson"
         records.write_text(records.read_text(encoding="utf-8") + "\n", encoding="utf-8")
@@ -315,6 +337,7 @@ class PartitionTests(unittest.TestCase):
     def test_tampered_manifest_fails_its_own_hash(self) -> None:
         writer = self._writer()
         writer.append_record(_record(self.session, 0))
+        _cover(writer, 0, 0, 1)
         writer.finalize()
         path = writer.directory / MANIFEST_FILE_NAME
         manifest = json.loads(path.read_text(encoding="utf-8"))
@@ -358,6 +381,7 @@ class ReplayTests(unittest.TestCase):
         ]
         for record in self.written:
             self.writer.append_record(record)
+        _cover(self.writer, 0, 2, 3)
 
     def test_replay_reproduces_the_exact_sequence_and_hashes(self) -> None:
         self.writer.finalize()
@@ -403,43 +427,371 @@ class ReplayTests(unittest.TestCase):
 
 
 class CoverageAndGapTests(unittest.TestCase):
-    def test_quiet_coverage_and_an_unobserved_hole_are_different(self) -> None:
-        covered = CaptureCoverageIntervalV1(
-            start_utc_nanos=1_000, end_utc_nanos=9_000, end_proof=END_PROOF_CLEAN_CLOSE,
-            record_count=0,
-        )
-        self.assertEqual(0, covered.record_count)  # quiet, but positively covered
-        self.assertEqual((), derive_session_gaps_v1([covered]))
+    """Half-open ``[start, last_proven + 1)`` semantics and derived gaps."""
 
-    def test_a_hole_between_windows_is_an_explicit_gap(self) -> None:
-        gaps = derive_session_gaps_v1(
+    @staticmethod
+    def _window(start: int, last: int, proof: str, session=None) -> ProvenWindowV1:
+        return ProvenWindowV1(
+            session_id=session or SESSION_A,
+            interval=CaptureCoverageIntervalV1(start, last, proof, 0),
+        )
+
+    def test_half_open_boundaries_include_first_and_last_proof_only(self) -> None:
+        window = CaptureCoverageIntervalV1(1_000, 4_999, END_PROOF_OPERATOR_BOUNDED_STOP, 2)
+        self.assertEqual(5_000, window.end_utc_nanos)
+        self.assertTrue(window.contains(1_000))
+        self.assertTrue(window.contains(4_999))
+        self.assertFalse(window.contains(999))
+        self.assertFalse(window.contains(5_000))
+
+    def test_a_single_instant_window_contains_that_instant(self) -> None:
+        window = CaptureCoverageIntervalV1(7_000, 7_000, END_PROOF_OPERATOR_BOUNDED_STOP, 1)
+        self.assertTrue(window.contains(7_000))
+        self.assertEqual(7_001, window.end_utc_nanos)
+
+    def test_the_exclusive_end_is_derived_and_cannot_be_forged(self) -> None:
+        payload = CaptureCoverageIntervalV1(
+            1_000, 4_999, END_PROOF_OPERATOR_BOUNDED_STOP, 0
+        ).to_payload()
+        self.assertEqual(4_999, payload["last_proven_utc_nanos"])
+        self.assertEqual(5_000, payload["end_utc_nanos_exclusive"])
+        payload["end_utc_nanos_exclusive"] = 9_000
+        with self.assertRaises(FirstPartyCaptureArchiveError):
+            CaptureCoverageIntervalV1.from_payload(payload)
+
+    def test_quiet_coverage_and_an_unobserved_hole_are_different(self) -> None:
+        quiet = self._window(1_000, 9_000, END_PROOF_OPERATOR_BOUNDED_STOP)
+        self.assertEqual(0, quiet.interval.record_count)  # quiet, but positively covered
+        self.assertEqual((), derive_capture_gaps_v1([quiet]))
+
+    def test_a_hole_between_windows_starts_at_the_exclusive_end(self) -> None:
+        gaps = derive_capture_gaps_v1(
             [
-                CaptureCoverageIntervalV1(1_000, 5_000, END_PROOF_CONNECTION_LOST, 10),
-                CaptureCoverageIntervalV1(8_000, 9_000, END_PROOF_CLEAN_CLOSE, 4),
+                self._window(1_000, 4_999, END_PROOF_CONNECTION_LOST),
+                self._window(8_000, 9_000, END_PROOF_OPERATOR_BOUNDED_STOP),
             ]
         )
-        self.assertEqual(1, len(gaps))
-        self.assertEqual(5_000, gaps[0].start_utc_nanos)
-        self.assertEqual(8_000, gaps[0].end_utc_nanos)
+        (gap,) = gaps
+        self.assertEqual(5_000, gap.start_utc_nanos)
+        self.assertEqual(8_000, gap.end_utc_nanos)
+        self.assertEqual(CaptureGapKindV1.CONNECTION_LOSS.value, gap.kind)
 
-    def test_abutting_windows_produce_no_gap(self) -> None:
+    def test_abutting_windows_produce_no_gap_but_one_nanosecond_does(self) -> None:
+        first = self._window(1_000, 4_999, END_PROOF_UTC_DAY_ROLLOVER)
+        self.assertEqual(
+            (), derive_capture_gaps_v1([first, self._window(5_000, 9_000, END_PROOF_OPERATOR_BOUNDED_STOP)])
+        )
+        (gap,) = derive_capture_gaps_v1(
+            [first, self._window(5_001, 9_000, END_PROOF_OPERATOR_BOUNDED_STOP)]
+        )
+        self.assertEqual((5_000, 5_001), (gap.start_utc_nanos, gap.end_utc_nanos))
+        self.assertEqual(CaptureGapKindV1.PARTITION_ROLLOVER.value, gap.kind)
+
+    def test_a_gap_between_sessions_is_a_session_boundary_whatever_ended_it(self) -> None:
+        (gap,) = derive_capture_gaps_v1(
+            [
+                self._window(1_000, 2_000, END_PROOF_OPERATOR_BOUNDED_STOP, SESSION_A),
+                self._window(9_000, 9_500, END_PROOF_OPERATOR_BOUNDED_STOP, SESSION_B),
+            ]
+        )
+        self.assertEqual(CaptureGapKindV1.SESSION_BOUNDARY.value, gap.kind)
+
+    def test_overlapping_sessions_merge_rather_than_invent_a_gap(self) -> None:
         self.assertEqual(
             (),
-            derive_session_gaps_v1(
+            derive_capture_gaps_v1(
                 [
-                    CaptureCoverageIntervalV1(1_000, 5_000, END_PROOF_CLEAN_CLOSE, 3),
-                    CaptureCoverageIntervalV1(5_000, 9_000, END_PROOF_CLEAN_CLOSE, 3),
+                    self._window(1_000, 9_000, END_PROOF_OPERATOR_BOUNDED_STOP, SESSION_A),
+                    self._window(2_000, 3_000, END_PROOF_OPERATOR_BOUNDED_STOP, SESSION_B),
+                    self._window(9_001, 9_500, END_PROOF_OPERATOR_BOUNDED_STOP, SESSION_B),
                 ]
             ),
         )
 
-    def test_an_interval_cannot_end_before_it_starts(self) -> None:
+    def test_malformed_intervals_and_gaps_are_refused(self) -> None:
         with self.assertRaises(FirstPartyCaptureArchiveError):
-            CaptureCoverageIntervalV1(9_000, 1_000, END_PROOF_CLEAN_CLOSE, 0)
+            CaptureCoverageIntervalV1(9_000, 1_000, END_PROOF_OPERATOR_BOUNDED_STOP, 0)
+        with self.assertRaises(FirstPartyCaptureArchiveError):
+            CaptureCoverageIntervalV1(1_000, 2_000, "CLEAN_CLOSE", 0)
+        with self.assertRaises(FirstPartyCaptureArchiveError):
+            CaptureCoverageIntervalV1(1_000, 2_000, END_PROOF_OPERATOR_BOUNDED_STOP, -1)
+        with self.assertRaises(FirstPartyCaptureArchiveError):
+            CaptureGapV1(5, 2, CaptureGapKindV1.CONNECTION_LOSS.value)
+        with self.assertRaises(FirstPartyCaptureArchiveError):
+            CaptureGapV1(1, 2, "RECORDER_NOT_RUNNING")
 
-    def test_gap_kinds_name_the_cause(self) -> None:
-        gap = CaptureGapV1(1, 2, CaptureGapKindV1.RECORDER_NOT_RUNNING.value)
-        self.assertEqual("RECORDER_NOT_RUNNING", gap.kind)
+    def test_gap_overlap_is_judged_on_half_open_bounds(self) -> None:
+        window = CaptureCoverageIntervalV1(1_000, 4_999, END_PROOF_CONNECTION_LOST, 0)
+        kind = CaptureGapKindV1.CONNECTION_LOSS.value
+        self.assertFalse(CaptureGapV1(5_000, 6_000, kind).overlaps(window))
+        self.assertFalse(CaptureGapV1(5_000, None, kind).overlaps(window))
+        self.assertTrue(CaptureGapV1(4_999, 6_000, kind).overlaps(window))
+        self.assertTrue(CaptureGapV1(500, None, kind).overlaps(window))
+        self.assertFalse(CaptureGapV1(500, 1_000, kind).overlaps(window))
+
+
+class ClockConversionTests(unittest.TestCase):
+    """No conversion may move an arrival earlier than the measured reading."""
+
+    def test_datetime_conversion_never_moves_an_arrival_earlier(self) -> None:
+        base = _reading(0).arrival_utc_nanos
+        for offset in (0, 1, 999, 1_000, 1_001, 123_456_789, 999_999_999):
+            nanos = base + offset
+            converted = nanos_to_datetime(nanos)
+            as_nanos = (converted - EPOCH) // timedelta(microseconds=1) * 1_000
+            self.assertGreaterEqual(as_nanos, nanos)
+            self.assertLess(as_nanos - nanos, 1_000)
+
+    def test_utc_day_is_exact_at_the_last_nanosecond_before_midnight(self) -> None:
+        midnight = int((datetime(2026, 9, 24, tzinfo=UTC) - EPOCH).total_seconds()) * 1_000_000_000
+        self.assertEqual(date(2026, 9, 23), utc_day_of_nanos(midnight - 1))
+        self.assertEqual(date(2026, 9, 24), utc_day_of_nanos(midnight))
+
+    def test_knowledge_bound_is_never_earlier_than_the_reading(self) -> None:
+        arrival = _reading(0).arrival_utc_nanos
+        self.assertEqual(arrival + 15_625_000, knowledge_bound_utc_nanos(arrival, 15_625_000))
+        self.assertGreater(knowledge_bound_utc_nanos(arrival, 1), arrival)
+        with self.assertRaises(FirstPartyCaptureArchiveError):
+            knowledge_bound_utc_nanos(arrival, 0)
+
+
+class WriterInvariantTests(unittest.TestCase):
+    """The writer refuses coverage bookkeeping that would misplace a record."""
+
+    def setUp(self) -> None:
+        self._temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temp.cleanup)
+        self.session = uuid4()
+        self.writer = CapturePartitionWriterV1(
+            root=Path(self._temp.name), contract=CONTRACT, session_id=self.session, day=DAY
+        )
+        self.addCleanup(self.writer.close_without_finalizing)
+
+    def test_a_window_ending_at_the_last_record_cannot_exclude_it(self) -> None:
+        """The pre-fix bug: end = last arrival under half-open semantics."""
+        self.writer.append_record(_record(self.session, 0))
+        self.writer.append_record(_record(self.session, 1))
+        with self.assertRaises(FirstPartyCaptureArchiveError):
+            self.writer.declare_coverage(
+                CaptureCoverageIntervalV1(
+                    _reading(0).arrival_utc_nanos,
+                    _reading(1).arrival_utc_nanos - 1,
+                    END_PROOF_OPERATOR_BOUNDED_STOP,
+                    2,
+                )
+            )
+
+    def test_the_window_count_must_match_the_records_it_claims(self) -> None:
+        self.writer.append_record(_record(self.session, 0))
+        with self.assertRaises(FirstPartyCaptureArchiveError):
+            _cover(self.writer, 0, 0, 2)
+
+    def test_finalize_refuses_records_no_window_claims(self) -> None:
+        self.writer.append_record(_record(self.session, 0))
+        with self.assertRaises(FirstPartyCaptureArchiveError):
+            self.writer.finalize()
+
+    def test_declarations_are_ordered_and_disjoint(self) -> None:
+        _cover(self.writer, 0, 5, 0)
+        with self.assertRaises(FirstPartyCaptureArchiveError):
+            _cover(self.writer, 5, 6, 0)  # starts at 5, inside [0, 5 + 1)
+        kind = CaptureGapKindV1.CONNECTION_LOSS.value
+        with self.assertRaises(FirstPartyCaptureArchiveError):
+            self.writer.declare_gap(CaptureGapV1(_reading(5).arrival_utc_nanos, None, kind))
+        self.writer.declare_gap(CaptureGapV1(_reading(5).arrival_utc_nanos + 1, None, kind))
+        with self.assertRaises(FirstPartyCaptureArchiveError):
+            _cover(self.writer, 9, 9, 0)  # nothing follows an open-ended gap
+
+    def test_a_gap_cannot_swallow_unclaimed_records(self) -> None:
+        self.writer.append_record(_record(self.session, 0))
+        with self.assertRaises(FirstPartyCaptureArchiveError):
+            self.writer.declare_gap(
+                CaptureGapV1(_reading(0).arrival_utc_nanos, None, CaptureGapKindV1.CONNECTION_LOSS.value)
+            )
+
+    def test_a_record_from_another_utc_day_is_refused(self) -> None:
+        other_day = build_capture_record_v1(
+            contract=CONTRACT,
+            session_id=self.session,
+            sequence=0,
+            clock=CaptureClockReadingV1(
+                arrival_utc_nanos=_reading(0).arrival_utc_nanos + 86_400 * 1_000_000_000,
+                arrival_monotonic_nanos=_reading(0).arrival_monotonic_nanos,
+            ),
+            payload_text=TICKER_PAYLOAD,
+        )
+        with self.assertRaises(FirstPartyCaptureArchiveError):
+            self.writer.append_record(other_day)
+
+
+def _rewrite_manifest(directory: Path, mutate) -> None:
+    """Forge a manifest that is internally hash-consistent, to prove the deeper checks."""
+    from trade_platform.first_party_capture_archive_v1 import _canonical_json, _sha256_text
+
+    path = directory / MANIFEST_FILE_NAME
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest.pop("manifest_content_hash")
+    mutate(manifest)
+    manifest["files"] = {
+        name: sha256_file(directory / name) for name in manifest["files"]
+    }
+    manifest["manifest_content_hash"] = _sha256_text(_canonical_json(manifest))
+    path.write_text(_canonical_json(manifest) + "\n", encoding="utf-8")
+
+
+class ManifestConsistencyTests(unittest.TestCase):
+    """A COMPLETE partition needs consistent metadata, not just matching hashes."""
+
+    def setUp(self) -> None:
+        self._temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temp.cleanup)
+        self.session = uuid4()
+        writer = CapturePartitionWriterV1(
+            root=Path(self._temp.name), contract=CONTRACT, session_id=self.session, day=DAY
+        )
+        writer.append_record(_record(self.session, 0))
+        writer.append_record(_record(self.session, 1, TRADE_PAYLOAD))
+        _cover(writer, 0, 1, 2)
+        writer.declare_gap(
+            CaptureGapV1(_reading(1).arrival_utc_nanos + 1, _reading(5).arrival_utc_nanos,
+                         CaptureGapKindV1.CONNECTION_LOSS.value)
+        )
+        writer.append_record(_record(self.session, 5, sequence=2))
+        _cover(writer, 5, 5, 1)
+        writer.finalize()
+        self.directory = writer.directory
+
+    def _reasons(self) -> tuple[str, ...]:
+        partition = read_partition_status_v1(self.directory)
+        self.assertEqual(PARTITION_STATUS_PARTIAL, partition.status)
+        return partition.reasons
+
+    def test_an_honest_partition_verifies_end_to_end(self) -> None:
+        verification = verify_partition_v1(self.directory)
+        self.assertEqual(3, verification.record_count)
+        self.assertEqual({"publicTrade": 1, "tickers": 2}, dict(verification.records_by_channel))
+        self.assertEqual(2, len(verification.coverage))
+
+    def test_coverage_counts_must_sum_to_the_manifest_count(self) -> None:
+        _rewrite_manifest(self.directory, lambda m: m.__setitem__("record_count", 4))
+        self.assertIn("coverage_record_counts_do_not_sum_to_the_manifest_count", self._reasons())
+
+    def test_a_consistent_but_inflated_count_fails_on_replay(self) -> None:
+        def inflate(manifest):
+            manifest["record_count"] = 4
+            manifest["coverage"][1]["record_count"] = 2
+
+        _rewrite_manifest(self.directory, inflate)
+        with self.assertRaises(FirstPartyCaptureArchiveError) as caught:
+            verify_partition_v1(self.directory)
+        self.assertIn("count", str(caught.exception))
+
+    def test_a_record_outside_declared_coverage_fails_on_replay(self) -> None:
+        def shift(manifest):
+            window = manifest["coverage"][0]
+            window["start_utc_nanos"] = _reading(1).arrival_utc_nanos  # excludes record 0
+            window["record_count"] = 2
+            manifest["first_arrival_utc_nanos"] = _reading(1).arrival_utc_nanos
+
+        _rewrite_manifest(self.directory, shift)
+        with self.assertRaises(FirstPartyCaptureArchiveError) as caught:
+            verify_partition_v1(self.directory)
+        self.assertIn("outside_every_declared_coverage_window", str(caught.exception))
+
+    def test_a_gap_overlapping_coverage_is_refused(self) -> None:
+        def overlap(manifest):
+            manifest["gaps"][0]["start_utc_nanos"] = _reading(1).arrival_utc_nanos
+
+        _rewrite_manifest(self.directory, overlap)
+        self.assertIn("declared_gap_overlaps_proven_coverage", self._reasons())
+
+    def test_overlapping_windows_are_refused(self) -> None:
+        def overlap(manifest):
+            manifest["coverage"][1]["start_utc_nanos"] = _reading(1).arrival_utc_nanos
+            manifest["gaps"] = []
+
+        _rewrite_manifest(self.directory, overlap)
+        self.assertIn("coverage_windows_overlap_or_are_unordered", self._reasons())
+
+    def test_the_contract_hash_must_be_the_authorized_contract(self) -> None:
+        _rewrite_manifest(
+            self.directory, lambda m: m.__setitem__("contract_content_hash", "0" * 64)
+        )
+        reasons = self._reasons()
+        self.assertIn("manifest_contract_hash_is_not_the_authorized_contract", reasons)
+        self.assertIn("session_and_manifest_disagree:contract_content_hash", reasons)
+
+    def test_session_metadata_must_agree_with_the_manifest(self) -> None:
+        session_path = self.directory / "session.json"
+        session = json.loads(session_path.read_text(encoding="utf-8"))
+        session["session_id"] = str(uuid4())
+        session_path.write_text(json.dumps(session), encoding="utf-8")
+        _rewrite_manifest(self.directory, lambda m: None)
+        self.assertIn("session_and_manifest_disagree:session_id", self._reasons())
+
+    def test_a_torn_record_line_fails_closed(self) -> None:
+        records = self.directory / "records.ndjson"
+        records.write_text(records.read_text(encoding="utf-8") + '{"schema_version":', encoding="utf-8")
+        _rewrite_manifest(self.directory, lambda m: None)
+        with self.assertRaises(FirstPartyCaptureArchiveError):
+            verify_partition_v1(self.directory)
+
+
+class CrashAndRestartAvailabilityTests(unittest.TestCase):
+    """Issue 3: a crashed session proves nothing, and the hole it leaves is visible."""
+
+    def setUp(self) -> None:
+        self._temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temp.cleanup)
+        self.root = Path(self._temp.name)
+
+    def _complete_session(self, indices: list[int]) -> Path:
+        session = uuid4()
+        writer = CapturePartitionWriterV1(root=self.root, contract=CONTRACT, session_id=session, day=DAY)
+        for index in indices:
+            writer.append_record(_record(session, index))
+        _cover(writer, indices[0], indices[-1], len(indices))
+        writer.finalize()
+        return writer.directory
+
+    def test_a_crashed_partition_contributes_no_coverage_and_the_hole_is_derived(self) -> None:
+        before = self._complete_session([0, 1, 2])
+        crashed_session = uuid4()
+        crashed = CapturePartitionWriterV1(
+            root=self.root, contract=CONTRACT, session_id=crashed_session, day=DAY
+        )
+        crashed.append_record(_record(crashed_session, 5))
+        crashed.append_record(_record(crashed_session, 6))
+        crashed.close_without_finalizing()  # a hard crash never gets further
+        after = self._complete_session([10, 11])
+
+        availability = derive_archive_availability_v1(self.root)
+        self.assertEqual(3, len(find_partitions_v1(self.root)))
+        self.assertNotIn(crashed.directory, (before, after))
+        self.assertEqual(((crashed.directory, ("partition_has_no_manifest",)),), availability.excluded)
+        self.assertEqual(2, len(availability.windows))
+        (gap,) = availability.gaps
+        self.assertEqual(CaptureGapKindV1.SESSION_BOUNDARY.value, gap.kind)
+        self.assertEqual(_reading(2).arrival_utc_nanos + 1, gap.start_utc_nanos)
+        self.assertEqual(_reading(10).arrival_utc_nanos, gap.end_utc_nanos)
+        # The crashed session's records sit in the hole, claimed by nothing.
+        for index in (5, 6):
+            arrival = _reading(index).arrival_utc_nanos
+            self.assertTrue(gap.start_utc_nanos <= arrival < gap.end_utc_nanos)
+            self.assertFalse(any(w.interval.contains(arrival) for w in availability.windows))
+
+    def test_a_crashed_partition_can_never_be_replayed_as_evidence(self) -> None:
+        session = uuid4()
+        crashed = CapturePartitionWriterV1(root=self.root, contract=CONTRACT, session_id=session, day=DAY)
+        crashed.append_record(_record(session, 0))
+        crashed.close_without_finalizing()
+        self.assertTrue((crashed.directory / OPEN_MARKER_NAME).exists())
+        with self.assertRaises(FirstPartyCaptureArchiveError):
+            verify_partition_v1(crashed.directory)
+
+    def test_an_empty_archive_proves_nothing(self) -> None:
+        availability = derive_archive_availability_v1(self.root)
+        self.assertEqual(((), (), ()), (availability.windows, availability.gaps, availability.excluded))
 
 
 if __name__ == "__main__":

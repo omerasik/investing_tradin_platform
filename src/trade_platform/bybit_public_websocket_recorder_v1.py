@@ -25,14 +25,25 @@ Fail closed around every boundary
 ---------------------------------
 Coverage opens only when Bybit has acknowledged both subscriptions, never when
 the socket opened -- an accepted TCP connection proves nothing about whether
-data is flowing. Coverage closes on a clean stop, a lost connection or a clock
-discontinuity, and each close records *which*, so a process that died is never
-presented as a process that finished. Every reconnect is a new coverage window
-with a gap in front of it, and ticker state is never carried across it: Bybit
+data is flowing -- and ends at the last message that positively proved it.
+Each close records *why*: an operator bounded stop, an operator interrupt, a
+UTC-day rollover, a lost or peer-closed connection, a clock discontinuity, a
+rejected message, or an unexpected recorder failure. The outer ``finally``
+never decides that label, so a crash inside the recorder is never presented as
+a process that finished. Every reconnect is a new coverage window with a gap
+in front of it, and ticker state is never carried across it: Bybit
 re-sends a ``snapshot`` on resubscribe, and
 :mod:`trade_platform.bybit_ticker_state_reconstruction_v1` already resets
 component state on a snapshot, so replayed capture feeds that proven logic
 without this module duplicating it.
+
+Only a positively identified Bybit operation reply (``subscribe``/``ping``/
+``pong`` without a topic) passes without becoming a record. Everything else is
+market data or a violation: a message that is not JSON, has an unknown shape,
+or carries a topic but fails the authorized payload contract closes coverage
+at the last proof, is kept verbatim in the lifecycle log as
+``MESSAGE_REJECTED``, and resets the connection. Nothing the contract refuses
+can disappear inside a window that still claims to be covered.
 
 A UTC-day rollover finalizes the open partition and starts a new one, so a
 partition is always exactly one session's slice of one day.
@@ -55,22 +66,27 @@ import socket
 import ssl
 import struct
 import time
-from collections.abc import Iterator
-from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass, field
+from datetime import date, datetime
 from pathlib import Path
-from typing import Final
+from typing import Any, Final, NoReturn
 from urllib.parse import urlparse
 from uuid import UUID
 
 from .first_party_capture_archive_v1 import (
-    END_PROOF_CLEAN_CLOSE,
     END_PROOF_CLOCK_DISCONTINUITY,
     END_PROOF_CONNECTION_LOST,
+    END_PROOF_CONTRACT_VIOLATION,
+    END_PROOF_OPERATOR_BOUNDED_STOP,
+    END_PROOF_OPERATOR_INTERRUPT,
+    END_PROOF_PEER_CLOSED,
+    END_PROOF_RECORDER_FAILURE,
+    END_PROOF_UTC_DAY_ROLLOVER,
+    GAP_KIND_FOR_END_PROOF_V1,
     CaptureClockMonitorV1,
     CaptureClockReadingV1,
     CaptureCoverageIntervalV1,
-    CaptureGapKindV1,
     CaptureGapV1,
     CaptureLifecycleEventV1,
     CaptureLifecycleKindV1,
@@ -79,7 +95,9 @@ from .first_party_capture_archive_v1 import (
     build_capture_record_v1,
     default_archive_root,
     measure_clock_resolution_nanos,
+    nanos_to_datetime,
     new_session_id_v1,
+    utc_day_of_nanos,
 )
 from .first_party_capture_authority_v1 import (
     FirstPartyCaptureContractV1,
@@ -113,8 +131,25 @@ _OPCODE_PONG: Final = 0xA
 _MAX_FRAME_BYTES: Final = 8 * 1024 * 1024
 
 
+#: Bybit operation replies that carry no market data. Only these may pass the
+#: recorder without becoming a record; anything else is data or a violation.
+_CONTROL_OPERATIONS: Final = frozenset({"subscribe", "ping", "pong"})
+
+
 class BybitPublicWebSocketError(RuntimeError):
     """Raised when the public feed cannot be reached or speaks an unexpected protocol."""
+
+
+class BybitPublicPeerClosedError(BybitPublicWebSocketError):
+    """The exchange sent a WebSocket close frame. Still an interruption, not our stop."""
+
+
+class CaptureClockRegressionError(BybitPublicWebSocketError):
+    """The wall clock or the UTC day went backwards within a session."""
+
+
+class CaptureContractViolationError(BybitPublicWebSocketError):
+    """A message failed the authorized contract. Coverage closed before it."""
 
 
 class _WebSocketClient:
@@ -239,7 +274,7 @@ class _WebSocketClient:
             if opcode == _OPCODE_PONG:
                 continue
             if opcode == _OPCODE_CLOSE:
-                raise BybitPublicWebSocketError("connection_closed_by_peer")
+                raise BybitPublicPeerClosedError("connection_closed_by_peer_close_frame")
             if opcode == _OPCODE_BINARY:
                 raise BybitPublicWebSocketError("binary_frames_are_not_expected_on_this_feed")
 
@@ -279,14 +314,21 @@ class CaptureHealthV1:
     clock_discontinuities: int
     gaps_recorded: int
     partition_directory: Path | None
+    contract_violations: int = 0
+    rejection_reasons: Mapping[str, int] = field(default_factory=dict)
+    session_end_proof: str | None = None
 
     def summary(self) -> str:
         status = "COVERING" if (self.connected and self.coverage_open) else "NOT_COVERING"
         last = "never" if self.last_arrival_utc is None else self.last_arrival_utc.isoformat()
+        rejected = ",".join(f"{reason}={count}" for reason, count in self.rejection_reasons.items())
         return (
             f"{status} session={self.session_id} records={self.records_written} "
             f"last_arrival={last} reconnects={self.reconnects} "
-            f"clock_discontinuities={self.clock_discontinuities} gaps={self.gaps_recorded}"
+            f"clock_discontinuities={self.clock_discontinuities} gaps={self.gaps_recorded} "
+            f"contract_violations={self.contract_violations}"
+            + (f" rejected[{rejected}]" if rejected else "")
+            + (f" end_proof={self.session_end_proof}" if self.session_end_proof else "")
         )
 
 
@@ -316,18 +358,26 @@ class BybitPublicCaptureRecorderV1:
         self._reconnects = 0
         self._clock_discontinuities = 0
         self._gaps_recorded = 0
+        self._contract_violations = 0
+        self._rejection_reasons: dict[str, int] = {}
+        self._session_end_proof: str | None = None
         self._connected = False
         self._acknowledged = False
         self._coverage_open = False
         self._coverage_start_nanos: int | None = None
+        self._coverage_last_proven_nanos: int | None = None
         self._coverage_records = 0
+        #: Exclusive end of the last window this session closed. A new window
+        #: may not start before it, whatever the (reset) clock monitor says.
+        self._window_floor_nanos = 0
+        #: A gap opened by an interruption, waiting for the next window's start
+        #: to bound it. Flushed open-ended if the partition ends first.
+        self._pending_gap: tuple[int, str, str] | None = None
         self._last_arrival_nanos: int | None = None
         self._resolution_nanos = measure_clock_resolution_nanos()
 
     # -- health -----------------------------------------------------------
     def health(self) -> CaptureHealthV1:
-        from .first_party_capture_archive_v1 import nanos_to_datetime
-
         return CaptureHealthV1(
             session_id=self._session_id,
             connected=self._connected,
@@ -343,6 +393,9 @@ class BybitPublicCaptureRecorderV1:
             clock_discontinuities=self._clock_discontinuities,
             gaps_recorded=self._gaps_recorded,
             partition_directory=None if self._writer is None else self._writer.directory,
+            contract_violations=self._contract_violations,
+            rejection_reasons=dict(sorted(self._rejection_reasons.items())),
+            session_end_proof=self._session_end_proof,
         )
 
     # -- partition lifecycle ---------------------------------------------
@@ -352,10 +405,12 @@ class BybitPublicCaptureRecorderV1:
         if self._writer is not None and self._day == day:
             return self._writer
         if self._writer is not None:
+            if self._day is not None and day < self._day:
+                raise CaptureClockRegressionError("utc_day_regressed_within_session")
             # A UTC-day rollover: finish the old partition before opening a new
             # one, so a partition is always one session's slice of one day.
-            self._close_coverage(END_PROOF_CLEAN_CLOSE)
-            self._writer.finalize()
+            self._close_coverage(END_PROOF_UTC_DAY_ROLLOVER)
+            self._finalize_writer()
         self._writer = CapturePartitionWriterV1(
             root=self._root,
             contract=self._contract,
@@ -366,21 +421,41 @@ class BybitPublicCaptureRecorderV1:
         self._day = day
         return self._writer
 
-    def _lifecycle(self, kind: CaptureLifecycleKindV1, detail: str | None = None) -> None:
-        reading = CaptureClockReadingV1.now()
+    def _finalize_writer(self) -> None:
+        writer = self._writer
+        if writer is None:
+            return
+        if self._pending_gap is not None:
+            # The partition ends before coverage was proven again: the gap is
+            # open-ended here, and the next partition does not inherit it.
+            start, kind, detail = self._pending_gap
+            writer.declare_gap(
+                CaptureGapV1(start_utc_nanos=start, end_utc_nanos=None, kind=kind, detail=detail)
+            )
+            self._pending_gap = None
+        writer.finalize()
+        self._writer = None
+
+    def _lifecycle(
+        self,
+        kind: CaptureLifecycleKindV1,
+        detail: str | None = None,
+        *,
+        reading: CaptureClockReadingV1 | None = None,
+        payload_text: str | None = None,
+    ) -> None:
+        reading = CaptureClockReadingV1.now() if reading is None else reading
         event = CaptureLifecycleEventV1(
             kind=kind.value,
             arrival_utc_nanos=reading.arrival_utc_nanos,
             arrival_monotonic_nanos=reading.arrival_monotonic_nanos,
             detail=detail,
+            payload_text=payload_text,
         )
-        writer = self._writer_for(datetime.fromtimestamp(
-            reading.arrival_utc_nanos / 1_000_000_000, tz=UTC
-        ).date())
-        writer.append_lifecycle(event)
+        self._writer_for(utc_day_of_nanos(reading.arrival_utc_nanos)).append_lifecycle(event)
 
     def _open_coverage(self, at_nanos: int) -> None:
-        """Start a coverage window, or leave an already-open one alone.
+        """Start a coverage window at a positive proof, or leave an open one alone.
 
         Idempotent on purpose. Bybit can push a first ``snapshot`` before its
         subscribe acknowledgement arrives, and that data is itself proof the
@@ -391,95 +466,142 @@ class BybitPublicCaptureRecorderV1:
         """
         if self._coverage_open:
             return
+        if at_nanos < self._window_floor_nanos:
+            # Windows must be disjoint. A wall reading earlier than the last
+            # window's exclusive end is a regression across a reset monitor.
+            raise CaptureClockRegressionError("coverage_would_start_inside_a_closed_window")
+        if self._pending_gap is not None and self._writer is not None:
+            start, kind, detail = self._pending_gap
+            self._writer.declare_gap(
+                CaptureGapV1(start_utc_nanos=start, end_utc_nanos=at_nanos, kind=kind, detail=detail)
+            )
+            self._pending_gap = None
         self._coverage_open = True
         self._coverage_start_nanos = at_nanos
+        self._coverage_last_proven_nanos = at_nanos
         self._coverage_records = 0
 
     def _close_coverage(self, end_proof: str, detail: str | None = None) -> None:
+        """Declare the open window, ending at its last positive proof.
+
+        The window's exclusive end is ``last_proven + 1`` by construction, so
+        the last record is inside it and nothing after it is claimed. Causes
+        the recorder did not choose also open a gap at that exclusive end.
+        """
         if not self._coverage_open or self._writer is None:
             return
-        if self._coverage_start_nanos is None:
+        if self._coverage_start_nanos is None or self._coverage_last_proven_nanos is None:
             raise FirstPartyCaptureArchiveError("open_coverage_has_no_recorded_start")
-        end_nanos = self._last_arrival_nanos or self._coverage_start_nanos
-        self._writer.declare_coverage(
-            CaptureCoverageIntervalV1(
-                start_utc_nanos=self._coverage_start_nanos,
-                end_utc_nanos=end_nanos,
-                end_proof=end_proof,
-                record_count=self._coverage_records,
-            )
+        interval = CaptureCoverageIntervalV1(
+            start_utc_nanos=self._coverage_start_nanos,
+            last_proven_utc_nanos=self._coverage_last_proven_nanos,
+            end_proof=end_proof,
+            record_count=self._coverage_records,
         )
-        if end_proof != END_PROOF_CLEAN_CLOSE:
-            kind = (
-                CaptureGapKindV1.CLOCK_DISCONTINUITY
-                if end_proof == END_PROOF_CLOCK_DISCONTINUITY
-                else CaptureGapKindV1.CONNECTION_LOSS
-            )
-            # An open-ended gap: it starts where proof stopped. Its end is
-            # whenever coverage is next proven, never guessed here.
-            self._writer.declare_gap(
-                CaptureGapV1(
-                    start_utc_nanos=end_nanos,
-                    end_utc_nanos=end_nanos,
-                    kind=kind.value,
-                    detail=detail or end_proof,
-                )
-            )
+        self._writer.declare_coverage(interval)
+        gap_kind = GAP_KIND_FOR_END_PROOF_V1.get(end_proof)
+        if gap_kind is not None:
+            self._pending_gap = (interval.end_utc_nanos, gap_kind.value, detail or end_proof)
             self._gaps_recorded += 1
+        self._window_floor_nanos = interval.end_utc_nanos
         self._coverage_open = False
         self._coverage_start_nanos = None
+        self._coverage_last_proven_nanos = None
+        self._coverage_records = 0
 
     # -- capture ----------------------------------------------------------
     def run(self, *, max_records: int | None = None, max_seconds: float | None = None) -> CaptureHealthV1:
         """Capture until a bound is reached. Bounds exist so a smoke run is finite.
 
-        Passing neither bound records indefinitely, which is the operator mode.
+        Passing neither bound records indefinitely, which is the operator mode,
+        stopped with Ctrl-C. How the session ended is decided by what actually
+        happened, never by the fact that ``finally`` ran: reaching a bound is an
+        operator bounded stop, ``KeyboardInterrupt`` an operator interrupt, and
+        any other exception an unexpected recorder failure, which is recorded
+        and re-raised. A hard crash runs none of this and leaves a PARTIAL
+        partition, which claims nothing.
         """
         self._session_id = new_session_id_v1()
         deadline = None if max_seconds is None else time.monotonic() + max_seconds
+        end_proof = END_PROOF_RECORDER_FAILURE
+        failure: BaseException | None = None
         try:
             self._lifecycle(CaptureLifecycleKindV1.SESSION_STARTED, str(self._session_id))
-            attempt = 0
-            while True:
-                if deadline is not None and time.monotonic() >= deadline:
-                    break
-                if max_records is not None and self._records_written >= max_records:
-                    break
-                try:
-                    self._run_one_connection(max_records=max_records, deadline=deadline)
-                    attempt = 0
-                    if (max_records is not None and self._records_written >= max_records) or (
-                        deadline is not None and time.monotonic() >= deadline
-                    ):
-                        break
-                except (BybitPublicWebSocketError, OSError, ssl.SSLError) as error:
-                    self._connected = False
-                    self._acknowledged = False
-                    self._close_coverage(END_PROOF_CONNECTION_LOST, str(error))
-                    self._lifecycle(CaptureLifecycleKindV1.CONNECTION_LOST, str(error))
-                    if deadline is not None and time.monotonic() >= deadline:
-                        break
-                    if max_records is not None and self._records_written >= max_records:
-                        break
-                    backoff = RECONNECT_BACKOFF_SECONDS_V1[
-                        min(attempt, len(RECONNECT_BACKOFF_SECONDS_V1) - 1)
-                    ]
-                    attempt += 1
-                    self._reconnects += 1
-                    self._lifecycle(
-                        CaptureLifecycleKindV1.RECONNECT_STARTED, f"backoff={backoff}s"
-                    )
-                    # State must not survive the hole: a fresh snapshot after
-                    # resubscribe is what re-establishes authoritative state.
-                    self._clock.reset()
-                    time.sleep(backoff)
+            self._capture_loop(max_records=max_records, deadline=deadline)
+            end_proof = END_PROOF_OPERATOR_BOUNDED_STOP
+        except KeyboardInterrupt:
+            end_proof = END_PROOF_OPERATOR_INTERRUPT
+            raise
+        except BaseException as error:
+            failure = error
+            raise
         finally:
-            self._close_coverage(END_PROOF_CLEAN_CLOSE)
-            if self._writer is not None:
-                self._lifecycle(CaptureLifecycleKindV1.SESSION_CLOSED, str(self._session_id))
-                self._writer.finalize()
-                self._writer = None
+            self._finish_session(end_proof, failure)
         return self.health()
+
+    def _capture_loop(self, *, max_records: int | None, deadline: float | None) -> None:
+        def bound_reached() -> bool:
+            return (deadline is not None and time.monotonic() >= deadline) or (
+                max_records is not None and self._records_written >= max_records
+            )
+
+        attempt = 0
+        while not bound_reached():
+            try:
+                self._run_one_connection(max_records=max_records, deadline=deadline)
+                attempt = 0
+            except (BybitPublicWebSocketError, OSError, ssl.SSLError) as error:
+                self._connected = False
+                self._acknowledged = False
+                # Clock and contract failures already closed their window with
+                # their own proof; this is a no-op for them.
+                end_proof = (
+                    END_PROOF_PEER_CLOSED
+                    if isinstance(error, BybitPublicPeerClosedError)
+                    else END_PROOF_CONNECTION_LOST
+                )
+                self._close_coverage(end_proof, str(error))
+                self._lifecycle(
+                    CaptureLifecycleKindV1.CONNECTION_LOST, f"{type(error).__name__}:{error}"
+                )
+                if bound_reached():
+                    break
+                backoff = RECONNECT_BACKOFF_SECONDS_V1[
+                    min(attempt, len(RECONNECT_BACKOFF_SECONDS_V1) - 1)
+                ]
+                attempt += 1
+                self._reconnects += 1
+                self._lifecycle(CaptureLifecycleKindV1.RECONNECT_STARTED, f"backoff={backoff}s")
+                # State must not survive the hole: a fresh snapshot after
+                # resubscribe is what re-establishes authoritative state.
+                self._clock.reset()
+                time.sleep(backoff)
+
+    def _finish_session(self, end_proof: str, failure: BaseException | None) -> None:
+        self._session_end_proof = end_proof
+        if self._writer is None:
+            return
+        try:
+            self._close_coverage(
+                end_proof, None if failure is None else f"{type(failure).__name__}:{failure}"
+            )
+            if failure is not None:
+                self._lifecycle(
+                    CaptureLifecycleKindV1.RECORDER_FAILED, f"{type(failure).__name__}:{failure}"
+                )
+            self._lifecycle(
+                CaptureLifecycleKindV1.SESSION_CLOSED,
+                f"session={self._session_id} end_proof={end_proof}",
+            )
+            self._finalize_writer()
+        except Exception:
+            # Finalizing over state an unexpected failure may have damaged is
+            # refused rather than forced: the partition stays honestly PARTIAL.
+            if self._writer is not None:
+                self._writer.close_without_finalizing()
+                self._writer = None
+            if failure is None:
+                raise
 
     def _run_one_connection(
         self, *, max_records: int | None, deadline: float | None
@@ -505,24 +627,12 @@ class BybitPublicCaptureRecorderV1:
                 text = client.receive_text()
                 reading = CaptureClockReadingV1.now()
 
-                if pending:
-                    if self._handle_subscription_reply(text, pending, reading):
-                        continue
-                    if not self._is_data_message(text):
-                        continue
-
+                if pending and self._handle_subscription_reply(text, pending, reading):
+                    continue
                 self._record(text, reading)
         finally:
             client.close()
             self._connected = False
-
-    @staticmethod
-    def _is_data_message(text: str) -> bool:
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
-            return False
-        return isinstance(parsed, dict) and "topic" in parsed
 
     def _handle_subscription_reply(
         self, text: str, pending: set[str], reading: CaptureClockReadingV1
@@ -534,38 +644,83 @@ class BybitPublicCaptureRecorderV1:
             return False
         if not isinstance(parsed, dict) or parsed.get("op") != "subscribe":
             return False
-        if parsed.get("success") is False:
+        if parsed.get("success") is not True:
             raise BybitPublicWebSocketError(f"subscription_rejected:{parsed.get('ret_msg')}")
+        self._observe_clock(reading)
         pending.clear()
         self._acknowledged = True
         self._lifecycle(
             CaptureLifecycleKindV1.SUBSCRIPTIONS_ACKNOWLEDGED,
             ",".join(self._contract.topics()),
+            reading=reading,
         )
         # Coverage starts at acknowledgement, not at socket open: an accepted
         # TCP connection proves nothing about whether data is flowing.
         self._open_coverage(reading.arrival_utc_nanos)
+        self._coverage_last_proven_nanos = reading.arrival_utc_nanos
         return True
 
-    def _record(self, text: str, reading: CaptureClockReadingV1) -> None:
+    def _observe_clock(self, reading: CaptureClockReadingV1) -> None:
+        """Judge one message's clock reading. Every text message passes here once."""
         verdict = self._clock.observe(reading)
         if not verdict.accepted:
             # A regressed clock means this is not one ordered recording.
-            self._close_coverage(END_PROOF_CLOCK_DISCONTINUITY, ",".join(verdict.reasons))
-            self._lifecycle(
-                CaptureLifecycleKindV1.CLOCK_DISCONTINUITY, ",".join(verdict.reasons)
-            )
+            reasons = ",".join(verdict.reasons)
+            self._close_coverage(END_PROOF_CLOCK_DISCONTINUITY, reasons)
             self._clock_discontinuities += 1
             self._clock.reset()
-            raise BybitPublicWebSocketError("clock_regression_within_session")
+            self._lifecycle(CaptureLifecycleKindV1.CLOCK_DISCONTINUITY, reasons)
+            raise CaptureClockRegressionError("clock_regression_within_session")
         if verdict.discontinuity:
-            self._close_coverage(END_PROOF_CLOCK_DISCONTINUITY, ",".join(verdict.reasons))
-            self._lifecycle(
-                CaptureLifecycleKindV1.CLOCK_DISCONTINUITY, ",".join(verdict.reasons)
-            )
+            reasons = ",".join(verdict.reasons)
+            self._close_coverage(END_PROOF_CLOCK_DISCONTINUITY, reasons)
             self._clock_discontinuities += 1
+            self._lifecycle(CaptureLifecycleKindV1.CLOCK_DISCONTINUITY, reasons, reading=reading)
+            # A fresh continuity claim that starts at this reading, so the next
+            # message is still compared against something.
             self._clock.reset()
-            self._open_coverage(reading.arrival_utc_nanos)
+            self._clock.observe(reading)
+
+    @staticmethod
+    def _is_positively_identified_control(parsed: Mapping[str, Any]) -> bool:
+        """A Bybit operation reply: no topic, a known op, and not a failure."""
+        return (
+            "topic" not in parsed
+            and parsed.get("op") in _CONTROL_OPERATIONS
+            and parsed.get("success") is not False
+        )
+
+    def _reject(self, text: str, reading: CaptureClockReadingV1, reason: str) -> NoReturn:
+        """Account for a refused message, end coverage before it, and drop the connection.
+
+        Nothing that fails the contract may vanish inside a covered window. The
+        window closes at its last proof, the refused text is kept verbatim in
+        the lifecycle log, and the connection is reset: a missed ``tickers``
+        delta would corrupt reconstructed state, and only the snapshot Bybit
+        sends on resubscribe restores it.
+        """
+        self._close_coverage(END_PROOF_CONTRACT_VIOLATION, reason)
+        self._contract_violations += 1
+        self._rejection_reasons[reason] = self._rejection_reasons.get(reason, 0) + 1
+        self._lifecycle(
+            CaptureLifecycleKindV1.MESSAGE_REJECTED, reason, reading=reading, payload_text=text
+        )
+        raise CaptureContractViolationError(reason)
+
+    def _record(self, text: str, reading: CaptureClockReadingV1) -> None:
+        self._observe_clock(reading)
+
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            self._reject(text, reading, "unidentified_message_is_not_valid_json")
+        if not isinstance(parsed, dict):
+            self._reject(text, reading, "unidentified_message_is_not_an_object")
+        if "topic" not in parsed:
+            if self._is_positively_identified_control(parsed):
+                # A pong or subscribe reply is not market data and not evidence.
+                return
+            self._reject(text, reading, "unidentified_message_is_not_a_known_control_frame")
 
         try:
             record = build_capture_record_v1(
@@ -575,19 +730,19 @@ class BybitPublicCaptureRecorderV1:
                 clock=reading,
                 payload_text=text,
             )
-        except FirstPartyCaptureArchiveError:
-            # Anything the contract does not authorize is not written. A
-            # heartbeat or an unrelated control frame is simply not evidence.
-            return
+        except FirstPartyCaptureArchiveError as error:
+            # Topic-bearing traffic is market data. If it fails the contract --
+            # a foreign topic, a changed schema, a wrong symbol, an unknown type
+            # -- it is a violation to account for, never noise to drop.
+            self._reject(text, reading, str(error))
 
-        day = datetime.fromtimestamp(reading.arrival_utc_nanos / 1_000_000_000, tz=UTC).date()
-        writer = self._writer_for(day)
-        if not self._coverage_open:
-            self._open_coverage(reading.arrival_utc_nanos)
+        writer = self._writer_for(utc_day_of_nanos(reading.arrival_utc_nanos))
+        self._open_coverage(reading.arrival_utc_nanos)
         writer.append_record(record)
         self._sequence += 1
         self._records_written += 1
         self._coverage_records += 1
+        self._coverage_last_proven_nanos = reading.arrival_utc_nanos
         self._last_arrival_nanos = reading.arrival_utc_nanos
 
 
@@ -611,7 +766,10 @@ __all__: list[str] = [
     "RECEIVE_TIMEOUT_SECONDS_V1",
     "RECONNECT_BACKOFF_SECONDS_V1",
     "BybitPublicCaptureRecorderV1",
+    "BybitPublicPeerClosedError",
     "BybitPublicWebSocketError",
+    "CaptureClockRegressionError",
+    "CaptureContractViolationError",
     "CaptureHealthV1",
     "iter_health_lines",
 ]

@@ -139,7 +139,8 @@ phase_3z2:                    # capture only; no normalization, no dataset, no s
     recorded per session -- 15,625,000 ns on this host -- so nothing reads
     nanosecond accuracy into an integer-nanosecond API. A wall or monotonic
     regression fails closed; a wall-vs-monotonic divergence beyond 2 s is a
-    discontinuity that closes coverage and opens an explicit gap.
+    discontinuity that closes coverage and opens an explicit gap. Datetime and
+    UTC-day conversions are integer-exact and never move an arrival earlier.
   storage: >-
     Filesystem NDJSON under UTC-day partitions in an object-storage-shaped
     layout, outside the working tree (~/.trade_platform/capture by default).
@@ -154,16 +155,37 @@ phase_3z2:                    # capture only; no normalization, no dataset, no s
     real provenance over a SEALED dataset, which 3Z.2 deliberately does not
     create. First-party evaluation fails closed today on
     evidence_tier_real_market_data_provenance_not_proven. Sealing is 3Z.3.
+  coverage_semantics: >-
+    Half-open [start, last_proven + 1). start and last_proven are measured
+    readings (subscription ack or record); the exclusive end is a derived
+    representational bound, never widened by clock resolution. Every record is
+    inside exactly one window, enforced by the writer at write time and by
+    replay. Knowledge time for PIT use is arrival + measured resolution
+    (knowledge_bound_utc_nanos), never the raw reading.
+  end_proofs: >-
+    OPERATOR_BOUNDED_STOP, OPERATOR_INTERRUPT, UTC_DAY_ROLLOVER, CONNECTION_LOST,
+    PEER_CLOSED, CLOCK_DISCONTINUITY, CONTRACT_VIOLATION, RECORDER_FAILURE. No
+    generic clean close. A hard crash writes nothing: PARTIAL, no manifest, no
+    window, excluded from derive_archive_availability_v1.
+  rejection_policy: >-
+    Only topic-less subscribe/ping/pong replies are ignored. Any other message
+    that fails the contract (bad JSON, unknown shape, foreign topic, schema,
+    symbol or type change) closes coverage at the last proof, is logged
+    verbatim as MESSAGE_REJECTED, opens a CONTRACT_VIOLATION gap and resets the
+    connection so a fresh snapshot restores ticker state.
   smoke_evidence: >-
-    Three bounded real captures against the official public feed on 2026-09-23
-    (45 s / 30 s / 30 s), no credential: 299, 292 and 182 records across
-    tickers and publicTrade, every partition COMPLETE, every record replayed
-    with matching content hashes. No performance, no P&L, no backtest.
+    Post-integrity-fix: one 60 s real capture on 2026-09-23, no credential, 417
+    records (348 tickers, 69 publicTrade), COMPLETE, verify_partition_v1 clean,
+    417 = manifest = coverage sum, 0 records outside coverage, 0 rejections.
+    The three earlier smokes predate the fix: each left 1-6 records at the last
+    wall tick outside its own half-open window, which is what the review caught.
+    No performance, no P&L, no backtest.
   operation: >-
-    scripts/capture_bybit_public.py run | health | replay. Capture accrues ONLY
-    while the process runs: a shut-down, sleeping or suspended machine records
-    nothing and the recorder represents that as an explicit gap rather than
-    continuous coverage. No always-on paid host is introduced.
+    scripts/capture_bybit_public.py run | health | replay | availability.
+    Capture accrues ONLY while the process runs. A shut-down, sleeping or
+    crashed machine writes nothing and cannot declare a gap; the hole is
+    derived instead, because coverage is positive-only (availability reports
+    SESSION_BOUNDARY between sessions). No always-on paid host is introduced.
 
 next_phases:                  # boundaries only; none authorized to start here
   3Z.3: >-

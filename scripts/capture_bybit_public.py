@@ -14,13 +14,21 @@ Check what the archive currently holds and whether it is provable::
 
     .venv\\Scripts\\python scripts/capture_bybit_public.py health
 
-Replay a finalized partition, re-verifying every checksum and content hash::
+Replay a finalized partition, re-proving every checksum, content hash,
+coverage window and count::
 
     .venv\\Scripts\\python scripts/capture_bybit_public.py replay <partition-directory>
 
+Show what the whole archive positively proves, and every hole between proofs::
+
+    .venv\\Scripts\\python scripts/capture_bybit_public.py availability
+
 Capture only accrues while this process runs. A shut-down, sleeping or
-suspended machine records nothing, and the recorder says so by leaving an
-explicit gap rather than by implying continuous coverage.
+suspended machine records nothing and writes nothing -- it cannot. The hole is
+visible because coverage is positive-only: the time between one session's last
+proven observation and the next session's first lies inside no COMPLETE
+partition's window, and ``availability`` reports it as a derived gap. A hard
+crash leaves a PARTIAL partition that proves nothing and is excluded.
 """
 
 from __future__ import annotations
@@ -37,8 +45,11 @@ from trade_platform.bybit_public_websocket_recorder_v1 import (
 )
 from trade_platform.first_party_capture_archive_v1 import (
     default_archive_root,
+    derive_archive_availability_v1,
+    nanos_to_datetime,
     read_partition_status_v1,
     replay_partition_v1,
+    verify_partition_v1,
 )
 from trade_platform.first_party_capture_authority_v1 import (
     first_party_bybit_capture_contract_v1,
@@ -58,7 +69,7 @@ def _run(args: argparse.Namespace) -> int:
     try:
         health = recorder.run(max_seconds=args.seconds, max_records=args.records)
     except KeyboardInterrupt:
-        print("\ninterrupted; finalizing partition")
+        print("\ninterrupted; partition finalized with end proof OPERATOR_INTERRUPT")
         health = recorder.health()
     print(health.summary())
     if health.partition_directory is not None:
@@ -81,14 +92,43 @@ def _replay(args: argparse.Namespace) -> int:
     directory = Path(args.partition)
     partition = read_partition_status_v1(directory)
     print(f"status {partition.status} reasons={','.join(partition.reasons) or 'none'}")
-    count = 0
-    channels: dict[str, int] = {}
-    for record in replay_partition_v1(directory, require_complete=not args.allow_partial):
-        count += 1
-        channels[record.channel] = channels.get(record.channel, 0) + 1
-    print(f"replayed {count} records, all hashes verified")
-    for channel, total in sorted(channels.items()):
+    if args.allow_partial:
+        count = sum(1 for _ in replay_partition_v1(directory, require_complete=False))
+        print(f"replayed {count} records from an unproven partition; nothing is claimed")
+        return 0
+    verification = verify_partition_v1(directory)
+    print(
+        f"verified {verification.record_count} records: hashes, contract, ordering, "
+        f"coverage placement and counts all reconcile"
+    )
+    for channel, total in verification.records_by_channel.items():
         print(f"  {channel}: {total}")
+    for window in verification.coverage:
+        print(
+            f"  window [{window.start_utc_nanos}, {window.end_utc_nanos}) "
+            f"records={window.record_count} end_proof={window.end_proof}"
+        )
+    for gap in verification.gaps:
+        print(f"  gap [{gap.start_utc_nanos}, {gap.end_utc_nanos}) kind={gap.kind}")
+    return 0
+
+
+def _availability(args: argparse.Namespace) -> int:
+    root = Path(args.root) if args.root else default_archive_root()
+    availability = derive_archive_availability_v1(root)
+    for window in availability.windows:
+        interval = window.interval
+        print(
+            f"COVERED   {nanos_to_datetime(interval.start_utc_nanos).isoformat()} -> "
+            f"{nanos_to_datetime(interval.last_proven_utc_nanos).isoformat()} "
+            f"records={interval.record_count} end_proof={interval.end_proof} "
+            f"session={window.session_id}"
+        )
+    for gap in availability.gaps:
+        end = "open" if gap.end_utc_nanos is None else nanos_to_datetime(gap.end_utc_nanos).isoformat()
+        print(f"UNPROVEN  {nanos_to_datetime(gap.start_utc_nanos).isoformat()} -> {end} kind={gap.kind}")
+    for directory, reasons in availability.excluded:
+        print(f"EXCLUDED  {directory} reasons={','.join(reasons)}")
     return 0
 
 
@@ -109,6 +149,9 @@ def main(argv: list[str] | None = None) -> int:
     replay.add_argument("partition")
     replay.add_argument("--allow-partial", action="store_true")
     replay.set_defaults(handler=_replay)
+
+    availability = sub.add_parser("availability", help="proven windows and gaps across sessions")
+    availability.set_defaults(handler=_availability)
 
     args = parser.parse_args(argv)
     handler = args.handler
