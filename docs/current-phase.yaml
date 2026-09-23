@@ -49,8 +49,10 @@ pilot_3d9s2a:                 # THIS phase; zero-cost, no credentials, no purcha
     first-of-month feed over 20 contiguous minutes each on 2026-05-01,
     2026-06-01, 2026-07-01 and 2026-08-01 (all pre-holdout): 8,353 basis
     observations carrying 8,353 DISTINCT research_available_at instants, 80
-    deterministic 1m bars, three represented collection gaps. No performance,
-    no P&L, no parameter ranking.
+    deterministic 1m bars, three represented collection gaps. Each bar carries
+    OPEN availability and completed-bar availability separately; a completed
+    minute is knowable only at max(bar_close_at, last contributing arrival).
+    No performance, no P&L, no parameter ranking.
   not_authorized_by_this_phase:
     - Tardis is NOT a canonical research source. real_market_data_provenance_v1
       is unchanged and still hard-binds REAL_DATA_RESEARCH_EVIDENCE to the one

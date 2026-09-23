@@ -7,11 +7,30 @@ no dataset, and produces no ``AuthoritativeTradableBarV2``: a bar here is
 engineering evidence that the capture path can reconstruct tradable bars whose
 availability instant is measured, nothing more.
 
-**Three different instants, never conflated.** ``bar_open_at`` is the economic
-open boundary of the minute; ``bar_close_at`` is its exclusive close boundary;
-``research_available_at`` is when the *last contributing trade* actually arrived
-at the recorder. The last one is always at or after the exchange timestamp of
-the final trade and is the only one that may be used as a decision cutoff.
+**Four different instants, never conflated.** ``bar_open_at`` is the economic
+open boundary of the minute and ``bar_close_at`` its exclusive close boundary;
+those two are calendar facts and prove nothing about knowability. The two
+availability instants are measured and are the only ones that may be used as a
+decision cutoff:
+
+``open_available_at``
+    when the trade that establishes the bar OPEN arrived at the recorder. This
+    is the earliest instant at which the open *price* is knowable, and nothing
+    else about the bar is.
+
+``bar_complete_available_at``
+    the earliest instant at which the *completed* OHLCV aggregate is knowable,
+    defined as ``max(bar_close_at, latest contributing trade arrival)``.
+
+The last contributing arrival alone is **not** completed-bar availability. If
+the final trade of the 12:00 minute arrives at 12:00:45, the completed 12:00 bar
+is still unknowable at 12:00:45, because another trade may yet print before
+12:01:00; only the minute boundary proves no further trade can contribute.
+Conversely a delayed final arrival at 12:01:20 pushes completion past the
+boundary, so completion is the later of the two, never the earlier. Both are
+carried and compared in exact integer nanoseconds: a ``datetime`` round trip
+truncates to microseconds and would move an availability instant *earlier*,
+which is the unsafe direction.
 
 **Bucketing is by exchange trade time ``T``, on the half-open interval
 ``[open, close)``.** A trade exactly on a minute boundary opens the new minute;
@@ -67,6 +86,7 @@ VOLUME_QUANTUM_V1: Final = Decimal("1E-8")
 TURNOVER_QUANTUM_V1: Final = Decimal("1E-8")
 
 _NAMESPACE: Final = uuid5(NAMESPACE_URL, "trade_platform.bybit_trade_bar_reconstruction_v1")
+_UNIX_EPOCH_V1: Final = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 class BybitTradeBarReconstructionError(ValueError):
@@ -209,7 +229,8 @@ class ReconstructedTradeBarV1:
     trade_count: int
     first_trade_id: str
     last_trade_id: str
-    research_available_at_nanos: int
+    open_available_at_nanos: int
+    bar_complete_available_at_nanos: int
     open_is_sequence_ambiguous: bool
     close_is_sequence_ambiguous: bool
     trade_manifest_hash: str
@@ -217,9 +238,14 @@ class ReconstructedTradeBarV1:
     content_hash: str
 
     @property
-    def research_available_at(self) -> datetime:
-        """When the final contributing trade arrived at the recorder."""
-        return nanos_to_datetime(self.research_available_at_nanos)
+    def open_available_at(self) -> datetime:
+        """When the trade establishing the OPEN arrived at the recorder."""
+        return nanos_to_datetime(self.open_available_at_nanos)
+
+    @property
+    def bar_complete_available_at(self) -> datetime:
+        """Earliest instant at which the completed OHLCV aggregate is knowable."""
+        return nanos_to_datetime(self.bar_complete_available_at_nanos)
 
     @property
     def bar_id(self) -> UUID:
@@ -228,6 +254,18 @@ class ReconstructedTradeBarV1:
 
 def _floor_to_minute(instant: datetime) -> datetime:
     return instant.replace(second=0, microsecond=0)
+
+
+def _minute_boundary_nanos(boundary: datetime) -> int:
+    """Exact nanoseconds for a minute-aligned boundary, via integer arithmetic.
+
+    Deliberately avoids ``timestamp()`` float arithmetic so that a boundary can
+    never be nudged -- in particular never nudged *earlier* -- by rounding.
+    """
+    if boundary.second or boundary.microsecond:
+        raise BybitTradeBarReconstructionError("bar_boundary_not_minute_aligned")
+    delta = boundary - _UNIX_EPOCH_V1
+    return (delta.days * 86_400 + delta.seconds) * 1_000_000_000
 
 
 def _price_group_ambiguous(group: Sequence[CapturedPublicTradeV1]) -> bool:
@@ -269,9 +307,16 @@ def build_one_minute_trade_bars(
             )
             quote_turnover_unit = contract.quote_asset
 
-        # Availability is the LAST contributing arrival, not the last trade's
-        # exchange time: a bar cannot be held before its final input arrived.
-        research_available_at_nanos = max(t.local_timestamp_nanos for t in ordered)
+        # OPEN availability is the arrival of the deterministically selected
+        # first trade -- the open price is knowable exactly then.
+        open_available_at_nanos = first.local_timestamp_nanos
+        # The COMPLETED aggregate needs both: every contributing input must have
+        # arrived, AND the minute must have finished, because until the close
+        # boundary passes a further trade may still contribute to this bar.
+        bar_complete_available_at_nanos = max(
+            _minute_boundary_nanos(bar_open_at + BAR_INTERVAL_V1),
+            max(t.local_timestamp_nanos for t in ordered),
+        )
         trade_manifest_hash = canonical_hash(
             {
                 "parser_semantic_version": TARDIS_CAPTURE_PARSER_SEMANTIC_VERSION,
@@ -311,7 +356,8 @@ def build_one_minute_trade_bars(
                 "trade_count": len(ordered),
                 "first_trade_id": first.trade_id,
                 "last_trade_id": last.trade_id,
-                "research_available_at_nanos": research_available_at_nanos,
+                "open_available_at_nanos": open_available_at_nanos,
+                "bar_complete_available_at_nanos": bar_complete_available_at_nanos,
                 "open_is_sequence_ambiguous": _price_group_ambiguous(leading),
                 "close_is_sequence_ambiguous": _price_group_ambiguous(trailing),
                 "trade_manifest_hash": trade_manifest_hash,
@@ -333,7 +379,8 @@ def build_one_minute_trade_bars(
                 trade_count=len(ordered),
                 first_trade_id=first.trade_id,
                 last_trade_id=last.trade_id,
-                research_available_at_nanos=research_available_at_nanos,
+                open_available_at_nanos=open_available_at_nanos,
+                bar_complete_available_at_nanos=bar_complete_available_at_nanos,
                 open_is_sequence_ambiguous=_price_group_ambiguous(leading),
                 close_is_sequence_ambiguous=_price_group_ambiguous(trailing),
                 trade_manifest_hash=trade_manifest_hash,
@@ -366,4 +413,9 @@ def first_strictly_later_bar(
 
 def bar_open_nanos(bar: ReconstructedTradeBarV1) -> int:
     """Exact nanosecond value of a minute-aligned bar open boundary."""
-    return int(bar.bar_open_at.timestamp()) * 1_000_000_000
+    return _minute_boundary_nanos(bar.bar_open_at)
+
+
+def bar_close_nanos(bar: ReconstructedTradeBarV1) -> int:
+    """Exact nanosecond value of a minute-aligned bar close boundary."""
+    return _minute_boundary_nanos(bar.bar_close_at)

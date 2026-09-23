@@ -54,6 +54,7 @@ from .bybit_ticker_state_reconstruction_v1 import (
 from .bybit_trade_bar_reconstruction_v1 import (
     BAR_BUILDER_SEMANTIC_VERSION_V1,
     ReconstructedTradeBarV1,
+    bar_close_nanos,
     bar_open_nanos,
     first_strictly_later_bar,
 )
@@ -220,8 +221,18 @@ def evaluate_tardis_capture_engineering_pilot(
             reasons.append("trade_bar_without_contributing_trades")
             break
     for bar in bars:
-        if bar.research_available_at_nanos < bar_open_nanos(bar):
-            reasons.append("trade_bar_available_before_its_own_open_boundary")
+        if bar.open_available_at_nanos < bar_open_nanos(bar):
+            reasons.append("trade_bar_open_available_before_its_own_open_boundary")
+            break
+    for bar in bars:
+        # A completed minute is not knowable before the minute has finished,
+        # however early its last contributing trade happened to arrive.
+        if bar.bar_complete_available_at_nanos < bar_close_nanos(bar):
+            reasons.append("trade_bar_complete_available_before_its_close_boundary")
+            break
+    for bar in bars:
+        if bar.bar_complete_available_at_nanos < bar.open_available_at_nanos:
+            reasons.append("trade_bar_complete_available_before_its_open_availability")
             break
     for bar in bars:
         if bar.quote_turnover is not None and bar.quote_turnover_unit is None:

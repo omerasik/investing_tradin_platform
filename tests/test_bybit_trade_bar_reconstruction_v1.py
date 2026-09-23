@@ -15,6 +15,7 @@ from trade_platform.bybit_trade_bar_reconstruction_v1 import (
     BYBIT_BTCUSDT_LINEAR_PERPETUAL_V1,
     BybitTradeBarReconstructionError,
     LinearContractQuantitySemanticsV1,
+    bar_close_nanos,
     bar_open_nanos,
     build_one_minute_trade_bars,
     first_strictly_later_bar,
@@ -343,68 +344,157 @@ class DeterministicOrderingTests(unittest.TestCase):
         self.assertFalse(bar.close_is_sequence_ambiguous)
 
 
+def _minute_trade(*, arrival_at: str, trade_id: str, offset_seconds: int, price: str, sequence: int):
+    return trade_record(
+        arrival_at,
+        [
+            trade(
+                trade_id=trade_id,
+                millis=MINUTE_ZERO_MILLIS + offset_seconds * 1_000,
+                price=price,
+                quantity="1",
+                sequence=sequence,
+            )
+        ],
+    )
+
+
 class AvailabilityTests(unittest.TestCase):
-    def _two_minutes(self):
+    def _three_minutes(self):
         return parse_captured_public_trades(
             [
-                trade_record(
-                    arrival(30, "5000000"),
-                    [
-                        trade(
-                            trade_id="t1",
-                            millis=MINUTE_ZERO_MILLIS + 30_000,
-                            price="100.0",
-                            quantity="1",
-                            sequence=1,
-                        )
-                    ],
+                _minute_trade(
+                    arrival_at=arrival(30, "5000000"),
+                    trade_id="t1",
+                    offset_seconds=30,
+                    price="100.0",
+                    sequence=1,
                 ),
-                trade_record(
-                    "2026-05-01T00:01:30.0000000Z",
-                    [
-                        trade(
-                            trade_id="t2",
-                            millis=MINUTE_ZERO_MILLIS + 90_000,
-                            price="110.0",
-                            quantity="1",
-                            sequence=2,
-                        )
-                    ],
+                _minute_trade(
+                    arrival_at="2026-05-01T00:01:30.0000000Z",
+                    trade_id="t2",
+                    offset_seconds=90,
+                    price="110.0",
+                    sequence=2,
+                ),
+                _minute_trade(
+                    arrival_at="2026-05-01T00:02:30.0000000Z",
+                    trade_id="t3",
+                    offset_seconds=150,
+                    price="120.0",
+                    sequence=3,
                 ),
             ],
             symbol=SYMBOL,
         )
 
-    def test_bar_availability_is_the_last_contributing_arrival(self) -> None:
-        bars = build_one_minute_trade_bars(self._two_minutes(), symbol=SYMBOL)
-        first = bars[0]
+    def test_open_availability_is_the_first_selected_trades_arrival(self) -> None:
+        first = build_one_minute_trade_bars(self._three_minutes(), symbol=SYMBOL)[0]
         self.assertEqual(
-            first.research_available_at, datetime(2026, 5, 1, 0, 0, 30, 500_000, tzinfo=UTC)
+            first.open_available_at, datetime(2026, 5, 1, 0, 0, 30, 500_000, tzinfo=UTC)
         )
-        # Availability is strictly after the bar's own economic open boundary and
-        # is never confused with the close boundary.
-        self.assertGreater(first.research_available_at, first.bar_open_at)
-        self.assertLess(first.research_available_at, first.bar_close_at)
+        # The OPEN is knowable inside its own minute; it proves nothing about the
+        # completed aggregate.
+        self.assertGreater(first.open_available_at, first.bar_open_at)
+        self.assertLess(first.open_available_at, first.bar_close_at)
 
-    def test_entry_bar_must_open_strictly_later_than_research_availability(self) -> None:
-        bars = build_one_minute_trade_bars(self._two_minutes(), symbol=SYMBOL)
-        availability = bars[0].research_available_at_nanos
+    def test_completed_bar_is_not_knowable_before_the_minute_closes(self) -> None:
+        """Last trade arrives at 00:00:30.5, but a further trade could still print."""
+        first = build_one_minute_trade_bars(self._three_minutes(), symbol=SYMBOL)[0]
+        self.assertEqual(first.bar_complete_available_at, first.bar_close_at)
+        self.assertGreater(
+            first.bar_complete_available_at_nanos, first.open_available_at_nanos
+        )
+
+    def test_a_final_trade_delayed_past_the_close_pushes_completion_later(self) -> None:
+        trades = parse_captured_public_trades(
+            [
+                _minute_trade(
+                    arrival_at=arrival(30, "5000000"),
+                    trade_id="t1",
+                    offset_seconds=30,
+                    price="100.0",
+                    sequence=1,
+                ),
+                # Printed at 00:00:59 but only recorded at 00:01:20.1234567.
+                _minute_trade(
+                    arrival_at="2026-05-01T00:01:20.1234567Z",
+                    trade_id="t2",
+                    offset_seconds=59,
+                    price="101.0",
+                    sequence=2,
+                ),
+            ],
+            symbol=SYMBOL,
+        )
+        bar = build_one_minute_trade_bars(trades, symbol=SYMBOL)[0]
+        latest_arrival = max(t.local_timestamp_nanos for t in trades)
+        self.assertEqual(bar.bar_complete_available_at_nanos, latest_arrival)
+        self.assertGreater(bar.bar_complete_available_at_nanos, bar_close_nanos(bar))
+        # Open availability stays with the OPEN trade and is unaffected.
+        self.assertEqual(bar.open_available_at, datetime(2026, 5, 1, 0, 0, 30, 500_000, tzinfo=UTC))
+
+    def test_completed_availability_is_never_truncated_to_microseconds(self) -> None:
+        trades = parse_captured_public_trades(
+            [
+                _minute_trade(
+                    arrival_at="2026-05-01T00:01:20.1234567Z",
+                    trade_id="t1",
+                    offset_seconds=30,
+                    price="100.0",
+                    sequence=1,
+                )
+            ],
+            symbol=SYMBOL,
+        )
+        bar = build_one_minute_trade_bars(trades, symbol=SYMBOL)[0]
+        # The 100 ns Tardis tick survives in the integer field; the datetime
+        # projection truncates it, which is exactly why the integer is canonical.
+        self.assertEqual(bar.bar_complete_available_at_nanos % 1_000, 700)
+        self.assertLess(
+            bar.bar_complete_available_at.timestamp(),
+            bar.bar_complete_available_at_nanos / 1_000_000_000 + 1e-9,
+        )
+        self.assertGreaterEqual(
+            bar.bar_complete_available_at_nanos,
+            int(bar.bar_complete_available_at.timestamp() * 1_000_000_000),
+        )
+
+    def test_both_availabilities_are_deterministic_under_reversed_input(self) -> None:
+        trades = self._three_minutes()
+        forward = build_one_minute_trade_bars(trades, symbol=SYMBOL)
+        reversed_bars = build_one_minute_trade_bars(tuple(reversed(trades)), symbol=SYMBOL)
+        self.assertEqual(
+            [(b.open_available_at_nanos, b.bar_complete_available_at_nanos) for b in forward],
+            [(b.open_available_at_nanos, b.bar_complete_available_at_nanos) for b in reversed_bars],
+        )
+        self.assertEqual(
+            [b.content_hash for b in forward], [b.content_hash for b in reversed_bars]
+        )
+
+    def test_entry_bar_must_open_strictly_later_than_completed_bar_availability(self) -> None:
+        bars = build_one_minute_trade_bars(self._three_minutes(), symbol=SYMBOL)
+        availability = bars[0].bar_complete_available_at_nanos
         entry = first_strictly_later_bar(bars, research_available_at_nanos=availability)
         self.assertIsNotNone(entry)
         assert entry is not None
-        self.assertEqual(entry.bar_open_at, datetime(2026, 5, 1, 0, 1, tzinfo=UTC))
+        # The 00:01 bar opens exactly when the 00:00 bar completes, so it is
+        # refused; the first admissible entry is 00:02.
+        self.assertEqual(entry.bar_open_at, datetime(2026, 5, 1, 0, 2, tzinfo=UTC))
         self.assertGreater(bar_open_nanos(entry), availability)
 
     def test_a_bar_opening_exactly_at_availability_is_refused(self) -> None:
-        bars = build_one_minute_trade_bars(self._two_minutes(), symbol=SYMBOL)
+        bars = build_one_minute_trade_bars(self._three_minutes(), symbol=SYMBOL)
         exactly_at_open = bar_open_nanos(bars[1])
         entry = first_strictly_later_bar(bars, research_available_at_nanos=exactly_at_open)
-        self.assertIsNone(entry)
+        self.assertIsNotNone(entry)
+        assert entry is not None
+        self.assertEqual(entry.bar_open_at, datetime(2026, 5, 1, 0, 2, tzinfo=UTC))
 
     def test_no_entry_bar_exists_after_the_last_observed_minute(self) -> None:
-        bars = build_one_minute_trade_bars(self._two_minutes(), symbol=SYMBOL)
+        bars = build_one_minute_trade_bars(self._three_minutes(), symbol=SYMBOL)
         entry = first_strictly_later_bar(
-            bars, research_available_at_nanos=bars[-1].research_available_at_nanos
+            bars, research_available_at_nanos=bars[-1].bar_complete_available_at_nanos
         )
         self.assertIsNone(entry)
 
