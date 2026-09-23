@@ -8,10 +8,10 @@ updated: 2026-09-23
 # docs/MODULE_3B_GOVERNANCE_SECURITY.md, docs/MODULE_3C_POSTGRES_RUNTIME_WIRING.md
 # and from the roadmap's 3G/3H/3I/3J series. Disambiguate before assuming.
 phase:
-  id: "3D.9S.3A"
-  name: Zero-cost market-data doctrine (owner decision recorded)
-  status: decided_no_paid_market_data
-  base_commit: 5a11527       # 3D.9S.2B (PR #144) merged, exact-main CI green
+  id: "3Z.1"
+  name: Evidence-tier authority (enforceable zero-cost evidence doctrine)
+  status: in_review          # PR open, awaiting owner review; not merged
+  base_commit: bf69c2c       # 3D.9S.3A (PR #145) merged, exact-main CI green
 
 owner_decision:               # PERMANENT. Not a budget pause.
   id: NO_PAID_MARKET_DATA_SUBSCRIPTIONS
@@ -48,7 +48,7 @@ blocker:                      # unchanged; still an EVIDENCE-SOURCE problem
     assumption (conditional results only), or T3/T4 evidence that carries a
     real per-observation knowledge time. See evidence_tiers.
 
-# Proposed by 3D.9S.3A; the authority module is Phase 3Z.1 work, not yet built.
+# IMPLEMENTED by Phase 3Z.1 in src/trade_platform/evidence_tier_authority_v1.py.
 # Orthogonal to real_market_data_provenance_v1 status, never a replacement for it.
 evidence_tiers:
   T0_SYNTHETIC:      engineering only; no economic claim of any kind.
@@ -72,6 +72,42 @@ evidence_tiers:
     open_to_open professional validation stays bound to T3/T4 ONLY. T1/T2 live
     in a separately named research lane that can never emit a professional
     verdict, and must never be presented as PIT validation.
+  eligibility_is_not_compatibility: >-
+    T3/T4 state evidence QUALITY, never that a strategy or engine may consume
+    it. There is deliberately no generic shortcut: the tier authority knows no
+    strategy, and each strategy keeps its own research-input contract and
+    preregistration. Unrelated T3/T4 evidence authorizes nothing.
+
+phase_3z1:                    # scope paths; authority only, no data, no migration
+  scope_paths:
+    - src/trade_platform/evidence_tier_authority_v1.py
+    - src/trade_platform/open_to_open_preregistration_v1.py   # adjacent gate only
+    - tests/test_evidence_tier_authority_v1.py
+  design: >-
+    Pure content-hashed authority in the 3D.9S.2B shape: private issuer
+    sentinel, derived verdict, integrity re-check, no caller-settable flag, no
+    persistence and no migration. The tier comes from a CLOSED contract set
+    keyed by deterministic source_id; EvidenceTimingFactsV1 carries no provider
+    field at all, so a name cannot reach the decision. A declared timing
+    authority is checked only for agreement -- disagreement is a refusal,
+    never a promotion.
+  authorized_timing_contracts: 1   # Bybit V5 REST -> TimingAuthorityV1.NONE -> T1
+  gate: >-
+    require_authorized_for_holdout_with_evidence_tier_v1 sits BESIDE the
+    existing holdout gate, which is unchanged. The packet dataclass, its bound
+    fields, its content hash and preregistration_id are untouched, so every
+    3D.9A identity is byte-for-byte unchanged. The tier verdict is a required
+    positional argument, so there is no permissive default.
+  dormant_tardis: >-
+    Deliberately NOT registered. No dataset exists under it and none is
+    planned, and a third-party recorder clock is neither a publisher's
+    publication time (T3) nor this platform's own capture (T4). Registering it
+    would have required inventing a sixth tier or misclassifying it.
+  owner_decisions_not_taken: >-
+    No publication-lag value chosen: a T2 dataset without a declared, bound lag
+    assumption simply loses conditional eligibility. No cost, slippage,
+    leverage, sizing, allocation, risk-limit or threshold assumption exists in
+    this phase.
 
 existing_rest_dataset:        # f07ebfc1-19ce-4757-af4b-10525f6a6992
   action: KEEP. Not deleted, not deprecated, not mutated, not relabelled.
@@ -83,10 +119,7 @@ existing_rest_dataset:        # f07ebfc1-19ce-4757-af4b-10525f6a6992
     which can raise the SAME research question to T2 over 6+ years at $0.
 
 next_phases:                  # boundaries only; none authorized to start here
-  3Z.1: >-
-    Evidence-tier authority + doctrine. Content-hashed tier verdicts; bind the
-    professional gate to T3/T4; supersede the acquisition gate. IMPLEMENT NEXT.
-  3Z.2: >-
+  3Z.2: >-   # IMPLEMENT NEXT, after owner review of the 3Z.1 PR
     First-party forward capture recorder (official public Bybit/Binance WS):
     immutable raw NDJSON, UTC-day partitions, manifests/checksums, reconnect and
     gap detection, resumability, replay. Value is time-dependent -- start early.

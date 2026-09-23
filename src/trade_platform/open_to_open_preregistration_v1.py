@@ -38,6 +38,18 @@ in this repository may read, evaluate, summarize or compute a strategy
 statistic at or after :attr:`OpenToOpenPreregistrationV1.holdout_start` unless
 that call has passed. :func:`pre_holdout_upper_bound` gives research code the
 exclusive upper bound it must stay under while the packet is still DRAFT.
+
+Phase 3Z.1 adds :func:`require_authorized_for_holdout_with_evidence_tier_v1`
+*beside* it rather than inside it. The packet dataclass, its bound fields, its
+content hash and its ``preregistration_id`` are untouched, so every existing
+3D.9A identity is byte-for-byte unchanged; the new gate is a strictly stronger
+adjacent call that additionally demands a professional-eligible evidence-tier
+verdict bound to the same dataset identity and content hash. It is fail closed
+by construction -- the verdict is a required argument, so there is no default
+that quietly admits T0/T1/T2 evidence. The tier authority itself stays
+strategy-agnostic: this function is where the crypto open-to-open path states
+that professional-grade *evidence quality* is a precondition of its own
+preregistered methodology, not a substitute for it.
 """
 
 from __future__ import annotations
@@ -50,6 +62,10 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from .crypto_basis_mean_reversion_v1 import CryptoBasisMeanReversionDefinitionV1
 from .crypto_liquidity_capacity_v1 import LiquidityCapacityPolicyV1
+from .evidence_tier_authority_v1 import (
+    EvidenceTierVerdictV1,
+    require_professional_evidence_tier_v1,
+)
 from .open_to_open_validation_orchestration_v1 import (
     OpenToOpenEvaluationSpanV1,
     OpenToOpenNeighborStepsV1,
@@ -379,3 +395,36 @@ def require_authorized_for_holdout(packet: OpenToOpenPreregistrationV1) -> None:
             "untouched_holdout_requires_authorized_preregistration:"
             + ",".join(packet.unresolved_reasons or (DRAFT_DISPOSITION,))
         )
+
+
+def require_authorized_for_holdout_with_evidence_tier_v1(
+    packet: OpenToOpenPreregistrationV1,
+    evidence_tier: EvidenceTierVerdictV1,
+) -> None:
+    """The Phase 3Z.1 gate: an authorized packet *and* professional-grade evidence.
+
+    Strictly stronger than :func:`require_authorized_for_holdout`, which it
+    calls first and never weakens. ``evidence_tier`` is positional and required
+    precisely so a caller cannot omit it and inherit a permissive default.
+
+    Both conditions are necessary and neither is sufficient. A professional
+    evidence tier is a statement about evidence *quality*; it never certifies
+    that this evidence suits this strategy. That judgement stays in the packet's
+    own frozen methodology, which this call still enforces in full.
+
+    The canonical Bybit REST dataset cannot pass: its source's timing authority
+    is ``NONE``, so it resolves to ``T1_RETROSPECTIVE`` and is not professional
+    evidence. That is the intended, unchanged answer, not a regression.
+    """
+    require_authorized_for_holdout(packet)
+    if not evidence_tier.integrity_verified():
+        raise OpenToOpenPreregistrationV1Error("evidence_tier_verdict_integrity_failed")
+    if evidence_tier.dataset_version_id != packet.dataset_version_id:
+        raise OpenToOpenPreregistrationV1Error("evidence_tier_verdict_dataset_mismatch")
+    if evidence_tier.provenance_evidence_id != packet.provenance_evidence_id:
+        raise OpenToOpenPreregistrationV1Error("evidence_tier_verdict_provenance_mismatch")
+    require_professional_evidence_tier_v1(
+        evidence_tier,
+        dataset_version_id=packet.dataset_version_id,
+        dataset_content_hash=packet.dataset_content_hash,
+    )
