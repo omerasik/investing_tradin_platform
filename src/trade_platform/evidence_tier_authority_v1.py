@@ -96,6 +96,10 @@ from enum import StrEnum
 from typing import Any, Final
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from .first_party_capture_authority_v1 import (
+    FIRST_PARTY_TIMING_AUTHORIZATION_REFERENCE_V1,
+    first_party_bybit_source_id_v1,
+)
 from .real_market_data_provenance_v1 import (
     STATUS_SYNTHETIC,
     RealMarketDataProvenanceV1,
@@ -258,13 +262,38 @@ def canonical_bybit_rest_timing_contract_v1() -> EvidenceTimingContractV1:
     )
 
 
+def first_party_bybit_capture_timing_contract_v1() -> EvidenceTimingContractV1:
+    """The Phase 3Z.2 first-party recorder: recorder arrival -> ``T4_FIRST_PARTY_CAPTURE``.
+
+    The source id is derived from the capture contract's own identity payload,
+    so nothing can enrol by asserting a provider name or a ``first_party`` flag.
+
+    Registration grants no verdict. :func:`evaluate_evidence_tier_v1` still
+    requires a proven :class:`RealMarketDataProvenanceV1` over a *sealed*
+    dataset, and Phase 3Z.2 deliberately creates none -- normalization and
+    sealing of captured evidence is Phase 3Z.3. Until then a first-party
+    evaluation fails closed on
+    ``evidence_tier_real_market_data_provenance_not_proven``, which is the
+    correct answer rather than a defect.
+    """
+    return _issue_contract(
+        source_id=first_party_bybit_source_id_v1(),
+        timing_authority=TimingAuthorityV1.PLATFORM_RECORDER_ARRIVAL_TIMESTAMP,
+        tier_ceiling_reason=None,
+        authorization_reference=FIRST_PARTY_TIMING_AUTHORIZATION_REFERENCE_V1,
+    )
+
+
 def authorized_timing_contracts_v1() -> tuple[EvidenceTimingContractV1, ...]:
     """The closed, explicit set of sources granted any timing authority.
 
-    One entry today. Adding one is an owner decision that ships as code: a
-    persisted row can never enrol itself, whatever its ``provider`` text says.
+    Two entries. Adding one is an owner decision that ships as code: a persisted
+    row can never enrol itself, whatever its ``provider`` text says.
     """
-    return (canonical_bybit_rest_timing_contract_v1(),)
+    return (
+        canonical_bybit_rest_timing_contract_v1(),
+        first_party_bybit_capture_timing_contract_v1(),
+    )
 
 
 def _resolve_timing_contract(source_id: UUID | None) -> EvidenceTimingContractV1 | None:
