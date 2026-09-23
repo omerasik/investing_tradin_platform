@@ -1,5 +1,16 @@
 """Phase 3D.8A canonical real-market-data provenance authority.
 
+Phase 3D.9S.2B added a second exact authority
+(:func:`canonical_tardis_captured_source_contract_v1`) without touching the
+first: :func:`authorized_source_contracts_v1` is a closed set of two contracts
+matched by deterministic persisted identity, not a provider allowlist. A dataset
+claiming the captured source must additionally carry an intact, positively
+authorized companion verdict from
+:mod:`trade_platform.canonical_captured_source_authority_v1` -- the capture
+semantics no column can hold. The canonical Bybit REST source id, its contract
+fields, its contract content hash and every REST verdict's content hash and
+evidence id are unchanged.
+
 **Positive proof only.** A historical dataset is ``REAL_DATA_RESEARCH_EVIDENCE``
 only when persisted canonical lineage proves it, never because a provider
 *name* looks right. ``historical_data_sources.provider`` (and the older
@@ -61,6 +72,10 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from .bybit_instrument_onboarding import (
     bybit_authorized_historical_source,
     captured_btcusdt_snapshot_v1,
+)
+from .canonical_captured_source_authority_v1 import (
+    CapturedSourceAuthorityVerdictV1,
+    canonical_tardis_captured_bybit_source_contract_v1,
 )
 from .persistence import PostgresDatabase
 
@@ -146,6 +161,44 @@ def canonical_bybit_source_contract_v1() -> CanonicalSourceContractV1:
     )
 
 
+def canonical_tardis_captured_source_contract_v1() -> CanonicalSourceContractV1:
+    """The Phase 3D.9S.2B captured-source authority, in persisted-row shape.
+
+    The eight persisted fields are only a *projection* of
+    :func:`trade_platform.canonical_captured_source_authority_v1.canonical_tardis_captured_bybit_source_contract_v1`;
+    the capture semantics that no column can hold stay in that companion
+    contract and are proven separately. The projection reuses
+    :class:`CanonicalSourceContractV1` unchanged, so the existing V1 hash payload
+    is untouched.
+    """
+    return CanonicalSourceContractV1(
+        **canonical_tardis_captured_bybit_source_contract_v1().persisted_source_projection()
+    )
+
+
+def authorized_source_contracts_v1() -> tuple[CanonicalSourceContractV1, ...]:
+    """The closed, explicit set of source authorities real data may qualify under.
+
+    Two exact contracts, matched by deterministic persisted identity. This is not
+    a provider allowlist: a row is never admitted because its ``provider`` text
+    looks like ``"bybit"`` or ``"tardis"``, and adding an authority here is an
+    owner decision that ships as code, never as data.
+    """
+    return (canonical_bybit_source_contract_v1(), canonical_tardis_captured_source_contract_v1())
+
+
+def _resolve_authority(facts: DatasetLineageFactsV1) -> CanonicalSourceContractV1:
+    """Pick the authority this dataset claims, defaulting to the REST contract.
+
+    A source id matching no authority resolves to the canonical Bybit REST
+    contract exactly as before, so its verdict and reasons are unchanged.
+    """
+    for authority in authorized_source_contracts_v1():
+        if facts.source_id == authority.source_id:
+            return authority
+    return canonical_bybit_source_contract_v1()
+
+
 @dataclass(frozen=True, slots=True)
 class PersistedSourceFactsV1:
     source_id: UUID
@@ -202,6 +255,10 @@ class RealMarketDataProvenanceV1:
     member_count_by_kind: tuple[tuple[str, int], ...]
     content_hash: str
     evidence_id: UUID
+    #: Set only on the captured-source path, where the companion authority is
+    #: required. It is absent from the identity payload when it is ``None``, so
+    #: every existing REST verdict keeps its exact content hash and evidence id.
+    captured_source_authority_evidence_id: UUID | None = None
     _issuer: object = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -211,7 +268,7 @@ class RealMarketDataProvenanceV1:
             )
 
     def identity_payload(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "schema_version": self.schema_version,
             "status": self.status,
             "reasons": list(self.reasons),
@@ -229,6 +286,11 @@ class RealMarketDataProvenanceV1:
             "instrument_ids": list(self.instrument_ids),
             "member_count_by_kind": [list(item) for item in self.member_count_by_kind],
         }
+        if self.captured_source_authority_evidence_id is not None:
+            payload["captured_source_authority_evidence_id"] = str(
+                self.captured_source_authority_evidence_id
+            )
+        return payload
 
     def integrity_verified(self) -> bool:
         return (
@@ -267,12 +329,50 @@ def _has_synthetic_marker(source: PersistedSourceFactsV1) -> bool:
     return any(marker in text.casefold() for text in texts for marker in _SYNTHETIC_MARKERS)
 
 
+def _captured_source_reasons(
+    facts: DatasetLineageFactsV1,
+    resolved: CanonicalSourceContractV1,
+    captured_source_authority: CapturedSourceAuthorityVerdictV1 | None,
+) -> list[str]:
+    """Extra proof the captured-source authority requires, and only it.
+
+    A captured source must additionally carry an intact, positively authorized
+    companion verdict for *this* dataset and *this* contract. Supplying one for
+    the REST authority is incoherent evidence and fails closed rather than being
+    quietly ignored.
+    """
+    captured = canonical_tardis_captured_source_contract_v1()
+    if resolved.source_id != captured.source_id:
+        if captured_source_authority is not None:
+            return ["captured_source_authority_not_applicable_to_this_source"]
+        return []
+    if captured_source_authority is None:
+        return ["captured_source_authority_evidence_missing"]
+    reasons: list[str] = []
+    if not captured_source_authority.integrity_verified():
+        reasons.append("captured_source_authority_integrity_failed")
+    elif not captured_source_authority.is_authorized():
+        reasons.append("captured_source_authority_not_authorized")
+    if captured_source_authority.source_id != captured.source_id:
+        reasons.append("captured_source_authority_source_mismatch")
+    if (
+        captured_source_authority.contract_content_hash
+        != canonical_tardis_captured_bybit_source_contract_v1().content_hash()
+    ):
+        reasons.append("captured_source_authority_contract_mismatch")
+    if captured_source_authority.dataset_version_id != facts.dataset_version_id:
+        reasons.append("captured_source_authority_dataset_mismatch")
+    return reasons
+
+
 def evaluate_real_market_data_provenance_v1(
     facts: DatasetLineageFactsV1,
     contract: CanonicalSourceContractV1 | None = None,
+    *,
+    captured_source_authority: CapturedSourceAuthorityVerdictV1 | None = None,
 ) -> RealMarketDataProvenanceV1:
     """Pure, fail-closed verdict over persisted facts. See the module docstring."""
-    resolved = canonical_bybit_source_contract_v1() if contract is None else contract
+    resolved = _resolve_authority(facts) if contract is None else contract
     reasons: list[str] = []
     status = STATUS_UNAVAILABLE
     source = facts.source
@@ -302,6 +402,7 @@ def evaluate_real_market_data_provenance_v1(
             reasons.append("member_lineage_incomplete")
         if not facts.content_hash:
             reasons.append("dataset_content_hash_missing")
+        reasons.extend(_captured_source_reasons(facts, resolved, captured_source_authority))
         if not reasons:
             status = STATUS_REAL_DATA
     proven_contract = status == STATUS_REAL_DATA
@@ -321,6 +422,11 @@ def evaluate_real_market_data_provenance_v1(
         member_count=facts.member_count,
         instrument_ids=facts.instrument_ids,
         member_count_by_kind=facts.member_count_by_kind,
+        captured_source_authority_evidence_id=(
+            captured_source_authority.evidence_id
+            if proven_contract and captured_source_authority is not None
+            else None
+        ),
     )
 
 
@@ -402,5 +508,12 @@ class PostgresRealMarketDataProvenanceAuthorityV1:
             member_count_by_kind=tuple(sorted(by_kind.items())),
         )
 
-    def prove(self, dataset_version_id: UUID) -> RealMarketDataProvenanceV1:
-        return evaluate_real_market_data_provenance_v1(self.facts(dataset_version_id))
+    def prove(
+        self,
+        dataset_version_id: UUID,
+        *,
+        captured_source_authority: CapturedSourceAuthorityVerdictV1 | None = None,
+    ) -> RealMarketDataProvenanceV1:
+        return evaluate_real_market_data_provenance_v1(
+            self.facts(dataset_version_id), captured_source_authority=captured_source_authority
+        )
