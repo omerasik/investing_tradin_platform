@@ -13,34 +13,42 @@ updated: 2026-09-24
 # -> R8 opportunity engine -> R9 accounts/risk -> R10 paper; R7 (T3 spine) is
 # the one parallel track.
 phase:
-  id: "R1A"
-  name: Multi-symbol capture capability and capacity measurement
-  status: in_review
-  base_commit: e38737a       # 3Z.2 (PR #147) merged, exact-main CI green
+  id: "R2A"
+  name: Three-clock knowledge-time semantics (FIN)
+  status: in_progress
+  base_commit: 28abbf2       # R1A (PR #148) merged
+  slices:
+    R2A.1: >-
+      Pure doctrine authority, no DB: knowledge_time_doctrine_v1.py -- per-tier
+      market_knowledge_at, propagation (max knowledge, min claim), historical
+      (knowledge + declared compute latency) vs live (max with computed_at)
+      decision time, strict all-inputs claim ceiling pending OR-4.
+    R2A.2: >-
+      Wire-in: additive migration (explicit column lists), new feature hash
+      version (existing V1/V2 hashes untouched), calculators stop deriving
+      knowledge from normalized_at/dataset.created_at, rewrite of
+      canonical_feature_decision_at, Postgres suite, independent PIT review.
   scope_paths:
-    - src/trade_platform/first_party_capture_authority_v1.py   # measurement contracts, closed-set resolver
-    - src/trade_platform/first_party_capture_archive_v1.py     # compaction, disk end proof, backup, per-source availability
-    - src/trade_platform/bybit_public_websocket_recorder_v1.py # stop signal, observer, clock evidence, fleet
-    - src/trade_platform/first_party_capture_measurement_v1.py # capacity report, timestamp delta, clock offset
-    - scripts/capture_bybit_public.py
-    - tests/test_first_party_capture_authority_v1.py
-    - tests/test_first_party_capture_archive_v1.py
-    - tests/test_bybit_public_websocket_recorder_v1.py
-    - tests/test_first_party_capture_measurement_v1.py
+    - src/trade_platform/knowledge_time_doctrine_v1.py
+    - tests/test_knowledge_time_doctrine_v1.py
   not_in_scope: >-
-    Pinning a production universe (OR-2 -> R1B), T4 registration of any new
-    contract, normalization, sealing, tier verdicts, spot/L2, UI, migrations.
-    The production v1 contract (source 1a4abe35-..., hash d76a51fc...) is
-    byte-for-byte unchanged; measurement contracts are NOT registered with the
-    evidence-tier authority.
+    Choosing any T2 lag (OR-5), any compute-latency value, the role-based tier
+    rule (OR-4, presented only), T4 normalization/sealing (R3A), columnar
+    storage (R2B), and any change to 3D.9A packet identities or existing
+    feature materialization hashes.
   ends_with: >-
-    A bounded ~24 h representative measurement run (8-symbol pinned sample,
-    turnover ranks 1,2,4,7,30,60,100,300), its capacity report, and 2-4
-    capture-universe options with a recommendation for the owner (OR-2).
+    T1 inputs fail closed with a principled reason instead of collapsing;
+    synthetic T2/T3/T4 fixtures give distinct, correct decision times;
+    recomputing at a later wall time moves no historical decision time; full
+    suite green with POSTGRES_TEST_DSN; OR-4 presented to the owner.
+
+r1a_follow_up:                # R1A merged (PR #148); its measurement is still running
+  measurement_run: "scripts/capture_bybit_public.py measure --seconds 86400, started 2026-09-24 03:06"
+  ends_with: capacity report + 2-4 capture-universe options for the owner (OR-2), then R1B.
 
 r0_operations:                # the T4 clock; runs beside every phase
   status: running             # BTCUSDT production contract v1, default root
-  command: scripts/capture_bybit_public.py supervise   # after R1A merges; `run` before
+  command: scripts/capture_bybit_public.py run   # `supervise` is available since R1A merged
   host_clock_finding: >-
     2026-09-24: Windows Time service (W32Time) is not running on the capture
     host and the host clock read ~9.47 s behind Bybit server time (RTT-bounded,
