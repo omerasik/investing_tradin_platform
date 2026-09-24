@@ -29,7 +29,15 @@ from .crypto_liquidity_capacity_v1 import (
     canonical_contract_conflicts,
     evaluate_crypto_liquidity_capacity_v1,
 )
-from .feature_authority import FeatureMaterializationV2
+from .feature_authority import FeatureMaterializationV2, FeatureMaterializationV3
+from .knowledge_time_doctrine_v1 import (
+    ClaimCeilingV1,
+    DecisionTimeV1,
+    DeclaredComputeLatencyV1,
+    KnowledgeTimeDoctrineError,
+    historical_decision_time_v1,
+    require_admissible_decision_v1,
+)
 from .open_to_open_validation_v1 import (
     CSCV_BLOCKS,
     STATUS_AVAILABLE,
@@ -273,13 +281,104 @@ def _cost_model_content_hash(cost_model: CostModel) -> str:
     return _content_hash({"cost_model": _wire_cost_model(cost_model)})
 
 
-def canonical_feature_decision_at(materialization: FeatureMaterializationV2) -> datetime:
+def legacy_platform_availability_at_v2(materialization: FeatureMaterializationV2) -> datetime:
+    """When *this platform* had a V2 value -- engine mechanics, never a market clock.
+
+    ``max(event_at, effective_at, knowledge_at, computed_at)``, where a V2
+    ``knowledge_at`` is the ingestion/seal instant. It orders fixture and
+    descriptive (T0/T1) runs deterministically and nothing more: it is not a
+    historical decision time, it moves if the feature is recomputed later, and
+    it can never satisfy :func:`count_distinct_historical_decision_times_v1`
+    or the professional gate
+    :func:`~trade_platform.open_to_open_preregistration_v1.require_professional_historical_decisions_v1`.
+    """
     return max(
         materialization.event_at,
         materialization.effective_at,
         materialization.knowledge_at,
         materialization.computed_at,
     )
+
+
+def historical_feature_decision_v1(
+    materialization: FeatureMaterializationV3, *, compute_latency: DeclaredComputeLatencyV1
+) -> DecisionTimeV1:
+    """The doctrine's historical replay decision for one V3 value (may be a refusal).
+
+    ``max(market_knowledge_at) + declared compute latency`` -- no
+    ``computed_at``, no ``platform_recorded_at``. A T1 value yields a refusal
+    with its principled reason, never an instant.
+    """
+    if not isinstance(materialization, FeatureMaterializationV3):
+        raise OpenToOpenValidationOrchestrationV1Error(
+            "historical_decision_requires_three_clock_materialization"
+        )
+    try:
+        return historical_decision_time_v1(
+            (materialization.feature_knowledge_v1(),), compute_latency=compute_latency
+        )
+    except KnowledgeTimeDoctrineError as error:
+        raise OpenToOpenValidationOrchestrationV1Error(str(error)) from error
+
+
+def canonical_feature_decision_at(
+    materialization: FeatureMaterializationV2 | FeatureMaterializationV3,
+    *,
+    compute_latency: DeclaredComputeLatencyV1 | None = None,
+) -> datetime:
+    """The instant a feature value may drive a decision (Phase R2A.2 rewrite).
+
+    * A three-clock (V3) value: the doctrine's historical replay decision
+      time, which requires a declared ``compute_latency`` and at least a
+      ``CONDITIONAL`` claim. A T1 (or clock-less T3/T4) value raises: it
+      cannot drive a historical decision at all.
+    * A legacy V2 value: :func:`legacy_platform_availability_at_v2`, the
+      unchanged engine-mechanics ordering. Passing ``compute_latency`` for a
+      V2 value is refused -- it has no market knowledge time to add it to.
+    """
+    if isinstance(materialization, FeatureMaterializationV3):
+        if compute_latency is None:
+            raise OpenToOpenValidationOrchestrationV1Error(
+                "historical_decision_requires_declared_compute_latency"
+            )
+        decision = historical_feature_decision_v1(materialization, compute_latency=compute_latency)
+        try:
+            return require_admissible_decision_v1(
+                decision, minimum_claim=ClaimCeilingV1.CONDITIONAL
+            )
+        except KnowledgeTimeDoctrineError as error:
+            raise OpenToOpenValidationOrchestrationV1Error(str(error)) from error
+    if compute_latency is not None:
+        raise OpenToOpenValidationOrchestrationV1Error(
+            "legacy_v2_materialization_has_no_market_knowledge_time"
+        )
+    return legacy_platform_availability_at_v2(materialization)
+
+
+def count_distinct_historical_decision_times_v1(
+    materializations: Sequence[FeatureMaterializationV3],
+    *,
+    compute_latency: DeclaredComputeLatencyV1,
+    minimum_claim: ClaimCeilingV1,
+) -> int:
+    """How many distinct historical decision instants a V3 feature series carries.
+
+    The number a preregistration binds as ``distinct_feature_decision_at_count``.
+    Fails closed: any value that is not admissible at ``minimum_claim`` (a T1
+    value, a missing clock, a claim below the floor) raises rather than being
+    skipped, because a silently thinned series would misstate what the
+    evidence supports.
+    """
+    if not materializations:
+        raise OpenToOpenValidationOrchestrationV1Error("decision_count_requires_materializations")
+    instants: set[datetime] = set()
+    for materialization in materializations:
+        decision = historical_feature_decision_v1(materialization, compute_latency=compute_latency)
+        try:
+            instants.add(require_admissible_decision_v1(decision, minimum_claim=minimum_claim))
+        except KnowledgeTimeDoctrineError as error:
+            raise OpenToOpenValidationOrchestrationV1Error(str(error)) from error
+    return len(instants)
 
 
 def _sole_basis_feature_series(

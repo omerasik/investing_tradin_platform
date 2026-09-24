@@ -88,6 +88,7 @@ made.
 from __future__ import annotations
 
 from collections.abc import Callable, Generator, Iterator, Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -102,13 +103,20 @@ from .crypto_instruments import (
     PostgresCryptoInstrumentAuthority,
     ReferencePriceRequirement,
 )
+from .evidence_tier_authority_v1 import EvidenceTierVerdictV1
 from .feature_authority import (
     FeatureDefinitionVersion,
     FeatureFamily,
     FeatureMaterializationV2,
+    FeatureMaterializationV3,
     FeatureQualityStatus,
     FeatureSubjectType,
     PostgresFeatureAuthority,
+)
+from .knowledge_time_doctrine_v1 import (
+    ObservationKnowledgeV1,
+    derive_observation_knowledge_v1,
+    propagate_feature_knowledge_v1,
 )
 from .persistence import PostgresDatabase
 
@@ -244,6 +252,38 @@ def crypto_mark_index_basis_definition(created_at: datetime) -> FeatureDefinitio
         "computed_at>=knowledge_at", 0, {}, "fail_closed_no_materialization", "reject",
         "reject_future_knowledge", None, None, "dimensionless",
         CALCULATION_VERSION_MARK_INDEX_BASIS, created_at,
+    )
+
+
+#: Phase R2A.2. Same formula, eligibility and quantization as v1; a new
+#: calculation version because the *timestamp semantics* changed, and a
+#: semantic version bump because a consumer's decision time now means
+#: something different. The v1 definition and its rows are untouched.
+CALCULATION_VERSION_MARK_INDEX_BASIS_V3 = "derivatives-crypto-mark-index-basis-r2a2-three-clock-v1"
+CRYPTO_MARK_INDEX_BASIS_V3_SEMANTIC_VERSION = "2.0.0"
+
+
+def crypto_mark_index_basis_three_clock_definition(
+    created_at: datetime,
+) -> FeatureDefinitionVersion:
+    """The ``crypto_mark_index_basis`` 2.0.0 definition, materialized as V3 rows only."""
+    return FeatureDefinitionVersion(
+        CRYPTO_MARK_INDEX_BASIS, FeatureFamily.DERIVATIVES,
+        CRYPTO_MARK_INDEX_BASIS_V3_SEMANTIC_VERSION, "quant",
+        "Crypto mark/index basis for one instrument: (mark_price - index_price) / "
+        "index_price, with the v1 eligibility rules unchanged (exact shared event_at, "
+        "same price asset, same sealed dataset, MARK_AND_INDEX instrument). Differs "
+        "from v1 only in its clocks: market knowledge time comes from the R2A "
+        "knowledge-time doctrine and the dataset's evidence-tier verdict, never from "
+        "normalization or seal time.",
+        ("MARK_PRICE", "INDEX_PRICE"), _MARK_INDEX_REQUIRED_FIELDS, "as_observed",
+        "event=shared mark/index event_at; effective_at=max(mark,index effective_at); "
+        "market_knowledge_at=max over mark,index of the doctrine knowledge time of each "
+        "input measured from its effective_at (undefined for T0/T1); "
+        "platform_recorded_at=max(mark,index normalized_at, dataset.created_at), audit only; "
+        "claim_ceiling=min over inputs; computed_at operational only", 0, {},
+        "fail_closed_no_materialization", "reject", "reject_future_knowledge", None, None,
+        "dimensionless", CALCULATION_VERSION_MARK_INDEX_BASIS_V3, created_at,
     )
 
 
@@ -573,13 +613,44 @@ class PostgresCryptoDerivativesFeatureCalculator:
         if not requested:
             return
         dataset = self._load_dataset(dataset_version_id, decision_at)
-        specification_cache: list[CryptoInstrumentSpecification | None] = []
+        specification = self._cached_specification(instrument_id, decision_at)
+        with closing(
+            self._iter_mark_index_pairs(
+                dataset_version_id=dataset_version_id, instrument_id=instrument_id,
+                requested=requested, decision_at=decision_at,
+            )
+        ) as pairs:
+            for event_at, mark, index in pairs:
+                materialization = self._basis_from_pair(
+                    feature_id=feature_id, instrument_id=instrument_id, dataset=dataset,
+                    event_at=event_at, decision_at=decision_at, computed_at=computed_at,
+                    mark=mark, index=index, specification=specification,
+                )
+                if materialization is not None:
+                    yield materialization
+
+    def _cached_specification(
+        self, instrument_id: str, decision_at: datetime
+    ) -> Callable[[], CryptoInstrumentSpecification | None]:
+        """Resolve the instrument specification once, lazily, at ``decision_at``."""
+        cache: list[CryptoInstrumentSpecification | None] = []
 
         def specification() -> CryptoInstrumentSpecification | None:
-            if not specification_cache:
-                specification_cache.append(self._specification_or_none(instrument_id, decision_at))
-            return specification_cache[0]
+            if not cache:
+                cache.append(self._specification_or_none(instrument_id, decision_at))
+            return cache[0]
 
+        return specification
+
+    def _iter_mark_index_pairs(
+        self,
+        *,
+        dataset_version_id: UUID,
+        instrument_id: str,
+        requested: tuple[datetime, ...],
+        decision_at: datetime,
+    ) -> Generator[tuple[datetime, _ReferencePriceObservation, _ReferencePriceObservation], None, None]:
+        """The one streamed, ranked MARK/INDEX pairing shared by the V2 and V3 paths."""
         statement = (
             "SELECT observation_kind, normalized_observation_id, raw_observation_id, "
             "provider_identifier, event_at, effective_at, ingested_at, revision, normalized_at, "
@@ -620,15 +691,149 @@ class PostgresCryptoDerivativesFeatureCalculator:
                 index = _select_single_identity(indexes, "ambiguous_index_observation_identity")
                 if index is None:
                     continue
-                materialization = self._basis_from_pair(
+                yield event_at, mark, index
+        finally:
+            stream.close()
+
+    # ---- crypto_mark_index_basis, three-clock (Phase R2A.2) -----------------
+
+    def _basis_v3_from_pair(
+        self,
+        *,
+        feature_id: UUID,
+        instrument_id: str,
+        dataset: _DatasetInfo,
+        evidence_tier: EvidenceTierVerdictV1,
+        event_at: datetime,
+        platform_as_of: datetime,
+        computed_at: datetime | None,
+        mark: _ReferencePriceObservation,
+        index: _ReferencePriceObservation,
+        specification: Callable[[], CryptoInstrumentSpecification | None],
+    ) -> FeatureMaterializationV3 | None:
+        """The V2 rule set and formula, with knowledge time from the doctrine.
+
+        Eligibility, value, quantization and manifest are exactly
+        :meth:`_basis_from_pair`'s. What differs is the clock: each input's
+        market knowledge time is derived by
+        :func:`~trade_platform.knowledge_time_doctrine_v1.derive_observation_knowledge_v1`
+        from the dataset's evidence-tier verdict, and the feature's is their
+        maximum. ``normalized_at`` and the dataset seal time enter only as the
+        observation's ``platform_recorded_at`` -- audit, never knowledge.
+
+        An observation's doctrine ``event_at`` is its ``effective_at``, not its
+        bar-open ``event_at``: a bar's value is complete only when the bar
+        closes, so knowledge measured from the open would be look-ahead.
+        """
+        if mark.price_asset != index.price_asset:
+            return None
+        resolved_specification = specification()
+        if (
+            resolved_specification is None
+            or resolved_specification.reference_price_requirement
+            is not ReferencePriceRequirement.MARK_AND_INDEX
+        ):
+            return None
+
+        def observed(observation: _ReferencePriceObservation) -> ObservationKnowledgeV1:
+            return derive_observation_knowledge_v1(
+                evidence_tier,
+                dataset_version_id=dataset.dataset_version_id,
+                dataset_content_hash=dataset.content_hash,
+                observation_reference=(
+                    f"historical_normalized_observation:{observation.normalized_observation_id}"
+                ),
+                event_at=observation.effective_at,
+                platform_recorded_at=max(observation.normalized_at, dataset.created_at),
+            )
+
+        knowledge = propagate_feature_knowledge_v1((observed(mark), observed(index)), event_at=event_at)
+        if knowledge.platform_recorded_at > platform_as_of:
+            raise CryptoDerivativesFeatureError("platform_recorded_at_exceeds_platform_as_of")
+        value = ((mark.price - index.price) / index.price).quantize(_VALUE_SCALE)
+        return FeatureMaterializationV3.create(
+            feature_id=feature_id, subject_type=FeatureSubjectType.INSTRUMENT,
+            subject_id=instrument_id, dataset_version=str(dataset.dataset_version_id),
+            event_at=event_at, effective_at=max(mark.effective_at, index.effective_at),
+            knowledge=knowledge,
+            computed_at=knowledge.platform_recorded_at if computed_at is None else computed_at,
+            source_observation_manifest=(
+                *_mark_index_basis_manifest_tokens(
+                    dataset=dataset, instrument_id=instrument_id, mark=mark, index=index,
+                ),
+                f"evidence_tier_verdict_id:{evidence_tier.evidence_id}",
+            ),
+            value=value, quality_status=FeatureQualityStatus.VALIDATED,
+        )
+
+    def iter_crypto_mark_index_basis_v3(
+        self,
+        *,
+        feature_id: UUID,
+        instrument_id: str,
+        dataset_version_id: UUID,
+        evidence_tier: EvidenceTierVerdictV1,
+        event_ats: Sequence[datetime],
+        platform_as_of: datetime,
+        computed_at: datetime | None = None,
+    ) -> Iterator[FeatureMaterializationV3]:
+        """Three-clock form of :meth:`iter_crypto_mark_index_basis`. Read-only.
+
+        ``platform_as_of`` is the V2 path's ``decision_at`` under its honest
+        name: which rows *this platform* held when it computed (normalized and
+        ingested by then, dataset sealed by then). It never becomes a market
+        clock. ``evidence_tier`` must be the verdict of exactly this dataset;
+        the doctrine then refuses it unless it is also bound to the dataset's
+        content hash. A T1 dataset yields rows whose market knowledge time is
+        undefined and whose claim is at most ``DESCRIPTIVE`` -- real values,
+        no decision authority. ``computed_at`` defaults to the platform
+        availability instant; it is not part of the V3 identity either way.
+        """
+        _aware(platform_as_of, "platform_as_of")
+        if computed_at is not None:
+            _aware(computed_at, "computed_at")
+        if evidence_tier.dataset_version_id != dataset_version_id:
+            raise CryptoDerivativesFeatureError("evidence_tier_verdict_dataset_mismatch")
+        requested = _strictly_increasing(event_ats)
+        if not requested:
+            return
+        dataset = self._load_dataset(dataset_version_id, platform_as_of)
+        specification = self._cached_specification(instrument_id, platform_as_of)
+        with closing(
+            self._iter_mark_index_pairs(
+                dataset_version_id=dataset_version_id, instrument_id=instrument_id,
+                requested=requested, decision_at=platform_as_of,
+            )
+        ) as pairs:
+            for event_at, mark, index in pairs:
+                materialization = self._basis_v3_from_pair(
                     feature_id=feature_id, instrument_id=instrument_id, dataset=dataset,
-                    event_at=event_at, decision_at=decision_at, computed_at=computed_at,
-                    mark=mark, index=index, specification=specification,
+                    evidence_tier=evidence_tier, event_at=event_at,
+                    platform_as_of=platform_as_of, computed_at=computed_at, mark=mark,
+                    index=index, specification=specification,
                 )
                 if materialization is not None:
                     yield materialization
-        finally:
-            stream.close()
+
+    def materialize_crypto_mark_index_basis_v3_batch(
+        self,
+        *,
+        feature_id: UUID,
+        instrument_id: str,
+        dataset_version_id: UUID,
+        evidence_tier: EvidenceTierVerdictV1,
+        event_ats: Sequence[datetime],
+        platform_as_of: datetime,
+        computed_at: datetime | None = None,
+    ) -> int:
+        """Write :meth:`iter_crypto_mark_index_basis_v3` through the V3 stream writer."""
+        return self._feature_authority.materialize_subject_stream_v3(
+            self.iter_crypto_mark_index_basis_v3(
+                feature_id=feature_id, instrument_id=instrument_id,
+                dataset_version_id=dataset_version_id, evidence_tier=evidence_tier,
+                event_ats=event_ats, platform_as_of=platform_as_of, computed_at=computed_at,
+            )
+        )
 
     def materialize_crypto_mark_index_basis_batch(
         self,

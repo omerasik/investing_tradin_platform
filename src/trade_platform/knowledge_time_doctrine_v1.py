@@ -693,6 +693,98 @@ def propagate_feature_knowledge_v1(
     )
 
 
+def _parse_instant(value: object, name: str) -> datetime | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise KnowledgeTimeDoctrineError(f"persisted_{name}_must_be_iso_text")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise KnowledgeTimeDoctrineError(f"persisted_{name}_malformed") from error
+    _require_aware(parsed, f"persisted_{name}")
+    return parsed
+
+
+def restore_persisted_feature_knowledge_v1(
+    market_payload: Mapping[str, Any],
+    *,
+    platform_recorded_at: datetime,
+    expected_market_content_hash: str,
+) -> FeatureKnowledgeV1:
+    """Re-issue a feature's clocks from the payload a durable row stored.
+
+    Phase R2A.2. A V3 feature materialization persists
+    :meth:`FeatureKnowledgeV1.market_identity_payload` so a later reader can
+    compute decision times without recomputing the inputs. This function is
+    the only way back from that payload to an issued object, and it trusts
+    nothing it can check: the payload must re-hash to
+    ``expected_market_content_hash`` (the hash bound into the row's own content
+    hash), and its clocks and claim must be *coherent* -- a defined knowledge
+    time only with no reasons and at least a conditional claim, an undefined
+    one only with a reason and at most a descriptive claim, knowledge never
+    before the event. A payload that fails any of this is refused, never
+    repaired. Provenance of the payload itself is the persistence authority's
+    job (append-only rows, deterministic content hashes); this function proves
+    only that what came back is exactly what the doctrine could have issued.
+    """
+    _require_aware(platform_recorded_at, "platform_recorded_at")
+    if market_payload.get("schema_version") != KNOWLEDGE_TIME_DOCTRINE_SCHEMA_VERSION:
+        raise KnowledgeTimeDoctrineError("persisted_feature_knowledge_schema_version_mismatch")
+    try:
+        hashes = tuple(str(item) for item in market_payload["input_knowledge_hashes"])
+        event_at = _parse_instant(market_payload["event_at"], "event_at")
+        market_knowledge_at = _parse_instant(
+            market_payload["market_knowledge_at"], "market_knowledge_at"
+        )
+        claim = ClaimCeilingV1[str(market_payload["claim_ceiling"])]
+        bindings = tuple(
+            PublicationLagBindingV1(
+                UUID(str(item["verdict_evidence_id"])),
+                int(item["publication_lag_nanos"]),
+                str(item["publication_lag_reference"]),
+            )
+            for item in market_payload["publication_lag_bindings"]
+        )
+        reasons = tuple(str(item) for item in market_payload["reasons"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise KnowledgeTimeDoctrineError("persisted_feature_knowledge_malformed") from error
+    if event_at is None or not hashes:
+        raise KnowledgeTimeDoctrineError("persisted_feature_knowledge_malformed")
+    if hashes != tuple(sorted(set(hashes))):
+        raise KnowledgeTimeDoctrineError("persisted_feature_knowledge_inputs_not_canonical")
+    if reasons != _ordered_reasons(reasons) or bindings != _sorted_bindings(bindings):
+        raise KnowledgeTimeDoctrineError("persisted_feature_knowledge_not_canonical")
+    if market_knowledge_at is None:
+        if not reasons or claim > ClaimCeilingV1.DESCRIPTIVE:
+            raise KnowledgeTimeDoctrineError("persisted_feature_knowledge_incoherent")
+    elif reasons or claim < ClaimCeilingV1.CONDITIONAL or market_knowledge_at < event_at:
+        raise KnowledgeTimeDoctrineError("persisted_feature_knowledge_incoherent")
+    values: dict[str, Any] = {
+        "schema_version": KNOWLEDGE_TIME_DOCTRINE_SCHEMA_VERSION,
+        "input_knowledge_hashes": hashes,
+        "event_at": event_at,
+        "market_knowledge_at": market_knowledge_at,
+        "platform_recorded_at": platform_recorded_at,
+        "claim_ceiling": claim,
+        "publication_lag_bindings": bindings,
+        "reasons": reasons,
+    }
+    draft = FeatureKnowledgeV1(
+        **values, market_content_hash="", content_hash="", knowledge_id=_NAMESPACE, _issuer=_ISSUER
+    )
+    market_hash, audit_hash = _hashes(draft.market_identity_payload(), draft.audit_payload())
+    if market_hash != expected_market_content_hash:
+        raise KnowledgeTimeDoctrineError("persisted_feature_knowledge_hash_mismatch")
+    return FeatureKnowledgeV1(
+        **values,
+        market_content_hash=market_hash,
+        content_hash=audit_hash,
+        knowledge_id=uuid5(_NAMESPACE, f"feature-knowledge:{market_hash}"),
+        _issuer=_ISSUER,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Decision time
 # ---------------------------------------------------------------------------
@@ -1036,5 +1128,6 @@ __all__ = [
     "live_decision_time_v1",
     "propagate_feature_knowledge_v1",
     "require_admissible_decision_v1",
+    "restore_persisted_feature_knowledge_v1",
     "result_claim_ceiling_v1",
 ]

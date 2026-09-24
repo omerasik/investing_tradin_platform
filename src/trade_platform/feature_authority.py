@@ -9,14 +9,20 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
+from .knowledge_time_doctrine_v1 import (
+    ClaimCeilingV1,
+    FeatureKnowledgeV1,
+    KnowledgeTimeDoctrineError,
+    restore_persisted_feature_knowledge_v1,
+)
 from .persistence import PostgresDatabase
 
 
@@ -83,6 +89,8 @@ class FeatureHashVersion(StrEnum):
 
     V1 = "V1"
     V2 = "V2"
+    #: Phase R2A.2 three-clock identity -- see :class:`FeatureMaterializationV3`.
+    V3 = "V3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -382,6 +390,240 @@ class FeatureMaterializationV2:
             raise FeatureAuthorityError("validated_feature_requires_value")
 
 
+def _utc_iso(value: datetime | None) -> str | None:
+    return None if value is None else value.astimezone(UTC).isoformat()
+
+
+def _knowledge_payload_hash(payload: Mapping[str, Any]) -> str:
+    # The doctrine's own canonical encoding, so the stored hash is the doctrine's
+    # market_content_hash and restore_persisted_feature_knowledge_v1 can check it.
+    return hashlib.sha256(_canonical(payload).encode()).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class FeatureMaterializationV3:
+    """Phase R2A.2 -- a materialization that carries the three clocks.
+
+    ``V1``/``V2`` rows store one ``knowledge_at`` that was
+    ``max(normalized_at, dataset.created_at)``: the platform's own
+    ingestion/seal instant. That is kept, under its honest name, as
+    :attr:`platform_recorded_at` (and mirrored into the legacy ``knowledge_at``
+    column so the table's existing temporal CHECK and uniqueness key keep
+    their meaning). Market knowability is a separate column,
+    :attr:`market_knowledge_at`, taken from an issued
+    :class:`~trade_platform.knowledge_time_doctrine_v1.FeatureKnowledgeV1`:
+    ``None`` whenever the doctrine says it is undefined (T0/T1, or any input
+    whose clock evidence is missing), never a platform instant standing in.
+
+    Identity. :attr:`content_hash` is the V3 formula and covers the market
+    identity only: subject, dataset, event/effective time, market knowledge
+    time, claim ceiling, the doctrine's feature-knowledge hash, manifest and
+    value. It deliberately excludes ``computed_at`` and
+    ``platform_recorded_at``, so recomputing the same feature from the same
+    sealed evidence at any later wall time is the *same* materialization
+    (idempotent), and neither operational clock can move a historical decision
+    time. V1/V2 hashes are untouched and never recomputed.
+    """
+
+    feature_id: UUID
+    subject_type: FeatureSubjectType
+    subject_id: str
+    dataset_version: str
+    event_at: datetime
+    effective_at: datetime
+    market_knowledge_at: datetime | None
+    platform_recorded_at: datetime
+    computed_at: datetime
+    claim_ceiling: ClaimCeilingV1
+    feature_knowledge: Mapping[str, Any]
+    feature_knowledge_hash: str
+    source_observation_manifest: tuple[str, ...]
+    value: Decimal | None
+    quality_status: FeatureQualityStatus
+    content_hash: str
+    materialization_id: UUID = field(default_factory=uuid4)
+
+    @property
+    def knowledge_at(self) -> datetime:
+        """The legacy column's value: platform availability, never market knowledge."""
+        return self.platform_recorded_at
+
+    @staticmethod
+    def _hash(
+        *,
+        feature_id: UUID,
+        subject_type: FeatureSubjectType,
+        subject_id: str,
+        dataset_version: str,
+        event_at: datetime,
+        effective_at: datetime,
+        market_knowledge_at: datetime | None,
+        claim_ceiling: ClaimCeilingV1,
+        feature_knowledge_hash: str,
+        source_observation_manifest: tuple[str, ...],
+        value: Decimal | None,
+        quality_status: FeatureQualityStatus,
+    ) -> str:
+        payload = {
+            "hash_version": FeatureHashVersion.V3.value,
+            "feature_id": str(feature_id), "subject_type": subject_type.value,
+            "subject_id": subject_id, "dataset_version": dataset_version,
+            "event_at": _utc_iso(event_at), "effective_at": _utc_iso(effective_at),
+            "market_knowledge_at": _utc_iso(market_knowledge_at),
+            "claim_ceiling": claim_ceiling.name,
+            "feature_knowledge_hash": feature_knowledge_hash,
+            "source_observation_manifest": list(source_observation_manifest),
+            "value": None if value is None else str(value),
+            "quality_status": quality_status.value,
+        }
+        return hashlib.sha256(_canonical(payload).encode()).hexdigest()
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        feature_id: UUID,
+        subject_type: FeatureSubjectType,
+        subject_id: str,
+        dataset_version: str,
+        event_at: datetime,
+        effective_at: datetime,
+        knowledge: FeatureKnowledgeV1,
+        computed_at: datetime,
+        source_observation_manifest: tuple[str, ...],
+        value: Decimal | None,
+        quality_status: FeatureQualityStatus,
+    ) -> FeatureMaterializationV3:
+        """Build a V3 row from an issued, intact feature-knowledge object only."""
+        if not isinstance(knowledge, FeatureKnowledgeV1) or not knowledge.integrity_verified():
+            raise FeatureAuthorityError("feature_knowledge_integrity_failed")
+        if knowledge.event_at != event_at:
+            raise FeatureAuthorityError("feature_knowledge_event_mismatch")
+        payload = knowledge.market_identity_payload()
+        content_hash = cls._hash(
+            feature_id=feature_id, subject_type=subject_type, subject_id=subject_id,
+            dataset_version=dataset_version, event_at=event_at, effective_at=effective_at,
+            market_knowledge_at=knowledge.market_knowledge_at,
+            claim_ceiling=knowledge.claim_ceiling,
+            feature_knowledge_hash=knowledge.market_content_hash,
+            source_observation_manifest=source_observation_manifest, value=value,
+            quality_status=quality_status,
+        )
+        return cls(
+            feature_id, subject_type, subject_id, dataset_version, event_at, effective_at,
+            knowledge.market_knowledge_at, knowledge.platform_recorded_at, computed_at,
+            knowledge.claim_ceiling, payload, knowledge.market_content_hash,
+            source_observation_manifest, value, quality_status, content_hash,
+        )
+
+    def feature_knowledge_v1(self) -> FeatureKnowledgeV1:
+        """The issued doctrine object behind this row, re-derived and re-checked."""
+        try:
+            return restore_persisted_feature_knowledge_v1(
+                self.feature_knowledge,
+                platform_recorded_at=self.platform_recorded_at,
+                expected_market_content_hash=self.feature_knowledge_hash,
+            )
+        except KnowledgeTimeDoctrineError as error:
+            raise FeatureAuthorityError(f"feature_knowledge_invalid:{error}") from error
+
+    def validate(self) -> None:
+        if not self.subject_id.strip() or not self.dataset_version.strip():
+            raise FeatureAuthorityError("feature_materialization_identity_missing")
+        if len(self.content_hash) != 64 or not self.source_observation_manifest:
+            raise FeatureAuthorityError("feature_materialization_provenance_missing")
+        for timestamp in (self.event_at, self.effective_at, self.platform_recorded_at, self.computed_at):
+            _aware(timestamp)
+        if self.market_knowledge_at is not None:
+            _aware(self.market_knowledge_at)
+        if self.effective_at < self.event_at or self.platform_recorded_at < self.effective_at:
+            raise FeatureAuthorityError("feature_materialization_invalid_temporal_order")
+        if self.computed_at < self.platform_recorded_at:
+            raise FeatureAuthorityError("feature_computed_before_platform_recorded")
+        if self.quality_status is FeatureQualityStatus.VALIDATED and self.value is None:
+            raise FeatureAuthorityError("validated_feature_requires_value")
+        if _knowledge_payload_hash(self.feature_knowledge) != self.feature_knowledge_hash:
+            raise FeatureAuthorityError("feature_knowledge_payload_hash_mismatch")
+        knowledge = self.feature_knowledge_v1()
+        if (
+            knowledge.event_at != self.event_at
+            or knowledge.market_knowledge_at != self.market_knowledge_at
+            or knowledge.claim_ceiling is not self.claim_ceiling
+        ):
+            raise FeatureAuthorityError("feature_knowledge_columns_disagree_with_payload")
+        expected = self._hash(
+            feature_id=self.feature_id, subject_type=self.subject_type,
+            subject_id=self.subject_id, dataset_version=self.dataset_version,
+            event_at=self.event_at, effective_at=self.effective_at,
+            market_knowledge_at=self.market_knowledge_at, claim_ceiling=self.claim_ceiling,
+            feature_knowledge_hash=self.feature_knowledge_hash,
+            source_observation_manifest=self.source_observation_manifest, value=self.value,
+            quality_status=self.quality_status,
+        )
+        if expected != self.content_hash:
+            raise FeatureAuthorityError("feature_materialization_v3_content_hash_mismatch")
+
+
+_V3_COLUMNS = (
+    "materialization_id,feature_id,subject_type,subject_id,dataset_version,event_at,"
+    "effective_at,market_knowledge_at,platform_recorded_at,computed_at,claim_ceiling,"
+    "feature_knowledge,feature_knowledge_hash,source_observation_manifest,value,"
+    "quality_status,content_hash"
+)
+
+
+def _row_v3(row: tuple[Any, ...]) -> FeatureMaterializationV3:
+    manifest = row[13] if isinstance(row[13], list) else json.loads(row[13])
+    knowledge = row[11] if isinstance(row[11], dict) else json.loads(row[11])
+    value = FeatureMaterializationV3(
+        feature_id=UUID(str(row[1])), subject_type=FeatureSubjectType(str(row[2])),
+        subject_id=str(row[3]), dataset_version=str(row[4]), event_at=row[5],
+        effective_at=row[6], market_knowledge_at=row[7], platform_recorded_at=row[8],
+        computed_at=row[9], claim_ceiling=ClaimCeilingV1[str(row[10])],
+        feature_knowledge=knowledge, feature_knowledge_hash=str(row[12]),
+        source_observation_manifest=tuple(str(item) for item in manifest),
+        value=None if row[14] is None else Decimal(str(row[14])),
+        quality_status=FeatureQualityStatus(str(row[15])), content_hash=str(row[16]),
+        materialization_id=UUID(str(row[0])),
+    )
+    # A stored row is re-verified on every read: its payload must still re-hash,
+    # restore through the doctrine and agree with its own columns.
+    value.validate()
+    return value
+
+
+def _write_in_chunks(
+    values: Iterable[Any], batch_size: int, write: Callable[[Sequence[Any]], None]
+) -> int:
+    """Write an ordered stream in bounded chunks; flush what was produced before a source error."""
+    if not 1 <= batch_size <= FEATURE_MATERIALIZATION_BATCH_MAX:
+        raise FeatureAuthorityError("invalid_feature_materialization_batch_size")
+    iterator = iter(values)
+    pending: list[Any] = []
+    count = 0
+    try:
+        while True:
+            try:
+                value = next(iterator)
+            except StopIteration:
+                break
+            except Exception:
+                write(pending)
+                raise
+            pending.append(value)
+            if len(pending) == batch_size:
+                write(pending)
+                count += len(pending)
+                pending = []
+        write(pending)
+        count += len(pending)
+    finally:
+        close = getattr(iterator, "close", None)
+        if close is not None:
+            close()
+    return count
+
+
 class PostgresFeatureAuthority:
     """Append-only definition/value authority with strict decision-time reads."""
 
@@ -616,32 +858,159 @@ class PostgresFeatureAuthority:
         :meth:`materialize_subject` loop leaves behind. Returns the number of
         materializations written or reconciled as identical.
         """
-        if not 1 <= batch_size <= FEATURE_MATERIALIZATION_BATCH_MAX:
-            raise FeatureAuthorityError("invalid_feature_materialization_batch_size")
-        iterator = iter(values)
-        pending: list[FeatureMaterializationV2] = []
-        count = 0
+        return _write_in_chunks(values, batch_size, self.materialize_subjects)
+
+    def materialize_subjects_v3(self, values: Sequence[FeatureMaterializationV3]) -> None:
+        """Phase R2A.2 batch write of three-clock rows -- ``hash_version='V3'``.
+
+        Same contract as :meth:`materialize_subjects` (one transaction, array
+        binds, deferred subject proof at COMMIT, ``DO NOTHING`` never trusted
+        on its own), but reconciled on the V3 natural key -- subject, dataset,
+        ``event_at``, ``effective_at`` -- which excludes every operational
+        clock. Recomputing the same evidence later therefore reconciles as the
+        identical row, and a same-key/different-hash row fails closed with
+        ``feature_materialization_conflict``.
+        """
+        if len(values) > FEATURE_MATERIALIZATION_BATCH_MAX:
+            raise FeatureAuthorityError("feature_materialization_batch_too_large")
+        if not values:
+            return
+        for value in values:
+            value.validate()
+        feature_ids = [value.feature_id for value in values]
+        subject_types = [value.subject_type.value for value in values]
+        subject_ids = [value.subject_id for value in values]
+        dataset_versions = [value.dataset_version for value in values]
+        event_ats = [value.event_at for value in values]
+        effective_ats = [value.effective_at for value in values]
         try:
-            while True:
-                try:
-                    value = next(iterator)
-                except StopIteration:
-                    break
-                except Exception:
-                    self.materialize_subjects(pending)
-                    raise
-                pending.append(value)
-                if len(pending) == batch_size:
-                    self.materialize_subjects(pending)
-                    count += len(pending)
-                    pending = []
-            self.materialize_subjects(pending)
-            count += len(pending)
-        finally:
-            close = getattr(iterator, "close", None)
-            if close is not None:
-                close()
-        return count
+            with self._database.transaction() as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "INSERT INTO feature_materializations "
+                    "(materialization_id,feature_id,instrument_id,dataset_version,event_at,"
+                    "effective_at,knowledge_at,computed_at,source_observation_manifest,value,"
+                    "quality_status,content_hash,subject_type,subject_id,hash_version,"
+                    "market_knowledge_at,platform_recorded_at,claim_ceiling,feature_knowledge,"
+                    "feature_knowledge_hash) "
+                    "SELECT materialization_id,feature_id,instrument_id,dataset_version,event_at,"
+                    "effective_at,platform_recorded_at,computed_at,source_observation_manifest::jsonb,"
+                    "value,quality_status,content_hash,subject_type,subject_id,%s,"
+                    "market_knowledge_at,platform_recorded_at,claim_ceiling,feature_knowledge::jsonb,"
+                    "feature_knowledge_hash FROM unnest("
+                    "%s::uuid[],%s::uuid[],%s::text[],%s::text[],%s::timestamptz[],"
+                    "%s::timestamptz[],%s::timestamptz[],%s::text[],%s::numeric[],%s::text[],"
+                    "%s::text[],%s::text[],%s::text[],%s::timestamptz[],%s::timestamptz[],"
+                    "%s::text[],%s::text[],%s::text[]) AS v("
+                    "materialization_id,feature_id,instrument_id,dataset_version,event_at,"
+                    "effective_at,computed_at,source_observation_manifest,value,quality_status,"
+                    "content_hash,subject_type,subject_id,market_knowledge_at,platform_recorded_at,"
+                    "claim_ceiling,feature_knowledge,feature_knowledge_hash) "
+                    "ON CONFLICT (feature_id,subject_type,subject_id,dataset_version,event_at,"
+                    "effective_at) WHERE hash_version='V3' DO NOTHING",
+                    (
+                        FeatureHashVersion.V3.value,
+                        [value.materialization_id for value in values], feature_ids,
+                        [
+                            value.subject_id
+                            if value.subject_type is FeatureSubjectType.INSTRUMENT else None
+                            for value in values
+                        ],
+                        dataset_versions, event_ats, effective_ats,
+                        [value.computed_at for value in values],
+                        [json.dumps(value.source_observation_manifest) for value in values],
+                        [value.value for value in values],
+                        [value.quality_status.value for value in values],
+                        [value.content_hash for value in values], subject_types, subject_ids,
+                        [value.market_knowledge_at for value in values],
+                        [value.platform_recorded_at for value in values],
+                        [value.claim_ceiling.name for value in values],
+                        [_canonical(value.feature_knowledge) for value in values],
+                        [value.feature_knowledge_hash for value in values],
+                    ),
+                )
+                cursor.execute(
+                    "SELECT v.ordinal, f.content_hash FROM unnest("
+                    "%s::uuid[],%s::text[],%s::text[],%s::text[],%s::timestamptz[],"
+                    "%s::timestamptz[]) WITH ORDINALITY AS v("
+                    "feature_id,subject_type,subject_id,dataset_version,event_at,effective_at,"
+                    "ordinal) LEFT JOIN feature_materializations f ON f.hash_version='V3' AND "
+                    "f.feature_id=v.feature_id AND f.subject_type=v.subject_type AND "
+                    "f.subject_id=v.subject_id AND f.dataset_version=v.dataset_version AND "
+                    "f.event_at=v.event_at AND f.effective_at=v.effective_at ORDER BY v.ordinal",
+                    (feature_ids, subject_types, subject_ids, dataset_versions, event_ats,
+                     effective_ats),
+                )
+                stored = cursor.fetchall()
+                if len(stored) != len(values) or any(
+                    row[1] is None or str(row[1]) != values[int(row[0]) - 1].content_hash
+                    for row in stored
+                ):
+                    raise FeatureAuthorityError("feature_materialization_conflict")
+        except FeatureAuthorityError:
+            raise
+        except Exception as error:
+            raise FeatureAuthorityError("feature_materialization_failed") from error
+
+    def materialize_subject_stream_v3(
+        self,
+        values: Iterable[FeatureMaterializationV3],
+        *,
+        batch_size: int = FEATURE_MATERIALIZATION_BATCH_MAX,
+    ) -> int:
+        """:meth:`materialize_subject_stream` for V3 rows -- identical chunk semantics."""
+        return _write_in_chunks(values, batch_size, self.materialize_subjects_v3)
+
+    def historical_as_of_subject_v3(
+        self,
+        feature_id: UUID,
+        subject_type: FeatureSubjectType,
+        subject_id: str,
+        dataset_version: str,
+        market_as_of: datetime,
+        *,
+        minimum_claim: ClaimCeilingV1,
+    ) -> tuple[FeatureMaterializationV3, ...]:
+        """Historical replay read: what the *market* could know at ``market_as_of``.
+
+        Gated on ``event_at`` and ``market_knowledge_at`` only -- never on
+        ``platform_recorded_at`` or ``computed_at``, which say when this
+        platform wrote the row, not when the value was knowable. A row whose
+        market knowledge time is undefined (T0/T1, missing clock evidence) is
+        never returned, whatever its claim, and nor is a row below
+        ``minimum_claim`` (which must be at least ``CONDITIONAL``: nothing with
+        an undefined knowledge time can be replayed historically).
+        """
+        _aware(market_as_of)
+        if minimum_claim < ClaimCeilingV1.CONDITIONAL:
+            raise FeatureAuthorityError("historical_read_requires_at_least_conditional_claim")
+        admitted = [claim.name for claim in ClaimCeilingV1 if claim >= minimum_claim]
+        with self._database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                f"SELECT {_V3_COLUMNS} FROM feature_materializations "  # nosec B608 - constant column list
+                "WHERE hash_version='V3' AND feature_id=%s AND subject_type=%s AND subject_id=%s "
+                "AND dataset_version=%s AND market_knowledge_at IS NOT NULL "
+                "AND event_at<=%s AND market_knowledge_at<=%s AND claim_ceiling=ANY(%s) "
+                "ORDER BY event_at, effective_at",
+                (feature_id, subject_type.value, subject_id, dataset_version, market_as_of,
+                 market_as_of, admitted),
+            )
+            rows = cursor.fetchall()
+        return tuple(_row_v3(row) for row in rows)
+
+    def v3_rows_for_dataset(
+        self, feature_id: UUID, subject_type: FeatureSubjectType, subject_id: str,
+        dataset_version: str,
+    ) -> tuple[FeatureMaterializationV3, ...]:
+        """Every V3 row of one feature/subject/dataset, whatever its claim. Audit reads."""
+        with self._database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                f"SELECT {_V3_COLUMNS} FROM feature_materializations "  # nosec B608 - constant column list
+                "WHERE hash_version='V3' AND feature_id=%s AND subject_type=%s AND subject_id=%s "
+                "AND dataset_version=%s ORDER BY event_at, effective_at",
+                (feature_id, subject_type.value, subject_id, dataset_version),
+            )
+            rows = cursor.fetchall()
+        return tuple(_row_v3(row) for row in rows)
 
     def definition(self, feature_id: UUID) -> FeatureDefinitionVersion:
         """Resolve the immutable definition instead of trusting caller metadata."""
@@ -674,6 +1043,7 @@ class PostgresFeatureAuthority:
                 "SELECT * FROM (SELECT m.*, ROW_NUMBER() OVER (PARTITION BY event_at "
                 "ORDER BY knowledge_at DESC, computed_at DESC) rank FROM feature_materializations m "
                 "WHERE feature_id=%s AND instrument_id=%s AND dataset_version=%s "
+                "AND hash_version<>'V3' "
                 "AND event_at<=%s AND effective_at<=%s AND knowledge_at<=%s AND computed_at<=%s) x "
                 "WHERE rank=1 ORDER BY event_at",
                 (feature_id, instrument_id, dataset_version, decision_at, decision_at,
@@ -708,6 +1078,10 @@ class PostgresFeatureAuthority:
         Gating is identical to :meth:`latest_as_of`: no row whose ``event_at``,
         ``effective_at``, ``knowledge_at`` or ``computed_at`` is after
         ``decision_at`` can ever be returned.
+
+        ``V3`` rows are never returned here: their ``knowledge_at`` is platform
+        availability and their identity is the V3 formula. They are read only
+        through :meth:`historical_as_of_subject_v3`.
         """
         _aware(decision_at)
         with self._database.transaction() as connection, connection.cursor() as cursor:
@@ -717,6 +1091,7 @@ class PostgresFeatureAuthority:
                 "quality_status,content_hash FROM (SELECT m.*, ROW_NUMBER() OVER (PARTITION BY event_at "
                 "ORDER BY knowledge_at DESC, computed_at DESC) rank FROM feature_materializations m "
                 "WHERE feature_id=%s AND subject_type=%s AND subject_id=%s AND dataset_version=%s "
+                "AND hash_version<>'V3' "
                 "AND event_at<=%s AND effective_at<=%s AND knowledge_at<=%s AND computed_at<=%s) x "
                 "WHERE rank=1 ORDER BY event_at",
                 (feature_id, subject_type.value, subject_id, dataset_version, decision_at,
