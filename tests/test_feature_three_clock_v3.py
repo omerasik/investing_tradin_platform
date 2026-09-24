@@ -624,8 +624,8 @@ def _t4_inputs(**overrides: Any) -> tuple[ObservationKnowledgeV1, ObservationKno
     )
 
 
-PINNED_V2_HASH = "37ff7fc48707ff81d4efdac1ec3ac10844a4e0b4d50dcd19ceba01256695bd2c"
-PINNED_DRAFT_PACKET_HASH = "dbfb0598c054b489d35d2193b8acc485e2f4f08ddb7495ea83f6e5c6313ab2c4"
+PINNED_V2_HASH = "37ff7fc48707ff81d4efdac1ec3ac10844a4e0b4d50dcd19ceba01256695bd2c"  # pragma: allowlist secret
+PINNED_DRAFT_PACKET_HASH = "dbfb0598c054b489d35d2193b8acc485e2f4f08ddb7495ea83f6e5c6313ab2c4"  # pragma: allowlist secret
 
 if __name__ == "__main__":
     unittest.main()
