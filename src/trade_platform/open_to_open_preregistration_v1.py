@@ -44,7 +44,11 @@ Phase 3Z.1 adds :func:`require_authorized_for_holdout_with_evidence_tier_v1`
 content hash and its ``preregistration_id`` are untouched, so every existing
 3D.9A identity is byte-for-byte unchanged; the new gate is a strictly stronger
 adjacent call that additionally demands a professional-eligible evidence-tier
-verdict bound to the same dataset identity and content hash. It is fail closed
+verdict bound to the same dataset identity and content hash. Phase R2A.2 adds
+:func:`require_professional_historical_decisions_v1` beside that in turn: the
+feature values themselves must be three-clock rows whose historical decision
+times are professional, so a platform ingestion instant can never pass as
+market knowledge. It is fail closed
 by construction -- the verdict is a required argument, so there is no default
 that quietly admits T0/T1/T2 evidence. The tier authority itself stays
 strategy-agnostic: this function is where the crypto open-to-open path states
@@ -54,6 +58,7 @@ preregistered methodology, not a substitute for it.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -66,11 +71,23 @@ from .evidence_tier_authority_v1 import (
     EvidenceTierVerdictV1,
     require_professional_evidence_tier_v1,
 )
+from .feature_authority import (
+    FeatureAuthorityError,
+    FeatureMaterializationV3,
+    require_authorized_sealed_clock_resolver_v1,
+)
+from .knowledge_time_doctrine_v1 import (
+    ClaimCeilingV1,
+    DeclaredComputeLatencyV1,
+    SealedClockResolverV1,
+)
 from .open_to_open_validation_orchestration_v1 import (
     OpenToOpenEvaluationSpanV1,
     OpenToOpenNeighborStepsV1,
+    OpenToOpenValidationOrchestrationV1Error,
     OpenToOpenWalkForwardProtocolV1,
     _content_hash,
+    count_distinct_historical_decision_times_v1,
 )
 from .real_market_data_provenance_v1 import RealMarketDataProvenanceV1
 from .research import CostModel
@@ -428,3 +445,75 @@ def require_authorized_for_holdout_with_evidence_tier_v1(
         dataset_version_id=packet.dataset_version_id,
         dataset_content_hash=packet.dataset_content_hash,
     )
+
+
+def require_professional_historical_decisions_v1(
+    packet: OpenToOpenPreregistrationV1,
+    evidence_tier: EvidenceTierVerdictV1,
+    materializations: Sequence[FeatureMaterializationV3],
+    *,
+    compute_latency: DeclaredComputeLatencyV1,
+    clock_resolver: SealedClockResolverV1,
+) -> None:
+    """The Phase R2A.2 gate: professional evidence *and* professional decision times.
+
+    Strictly stronger than
+    :func:`require_authorized_for_holdout_with_evidence_tier_v1`, which it
+    calls first. A professional dataset verdict is not enough on its own: a
+    value derived from T4 capture through the legacy V2 path would still carry
+    a platform ingestion instant as its "knowledge". So every feature value
+    the run would use must also be a three-clock (V3) row of this exact
+    dataset, every input of which re-derives from *this* verdict and the
+    clock facts ``clock_resolver`` reads from the sealed evidence (so a
+    hand-built row, one built on invented clock facts, or one derived from
+    another verdict refuses), whose
+    historical decision -- market knowledge plus the declared
+    compute latency, no operational clock -- is admissible at
+    ``PROFESSIONAL``, and the distinct decision instants they carry must be at
+    least two and exactly the count the packet bound. A legacy V2 value, a T1
+    value or a T2 (conditional) value refuses; nothing is skipped.
+
+    ``clock_resolver`` must be one of
+    :func:`~trade_platform.feature_authority.authorized_sealed_clock_resolver_types_v1`:
+    T3/T4 clock facts enter there, so a caller-supplied callable cannot back
+    a professional claim.
+
+    Scope: this proves the *clocks and claims* of each value against sealed
+    evidence. The value itself is proven by recomputation from the same
+    sealed inputs (the R2B feature-frame parity path), not here.
+
+    The packet's fields and identity are unchanged. It does not yet bind
+    ``compute_latency`` itself; a methodology version that does is the
+    professional-validation phase's job, and until then the latency is a
+    required, referenced argument with no default.
+    """
+    require_authorized_for_holdout_with_evidence_tier_v1(packet, evidence_tier)
+    try:
+        require_authorized_sealed_clock_resolver_v1(clock_resolver)
+    except FeatureAuthorityError as error:
+        raise OpenToOpenPreregistrationV1Error(str(error)) from error
+    if not materializations:
+        raise OpenToOpenPreregistrationV1Error("professional_decisions_require_materializations")
+    for materialization in materializations:
+        if not isinstance(materialization, FeatureMaterializationV3):
+            raise OpenToOpenPreregistrationV1Error(
+                "professional_decisions_require_three_clock_materializations"
+            )
+        if materialization.dataset_version != str(packet.dataset_version_id):
+            raise OpenToOpenPreregistrationV1Error("professional_decision_dataset_mismatch")
+    try:
+        count = count_distinct_historical_decision_times_v1(
+            materializations,
+            compute_latency=compute_latency,
+            evidence_tiers={evidence_tier.evidence_id: evidence_tier},
+            clock_resolver=clock_resolver,
+            minimum_claim=ClaimCeilingV1.PROFESSIONAL,
+        )
+    except OpenToOpenValidationOrchestrationV1Error as error:
+        raise OpenToOpenPreregistrationV1Error(
+            f"professional_decision_not_admissible:{error}"
+        ) from error
+    if count < _MINIMUM_DISTINCT_FEATURE_DECISION_TIMES:
+        raise OpenToOpenPreregistrationV1Error(UNRESOLVED_FEATURE_DECISION_TIMES)
+    if count != packet.distinct_feature_decision_at_count:
+        raise OpenToOpenPreregistrationV1Error("distinct_decision_count_differs_from_packet")

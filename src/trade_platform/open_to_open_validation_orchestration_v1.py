@@ -29,7 +29,22 @@ from .crypto_liquidity_capacity_v1 import (
     canonical_contract_conflicts,
     evaluate_crypto_liquidity_capacity_v1,
 )
-from .feature_authority import FeatureMaterializationV2
+from .evidence_tier_authority_v1 import EvidenceTierVerdictV1
+from .feature_authority import (
+    FeatureAuthorityError,
+    FeatureMaterializationV2,
+    FeatureMaterializationV3,
+    require_authorized_sealed_clock_resolver_v1,
+)
+from .knowledge_time_doctrine_v1 import (
+    ClaimCeilingV1,
+    DecisionTimeV1,
+    DeclaredComputeLatencyV1,
+    KnowledgeTimeDoctrineError,
+    SealedClockResolverV1,
+    historical_decision_time_v1,
+    require_admissible_decision_v1,
+)
 from .open_to_open_validation_v1 import (
     CSCV_BLOCKS,
     STATUS_AVAILABLE,
@@ -273,13 +288,131 @@ def _cost_model_content_hash(cost_model: CostModel) -> str:
     return _content_hash({"cost_model": _wire_cost_model(cost_model)})
 
 
-def canonical_feature_decision_at(materialization: FeatureMaterializationV2) -> datetime:
+def legacy_platform_availability_at_v2(materialization: FeatureMaterializationV2) -> datetime:
+    """When *this platform* had a V2 value -- engine mechanics, never a market clock.
+
+    ``max(event_at, effective_at, knowledge_at, computed_at)``, where a V2
+    ``knowledge_at`` is the ingestion/seal instant. It orders fixture and
+    descriptive (T0/T1) runs deterministically and nothing more: it is not a
+    historical decision time, it moves if the feature is recomputed later, and
+    it can never satisfy :func:`count_distinct_historical_decision_times_v1`
+    or the professional gate
+    :func:`~trade_platform.open_to_open_preregistration_v1.require_professional_historical_decisions_v1`.
+    """
     return max(
         materialization.event_at,
         materialization.effective_at,
         materialization.knowledge_at,
         materialization.computed_at,
     )
+
+
+def historical_feature_decision_v1(
+    materialization: FeatureMaterializationV3,
+    *,
+    compute_latency: DeclaredComputeLatencyV1,
+    evidence_tiers: Mapping[UUID, EvidenceTierVerdictV1],
+    clock_resolver: SealedClockResolverV1,
+) -> DecisionTimeV1:
+    """The doctrine's historical replay decision for one V3 value (may be a refusal).
+
+    ``max(market_knowledge_at) + declared compute latency`` -- no
+    ``computed_at``, no ``platform_recorded_at``. The row's own clocks are
+    never trusted: every input is re-derived from the genuine verdict in
+    ``evidence_tiers`` that its payload names and from the sealed clock facts
+    ``clock_resolver`` reads
+    (:meth:`FeatureMaterializationV3.verified_feature_knowledge_v1`), so a
+    hand-built row, or one built on invented clock facts, refuses. A T1 value yields a refusal with its
+    principled reason, never an instant.
+    """
+    if not isinstance(materialization, FeatureMaterializationV3):
+        raise OpenToOpenValidationOrchestrationV1Error(
+            "historical_decision_requires_three_clock_materialization"
+        )
+    try:
+        # T3/T4 clock facts enter through the resolver; only reviewed resolver
+        # types may back any historical decision time.
+        require_authorized_sealed_clock_resolver_v1(clock_resolver)
+        knowledge = materialization.verified_feature_knowledge_v1(evidence_tiers, clock_resolver)
+        return historical_decision_time_v1((knowledge,), compute_latency=compute_latency)
+    except (KnowledgeTimeDoctrineError, FeatureAuthorityError) as error:
+        raise OpenToOpenValidationOrchestrationV1Error(str(error)) from error
+
+
+def canonical_feature_decision_at(
+    materialization: FeatureMaterializationV2 | FeatureMaterializationV3,
+    *,
+    compute_latency: DeclaredComputeLatencyV1 | None = None,
+    evidence_tiers: Mapping[UUID, EvidenceTierVerdictV1] | None = None,
+    clock_resolver: SealedClockResolverV1 | None = None,
+) -> datetime:
+    """The instant a feature value may drive a decision (Phase R2A.2 rewrite).
+
+    * A three-clock (V3) value: the doctrine's historical replay decision
+      time, which requires a declared ``compute_latency``, the genuine
+      ``evidence_tiers`` its inputs were derived from, a ``clock_resolver``
+      over the sealed evidence, and at least a
+      ``CONDITIONAL`` claim. A T1 (or clock-less T3/T4) value raises: it
+      cannot drive a historical decision at all.
+    * A legacy V2 value: :func:`legacy_platform_availability_at_v2`, the
+      unchanged engine-mechanics ordering. Passing ``compute_latency`` for a
+      V2 value is refused -- it has no market knowledge time to add it to.
+    """
+    if isinstance(materialization, FeatureMaterializationV3):
+        if compute_latency is None:
+            raise OpenToOpenValidationOrchestrationV1Error(
+                "historical_decision_requires_declared_compute_latency"
+            )
+        if evidence_tiers is None or clock_resolver is None:
+            raise OpenToOpenValidationOrchestrationV1Error(
+                "historical_decision_requires_verdicts_and_sealed_clock_evidence"
+            )
+        decision = historical_feature_decision_v1(
+            materialization, compute_latency=compute_latency, evidence_tiers=evidence_tiers,
+            clock_resolver=clock_resolver,
+        )
+        try:
+            return require_admissible_decision_v1(
+                decision, minimum_claim=ClaimCeilingV1.CONDITIONAL
+            )
+        except KnowledgeTimeDoctrineError as error:
+            raise OpenToOpenValidationOrchestrationV1Error(str(error)) from error
+    if compute_latency is not None or evidence_tiers is not None or clock_resolver is not None:
+        raise OpenToOpenValidationOrchestrationV1Error(
+            "legacy_v2_materialization_has_no_market_knowledge_time"
+        )
+    return legacy_platform_availability_at_v2(materialization)
+
+
+def count_distinct_historical_decision_times_v1(
+    materializations: Sequence[FeatureMaterializationV3],
+    *,
+    compute_latency: DeclaredComputeLatencyV1,
+    evidence_tiers: Mapping[UUID, EvidenceTierVerdictV1],
+    clock_resolver: SealedClockResolverV1,
+    minimum_claim: ClaimCeilingV1,
+) -> int:
+    """How many distinct historical decision instants a V3 feature series carries.
+
+    The number a preregistration binds as ``distinct_feature_decision_at_count``.
+    Fails closed: any value that is not admissible at ``minimum_claim`` (a T1
+    value, a missing clock, a claim below the floor) raises rather than being
+    skipped, because a silently thinned series would misstate what the
+    evidence supports.
+    """
+    if not materializations:
+        raise OpenToOpenValidationOrchestrationV1Error("decision_count_requires_materializations")
+    instants: set[datetime] = set()
+    for materialization in materializations:
+        decision = historical_feature_decision_v1(
+            materialization, compute_latency=compute_latency, evidence_tiers=evidence_tiers,
+            clock_resolver=clock_resolver,
+        )
+        try:
+            instants.add(require_admissible_decision_v1(decision, minimum_claim=minimum_claim))
+        except KnowledgeTimeDoctrineError as error:
+            raise OpenToOpenValidationOrchestrationV1Error(str(error)) from error
+    return len(instants)
 
 
 def _sole_basis_feature_series(

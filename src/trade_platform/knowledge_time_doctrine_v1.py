@@ -102,7 +102,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import IntEnum, StrEnum
@@ -693,6 +693,215 @@ def propagate_feature_knowledge_v1(
     )
 
 
+def _parse_instant(value: object, name: str) -> datetime | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise KnowledgeTimeDoctrineError(f"persisted_{name}_must_be_iso_text")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise KnowledgeTimeDoctrineError(f"persisted_{name}_malformed") from error
+    _require_aware(parsed, f"persisted_{name}")
+    return parsed
+
+
+def persisted_observation_knowledge_v1(observation: ObservationKnowledgeV1) -> dict[str, Any]:
+    """What a durable row stores about one input: its market payload and audit clock."""
+    if not isinstance(observation, ObservationKnowledgeV1) or not observation.integrity_verified():
+        raise KnowledgeTimeDoctrineError("persisted_observation_knowledge_integrity_failed")
+    return {
+        "market": observation.market_identity_payload(),
+        "platform_recorded_at": _iso(observation.platform_recorded_at),
+    }
+
+
+def persisted_observation_market_hash_v1(persisted: Mapping[str, Any]) -> str:
+    """The observation market hash a persisted input claims to be."""
+    market = persisted.get("market")
+    if not isinstance(market, Mapping):
+        raise KnowledgeTimeDoctrineError("persisted_observation_knowledge_malformed")
+    return _sha256(market)
+
+
+@dataclass(frozen=True, slots=True)
+class SealedObservationClocksV1:
+    """One observation's clock facts as the *sealed evidence* records them.
+
+    Phase R2A.2. Supplied by a resolver that reads the sealed dataset (never
+    the feature row being verified): ``event_at`` is the instant the value was
+    complete, ``platform_recorded_at`` the platform's normalize/seal instant,
+    and the tier-specific clocks are whatever the sealed evidence itself
+    carries. A source whose sealed evidence carries no publication or arrival
+    clock (every source today; T4 sealing is R3A) yields ``None`` there, so a
+    T3/T4 input then has no knowledge time -- the fail-closed answer.
+    """
+
+    event_at: datetime
+    platform_recorded_at: datetime
+    publication_at: datetime | None = None
+    arrival_at: datetime | None = None
+    arrival_clock_bound: HostClockBoundV1 | None = None
+
+
+#: ``(dataset_version_id, observation_references) -> {reference: sealed clocks}``.
+#: A reference missing from the result is not sealed evidence and refuses.
+SealedClockResolverV1 = Callable[[UUID, Sequence[str]], Mapping[str, SealedObservationClocksV1]]
+
+
+def rederive_observation_knowledge_v1(
+    verdict: EvidenceTierVerdictV1,
+    persisted: Mapping[str, Any],
+    *,
+    sealed: SealedObservationClocksV1,
+) -> ObservationKnowledgeV1:
+    """Re-run the doctrine for a persisted input from sealed facts and its genuine verdict.
+
+    Phase R2A.2 provenance check. The persisted payload contributes only its
+    *identity* (dataset binding and observation reference); every clock --
+    event, publication, arrival, clock bound, platform time -- comes from
+    ``sealed``, which the caller resolved from the sealed dataset, and the
+    tier and claim come from ``verdict``. The result must reproduce the stored
+    market hash exactly. So neither a hand-built payload nor a correctly
+    re-derived payload built on invented clock facts (an earlier arrival, a
+    zero clock bound) survives: its hash cannot match the doctrine applied to
+    what the evidence actually recorded.
+    """
+    market = persisted.get("market")
+    if not isinstance(market, Mapping):
+        raise KnowledgeTimeDoctrineError("persisted_observation_knowledge_malformed")
+    try:
+        if UUID(str(market["verdict_evidence_id"])) != verdict.evidence_id:
+            raise KnowledgeTimeDoctrineError("persisted_observation_knowledge_verdict_mismatch")
+        rederived = derive_observation_knowledge_v1(
+            verdict,
+            dataset_version_id=UUID(str(market["dataset_version_id"])),
+            dataset_content_hash=str(market["dataset_content_hash"]),
+            observation_reference=str(market["observation_reference"]),
+            event_at=sealed.event_at,
+            platform_recorded_at=sealed.platform_recorded_at,
+            publication_at=sealed.publication_at,
+            arrival_at=sealed.arrival_at,
+            arrival_clock_bound=sealed.arrival_clock_bound,
+        )
+    except KnowledgeTimeDoctrineError:
+        raise
+    except (KeyError, TypeError, ValueError, AttributeError) as error:
+        raise KnowledgeTimeDoctrineError("persisted_observation_knowledge_malformed") from error
+    if rederived.market_content_hash != _sha256(market):
+        raise KnowledgeTimeDoctrineError("persisted_observation_knowledge_not_derivable_from_evidence")
+    return rederived
+
+
+@dataclass(frozen=True, slots=True)
+class RestoredFeatureKnowledgeV1:
+    """A persisted feature-knowledge payload that passed integrity and coherence checks.
+
+    Deliberately *not* a :class:`FeatureKnowledgeV1`: it is never issued, so
+    no decision-time or claim-ceiling function accepts it, and no copy or
+    ``dataclasses.replace`` can turn it into one. Only re-derivation from
+    sealed evidence (:func:`rederive_observation_knowledge_v1`) produces issued
+    knowledge from persisted data.
+    """
+
+    input_knowledge_hashes: tuple[str, ...]
+    event_at: datetime
+    market_knowledge_at: datetime | None
+    claim_ceiling: ClaimCeilingV1
+    market_content_hash: str
+
+
+def restore_persisted_feature_knowledge_v1(
+    market_payload: Mapping[str, Any],
+    *,
+    platform_recorded_at: datetime,
+    expected_market_content_hash: str,
+) -> RestoredFeatureKnowledgeV1:
+    """Check a feature's clocks as a durable row stored them (integrity only).
+
+    Phase R2A.2. A V3 feature materialization persists
+    :meth:`FeatureKnowledgeV1.market_identity_payload` so a later reader can
+    audit it without recomputing the inputs. This function trusts nothing it
+    can check: the payload must re-hash to
+    ``expected_market_content_hash`` (the hash bound into the row's own content
+    hash), and its clocks and claim must be *coherent* -- a defined knowledge
+    time only with no reasons and at least a conditional claim, an undefined
+    one only with a reason and at most a descriptive claim, knowledge never
+    before the event. A payload that fails any of this is refused, never
+    repaired.
+
+    This proves *integrity and coherence only* -- never provenance. A payload
+    anyone assembled by hand can pass it, so it returns a
+    :class:`RestoredFeatureKnowledgeV1`, which no decision-time or
+    claim-ceiling function accepts.
+    Anything that grants decision authority must instead re-derive every input
+    from sealed evidence and its genuine verdict with
+    :func:`rederive_observation_knowledge_v1` and re-propagate.
+    """
+    _require_aware(platform_recorded_at, "platform_recorded_at")
+    if market_payload.get("schema_version") != KNOWLEDGE_TIME_DOCTRINE_SCHEMA_VERSION:
+        raise KnowledgeTimeDoctrineError("persisted_feature_knowledge_schema_version_mismatch")
+    try:
+        hashes = tuple(str(item) for item in market_payload["input_knowledge_hashes"])
+        event_at = _parse_instant(market_payload["event_at"], "event_at")
+        market_knowledge_at = _parse_instant(
+            market_payload["market_knowledge_at"], "market_knowledge_at"
+        )
+        claim = ClaimCeilingV1[str(market_payload["claim_ceiling"])]
+        bindings = tuple(
+            PublicationLagBindingV1(
+                UUID(str(item["verdict_evidence_id"])),
+                int(item["publication_lag_nanos"]),
+                str(item["publication_lag_reference"]),
+            )
+            for item in market_payload["publication_lag_bindings"]
+        )
+        reasons = tuple(str(item) for item in market_payload["reasons"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise KnowledgeTimeDoctrineError("persisted_feature_knowledge_malformed") from error
+    if event_at is None or not hashes:
+        raise KnowledgeTimeDoctrineError("persisted_feature_knowledge_malformed")
+    if hashes != tuple(sorted(set(hashes))):
+        raise KnowledgeTimeDoctrineError("persisted_feature_knowledge_inputs_not_canonical")
+    if reasons != _ordered_reasons(reasons) or bindings != _sorted_bindings(bindings):
+        raise KnowledgeTimeDoctrineError("persisted_feature_knowledge_not_canonical")
+    if market_knowledge_at is None:
+        if not reasons or claim > ClaimCeilingV1.DESCRIPTIVE:
+            raise KnowledgeTimeDoctrineError("persisted_feature_knowledge_incoherent")
+    elif reasons or claim < ClaimCeilingV1.CONDITIONAL or market_knowledge_at < event_at:
+        raise KnowledgeTimeDoctrineError("persisted_feature_knowledge_incoherent")
+    # Only a T2 input carries a lag binding and caps the claim at CONDITIONAL,
+    # so a defined CONDITIONAL value has at least one and a PROFESSIONAL none.
+    if claim is ClaimCeilingV1.CONDITIONAL and market_knowledge_at is not None and not bindings:
+        raise KnowledgeTimeDoctrineError("persisted_feature_knowledge_incoherent")
+    if claim is ClaimCeilingV1.PROFESSIONAL and bindings:
+        raise KnowledgeTimeDoctrineError("persisted_feature_knowledge_incoherent")
+    values: dict[str, Any] = {
+        "schema_version": KNOWLEDGE_TIME_DOCTRINE_SCHEMA_VERSION,
+        "input_knowledge_hashes": hashes,
+        "event_at": event_at,
+        "market_knowledge_at": market_knowledge_at,
+        "platform_recorded_at": platform_recorded_at,
+        "claim_ceiling": claim,
+        "publication_lag_bindings": bindings,
+        "reasons": reasons,
+    }
+    draft = FeatureKnowledgeV1(
+        **values, market_content_hash="", content_hash="", knowledge_id=_NAMESPACE, _issuer=_ISSUER
+    )
+    market_hash, audit_hash = _hashes(draft.market_identity_payload(), draft.audit_payload())
+    if market_hash != expected_market_content_hash:
+        raise KnowledgeTimeDoctrineError("persisted_feature_knowledge_hash_mismatch")
+    del audit_hash  # the audit clock is not part of what a restore vouches for
+    return RestoredFeatureKnowledgeV1(
+        input_knowledge_hashes=hashes,
+        event_at=event_at,
+        market_knowledge_at=market_knowledge_at,
+        claim_ceiling=claim,
+        market_content_hash=market_hash,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Decision time
 # ---------------------------------------------------------------------------
@@ -1030,11 +1239,18 @@ __all__ = [
     "KnowledgeTimeDoctrineError",
     "ObservationKnowledgeV1",
     "PublicationLagBindingV1",
+    "RestoredFeatureKnowledgeV1",
     "ResultClaimCeilingV1",
+    "SealedClockResolverV1",
+    "SealedObservationClocksV1",
     "derive_observation_knowledge_v1",
     "historical_decision_time_v1",
     "live_decision_time_v1",
+    "persisted_observation_knowledge_v1",
+    "persisted_observation_market_hash_v1",
     "propagate_feature_knowledge_v1",
+    "rederive_observation_knowledge_v1",
     "require_admissible_decision_v1",
+    "restore_persisted_feature_knowledge_v1",
     "result_claim_ceiling_v1",
 ]

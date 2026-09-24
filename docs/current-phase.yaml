@@ -15,8 +15,8 @@ updated: 2026-09-24
 phase:
   id: "R2A"
   name: Three-clock knowledge-time semantics (FIN)
-  status: in_progress
-  base_commit: 28abbf2       # R1A (PR #148) merged
+  status: in_progress        # R2A.1 merged (PR #149); R2A.2 in review
+  base_commit: cdff28d       # R2A.1 (PR #149) merged
   slices:
     R2A.1: >-
       Pure doctrine authority, no DB: knowledge_time_doctrine_v1.py -- per-tier
@@ -30,7 +30,27 @@ phase:
       canonical_feature_decision_at, Postgres suite, independent PIT review.
   scope_paths:
     - src/trade_platform/knowledge_time_doctrine_v1.py
-    - tests/test_knowledge_time_doctrine_v1.py
+    - src/trade_platform/feature_authority.py
+    - src/trade_platform/crypto_derivatives_features.py
+    - src/trade_platform/open_to_open_validation_orchestration_v1.py
+    - src/trade_platform/open_to_open_preregistration_v1.py
+    - migrations/versions/20260924_0049_feature_three_clock_v3.py
+    - tests/test_feature_three_clock_v3.py
+    - tests/test_feature_three_clock_v3_postgres.py
+  r2a2_delivered: >-
+    hash_version V3 feature rows (migration 0049, additive): market_knowledge_at
+    (NULL = undefined), platform_recorded_at (the old instant, audit only),
+    claim_ceiling, doctrine feature-knowledge payload + hash; V3 identity
+    excludes computed_at/platform_recorded_at. crypto_mark_index_basis 2.0.0
+    three-clock calculator (knowledge measured from each input's effective_at).
+    canonical_feature_decision_at: V3 -> doctrine historical decision (declared
+    latency, >= CONDITIONAL); V2 -> unchanged engine-mechanics ordering only.
+    require_professional_historical_decisions_v1: the professional gate needs V3
+    PROFESSIONAL decisions. Decision authority is granted only after every input
+    is re-derived from its genuine verdict AND clock facts read from the sealed
+    dataset (never the row); historical tables carry no arrival/publication
+    clocks, so T3/T4 authority waits for R3A sealing. V1/V2 hashes and 3D.9A
+    packet identities pinned.
   not_in_scope: >-
     Choosing any T2 lag (OR-5), any compute-latency value, the role-based tier
     rule (OR-4, presented only), T4 normalization/sealing (R3A), columnar
