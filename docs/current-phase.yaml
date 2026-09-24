@@ -13,57 +13,56 @@ updated: 2026-09-24
 # -> R8 opportunity engine -> R9 accounts/risk -> R10 paper; R7 (T3 spine) is
 # the one parallel track.
 phase:
-  id: "R2A"
-  name: Three-clock knowledge-time semantics (FIN)
-  status: in_progress        # R2A.1 merged (PR #149); R2A.2 in review
-  base_commit: cdff28d       # R2A.1 (PR #149) merged
-  slices:
-    R2A.1: >-
-      Pure doctrine authority, no DB: knowledge_time_doctrine_v1.py -- per-tier
-      market_knowledge_at, propagation (max knowledge, min claim), historical
-      (knowledge + declared compute latency) vs live (max with computed_at)
-      decision time, strict all-inputs claim ceiling pending OR-4.
-    R2A.2: >-
-      Wire-in: additive migration (explicit column lists), new feature hash
-      version (existing V1/V2 hashes untouched), calculators stop deriving
-      knowledge from normalized_at/dataset.created_at, rewrite of
-      canonical_feature_decision_at, Postgres suite, independent PIT review.
+  id: "R2B"
+  name: Columnar research data plane (SCALE)
+  status: in_progress
+  base_commit: 97c55dd       # R2A.2 (PR #150) merged; R2A complete, exact-main CI green
+  stack: >-
+    pyarrow (Parquet, exact Arrow schema, decimal128(38,18), timestamp[us,UTC],
+    byte-deterministic writer) + duckdb (query plane: filters, joins, ranking,
+    exact decimal sums). Economic arithmetic stays Python Decimal: DuckDB and
+    Polars turn DECIMAL/DECIMAL into binary float (DuckDB returns DOUBLE and
+    rounds half away from zero); measured, and the evidence for OR-3.
+  delivered: >-
+    research_data_plane_v1.py (content-addressed objects + manifests,
+    library-independent logical content hash, per-object sha256, streaming
+    bounded-memory writer, verify), research_data_export_v1.py (sealed dataset
+    -> REFERENCE_PRICE/OHLCV/OPEN_INTEREST frames, independent PostgreSQL
+    reconciliation digest, basis feature frame with deterministic cache key,
+    Feature Authority parity, research_frame_manifests catalog, migration
+    0050), scripts/research_data_plane.py (export/verify/bench), analytics
+    extra (never in runtime images).
+  real_export_evidence: >-
+    Composite f07ebfc1 (T1): 691,200 rows exported in ~34 s (~20k rows/s incl.
+    PostgreSQL read), 43.2 MB Parquet (reference 54.6 B/row, OHLCV 79.4 B/row,
+    OI 56.0 B/row), all three frames reconciled with PostgreSQL, repeat export
+    byte-identical manifests, basis frame 216,000 rows = V2 materializations
+    with 0 mismatches (cache hit on rebuild), peak working set ~513 MiB.
+    Synthetic streaming bench: 1M rows 349 MiB peak, 6M rows 411 MiB peak
+    (bounded), ~37k rows/s write and verify (Python-side validation/hashing is
+    the known throughput limit). market_knowledge_at NULL in every T1 row.
   scope_paths:
-    - src/trade_platform/knowledge_time_doctrine_v1.py
-    - src/trade_platform/feature_authority.py
-    - src/trade_platform/crypto_derivatives_features.py
-    - src/trade_platform/open_to_open_validation_orchestration_v1.py
-    - src/trade_platform/open_to_open_preregistration_v1.py
-    - migrations/versions/20260924_0049_feature_three_clock_v3.py
-    - tests/test_feature_three_clock_v3.py
-    - tests/test_feature_three_clock_v3_postgres.py
-  r2a2_delivered: >-
-    hash_version V3 feature rows (migration 0049, additive): market_knowledge_at
-    (NULL = undefined), platform_recorded_at (the old instant, audit only),
-    claim_ceiling, doctrine feature-knowledge payload + hash; V3 identity
-    excludes computed_at/platform_recorded_at. crypto_mark_index_basis 2.0.0
-    three-clock calculator (knowledge measured from each input's effective_at).
-    canonical_feature_decision_at: V3 -> doctrine historical decision (declared
-    latency, >= CONDITIONAL); V2 -> unchanged engine-mechanics ordering only.
-    require_professional_historical_decisions_v1: the professional gate needs V3
-    PROFESSIONAL decisions. Decision authority is granted only after every input
-    is re-derived from its genuine verdict AND clock facts read from the sealed
-    dataset (never the row); historical tables carry no arrival/publication
-    clocks, so T3/T4 authority waits for R3A sealing. V1/V2 hashes and 3D.9A
-    packet identities pinned.
+    - src/trade_platform/research_data_plane_v1.py
+    - src/trade_platform/research_data_export_v1.py
+    - scripts/research_data_plane.py
+    - migrations/versions/20260924_0050_research_frame_manifests.py
+    - tests/test_research_data_plane_v1.py
+    - tests/test_research_data_plane_postgres.py
   not_in_scope: >-
-    Choosing any T2 lag (OR-5), any compute-latency value, the role-based tier
-    rule (OR-4, presented only), T4 normalization/sealing (R3A), columnar
-    storage (R2B), and any change to 3D.9A packet identities or existing
-    feature materialization hashes.
-  ends_with: >-
-    T1 inputs fail closed with a principled reason instead of collapsing;
-    synthetic T2/T3/T4 fixtures give distinct, correct decision times;
-    recomputing at a later wall time moves no historical decision time; full
-    suite green with POSTGRES_TEST_DSN; OR-4 presented to the owner.
+    Any evidence-tier change (the T1 composite stays T1, blocker not cleared),
+    float/vectorized candidate search (OR-3), Strategy Lab (R4), T2/T4 frames
+    (R3B/R3A reuse this plane).
+
+r2a_completed: >-
+  R2A.1 PR #149, R2A.2 PR #150 (merge 97c55dd): V3 three-clock feature rows,
+  doctrine decision time, professional gate re-deriving every input from its
+  verdict and sealed clock facts; three-round independent PIT review.
 
 r1a_follow_up:                # R1A merged (PR #148); its measurement is still running
-  measurement_run: "scripts/capture_bybit_public.py measure --seconds 86400, started 2026-09-24 03:06"
+  measurement_run: >-
+    scripts/capture_bybit_public.py measure --seconds 86400. The 03:06 run was
+    ended at 04:39 local by a host shutdown (no report, PARTIAL partitions);
+    restarted 2026-09-24 13:10 local (11:10Z), due ~2026-09-25 13:10 local.
   ends_with: capacity report + 2-4 capture-universe options for the owner (OR-2), then R1B.
 
 r0_operations:                # the T4 clock; runs beside every phase
