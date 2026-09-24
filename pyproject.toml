@@ -14,9 +14,18 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["alembic>=1.14,<2", "bandit>=1.8,<2", "cyclonedx-bom>=5.1,<6", "detect-secrets>=1.5,<2", "httpx>=0.27,<1", "mypy>=1.13,<2", "pip-audit>=2.8,<3", "PyYAML>=6.0,<7", "ruff>=0.8,<1"]
 
+# Phase R2B columnar research data plane (Parquet + query engine). Research
+# tooling only: the runtime API/migration images never install it.
+analytics = ["duckdb>=1.3,<2", "pyarrow>=21,<26"]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[[tool.mypy.overrides]]
+# pyarrow ships no type information (R2B analytics extra); duckdb ships stubs.
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
