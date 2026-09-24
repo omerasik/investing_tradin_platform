@@ -9,6 +9,8 @@ the refusals that stop synthetic or REST-rebuilt data masquerading as capture.
 from __future__ import annotations
 
 import dataclasses
+import gzip
+import hashlib
 import json
 import tempfile
 import unittest
@@ -17,14 +19,24 @@ from pathlib import Path
 from uuid import uuid4
 
 from trade_platform.first_party_capture_archive_v1 import (
+    BACKUP_ALREADY_PRESENT,
+    BACKUP_COPIED_AND_VERIFIED,
+    BACKUP_SKIPPED_NOT_COMPLETE,
     CLOCK_DIVERGENCE_TOLERANCE_NANOS,
+    COMPACTED_RECORDS_FILE_NAME,
+    COMPACTION_FILE_NAME,
     END_PROOF_CONNECTION_LOST,
+    END_PROOF_DISK_BUDGET_STOP,
     END_PROOF_OPERATOR_BOUNDED_STOP,
     END_PROOF_UTC_DAY_ROLLOVER,
+    END_PROOFS_V1,
+    GAP_KIND_FOR_END_PROOF_V1,
     MANIFEST_FILE_NAME,
     OPEN_MARKER_NAME,
     PARTITION_STATUS_COMPLETE,
     PARTITION_STATUS_PARTIAL,
+    RECORDS_FILE_NAME,
+    REQUESTABLE_END_PROOFS_V1,
     CaptureClockMonitorV1,
     CaptureClockReadingV1,
     CaptureCoverageIntervalV1,
@@ -36,22 +48,31 @@ from trade_platform.first_party_capture_archive_v1 import (
     FirstPartyCaptureArchiveError,
     FirstPartyCaptureRecordV1,
     ProvenWindowV1,
+    backup_archive_v1,
+    backup_partition_v1,
     build_capture_record_v1,
+    compact_partition_v1,
+    compaction_candidates_v1,
+    derive_archive_availability_by_source_v1,
     derive_archive_availability_v1,
     derive_capture_gaps_v1,
     find_partitions_v1,
     knowledge_bound_utc_nanos,
     measure_clock_resolution_nanos,
     nanos_to_datetime,
+    open_partition_bytes_v1,
     read_lifecycle_v1,
     read_partition_status_v1,
     replay_partition_v1,
+    session_source_id_v1,
     sha256_file,
     utc_day_of_nanos,
     verify_partition_v1,
 )
 from trade_platform.first_party_capture_authority_v1 import (
+    FirstPartyCaptureContractV1,
     first_party_bybit_capture_contract_v1,
+    first_party_bybit_measurement_contract_v1,
 )
 
 CONTRACT = first_party_bybit_capture_contract_v1()
@@ -792,6 +813,275 @@ class CrashAndRestartAvailabilityTests(unittest.TestCase):
     def test_an_empty_archive_proves_nothing(self) -> None:
         availability = derive_archive_availability_v1(self.root)
         self.assertEqual(((), (), ()), (availability.windows, availability.gaps, availability.excluded))
+
+
+# -- Phase R1A --------------------------------------------------------------
+
+
+def _measurement_payload(symbol: str) -> str:
+    return TICKER_PAYLOAD.replace("BTCUSDT", symbol)
+
+
+def _complete_partition(
+    root: Path,
+    *,
+    contract: FirstPartyCaptureContractV1 = CONTRACT,
+    count: int = 3,
+    first: int = 0,
+) -> Path:
+    """A finalized partition of ``count`` ticker records under ``contract``."""
+    session = uuid4()
+    writer = CapturePartitionWriterV1(
+        root=root, contract=contract, session_id=session, day=DAY, clock_resolution_nanos=15_625_000
+    )
+    payload = _measurement_payload(contract.exchange_symbol)
+    for offset in range(count):
+        writer.append_record(
+            build_capture_record_v1(
+                contract=contract,
+                session_id=session,
+                sequence=offset,
+                clock=_reading(first + offset),
+                payload_text=payload,
+            )
+        )
+    _cover(writer, first, first + count - 1, count)
+    return writer.finalize().parent
+
+
+class _RootTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temp = tempfile.TemporaryDirectory()
+        self.root = Path(self._temp.name) / "archive"
+        self.addCleanup(self._temp.cleanup)
+
+
+class WriterByteAccountingTests(_RootTest):
+    def test_bytes_written_equal_the_records_file_size(self) -> None:
+        session = uuid4()
+        writer = CapturePartitionWriterV1(root=self.root, contract=CONTRACT, session_id=session, day=DAY)
+        returned = [writer.append_record(_record(session, index)) for index in range(4)]
+        self.assertEqual(sum(returned), writer.bytes_written)
+        self.assertEqual(writer.bytes_written, open_partition_bytes_v1(writer.directory))
+        _cover(writer, 0, 3, 4)
+        directory = writer.finalize().parent
+        self.assertEqual(writer.bytes_written, (directory / RECORDS_FILE_NAME).stat().st_size)
+
+
+class DiskBudgetEndProofTests(unittest.TestCase):
+    def test_disk_budget_stop_is_a_recognized_end_proof_without_a_declared_gap(self) -> None:
+        interval = CaptureCoverageIntervalV1(
+            start_utc_nanos=1, last_proven_utc_nanos=2, end_proof=END_PROOF_DISK_BUDGET_STOP,
+            record_count=0,
+        )
+        self.assertEqual(END_PROOF_DISK_BUDGET_STOP, interval.end_proof)
+        self.assertIn(END_PROOF_DISK_BUDGET_STOP, END_PROOFS_V1)
+        self.assertIn(END_PROOF_DISK_BUDGET_STOP, REQUESTABLE_END_PROOFS_V1)
+        self.assertNotIn(END_PROOF_DISK_BUDGET_STOP, GAP_KIND_FOR_END_PROOF_V1)
+
+
+class CompactionTests(_RootTest):
+    def test_compaction_is_lossless_and_leaves_the_manifest_untouched(self) -> None:
+        directory = _complete_partition(self.root, count=5)
+        manifest_before = (directory / MANIFEST_FILE_NAME).read_bytes()
+        records_before = [record.content_hash for record in replay_partition_v1(directory)]
+        raw_size = (directory / RECORDS_FILE_NAME).stat().st_size
+
+        result = compact_partition_v1(directory)
+
+        self.assertFalse(result.already_compacted)
+        self.assertEqual(raw_size, result.uncompressed_bytes)
+        self.assertEqual((directory / COMPACTED_RECORDS_FILE_NAME).stat().st_size, result.compressed_bytes)
+        self.assertFalse((directory / RECORDS_FILE_NAME).exists())
+        self.assertEqual(manifest_before, (directory / MANIFEST_FILE_NAME).read_bytes())
+        partition = read_partition_status_v1(directory)
+        self.assertEqual(PARTITION_STATUS_COMPLETE, partition.status, partition.reasons)
+        self.assertEqual(records_before, [r.content_hash for r in replay_partition_v1(directory)])
+        self.assertEqual(5, verify_partition_v1(directory).record_count)
+
+    def test_compressed_output_is_deterministic(self) -> None:
+        directory = _complete_partition(self.root)
+        raw = (directory / RECORDS_FILE_NAME).read_bytes()
+        compact_partition_v1(directory)
+        packed = (directory / COMPACTED_RECORDS_FILE_NAME).read_bytes()
+        self.assertEqual(b"\x00\x00\x00\x00", packed[4:8], "gzip mtime must be zero")
+        self.assertEqual(raw, gzip.decompress(packed))
+
+    def test_a_tampered_compressed_file_is_not_complete(self) -> None:
+        directory = _complete_partition(self.root)
+        compact_partition_v1(directory)
+        path = directory / COMPACTED_RECORDS_FILE_NAME
+        data = bytearray(path.read_bytes())
+        data[-9] ^= 0xFF
+        path.write_bytes(bytes(data))
+        partition = read_partition_status_v1(directory)
+        self.assertEqual(PARTITION_STATUS_PARTIAL, partition.status)
+        self.assertIn("compacted_records_checksum_mismatch", partition.reasons)
+        with self.assertRaises(FirstPartyCaptureArchiveError):
+            list(replay_partition_v1(directory))
+
+    def test_an_edited_compaction_record_is_not_complete(self) -> None:
+        directory = _complete_partition(self.root)
+        compact_partition_v1(directory)
+        path = directory / COMPACTION_FILE_NAME
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record["uncompressed_bytes"] += 1
+        path.write_text(json.dumps(record), encoding="utf-8")
+        self.assertIn(
+            "compaction_content_hash_mismatch", read_partition_status_v1(directory).reasons
+        )
+
+    def test_a_compaction_rebound_to_another_manifest_is_refused(self) -> None:
+        directory = _complete_partition(self.root)
+        compact_partition_v1(directory)
+        path = directory / COMPACTION_FILE_NAME
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record.pop("compaction_content_hash")
+        record["manifest_content_hash"] = "0" * 64
+        record["compaction_content_hash"] = hashlib.sha256(
+            json.dumps(record, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        path.write_text(json.dumps(record), encoding="utf-8")
+        self.assertIn(
+            "compaction_is_bound_to_another_manifest", read_partition_status_v1(directory).reasons
+        )
+
+    def test_an_interrupted_compaction_is_finished_only_after_proof(self) -> None:
+        directory = _complete_partition(self.root)
+        raw = (directory / RECORDS_FILE_NAME).read_bytes()
+        compact_partition_v1(directory)
+        # Simulate a crash after COMPACTION.json was written but before the
+        # original was removed: both forms present. The original stays the
+        # authority until the compacted form is re-proven.
+        (directory / RECORDS_FILE_NAME).write_bytes(raw)
+        self.assertEqual(PARTITION_STATUS_COMPLETE, read_partition_status_v1(directory).status)
+        result = compact_partition_v1(directory)
+        self.assertTrue(result.already_compacted)
+        self.assertFalse((directory / RECORDS_FILE_NAME).exists())
+        self.assertEqual(PARTITION_STATUS_COMPLETE, read_partition_status_v1(directory).status)
+
+    def test_an_unproven_partition_is_never_compacted(self) -> None:
+        session = uuid4()
+        writer = CapturePartitionWriterV1(root=self.root, contract=CONTRACT, session_id=session, day=DAY)
+        writer.append_record(_record(session, 0))
+        writer.close_without_finalizing()
+        with self.assertRaises(FirstPartyCaptureArchiveError):
+            compact_partition_v1(writer.directory)
+        self.assertTrue((writer.directory / RECORDS_FILE_NAME).exists())
+
+    def test_candidates_are_finalized_uncompacted_partitions_only(self) -> None:
+        finalized = _complete_partition(self.root)
+        compacted = _complete_partition(self.root, first=10)
+        compact_partition_v1(compacted)
+        session = uuid4()
+        open_writer = CapturePartitionWriterV1(
+            root=self.root, contract=CONTRACT, session_id=session, day=DAY
+        )
+        open_writer.append_record(_record(session, 30))
+        self.addCleanup(open_writer.close_without_finalizing)
+        self.assertEqual((finalized,), compaction_candidates_v1(self.root))
+
+
+class ContractResolutionTests(_RootTest):
+    def test_a_measurement_partition_is_proven_against_its_own_contract(self) -> None:
+        contract = first_party_bybit_measurement_contract_v1("ETHUSDT")
+        directory = _complete_partition(self.root, contract=contract)
+        self.assertEqual(str(contract.source_id), session_source_id_v1(directory))
+        partition = read_partition_status_v1(directory)
+        self.assertEqual(PARTITION_STATUS_COMPLETE, partition.status, partition.reasons)
+        self.assertEqual(3, verify_partition_v1(directory).record_count)
+        # Judged against the production contract it is someone else's evidence.
+        forced = read_partition_status_v1(directory, contract=CONTRACT)
+        self.assertEqual(PARTITION_STATUS_PARTIAL, forced.status)
+        self.assertIn("manifest_source_is_not_the_authorized_first_party_source", forced.reasons)
+
+    def test_an_unknown_source_falls_back_to_production_and_fails(self) -> None:
+        directory = _complete_partition(self.root)
+        session_path = directory / "session.json"
+        session = json.loads(session_path.read_text(encoding="utf-8"))
+        session["source_id"] = str(uuid4())
+        session_path.write_text(json.dumps(session), encoding="utf-8")
+        self.assertEqual(PARTITION_STATUS_PARTIAL, read_partition_status_v1(directory).status)
+
+    def test_availability_is_never_merged_across_sources(self) -> None:
+        production = _complete_partition(self.root, count=2)
+        eth = first_party_bybit_measurement_contract_v1("ETHUSDT")
+        _complete_partition(self.root, contract=eth, count=4, first=100)
+        default = derive_archive_availability_v1(self.root)
+        self.assertEqual(1, len(default.windows))
+        self.assertEqual((), default.excluded)
+        self.assertEqual(2, default.windows[0].interval.record_count)
+        self.assertEqual(
+            read_partition_status_v1(production).session_id, default.windows[0].session_id
+        )
+        sources, unattributed = derive_archive_availability_by_source_v1(self.root)
+        self.assertEqual((), unattributed)
+        self.assertEqual(
+            [(CONTRACT.source_id, 2), (eth.source_id, 4)],
+            [
+                (item.contract.source_id, item.availability.windows[0].interval.record_count)
+                for item in sources
+            ],
+        )
+
+    def test_an_unattributable_partition_is_reported(self) -> None:
+        directory = _complete_partition(self.root)
+        session_path = directory / "session.json"
+        session = json.loads(session_path.read_text(encoding="utf-8"))
+        session["source_id"] = str(uuid4())
+        session_path.write_text(json.dumps(session), encoding="utf-8")
+        sources, unattributed = derive_archive_availability_by_source_v1(self.root)
+        self.assertEqual((), sources)
+        self.assertEqual(
+            ((directory, ("partition_source_is_not_an_authorized_contract",)),), unattributed
+        )
+
+
+class BackupTests(_RootTest):
+    def setUp(self) -> None:
+        super().setUp()
+        self.destination = Path(self._temp.name) / "backup"
+
+    def test_backup_copies_and_re_verifies(self) -> None:
+        directory = _complete_partition(self.root)
+        compacted = _complete_partition(self.root, first=20)
+        compact_partition_v1(compacted)
+        outcomes = backup_archive_v1(self.root, self.destination)
+        self.assertEqual({BACKUP_COPIED_AND_VERIFIED}, {outcome.action for outcome in outcomes})
+        for source in (directory, compacted):
+            target = self.destination / source.relative_to(self.root)
+            self.assertEqual(3, verify_partition_v1(target).record_count)
+            self.assertFalse(target.with_name(target.name + ".partial").exists())
+
+    def test_a_second_backup_finds_the_partition_already_present(self) -> None:
+        _complete_partition(self.root)
+        backup_archive_v1(self.root, self.destination)
+        (outcome,) = backup_archive_v1(self.root, self.destination)
+        self.assertEqual(BACKUP_ALREADY_PRESENT, outcome.action)
+
+    def test_a_different_partition_at_the_destination_is_never_overwritten(self) -> None:
+        directory = _complete_partition(self.root)
+        (outcome,) = backup_archive_v1(self.root, self.destination)
+        manifest = outcome.destination_directory / MANIFEST_FILE_NAME
+        altered = json.loads(manifest.read_text(encoding="utf-8"))
+        altered["manifest_content_hash"] = "f" * 64
+        manifest.write_text(json.dumps(altered), encoding="utf-8")
+        with self.assertRaises(FirstPartyCaptureArchiveError):
+            backup_partition_v1(directory, archive_root=self.root, destination_root=self.destination)
+
+    def test_an_open_partition_is_skipped(self) -> None:
+        session = uuid4()
+        writer = CapturePartitionWriterV1(root=self.root, contract=CONTRACT, session_id=session, day=DAY)
+        writer.append_record(_record(session, 0))
+        self.addCleanup(writer.close_without_finalizing)
+        (outcome,) = backup_archive_v1(self.root, self.destination)
+        self.assertEqual(BACKUP_SKIPPED_NOT_COMPLETE, outcome.action)
+        self.assertFalse(outcome.destination_directory.exists())
+
+    def test_backing_up_onto_itself_is_refused(self) -> None:
+        _complete_partition(self.root)
+        with self.assertRaises(FirstPartyCaptureArchiveError):
+            backup_archive_v1(self.root, self.root)
 
 
 if __name__ == "__main__":

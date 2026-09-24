@@ -98,17 +98,22 @@ that need the whole proof before using any of it.
 
 from __future__ import annotations
 
+import gzip
 import hashlib
+import io
 import json
+import os
+import shutil
 import time
+import zlib
 from bisect import bisect_right
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from itertools import pairwise
 from pathlib import Path
-from typing import Any, Final
+from typing import IO, Any, Final
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from .first_party_capture_authority_v1 import (
@@ -116,7 +121,9 @@ from .first_party_capture_authority_v1 import (
     BybitMessageTypeV1,
     BybitPublicChannelV1,
     FirstPartyCaptureContractV1,
+    authorized_first_party_capture_contracts_v1,
     first_party_bybit_capture_contract_v1,
+    resolve_first_party_capture_contract_v1,
 )
 
 ARCHIVE_LAYOUT_VERSION: Final = "v1"
@@ -128,6 +135,15 @@ LIFECYCLE_FILE_NAME: Final = "lifecycle.ndjson"
 SESSION_FILE_NAME: Final = "session.json"
 MANIFEST_FILE_NAME: Final = "MANIFEST.json"
 OPEN_MARKER_NAME: Final = "OPEN"
+
+#: Phase R1A lossless compaction. The manifest is never rewritten: it keeps
+#: binding the *uncompressed* records file's SHA-256, and the compaction record
+#: proves the compressed file decompresses to exactly those bytes.
+COMPACTED_RECORDS_FILE_NAME: Final = "records.ndjson.gz"
+COMPACTION_FILE_NAME: Final = "COMPACTION.json"
+COMPACTION_SCHEMA_VERSION: Final = "first-party-capture-compaction-v1"
+COMPACTION_CODEC: Final = "gzip"
+_COMPACTION_TEMP_NAME: Final = "records.ndjson.gz.tmp"
 
 #: How far the wall clock may drift from the monotonic counter between two
 #: consecutive messages before the interval is declared discontinuous. Generous
@@ -148,6 +164,10 @@ END_PROOF_PEER_CLOSED: Final = "PEER_CLOSED"
 END_PROOF_CLOCK_DISCONTINUITY: Final = "CLOCK_DISCONTINUITY"
 END_PROOF_CONTRACT_VIOLATION: Final = "CONTRACT_VIOLATION"
 END_PROOF_RECORDER_FAILURE: Final = "RECORDER_FAILURE"
+#: Phase R1A. The recorder stopped itself because free disk space fell below the
+#: operator's floor. A deliberate, observed stop -- like an operator stop it opens
+#: no declared gap; the hole until the next session is derived, never claimed.
+END_PROOF_DISK_BUDGET_STOP: Final = "DISK_BUDGET_STOP"
 
 END_PROOFS_V1: Final = frozenset(
     {
@@ -159,7 +179,14 @@ END_PROOFS_V1: Final = frozenset(
         END_PROOF_CLOCK_DISCONTINUITY,
         END_PROOF_CONTRACT_VIOLATION,
         END_PROOF_RECORDER_FAILURE,
+        END_PROOF_DISK_BUDGET_STOP,
     }
+)
+
+#: The end proofs a caller may *request* of a running recorder. Everything else
+#: is observed by the recorder itself and can never be asked for.
+REQUESTABLE_END_PROOFS_V1: Final = frozenset(
+    {END_PROOF_OPERATOR_BOUNDED_STOP, END_PROOF_OPERATOR_INTERRUPT, END_PROOF_DISK_BUDGET_STOP}
 )
 
 PARTITION_STATUS_COMPLETE: Final = "COMPLETE"
@@ -185,6 +212,10 @@ class CaptureLifecycleKindV1(StrEnum):
     MESSAGE_REJECTED = "MESSAGE_REJECTED"
     RECORDER_FAILED = "RECORDER_FAILED"
     SESSION_CLOSED = "SESSION_CLOSED"
+    #: Phase R1A. RTT-bounded evidence of the host wall clock's offset from the
+    #: venue's public server clock, taken while the session ran. Evidence about
+    #: the recorder clock; it never adjusts an arrival reading.
+    CLOCK_OFFSET_SAMPLE = "CLOCK_OFFSET_SAMPLE"
 
 
 class CaptureGapKindV1(StrEnum):
@@ -751,6 +782,7 @@ class CapturePartitionWriterV1:
         "_unclaimed_count",
         "_unclaimed_first_nanos",
         "_unclaimed_last_nanos",
+        "bytes_written",
         "first_arrival_utc_nanos",
         "last_arrival_utc_nanos",
         "record_count",
@@ -816,6 +848,9 @@ class CapturePartitionWriterV1:
         self._unclaimed_first_nanos: int | None = None
         self._unclaimed_last_nanos: int | None = None
         self.record_count = 0
+        #: Bytes appended to the records file, newline translation included,
+        #: so capacity measurement never has to stat a file still being written.
+        self.bytes_written = 0
         self.first_arrival_utc_nanos: int | None = None
         self.last_arrival_utc_nanos: int | None = None
 
@@ -823,7 +858,8 @@ class CapturePartitionWriterV1:
     def directory(self) -> Path:
         return self._directory
 
-    def append_record(self, record: FirstPartyCaptureRecordV1) -> None:
+    def append_record(self, record: FirstPartyCaptureRecordV1) -> int:
+        """Append one verified record and return the bytes it added on disk."""
         if self._finalized:
             raise FirstPartyCaptureArchiveError("cannot_append_to_a_finalized_partition")
         if not record.integrity_verified():
@@ -832,8 +868,12 @@ class CapturePartitionWriterV1:
             raise FirstPartyCaptureArchiveError("record_belongs_to_another_capture_session")
         if utc_day_of_nanos(record.arrival_utc_nanos) != self._day:
             raise FirstPartyCaptureArchiveError("record_arrival_is_outside_the_partition_utc_day")
-        self._records_handle.write(record.to_json_line() + "\n")
+        line = record.to_json_line()
+        self._records_handle.write(line + "\n")
         self._records_handle.flush()
+        # Text mode writes os.linesep for "\n"; count what actually lands.
+        written = len(line.encode("utf-8")) + len(os.linesep)
+        self.bytes_written += written
         self.record_count += 1
         if self.first_arrival_utc_nanos is None:
             self.first_arrival_utc_nanos = record.arrival_utc_nanos
@@ -842,6 +882,7 @@ class CapturePartitionWriterV1:
         if self._unclaimed_first_nanos is None:
             self._unclaimed_first_nanos = record.arrival_utc_nanos
         self._unclaimed_last_nanos = record.arrival_utc_nanos
+        return written
 
     def append_lifecycle(self, event: CaptureLifecycleEventV1) -> None:
         if self._finalized:
@@ -998,6 +1039,92 @@ def _metadata_reasons(
     return reasons
 
 
+def session_source_id_v1(directory: Path) -> str | None:
+    """The ``source_id`` a partition's own ``session.json`` claims, or ``None``.
+
+    A claim, not a proof: it only selects which authorized contract the
+    partition must then satisfy.
+    """
+    try:
+        session = json.loads((directory / SESSION_FILE_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    source_id = session.get("source_id") if isinstance(session, dict) else None
+    return source_id if isinstance(source_id, str) else None
+
+
+def _partition_contract(
+    directory: Path, contract: FirstPartyCaptureContractV1 | None
+) -> FirstPartyCaptureContractV1:
+    if contract is not None:
+        return contract
+    claimed = session_source_id_v1(directory)
+    resolved = None if claimed is None else resolve_first_party_capture_contract_v1(claimed)
+    return first_party_bybit_capture_contract_v1() if resolved is None else resolved
+
+
+def _sha256_of_gzip(path: Path) -> tuple[str, int]:
+    """SHA-256 and size of a gzip file's decompressed bytes, streamed."""
+    digest = hashlib.sha256()
+    size = 0
+    with gzip.open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+            size += len(chunk)
+    return digest.hexdigest(), size
+
+
+def _compaction_reasons(directory: Path, manifest: Mapping[str, Any], digest: str) -> list[str]:
+    """Why a compacted records file does not stand in for the manifest's bytes."""
+    try:
+        record = json.loads((directory / COMPACTION_FILE_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ["compaction_record_is_unreadable"]
+    if not isinstance(record, dict):
+        return ["compaction_record_is_unreadable"]
+    reasons: list[str] = []
+    stated = dict(record)
+    declared = stated.pop("compaction_content_hash", None)
+    if declared != _sha256_text(_canonical_json(stated)):
+        reasons.append("compaction_content_hash_mismatch")
+    if record.get("schema_version") != COMPACTION_SCHEMA_VERSION:
+        reasons.append("compaction_schema_version_not_recognized")
+    if record.get("codec") != COMPACTION_CODEC:
+        reasons.append("compaction_codec_not_recognized")
+    if record.get("session_id") != manifest.get("session_id"):
+        reasons.append("compaction_and_manifest_disagree:session_id")
+    if record.get("manifest_content_hash") != manifest.get("manifest_content_hash"):
+        reasons.append("compaction_is_bound_to_another_manifest")
+    if record.get("uncompressed_sha256") != digest:
+        reasons.append("compaction_does_not_claim_the_manifest_records_bytes")
+    compressed = directory / COMPACTED_RECORDS_FILE_NAME
+    if not compressed.exists():
+        reasons.append("compacted_records_file_missing")
+        return reasons
+    if sha256_file(compressed) != record.get("compressed_sha256"):
+        reasons.append("compacted_records_checksum_mismatch")
+        return reasons
+    try:
+        decompressed, _ = _sha256_of_gzip(compressed)
+    except (OSError, EOFError, zlib.error):
+        reasons.append("compacted_records_do_not_decompress")
+        return reasons
+    if decompressed != digest:
+        reasons.append("compacted_records_do_not_decompress_to_the_manifest_bytes")
+    return reasons
+
+
+def _open_records_text(directory: Path) -> IO[str] | None:
+    """The records as text, from the raw file or its proven compacted form."""
+    raw = directory / RECORDS_FILE_NAME
+    if raw.exists():
+        return raw.open("r", encoding="utf-8")
+    compressed = directory / COMPACTED_RECORDS_FILE_NAME
+    if compressed.exists() and (directory / COMPACTION_FILE_NAME).exists():
+        return io.TextIOWrapper(gzip.open(compressed, "rb"), encoding="utf-8")
+    return None
+
+
 def read_partition_status_v1(
     directory: Path, *, contract: FirstPartyCaptureContractV1 | None = None
 ) -> CapturePartitionV1:
@@ -1007,8 +1134,16 @@ def read_partition_status_v1(
     reproduce, no OPEN marker survives, and its metadata is internally
     consistent and belongs to the authorized first-party contract. It does not
     read records; :func:`verify_partition_v1` proves the record-level claims.
+
+    Without an explicit ``contract`` the partition is judged against the
+    authorized contract its own ``session.json`` names (Phase R1A: production or
+    capacity measurement), falling back to the production v1 contract when it
+    names none -- so a partition can only ever be proven against a member of the
+    closed contract set. A compacted partition (see :func:`compact_partition_v1`)
+    is COMPLETE only when its compressed records decompress to exactly the bytes
+    the untouched manifest binds.
     """
-    authorized = first_party_bybit_capture_contract_v1() if contract is None else contract
+    authorized = _partition_contract(directory, contract)
     manifest_path = directory / MANIFEST_FILE_NAME
     reasons: list[str] = []
     if not manifest_path.exists():
@@ -1040,10 +1175,13 @@ def read_partition_status_v1(
             reasons.append(f"manifest_does_not_cover_file:{required}")
     for name, digest in files.items():
         path = directory / name
-        if not path.exists():
+        if path.exists():
+            if sha256_file(path) != digest:
+                reasons.append(f"manifest_file_checksum_mismatch:{name}")
+        elif name == RECORDS_FILE_NAME and (directory / COMPACTION_FILE_NAME).exists():
+            reasons.extend(_compaction_reasons(directory, manifest, digest))
+        else:
             reasons.append(f"manifest_file_missing:{name}")
-        elif sha256_file(path) != digest:
-            reasons.append(f"manifest_file_checksum_mismatch:{name}")
     reasons.extend(_metadata_reasons(manifest, session, coverage, gaps, authorized))
     return CapturePartitionV1(
         directory=directory,
@@ -1075,7 +1213,7 @@ def replay_partition_v1(
     evidence is worse than one that stops -- so a consumer must exhaust the
     iterator (or call :func:`verify_partition_v1`) before relying on it.
     """
-    authorized = first_party_bybit_capture_contract_v1() if contract is None else contract
+    authorized = _partition_contract(directory, contract)
     partition = read_partition_status_v1(directory, contract=authorized)
     complete = partition.status == PARTITION_STATUS_COMPLETE
     if require_complete and not complete:
@@ -1091,7 +1229,6 @@ def replay_partition_v1(
         if complete:
             raise FirstPartyCaptureArchiveError("partition_session_metadata_is_unreadable") from None
 
-    records_path = directory / RECORDS_FILE_NAME
     starts = [interval.start_utc_nanos for interval in partition.coverage]
     per_window = [0] * len(partition.coverage)
     count = 0
@@ -1099,8 +1236,9 @@ def replay_partition_v1(
     last_arrival: int | None = None
     previous_monotonic: int | None = None
     previous_sequence: int | None = None
-    if records_path.exists():
-        with records_path.open("r", encoding="utf-8") as handle:
+    handle_or_none = _open_records_text(directory)
+    if handle_or_none is not None:
+        with handle_or_none as handle:
             for line in handle:
                 text = line.strip()
                 if not text:
@@ -1294,11 +1432,23 @@ def derive_archive_availability_v1(
     hard crash, a killed process -- contributes no window, so it can never make
     time look covered. Metadata-level only; a dataset built on these windows
     must still :func:`verify_partition_v1` each partition it uses.
+
+    Availability is always *one contract's*: the production v1 contract unless
+    another is given. Since Phase R1A an archive root may also hold other
+    authorized contracts' partitions (another symbol, a capacity measurement);
+    those are another source's evidence, so they are out of scope here rather
+    than excluded -- merging them would let one symbol's coverage make another
+    symbol's time look observed. See :func:`derive_archive_availability_by_source_v1`.
     """
+    authorized = first_party_bybit_capture_contract_v1() if contract is None else contract
+    wanted = str(authorized.source_id)
     windows: list[ProvenWindowV1] = []
     excluded: list[tuple[Path, tuple[str, ...]]] = []
     for directory in find_partitions_v1(root):
-        partition = read_partition_status_v1(directory, contract=contract)
+        claimed = session_source_id_v1(directory)
+        if claimed is not None and claimed != wanted:
+            continue
+        partition = read_partition_status_v1(directory, contract=authorized)
         if partition.status != PARTITION_STATUS_COMPLETE or partition.session_id is None:
             excluded.append((directory, partition.reasons))
             continue
@@ -1312,6 +1462,291 @@ def derive_archive_availability_v1(
         gaps=derive_capture_gaps_v1(windows),
         excluded=tuple(excluded),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class SourceAvailabilityV1:
+    """One authorized contract's proven availability within a shared archive root."""
+
+    contract: FirstPartyCaptureContractV1
+    availability: CaptureArchiveAvailabilityV1
+
+
+def derive_archive_availability_by_source_v1(
+    root: Path,
+) -> tuple[tuple[SourceAvailabilityV1, ...], tuple[tuple[Path, tuple[str, ...]], ...]]:
+    """Availability per authorized contract present under ``root``, never merged.
+
+    Returns the per-contract availabilities (in closed-set order) and every
+    partition whose claimed source resolves to no authorized contract, which
+    therefore proves nothing for anyone.
+    """
+    present: set[str] = set()
+    unattributed: list[tuple[Path, tuple[str, ...]]] = []
+    for directory in find_partitions_v1(root):
+        claimed = session_source_id_v1(directory)
+        if claimed is None:
+            unattributed.append((directory, ("partition_session_source_is_unreadable",)))
+        elif resolve_first_party_capture_contract_v1(claimed) is None:
+            unattributed.append((directory, ("partition_source_is_not_an_authorized_contract",)))
+        else:
+            present.add(claimed)
+    results = tuple(
+        SourceAvailabilityV1(
+            contract=contract, availability=derive_archive_availability_v1(root, contract=contract)
+        )
+        for contract in authorized_first_party_capture_contracts_v1()
+        if str(contract.source_id) in present
+    )
+    return results, tuple(unattributed)
+
+
+def open_partition_bytes_v1(directory: Path) -> int | None:
+    """Current size of a partition's records file, read from an open handle.
+
+    Windows may report a stale size in a directory listing for a file another
+    process is still appending to; the handle's own size is current.
+    """
+    for name in (RECORDS_FILE_NAME, COMPACTED_RECORDS_FILE_NAME):
+        path = directory / name
+        try:
+            with path.open("rb") as handle:
+                return os.fstat(handle.fileno()).st_size
+        except OSError:
+            continue
+    return None
+
+
+# -- Phase R1A: lossless compaction ---------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class CompactionResultV1:
+    """What compacting one COMPLETE partition did, with its measured sizes."""
+
+    directory: Path
+    session_id: UUID
+    source_id: UUID
+    uncompressed_bytes: int
+    compressed_bytes: int
+    already_compacted: bool
+
+
+def _read_json_object(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise FirstPartyCaptureArchiveError(f"expected_a_json_object:{path.name}")
+    return value
+
+
+def compact_partition_v1(
+    directory: Path,
+    *,
+    contract: FirstPartyCaptureContractV1 | None = None,
+    compresslevel: int = 6,
+) -> CompactionResultV1:
+    """Replace a COMPLETE partition's records file with a proven gzip twin.
+
+    Lossless and evidence-neutral. The manifest is never touched, so every
+    identity it binds -- above all the SHA-256 of the *uncompressed* records --
+    stays exactly what the recorder sealed. The compressed file is written
+    beside the original, decompressed and re-hashed, and only when it
+    reproduces the manifest's bytes is a content-hashed ``COMPACTION.json``
+    written and the original removed. Every step is restartable: an
+    interrupted compaction leaves the original in place, which remains the
+    authority while it exists. Refuses anything that is not COMPLETE.
+    """
+    partition = read_partition_status_v1(directory, contract=contract)
+    if partition.status != PARTITION_STATUS_COMPLETE or partition.session_id is None:
+        raise FirstPartyCaptureArchiveError(
+            "refusing_to_compact_an_unproven_partition:" + ",".join(partition.reasons)
+        )
+    manifest = _read_json_object(directory / MANIFEST_FILE_NAME)
+    expected = manifest["files"][RECORDS_FILE_NAME]
+    raw = directory / RECORDS_FILE_NAME
+    compressed = directory / COMPACTED_RECORDS_FILE_NAME
+    record_path = directory / COMPACTION_FILE_NAME
+    source_id = UUID(str(manifest["source_id"]))
+
+    if record_path.exists():
+        # Already compacted -- or interrupted after the record was written but
+        # before the original was removed. Prove it before removing anything.
+        reasons = _compaction_reasons(directory, manifest, expected)
+        if reasons:
+            raise FirstPartyCaptureArchiveError(
+                "existing_compaction_does_not_prove_the_manifest_bytes:" + ",".join(reasons)
+            )
+        record = _read_json_object(record_path)
+        raw.unlink(missing_ok=True)
+        return CompactionResultV1(
+            directory=directory,
+            session_id=partition.session_id,
+            source_id=source_id,
+            uncompressed_bytes=int(record["uncompressed_bytes"]),
+            compressed_bytes=int(record["compressed_bytes"]),
+            already_compacted=True,
+        )
+
+    temporary = directory / _COMPACTION_TEMP_NAME
+    digest = hashlib.sha256()
+    uncompressed_bytes = 0
+    with raw.open("rb") as source, temporary.open("wb") as target:
+        # filename="" and mtime=0 make the gzip header deterministic, so the
+        # same records always compact to the same bytes.
+        with gzip.GzipFile(
+            filename="", mode="wb", fileobj=target, mtime=0, compresslevel=compresslevel
+        ) as stream:
+            for chunk in iter(lambda: source.read(1 << 20), b""):
+                digest.update(chunk)
+                uncompressed_bytes += len(chunk)
+                stream.write(chunk)
+        target.flush()
+        os.fsync(target.fileno())
+    if digest.hexdigest() != expected:
+        temporary.unlink(missing_ok=True)
+        raise FirstPartyCaptureArchiveError("records_changed_under_compaction")
+    round_trip, round_trip_bytes = _sha256_of_gzip(temporary)
+    if round_trip != expected or round_trip_bytes != uncompressed_bytes:
+        temporary.unlink(missing_ok=True)
+        raise FirstPartyCaptureArchiveError("compacted_records_do_not_round_trip")
+    compressed_sha = sha256_file(temporary)
+    compressed_bytes = temporary.stat().st_size
+    os.replace(temporary, compressed)
+
+    record = {
+        "schema_version": COMPACTION_SCHEMA_VERSION,
+        "codec": COMPACTION_CODEC,
+        "session_id": manifest["session_id"],
+        "source_id": manifest["source_id"],
+        "manifest_content_hash": manifest["manifest_content_hash"],
+        "uncompressed_file": RECORDS_FILE_NAME,
+        "uncompressed_sha256": expected,
+        "uncompressed_bytes": uncompressed_bytes,
+        "compressed_file": COMPACTED_RECORDS_FILE_NAME,
+        "compressed_sha256": compressed_sha,
+        "compressed_bytes": compressed_bytes,
+    }
+    record["compaction_content_hash"] = _sha256_text(_canonical_json(record))
+    staged = directory / (COMPACTION_FILE_NAME + ".tmp")
+    staged.write_text(_canonical_json(record) + "\n", encoding="utf-8")
+    os.replace(staged, record_path)
+    # The original goes only once the compacted form is proven and recorded.
+    raw.unlink()
+    return CompactionResultV1(
+        directory=directory,
+        session_id=partition.session_id,
+        source_id=source_id,
+        uncompressed_bytes=uncompressed_bytes,
+        compressed_bytes=compressed_bytes,
+        already_compacted=False,
+    )
+
+
+def compaction_candidates_v1(root: Path) -> tuple[Path, ...]:
+    """Finalized partitions whose raw records file is still present.
+
+    Only a manifest proves a partition is finalized; an OPEN partition (the one
+    a recorder is still appending to) is never a candidate.
+    """
+    return tuple(
+        directory
+        for directory in find_partitions_v1(root)
+        if (directory / MANIFEST_FILE_NAME).exists()
+        and not (directory / OPEN_MARKER_NAME).exists()
+        and (directory / RECORDS_FILE_NAME).exists()
+    )
+
+
+# -- Phase R1A: verified backup -------------------------------------------
+
+BACKUP_COPIED_AND_VERIFIED: Final = "COPIED_AND_VERIFIED"
+BACKUP_ALREADY_PRESENT: Final = "ALREADY_PRESENT"
+BACKUP_SKIPPED_NOT_COMPLETE: Final = "SKIPPED_NOT_COMPLETE"
+
+
+@dataclass(frozen=True, slots=True)
+class BackupOutcomeV1:
+    source_directory: Path
+    destination_directory: Path
+    action: str
+    detail: str | None = None
+
+
+def backup_partition_v1(
+    directory: Path,
+    *,
+    archive_root: Path,
+    destination_root: Path,
+    contract: FirstPartyCaptureContractV1 | None = None,
+) -> BackupOutcomeV1:
+    """Copy one COMPLETE partition to a second root and re-prove it there.
+
+    The copy lands under the same relative path, is staged beside its final
+    name and renamed into place only when complete, and is then fully replayed
+    with :func:`verify_partition_v1` at the destination -- a backup nobody has
+    verified is a hope, not a copy. An existing destination partition is never
+    overwritten: the same manifest hash means it is already present; any other
+    manifest there is refused.
+    """
+    target = destination_root / directory.relative_to(archive_root)
+    partition = read_partition_status_v1(directory, contract=contract)
+    if partition.status != PARTITION_STATUS_COMPLETE:
+        return BackupOutcomeV1(
+            directory, target, BACKUP_SKIPPED_NOT_COMPLETE, ",".join(partition.reasons)
+        )
+    source_hash = _read_json_object(directory / MANIFEST_FILE_NAME).get("manifest_content_hash")
+    if (target / MANIFEST_FILE_NAME).exists():
+        existing = _read_json_object(target / MANIFEST_FILE_NAME).get("manifest_content_hash")
+        if existing == source_hash:
+            return BackupOutcomeV1(directory, target, BACKUP_ALREADY_PRESENT)
+        raise FirstPartyCaptureArchiveError("backup_destination_holds_a_different_partition")
+    if target.exists():
+        raise FirstPartyCaptureArchiveError("backup_destination_exists_without_a_manifest")
+    staging = target.with_name(target.name + ".partial")
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    for item in sorted(directory.iterdir()):
+        if item.is_file() and not item.name.endswith(".tmp"):
+            shutil.copy2(item, staging / item.name)
+    os.replace(staging, target)
+    verification = verify_partition_v1(target, contract=contract)
+    return BackupOutcomeV1(
+        directory, target, BACKUP_COPIED_AND_VERIFIED, f"records={verification.record_count}"
+    )
+
+
+def backup_archive_v1(
+    archive_root: Path, destination_root: Path
+) -> tuple[BackupOutcomeV1, ...]:
+    """Back up every COMPLETE partition under ``archive_root``; OPEN ones are skipped."""
+    if destination_root.resolve() == archive_root.resolve():
+        raise FirstPartyCaptureArchiveError("backup_destination_must_differ_from_the_archive_root")
+    return tuple(
+        backup_partition_v1(
+            directory, archive_root=archive_root, destination_root=destination_root
+        )
+        for directory in find_partitions_v1(archive_root)
+    )
+
+
+def disk_free_bytes_v1(path: Path) -> int:
+    """Free bytes on the volume holding ``path`` (or its nearest existing parent)."""
+    probe = path
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    return shutil.disk_usage(probe).free
+
+
+def iter_compaction_results_v1(
+    directories: Iterable[Path],
+) -> Iterator[CompactionResultV1 | tuple[Path, str]]:
+    """Compact each directory; a failure is yielded as ``(directory, reason)``, never raised."""
+    for directory in directories:
+        try:
+            yield compact_partition_v1(directory)
+        except (FirstPartyCaptureArchiveError, OSError, KeyError, ValueError) as error:
+            yield (directory, f"{type(error).__name__}:{error}")
 
 
 def new_session_id_v1() -> UUID:
@@ -1331,11 +1766,17 @@ def default_archive_root() -> Path:
 
 __all__ = [
     "ARCHIVE_LAYOUT_VERSION",
+    "BACKUP_ALREADY_PRESENT",
+    "BACKUP_COPIED_AND_VERIFIED",
+    "BACKUP_SKIPPED_NOT_COMPLETE",
     "CLOCK_DIVERGENCE_TOLERANCE_NANOS",
+    "COMPACTED_RECORDS_FILE_NAME",
+    "COMPACTION_FILE_NAME",
     "END_PROOFS_V1",
     "END_PROOF_CLOCK_DISCONTINUITY",
     "END_PROOF_CONNECTION_LOST",
     "END_PROOF_CONTRACT_VIOLATION",
+    "END_PROOF_DISK_BUDGET_STOP",
     "END_PROOF_OPERATOR_BOUNDED_STOP",
     "END_PROOF_OPERATOR_INTERRUPT",
     "END_PROOF_PEER_CLOSED",
@@ -1346,6 +1787,9 @@ __all__ = [
     "OPEN_MARKER_NAME",
     "PARTITION_STATUS_COMPLETE",
     "PARTITION_STATUS_PARTIAL",
+    "RECORDS_FILE_NAME",
+    "REQUESTABLE_END_PROOFS_V1",
+    "BackupOutcomeV1",
     "CaptureArchiveAvailabilityV1",
     "CaptureClockMonitorV1",
     "CaptureClockReadingV1",
@@ -1358,23 +1802,34 @@ __all__ = [
     "CapturePartitionVerificationV1",
     "CapturePartitionWriterV1",
     "ClockVerdictV1",
+    "CompactionResultV1",
     "FirstPartyCaptureArchiveError",
     "FirstPartyCaptureRecordV1",
     "ProvenWindowV1",
+    "SourceAvailabilityV1",
+    "backup_archive_v1",
+    "backup_partition_v1",
     "build_capture_record_v1",
+    "compact_partition_v1",
+    "compaction_candidates_v1",
     "default_archive_root",
+    "derive_archive_availability_by_source_v1",
     "derive_archive_availability_v1",
     "derive_capture_gaps_v1",
+    "disk_free_bytes_v1",
     "find_partitions_v1",
     "first_party_bybit_capture_contract_v1",
+    "iter_compaction_results_v1",
     "knowledge_bound_utc_nanos",
     "measure_clock_resolution_nanos",
     "nanos_to_datetime",
     "new_session_id_v1",
+    "open_partition_bytes_v1",
     "partition_directory",
     "read_lifecycle_v1",
     "read_partition_status_v1",
     "replay_partition_v1",
+    "session_source_id_v1",
     "sha256_file",
     "utc_day_of_nanos",
     "verify_partition_v1",

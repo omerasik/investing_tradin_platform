@@ -16,6 +16,7 @@ import unittest
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path
+from typing import ClassVar
 from unittest import mock
 from uuid import uuid4
 
@@ -27,12 +28,17 @@ from trade_platform.bybit_public_websocket_recorder_v1 import (
     BybitPublicWebSocketError,
     CaptureClockRegressionError,
     CaptureContractViolationError,
+    CaptureDiskBudgetError,
+    CaptureHealthV1,
+    CaptureStopSignalV1,
     iter_health_lines,
+    run_capture_fleet_v1,
 )
 from trade_platform.first_party_capture_archive_v1 import (
     END_PROOF_CLOCK_DISCONTINUITY,
     END_PROOF_CONNECTION_LOST,
     END_PROOF_CONTRACT_VIOLATION,
+    END_PROOF_DISK_BUDGET_STOP,
     END_PROOF_OPERATOR_BOUNDED_STOP,
     END_PROOF_OPERATOR_INTERRUPT,
     END_PROOF_PEER_CLOSED,
@@ -55,6 +61,7 @@ from trade_platform.first_party_capture_archive_v1 import (
 )
 from trade_platform.first_party_capture_authority_v1 import (
     first_party_bybit_capture_contract_v1,
+    first_party_bybit_measurement_contract_v1,
 )
 
 CONTRACT = first_party_bybit_capture_contract_v1()
@@ -733,6 +740,263 @@ class ArchiveIsolationTests(unittest.TestCase):
                 CapturePartitionWriterV1(
                     root=root, contract=CONTRACT, session_id=session, day=DAY
                 )
+
+
+# -- Phase R1A --------------------------------------------------------------
+
+
+class StopSignalTests(unittest.TestCase):
+    def test_first_request_wins(self) -> None:
+        signal = CaptureStopSignalV1()
+        self.assertFalse(signal.requested)
+        signal.request(END_PROOF_DISK_BUDGET_STOP)
+        signal.request(END_PROOF_OPERATOR_INTERRUPT)
+        self.assertTrue(signal.requested)
+        self.assertEqual(END_PROOF_DISK_BUDGET_STOP, signal.end_proof)
+
+    def test_observed_end_proofs_cannot_be_requested(self) -> None:
+        signal = CaptureStopSignalV1()
+        for proof in (END_PROOF_CONNECTION_LOST, END_PROOF_UTC_DAY_ROLLOVER, END_PROOF_RECORDER_FAILURE):
+            with self.assertRaises(FirstPartyCaptureArchiveError):
+                signal.request(proof)
+        self.assertFalse(signal.requested)
+
+
+class RequestedStopTests(_TempRootTest):
+    def test_a_requested_stop_labels_the_session_with_its_reason(self) -> None:
+        signal = CaptureStopSignalV1()
+        recorder = BybitPublicCaptureRecorderV1(
+            archive_root=self.root, contract=CONTRACT, stop_signal=signal
+        )
+
+        def fake_loop(**_: object) -> None:
+            pending = set(CONTRACT.topics())
+            recorder._handle_subscription_reply(SUBSCRIBE_ACK, pending, CaptureClockReadingV1.now())
+            recorder._record(TICKER_SNAPSHOT, CaptureClockReadingV1.now())
+            signal.request(END_PROOF_DISK_BUDGET_STOP)
+
+        with mock.patch.object(recorder, "_capture_loop", side_effect=fake_loop):
+            health = recorder.run()
+        self.assertEqual(END_PROOF_DISK_BUDGET_STOP, health.session_end_proof)
+        (directory,) = find_partitions_v1(self.root)
+        partition = read_partition_status_v1(directory)
+        self.assertEqual(PARTITION_STATUS_COMPLETE, partition.status, partition.reasons)
+        self.assertEqual(END_PROOF_DISK_BUDGET_STOP, partition.coverage[-1].end_proof)
+        self.assertEqual((), partition.gaps)
+
+    def test_the_connection_loop_returns_once_a_stop_is_requested(self) -> None:
+        signal = CaptureStopSignalV1()
+        signal.request(END_PROOF_OPERATOR_INTERRUPT)
+        recorder = BybitPublicCaptureRecorderV1(
+            archive_root=self.root, contract=CONTRACT, stop_signal=signal
+        )
+        client = mock.MagicMock()
+        with mock.patch.object(recorder_module, "_WebSocketClient", return_value=client):
+            recorder._session_id = uuid4()
+            recorder._run_one_connection(max_records=None, deadline=None)
+        client.receive_text.assert_not_called()
+        client.close.assert_called_once()
+        if recorder._writer is not None:
+            recorder._writer.close_without_finalizing()
+
+
+class ObserverAndClockEvidenceTests(_TempRootTest):
+    def test_the_observer_sees_every_record_and_its_bytes(self) -> None:
+        seen: list[tuple[str, int]] = []
+        recorder = BybitPublicCaptureRecorderV1(
+            archive_root=self.root,
+            contract=CONTRACT,
+            record_observer=lambda record, written: seen.append((record.channel, written)),
+        )
+        recorder._session_id = uuid4()
+        recorder._handle_subscription_reply(SUBSCRIBE_ACK, set(CONTRACT.topics()), _reading(0))
+        recorder._record(TICKER_SNAPSHOT, _reading(1))
+        recorder._record(TRADE, _reading(2))
+        self.assertEqual(["tickers", "publicTrade"], [channel for channel, _ in seen])
+        total = sum(written for _, written in seen)
+        self.assertEqual(total, recorder.health().bytes_written)
+        self.assertEqual("BTCUSDT", recorder.health().exchange_symbol)
+        recorder._close_coverage(END_PROOF_OPERATOR_BOUNDED_STOP)
+        directory = recorder._writer.directory  # type: ignore[union-attr]
+        recorder._finalize_writer()
+        self.assertEqual(total, (directory / "records.ndjson").stat().st_size)
+
+    def test_clock_evidence_is_written_by_the_recording_thread(self) -> None:
+        recorder = BybitPublicCaptureRecorderV1(archive_root=self.root, contract=CONTRACT)
+        recorder._session_id = uuid4()
+        recorder._handle_subscription_reply(SUBSCRIBE_ACK, set(CONTRACT.topics()), _reading(0))
+        detail = '{"offset_estimate_nanos":9471060885,"offset_bound_nanos":179412250}'
+        recorder.submit_clock_evidence(detail)
+        recorder._drain_clock_evidence()
+        recorder._close_coverage(END_PROOF_OPERATOR_BOUNDED_STOP)
+        directory = recorder._writer.directory  # type: ignore[union-attr]
+        recorder._finalize_writer()
+        events = [
+            event for event in read_lifecycle_v1(directory)
+            if event.kind == CaptureLifecycleKindV1.CLOCK_OFFSET_SAMPLE.value
+        ]
+        self.assertEqual([detail], [event.detail for event in events])
+        self.assertEqual(PARTITION_STATUS_COMPLETE, read_partition_status_v1(directory).status)
+
+
+class _FakeRecorderFactory:
+    """Stands in for recorders so fleet supervision is proven without sockets."""
+
+    def __init__(self, failing: dict[str, int] | None = None) -> None:
+        self.failing = dict(failing or {})
+        self.instances: list[_FakeRecorder] = []
+
+    def __call__(self, **kwargs: object) -> _FakeRecorder:
+        recorder = _FakeRecorder(self, **kwargs)  # type: ignore[arg-type]
+        self.instances.append(recorder)
+        return recorder
+
+
+class _FakeRecorder:
+    def __init__(
+        self,
+        factory: _FakeRecorderFactory,
+        *,
+        archive_root: Path,
+        contract: object,
+        stop_signal: CaptureStopSignalV1,
+        record_observer: object,
+    ) -> None:
+        self.factory = factory
+        self.contract = contract
+        self.stop = stop_signal
+        self.evidence: list[str] = []
+        self.symbol = contract.exchange_symbol  # type: ignore[attr-defined]
+
+    def submit_clock_evidence(self, detail: str) -> None:
+        self.evidence.append(detail)
+
+    def run(self) -> None:
+        if self.factory.failing.get(self.symbol, 0) > 0:
+            self.factory.failing[self.symbol] -= 1
+            raise RuntimeError("simulated lane failure")
+        while not self.stop.requested:
+            time.sleep(0.002)
+
+    def health(self) -> CaptureHealthV1:
+        return CaptureHealthV1(
+            session_id=None,
+            connected=False,
+            subscriptions_acknowledged=False,
+            records_written=0,
+            coverage_open=False,
+            last_arrival_utc=None,
+            reconnects=0,
+            clock_discontinuities=0,
+            gaps_recorded=0,
+            partition_directory=None,
+            session_end_proof=self.stop.end_proof,
+            exchange_symbol=self.symbol,
+        )
+
+
+class CaptureFleetTests(_TempRootTest):
+    FAST: ClassVar[dict[str, float]] = {
+        "poll_seconds": 0.005,
+        "lane_restart_backoff_seconds": 0.01,
+        "maintenance_interval_seconds": 0.02,
+    }
+
+    def _contracts(self) -> tuple:
+        return (
+            first_party_bybit_measurement_contract_v1("BTCUSDT"),
+            first_party_bybit_measurement_contract_v1("ETHUSDT"),
+        )
+
+    def test_every_lane_runs_until_the_bound(self) -> None:
+        factory = _FakeRecorderFactory()
+        result = run_capture_fleet_v1(
+            self._contracts(), archive_root=self.root, max_seconds=0.1,
+            recorder_factory=factory, **self.FAST,
+        )
+        self.assertEqual(END_PROOF_OPERATOR_BOUNDED_STOP, result.end_proof)
+        self.assertEqual(["BTCUSDT", "ETHUSDT"], sorted(h.exchange_symbol for h in result.sessions))
+        self.assertEqual({}, dict(result.failures))
+        self.assertEqual(0, result.restarts)
+
+    def test_a_failing_lane_is_restarted_as_a_new_session(self) -> None:
+        factory = _FakeRecorderFactory(failing={"ETHUSDT": 2})
+        result = run_capture_fleet_v1(
+            self._contracts(), archive_root=self.root, max_seconds=0.4,
+            recorder_factory=factory, **self.FAST,
+        )
+        self.assertEqual(2, result.restarts)
+        self.assertEqual({"ETHUSDT:RuntimeError:simulated lane failure": 2}, dict(result.failures))
+        eth_instances = [r for r in factory.instances if r.symbol == "ETHUSDT"]
+        self.assertEqual(3, len(eth_instances))
+        self.assertEqual(4, len(result.sessions))
+
+    def test_capture_refuses_to_start_below_the_disk_floor(self) -> None:
+        with (
+            mock.patch.object(recorder_module, "disk_free_bytes_v1", return_value=10),
+            self.assertRaises(CaptureDiskBudgetError),
+        ):
+            run_capture_fleet_v1(
+                self._contracts(), archive_root=self.root, min_free_bytes=100,
+                recorder_factory=_FakeRecorderFactory(), **self.FAST,
+            )
+
+    def test_running_short_of_disk_stops_every_lane(self) -> None:
+        readings = iter([1_000] + [10] * 1_000)
+        with mock.patch.object(
+            recorder_module, "disk_free_bytes_v1", side_effect=lambda _: next(readings)
+        ):
+            result = run_capture_fleet_v1(
+                self._contracts(), archive_root=self.root, min_free_bytes=100,
+                max_seconds=5.0, recorder_factory=_FakeRecorderFactory(), **self.FAST,
+            )
+        self.assertEqual(END_PROOF_DISK_BUDGET_STOP, result.end_proof)
+        self.assertEqual(
+            {END_PROOF_DISK_BUDGET_STOP}, {h.session_end_proof for h in result.sessions}
+        )
+
+    def test_clock_samples_reach_every_running_recorder(self) -> None:
+        samples = iter([{"offset_estimate_nanos": 5}, None, {"offset_estimate_nanos": 7}])
+        factory = _FakeRecorderFactory()
+        result = run_capture_fleet_v1(
+            self._contracts(), archive_root=self.root, max_seconds=0.3,
+            recorder_factory=factory, clock_sampler=lambda: next(samples, None),
+            clock_sample_interval_seconds=0.05, **self.FAST,
+        )
+        self.assertGreaterEqual(len(result.clock_samples), 2)
+        self.assertGreaterEqual(result.clock_sample_failures, 1)
+        for recorder in factory.instances:
+            self.assertIn('{"offset_estimate_nanos":5}', recorder.evidence)
+
+    def test_finalized_partitions_are_compacted(self) -> None:
+        session = uuid4()
+        writer = CapturePartitionWriterV1(root=self.root, contract=CONTRACT, session_id=session, day=DAY)
+        writer.append_record(
+            recorder_module.build_capture_record_v1(
+                contract=CONTRACT, session_id=session, sequence=0, clock=_reading(1),
+                payload_text=TICKER_SNAPSHOT,
+            )
+        )
+        writer.declare_coverage(
+            recorder_module.CaptureCoverageIntervalV1(
+                start_utc_nanos=_reading(0).arrival_utc_nanos,
+                last_proven_utc_nanos=_reading(1).arrival_utc_nanos,
+                end_proof=END_PROOF_OPERATOR_BOUNDED_STOP,
+                record_count=1,
+            )
+        )
+        directory = writer.finalize().parent
+        result = run_capture_fleet_v1(
+            self._contracts(), archive_root=self.root, max_seconds=0.05,
+            recorder_factory=_FakeRecorderFactory(), **self.FAST,
+        )
+        self.assertEqual([directory], [c.directory for c in result.compactions])
+        self.assertEqual(1, verify_partition_v1(directory).record_count)
+
+    def test_contracts_must_be_distinct(self) -> None:
+        contract = first_party_bybit_measurement_contract_v1("BTCUSDT")
+        with self.assertRaises(ValueError):
+            run_capture_fleet_v1((contract, contract), archive_root=self.root)
 
 
 if __name__ == "__main__":

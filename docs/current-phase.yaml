@@ -1,202 +1,92 @@
-# Cheap current-task pointer for Claude Code. Keep it under ~60 lines.
+# Cheap current-task pointer for Claude Code. Keep it small.
 # This is NOT a second roadmap: requirements stay in MASTER_ROADMAP.md, design
 # stays in module docstrings, history stays in git.
 
-updated: 2026-09-23
+updated: 2026-09-24
 
-# Recent commits number phases 3B.1/3B.2/3B.3/3C/3D.x. That series is distinct from
-# docs/MODULE_3B_GOVERNANCE_SECURITY.md, docs/MODULE_3C_POSTGRES_RUNTIME_WIRING.md
-# and from the roadmap's 3G/3H/3I/3J series. Disambiguate before assuming.
+# Phase naming. Since 2026-09-24 the owner-approved canonical roadmap uses an
+# "R" series (R0-R15, owner review points OR-1..OR-14). It is distinct from the
+# RQ-xxx rows, the 3B.x/3C/3D.x/3Z.x series, the MODULE_* docs and the roadmap's
+# 3G/3H/3I/3J series. Order: R0 (ops) -> R1A -> OR-2 -> R1B; R2A (knowledge-time
+# semantics, FIN) -> R2B (columnar data plane, SCALE) -> R3B (free T2 archive)
+# -> R3A (T4 normalization/sealing) -> R4 Strategy Lab -> R5 UI -> R6 validation
+# -> R8 opportunity engine -> R9 accounts/risk -> R10 paper; R7 (T3 spine) is
+# the one parallel track.
 phase:
-  id: "3Z.2"
-  name: First-party forward capture recorder (starts the T4 clock)
-  status: in_review          # PR open, awaiting owner review; not merged
-  base_commit: 9e68b9f       # 3Z.1 (PR #146) merged, exact-main CI green
+  id: "R1A"
+  name: Multi-symbol capture capability and capacity measurement
+  status: in_review
+  base_commit: e38737a       # 3Z.2 (PR #147) merged, exact-main CI green
+  scope_paths:
+    - src/trade_platform/first_party_capture_authority_v1.py   # measurement contracts, closed-set resolver
+    - src/trade_platform/first_party_capture_archive_v1.py     # compaction, disk end proof, backup, per-source availability
+    - src/trade_platform/bybit_public_websocket_recorder_v1.py # stop signal, observer, clock evidence, fleet
+    - src/trade_platform/first_party_capture_measurement_v1.py # capacity report, timestamp delta, clock offset
+    - scripts/capture_bybit_public.py
+    - tests/test_first_party_capture_authority_v1.py
+    - tests/test_first_party_capture_archive_v1.py
+    - tests/test_bybit_public_websocket_recorder_v1.py
+    - tests/test_first_party_capture_measurement_v1.py
+  not_in_scope: >-
+    Pinning a production universe (OR-2 -> R1B), T4 registration of any new
+    contract, normalization, sealing, tier verdicts, spot/L2, UI, migrations.
+    The production v1 contract (source 1a4abe35-..., hash d76a51fc...) is
+    byte-for-byte unchanged; measurement contracts are NOT registered with the
+    evidence-tier authority.
+  ends_with: >-
+    A bounded ~24 h representative measurement run (8-symbol pinned sample,
+    turnover ranks 1,2,4,7,30,60,100,300), its capacity report, and 2-4
+    capture-universe options with a recommendation for the owner (OR-2).
+
+r0_operations:                # the T4 clock; runs beside every phase
+  status: running             # BTCUSDT production contract v1, default root
+  command: scripts/capture_bybit_public.py supervise   # after R1A merges; `run` before
+  host_clock_finding: >-
+    2026-09-24: Windows Time service (W32Time) is not running on the capture
+    host and the host clock read ~9.47 s behind Bybit server time (RTT-bounded,
+    +/- 0.18 s). Arrival timestamps are recorded on this clock. R1A records
+    RTT-bounded offset samples in every session's lifecycle log as evidence;
+    no arrival is ever adjusted. Enabling time sync is an owner action (system
+    setting). Sessions recorded before sync carry this offset and R2A/R3A must
+    decide their admissibility from the recorded evidence.
+  timestamp_delta_rule: >-
+    arrival - exchange ts is an OBSERVED TIMESTAMP DELTA, never latency, and is
+    never the justification for a T2 publication-lag value (OR-5).
 
 owner_decision:               # PERMANENT. Not a budget pause.
   id: NO_PAID_MARKET_DATA_SUBSCRIPTIONS
   date: 2026-09-23
   statement: >-
-    The platform will not purchase Tardis or any other paid historical
-    market-data subscription, now or later. Recurring market-data subscription
-    cost target is $0. Acquisition uses official public exchange APIs and
+    No Tardis or other paid historical market-data subscription, now or later.
+    Recurring market-data cost target is $0: official public exchange APIs and
     WebSocket feeds, free public exchange archives, official government and
-    open-data sources, genuinely free APIs, and first-party capture performed
-    by this platform.
-  consequences:
-    - The 3D.9S.3A acquisition/purchase gate is SUPERSEDED and will not be executed.
-    - >-
-      canonical_captured_source_authority_v1 (Tardis contract, source_id
-      b4f161e8-3ebd-53f5-bfdb-e527f598b08a) stays merged and byte-for-byte
-      unchanged as a never-activated authority. It is history and a reusable
-      semantic reference; it is NOT a dependency of any future phase.
-    - >-
-      The valuable part of 3D.9S.2A/2B is CAPTURE semantics (recorder arrival
-      clock, channel scope, generated-record refusal, OPEN vs completed-bar
-      availability, positive coverage, fail-closed gaps) -- vendor-independent.
-      First-party capture reuses it as a third contract of the same shape.
-    - No evidence standard is lowered. The professional PIT gate is unchanged.
+    open-data sources, genuinely free APIs, and first-party capture. The dormant
+    Tardis contract (b4f161e8-...) stays merged and unchanged, a dependency of
+    nothing. No evidence standard is lowered.
 
-blocker:                      # unchanged; still an EVIDENCE-SOURCE problem
+blocker:                      # unchanged; resolved structurally by R2A + R3A/R3B
   id: UNPROVEN_DISTINCT_FEATURE_DECISION_TIMES
-  consequence: >-
-    All 216,000 canonical basis materializations share one knowledge_at, so
-    every decision_at collapses to a single post-span instant and any
-    open-to-open run would admit zero decisions.
-  resolution_path: >-
-    Not money. Either T2 event-time evidence with a declared publication-lag
-    assumption (conditional results only), or T3/T4 evidence that carries a
-    real per-observation knowledge time. See evidence_tiers.
+  root_cause: >-
+    Feature knowledge_at = max(normalized_at, dataset.created_at) (platform
+    ingestion/seal time, not market knowability), and canonical decision time
+    includes computed_at. All 216,000 basis materializations of the T1
+    composite f07ebfc1-19ce-4757-af4b-10525f6a6992 share one knowledge_at.
+  resolution_path: R2A three-clock doctrine, then T4 (R3A) / T2 (R3B) evidence.
 
-# IMPLEMENTED by Phase 3Z.1 in src/trade_platform/evidence_tier_authority_v1.py.
-# Orthogonal to real_market_data_provenance_v1 status, never a replacement for it.
-evidence_tiers:
-  T0_SYNTHETIC:      engineering only; no economic claim of any kind.
-  T1_RETROSPECTIVE: >-
-    Real values, no defensible knowledge time. Permits descriptive statistics,
-    data-quality work, liquidity/cost envelopes, hypothesis GENERATION, engine
-    correctness. Forbids performance, parameter ranking, any "works" claim.
-  T2_EVENT_TIME: >-
-    Venue-published per-observation event timestamps (free exchange tick
-    archives). Distinct decision times are provable; dissemination latency is
-    NOT. Permits backtests only under an explicit preregistered publication-lag
-    assumption plus lag sensitivity. Never a professional verdict.
-  T3_PUBLICATION_TIME: >-
-    The source itself publishes the knowledge time. Genuine PIT at $0 today:
-    SEC EDGAR acceptanceDateTime, FRED/ALFRED vintage dates, ECB and CME
-    scheduled publication times. Professional-verdict eligible.
-  T4_FIRST_PARTY_CAPTURE: >-
-    Our own recorder arrival timestamps on official public WebSocket feeds.
-    Strongest; grows forward only. Professional-verdict eligible.
-  gate_binding: >-
-    open_to_open professional validation stays bound to T3/T4 ONLY. T1/T2 live
-    in a separately named research lane that can never emit a professional
-    verdict, and must never be presented as PIT validation.
-  eligibility_is_not_compatibility: >-
-    T3/T4 state evidence QUALITY, never that a strategy or engine may consume
-    it. There is deliberately no generic shortcut: the tier authority knows no
-    strategy, and each strategy keeps its own research-input contract and
-    preregistration. Unrelated T3/T4 evidence authorizes nothing.
+evidence_tiers:               # implemented by 3Z.1, evidence_tier_authority_v1.py
+  T0_SYNTHETIC: engineering only.
+  T1_RETROSPECTIVE: real values, no defensible knowledge time; no performance claims.
+  T2_EVENT_TIME: venue event times; conditional only, with a declared bound lag.
+  T3_PUBLICATION_TIME: publisher's own knowledge time (EDGAR, ALFRED, ...).
+  T4_FIRST_PARTY_CAPTURE: our own recorder arrival times; grows forward only.
+  gate_binding: professional validation stays bound to T3/T4 only.
 
-phase_3z1:                    # scope paths; authority only, no data, no migration
-  scope_paths:
-    - src/trade_platform/evidence_tier_authority_v1.py
-    - src/trade_platform/open_to_open_preregistration_v1.py   # adjacent gate only
-    - tests/test_evidence_tier_authority_v1.py
-  design: >-
-    Pure content-hashed authority in the 3D.9S.2B shape: private issuer
-    sentinel, derived verdict, integrity re-check, no caller-settable flag, no
-    persistence and no migration. The tier comes from a CLOSED contract set
-    keyed by deterministic source_id; EvidenceTimingFactsV1 carries no provider
-    field at all, so a name cannot reach the decision. A declared timing
-    authority is checked only for agreement -- disagreement is a refusal,
-    never a promotion.
-  authorized_timing_contracts: 1   # Bybit V5 REST -> TimingAuthorityV1.NONE -> T1
-  gate: >-
-    require_authorized_for_holdout_with_evidence_tier_v1 sits BESIDE the
-    existing holdout gate, which is unchanged. The packet dataclass, its bound
-    fields, its content hash and preregistration_id are untouched, so every
-    3D.9A identity is byte-for-byte unchanged. The tier verdict is a required
-    positional argument, so there is no permissive default.
-  dormant_tardis: >-
-    Deliberately NOT registered. No dataset exists under it and none is
-    planned, and a third-party recorder clock is neither a publisher's
-    publication time (T3) nor this platform's own capture (T4). Registering it
-    would have required inventing a sixth tier or misclassifying it.
-  owner_decisions_not_taken: >-
-    No publication-lag value chosen: a T2 dataset without a declared, bound lag
-    assumption simply loses conditional eligibility. No cost, slippage,
-    leverage, sizing, allocation, risk-limit or threshold assumption exists in
-    this phase.
-
-existing_rest_dataset:        # f07ebfc1-19ce-4757-af4b-10525f6a6992
-  action: KEEP. Not deleted, not deprecated, not mutated, not relabelled.
-  tier: T1_RETROSPECTIVE      # effective_at = computed bar_close_at is an assumption
-  continuing_role: >-
-    Cross-check reference and descriptive research, exactly as already declared.
-    The same instrument and span are covered by the free Bybit public tick
-    archive (public.bybit.com/trading/BTCUSDT/, daily csv.gz from 2020-03-25),
-    which can raise the SAME research question to T2 over 6+ years at $0.
-
-phase_3z2:                    # capture only; no normalization, no dataset, no sealing
-  scope_paths:
-    - src/trade_platform/first_party_capture_authority_v1.py
-    - src/trade_platform/first_party_capture_archive_v1.py
-    - src/trade_platform/bybit_public_websocket_recorder_v1.py
-    - src/trade_platform/evidence_tier_authority_v1.py   # T4 registration only
-    - scripts/capture_bybit_public.py
-    - tests/test_first_party_capture_authority_v1.py
-    - tests/test_first_party_capture_archive_v1.py
-    - tests/test_bybit_public_websocket_recorder_v1.py
-  target: CRYPTO:BYBIT:BTCUSDT:PERP via wss://stream.bybit.com/v5/public/linear
-  channels: [tickers, publicTrade]      # nothing else; no L2, no liquidations
-  credential_required: false            # official public feed, no account
-  first_party_source_id: 1a4abe35-ff28-5f3a-9a12-592634f7ccb4
-  capture_contract_hash: d76a51fcd3b7420e55f02acb52ddb6ee9b668ec6e09ec5962139f5d0ea675753 # pragma: allowlist secret
-  clock_model: >-
-    Two clocks per message: platform wall clock (arrival_utc_nanos) and a
-    process-local monotonic counter. The OS-measured wall resolution is
-    recorded per session -- 15,625,000 ns on this host -- so nothing reads
-    nanosecond accuracy into an integer-nanosecond API. A wall or monotonic
-    regression fails closed; a wall-vs-monotonic divergence beyond 2 s is a
-    discontinuity that closes coverage and opens an explicit gap. Datetime and
-    UTC-day conversions are integer-exact and never move an arrival earlier.
-  storage: >-
-    Filesystem NDJSON under UTC-day partitions in an object-storage-shaped
-    layout, outside the working tree (~/.trade_platform/capture by default).
-    Append-only while OPEN; finalize writes MANIFEST.json with per-file SHA-256
-    and removes the marker. COMPLETE requires a verifying manifest. No
-    migration and no PostgreSQL row: raw traffic is high-cardinality and does
-    not belong in the low-cardinality evidence tables.
-  t4_boundary: >-
-    The source is registered with the 3Z.1 authority as
-    PLATFORM_RECORDER_ARRIVAL_TIMESTAMP -> T4_FIRST_PARTY_CAPTURE, but
-    registration issues NO verdict: evaluate_evidence_tier_v1 still needs proven
-    real provenance over a SEALED dataset, which 3Z.2 deliberately does not
-    create. First-party evaluation fails closed today on
-    evidence_tier_real_market_data_provenance_not_proven. Sealing is 3Z.3.
-  coverage_semantics: >-
-    Half-open [start, last_proven + 1). start and last_proven are measured
-    readings (subscription ack or record); the exclusive end is a derived
-    representational bound, never widened by clock resolution. Every record is
-    inside exactly one window, enforced by the writer at write time and by
-    replay. Knowledge time for PIT use is arrival + measured resolution
-    (knowledge_bound_utc_nanos), never the raw reading.
-  end_proofs: >-
-    OPERATOR_BOUNDED_STOP, OPERATOR_INTERRUPT, UTC_DAY_ROLLOVER, CONNECTION_LOST,
-    PEER_CLOSED, CLOCK_DISCONTINUITY, CONTRACT_VIOLATION, RECORDER_FAILURE. No
-    generic clean close. A hard crash writes nothing: PARTIAL, no manifest, no
-    window, excluded from derive_archive_availability_v1.
-  rejection_policy: >-
-    Only topic-less subscribe/ping/pong replies are ignored. Any other message
-    that fails the contract (bad JSON, unknown shape, foreign topic, schema,
-    symbol or type change) closes coverage at the last proof, is logged
-    verbatim as MESSAGE_REJECTED, opens a CONTRACT_VIOLATION gap and resets the
-    connection so a fresh snapshot restores ticker state.
-  smoke_evidence: >-
-    Post-integrity-fix: one 60 s real capture on 2026-09-23, no credential, 417
-    records (348 tickers, 69 publicTrade), COMPLETE, verify_partition_v1 clean,
-    417 = manifest = coverage sum, 0 records outside coverage, 0 rejections.
-    The three earlier smokes predate the fix: each left 1-6 records at the last
-    wall tick outside its own half-open window, which is what the review caught.
-    No performance, no P&L, no backtest.
-  operation: >-
-    scripts/capture_bybit_public.py run | health | replay | availability.
-    Capture accrues ONLY while the process runs. A shut-down, sleeping or
-    crashed machine writes nothing and cannot declare a gap; the hole is
-    derived instead, because coverage is positive-only (availability reports
-    SESSION_BOUNDARY between sessions). No always-on paid host is introduced.
-
-next_phases:                  # boundaries only; none authorized to start here
-  3Z.3: >-
-    Normalize and seal captured evidence into a canonical dataset, so a
-    first-party T4 evidence-tier verdict becomes issuable. Also free exchange
-    archive acquisition (T2) for BTCUSDT; replaces the abandoned purchase.
-  3Z.4: Publication-time macro/fundamental spine (T3) -- ALFRED + SEC EDGAR.
-  3Z.5: First professional validation run, on T3 evidence.
+existing_rest_dataset: >-
+  f07ebfc1-19ce-4757-af4b-10525f6a6992 -- KEEP, T1_RETROSPECTIVE, cross-check
+  and descriptive research only.
 
 safety_gates:
   - Untouched holdout (>= 2026-08-20T00:00Z) not opened, evaluated or summarized.
-  - No migration, no provider/broker/account/order call, no paid activation,
-    no execution-authority change, no live trading.
+  - No provider/broker/account/order call beyond public market data, no paid
+    activation, no execution-authority change, no live trading.
   - Research evidence never becomes execution authority.

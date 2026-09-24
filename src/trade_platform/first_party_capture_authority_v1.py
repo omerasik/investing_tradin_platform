@@ -346,3 +346,126 @@ def first_party_bybit_capture_contract_v1() -> FirstPartyCaptureContractV1:
 def first_party_bybit_source_id_v1() -> UUID:
     """The deterministic first-party source identity, for registration and tests."""
     return first_party_bybit_capture_contract_v1().source_id
+
+
+# ---------------------------------------------------------------------------
+# Phase R1A -- capacity-measurement capture contracts
+# ---------------------------------------------------------------------------
+#
+# R1A measures what multi-symbol capture actually costs on the operator's host
+# before anyone chooses a production universe (owner decision OR-2). The
+# measurement needs real traffic from several symbols of different activity,
+# so it needs contracts -- but they are deliberately *not* a production
+# universe and *not* registered with the evidence-tier authority. They carry the
+# exact v1 record, clock, gap and refusal semantics (one symbol per contract, so
+# every archive rule applies unchanged); only the purpose, the terms marker and
+# the semantic version differ, which also gives each one its own ``source_id``.
+# The v1 contract above is untouched byte for byte.
+
+FIRST_PARTY_MEASUREMENT_SEMANTIC_VERSION_V1: Final = (
+    "trade-platform-bybit-v5-public-websocket-first-party-capacity-measurement-1.0.0"
+)
+
+FIRST_PARTY_MEASUREMENT_TERMS_VERSION_V1: Final = (
+    "operator-declared:trade-platform-first-party-bybit-v5-public-websocket-"
+    "capacity-measurement:v1"
+)
+
+#: A pinned engineering sample across activity tiers. The ranks are the 24h
+#: USDT-linear turnover ranks observed from Bybit's public tickers endpoint on
+#: 2026-09-24 when the sample was chosen; they document why each symbol is in
+#: the sample and are not re-derived at run time. Choosing a sample to measure
+#: cost is an engineering decision; choosing what to capture in production is
+#: not, and nothing here does that.
+MEASUREMENT_SAMPLE_V1: Final[tuple[tuple[str, int], ...]] = (
+    ("BTCUSDT", 1),
+    ("ETHUSDT", 2),
+    ("SOLUSDT", 4),
+    ("DOGEUSDT", 7),
+    ("LINKUSDT", 30),
+    ("HBARUSDT", 60),
+    ("ATOMUSDT", 100),
+    ("GMTUSDT", 300),
+)
+
+MEASUREMENT_SAMPLE_SYMBOLS_V1: Final = tuple(symbol for symbol, _ in MEASUREMENT_SAMPLE_V1)
+
+
+def _measurement_authorization_reference(symbol: str) -> str:
+    return (
+        "operator-approved Phase R1A capacity-measurement capture: this platform "
+        "records the official public wss://stream.bybit.com/v5/public/linear feed "
+        f"for CRYPTO:BYBIT:{symbol}:PERP, channels tickers and publicTrade only, with "
+        "no credential, no account and no paid tier, solely to measure capture "
+        "cost. Not a production capture universe and not registered for "
+        "evidence-tier evaluation. Public market data only: no broker, account, "
+        "order, execution or live-trading authority is implied."
+    )
+
+
+def first_party_bybit_measurement_contract_v1(symbol: str) -> FirstPartyCaptureContractV1:
+    """The capacity-measurement contract for one pinned sample symbol.
+
+    Refuses any symbol outside :data:`MEASUREMENT_SAMPLE_SYMBOLS_V1`: widening the
+    sample is a code change, never a runtime argument.
+    """
+    if symbol not in MEASUREMENT_SAMPLE_SYMBOLS_V1:
+        raise FirstPartyCaptureAuthorityError(f"measurement_symbol_not_in_pinned_sample:{symbol}")
+    return FirstPartyCaptureContractV1(
+        schema_version=FIRST_PARTY_CAPTURE_CONTRACT_SCHEMA_VERSION,
+        capture_provider=CAPTURE_PROVIDER_FIRST_PARTY,
+        originating_exchange=ORIGINATING_EXCHANGE_BYBIT_V1,
+        origin_transport=OriginTransportV1.BYBIT_V5_PUBLIC_WEBSOCKET.value,
+        endpoint=BYBIT_PUBLIC_LINEAR_ENDPOINT_V1,
+        instrument_scope=f"CRYPTO:BYBIT:{symbol}:PERP",
+        exchange_symbol=symbol,
+        authorized_channels=tuple(
+            sorted((BybitPublicChannelV1.TICKERS.value, BybitPublicChannelV1.PUBLIC_TRADE.value))
+        ),
+        capture_methodology=CaptureMethodologyV1.FIRST_PARTY_LIVE_WEBSOCKET_RECORDING.value,
+        source_availability_clock=SourceAvailabilityClockV1.PLATFORM_RECORDER_WALL_CLOCK.value,
+        credential_required=False,
+        generated_records_permitted=False,
+        provider_captured_observations=PROVIDER_CAPTURED_OBSERVATIONS_V1,
+        platform_derived_artifacts=PLATFORM_DERIVED_ARTIFACTS_V1,
+        ticker_availability_rules=TICKER_AVAILABILITY_RULES_V1,
+        bar_temporal_rules=BAR_TEMPORAL_RULES_V1,
+        gap_authority_rules=GAP_AUTHORITY_RULES_V1,
+        clock_semantics=CLOCK_SEMANTICS_V1,
+        capture_refusal_rules=CAPTURE_REFUSAL_RULES_V1,
+        record_schema_version=FIRST_PARTY_RECORD_SCHEMA_VERSION_V1,
+        capture_semantic_version=FIRST_PARTY_MEASUREMENT_SEMANTIC_VERSION_V1,
+        provider_terms_version=FIRST_PARTY_MEASUREMENT_TERMS_VERSION_V1,
+        authorization_reference=_measurement_authorization_reference(symbol),
+        _issuer=_ISSUER,
+    )
+
+
+def first_party_bybit_measurement_contracts_v1() -> tuple[FirstPartyCaptureContractV1, ...]:
+    """Every capacity-measurement contract, in pinned sample order."""
+    return tuple(
+        first_party_bybit_measurement_contract_v1(symbol) for symbol in MEASUREMENT_SAMPLE_SYMBOLS_V1
+    )
+
+
+def authorized_first_party_capture_contracts_v1() -> tuple[FirstPartyCaptureContractV1, ...]:
+    """The closed set of capture contracts a partition may belong to.
+
+    The production v1 contract first, then the R1A measurement contracts.
+    Membership is by deterministic identity only; a partition that names a
+    ``source_id`` outside this set resolves to nothing.
+    """
+    return (first_party_bybit_capture_contract_v1(), *first_party_bybit_measurement_contracts_v1())
+
+
+def resolve_first_party_capture_contract_v1(source_id: UUID | str) -> FirstPartyCaptureContractV1 | None:
+    """The authorized contract whose deterministic ``source_id`` this is, else ``None``.
+
+    Resolution only *selects* which contract a partition must then satisfy
+    field for field; it never vouches for the partition itself.
+    """
+    wanted = str(source_id)
+    for contract in authorized_first_party_capture_contracts_v1():
+        if str(contract.source_id) == wanted:
+            return contract
+    return None

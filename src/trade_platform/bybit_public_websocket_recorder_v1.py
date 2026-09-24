@@ -62,11 +62,14 @@ import base64
 import hashlib
 import json
 import os
+import queue
 import socket
 import ssl
 import struct
+import sys
+import threading
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -75,15 +78,19 @@ from urllib.parse import urlparse
 from uuid import UUID
 
 from .first_party_capture_archive_v1 import (
+    COMPACTION_FILE_NAME,
     END_PROOF_CLOCK_DISCONTINUITY,
     END_PROOF_CONNECTION_LOST,
     END_PROOF_CONTRACT_VIOLATION,
+    END_PROOF_DISK_BUDGET_STOP,
     END_PROOF_OPERATOR_BOUNDED_STOP,
     END_PROOF_OPERATOR_INTERRUPT,
     END_PROOF_PEER_CLOSED,
     END_PROOF_RECORDER_FAILURE,
     END_PROOF_UTC_DAY_ROLLOVER,
     GAP_KIND_FOR_END_PROOF_V1,
+    OPEN_MARKER_NAME,
+    REQUESTABLE_END_PROOFS_V1,
     CaptureClockMonitorV1,
     CaptureClockReadingV1,
     CaptureCoverageIntervalV1,
@@ -91,17 +98,27 @@ from .first_party_capture_archive_v1 import (
     CaptureLifecycleEventV1,
     CaptureLifecycleKindV1,
     CapturePartitionWriterV1,
+    CompactionResultV1,
     FirstPartyCaptureArchiveError,
+    FirstPartyCaptureRecordV1,
     build_capture_record_v1,
+    compaction_candidates_v1,
     default_archive_root,
+    disk_free_bytes_v1,
+    find_partitions_v1,
+    iter_compaction_results_v1,
     measure_clock_resolution_nanos,
     nanos_to_datetime,
     new_session_id_v1,
+    open_partition_bytes_v1,
+    read_partition_status_v1,
+    session_source_id_v1,
     utc_day_of_nanos,
 )
 from .first_party_capture_authority_v1 import (
     FirstPartyCaptureContractV1,
     first_party_bybit_capture_contract_v1,
+    resolve_first_party_capture_contract_v1,
 )
 
 #: Bounded exponential backoff. Bybit's public feed is free and unmetered, but
@@ -317,19 +334,63 @@ class CaptureHealthV1:
     contract_violations: int = 0
     rejection_reasons: Mapping[str, int] = field(default_factory=dict)
     session_end_proof: str | None = None
+    exchange_symbol: str | None = None
+    bytes_written: int = 0
 
     def summary(self) -> str:
         status = "COVERING" if (self.connected and self.coverage_open) else "NOT_COVERING"
         last = "never" if self.last_arrival_utc is None else self.last_arrival_utc.isoformat()
         rejected = ",".join(f"{reason}={count}" for reason, count in self.rejection_reasons.items())
+        symbol = "" if self.exchange_symbol is None else f"{self.exchange_symbol} "
         return (
-            f"{status} session={self.session_id} records={self.records_written} "
+            f"{symbol}{status} session={self.session_id} records={self.records_written} "
+            f"bytes={self.bytes_written} "
             f"last_arrival={last} reconnects={self.reconnects} "
             f"clock_discontinuities={self.clock_discontinuities} gaps={self.gaps_recorded} "
             f"contract_violations={self.contract_violations}"
             + (f" rejected[{rejected}]" if rejected else "")
             + (f" end_proof={self.session_end_proof}" if self.session_end_proof else "")
         )
+
+
+class CaptureStopSignalV1:
+    """A thread-safe request that running recorders stop, naming why.
+
+    Only an operator stop, an operator interrupt or the disk-budget guard can be
+    *requested*; every other end proof is something a recorder observes itself.
+    The first request wins, so a later one can never relabel a stop.
+    """
+
+    __slots__ = ("_end_proof", "_event", "_lock")
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+        self._lock = threading.Lock()
+        self._end_proof: str | None = None
+
+    def request(self, end_proof: str) -> None:
+        if end_proof not in REQUESTABLE_END_PROOFS_V1:
+            raise FirstPartyCaptureArchiveError(f"end_proof_cannot_be_requested:{end_proof}")
+        with self._lock:
+            if self._end_proof is None:
+                self._end_proof = end_proof
+        self._event.set()
+
+    @property
+    def requested(self) -> bool:
+        return self._event.is_set()
+
+    @property
+    def end_proof(self) -> str | None:
+        return self._end_proof
+
+    def wait(self, timeout: float) -> bool:
+        return self._event.wait(timeout)
+
+
+#: Called by a recorder for every record it wrote, with the bytes it added.
+#: Runs on the recorder's own thread; give each recorder its own observer.
+RecordObserverV1 = Callable[[FirstPartyCaptureRecordV1, int], None]
 
 
 class BybitPublicCaptureRecorderV1:
@@ -346,10 +407,17 @@ class BybitPublicCaptureRecorderV1:
         archive_root: Path | None = None,
         contract: FirstPartyCaptureContractV1 | None = None,
         clock_monitor: CaptureClockMonitorV1 | None = None,
+        stop_signal: CaptureStopSignalV1 | None = None,
+        record_observer: RecordObserverV1 | None = None,
     ) -> None:
         self._contract = first_party_bybit_capture_contract_v1() if contract is None else contract
         self._root = default_archive_root() if archive_root is None else archive_root
         self._clock = CaptureClockMonitorV1() if clock_monitor is None else clock_monitor
+        self._stop = stop_signal
+        self._observer = record_observer
+        #: Clock evidence handed over by another thread; written by this one.
+        self._clock_evidence: queue.SimpleQueue[str] = queue.SimpleQueue()
+        self._bytes_written = 0
         self._session_id: UUID | None = None
         self._writer: CapturePartitionWriterV1 | None = None
         self._day: date | None = None
@@ -396,7 +464,32 @@ class BybitPublicCaptureRecorderV1:
             contract_violations=self._contract_violations,
             rejection_reasons=dict(sorted(self._rejection_reasons.items())),
             session_end_proof=self._session_end_proof,
+            exchange_symbol=self._contract.exchange_symbol,
+            bytes_written=self._bytes_written,
         )
+
+    @property
+    def contract(self) -> FirstPartyCaptureContractV1:
+        return self._contract
+
+    def _stop_requested(self) -> bool:
+        return self._stop is not None and self._stop.requested
+
+    def submit_clock_evidence(self, detail: str) -> None:
+        """Queue a clock-offset sample for this session's lifecycle log.
+
+        Thread-safe. The sample is written by the recording thread itself at its
+        next loop turn, so no other thread ever touches the partition files.
+        """
+        self._clock_evidence.put(detail)
+
+    def _drain_clock_evidence(self) -> None:
+        while True:
+            try:
+                detail = self._clock_evidence.get_nowait()
+            except queue.Empty:
+                return
+            self._lifecycle(CaptureLifecycleKindV1.CLOCK_OFFSET_SAMPLE, detail)
 
     # -- partition lifecycle ---------------------------------------------
     def _writer_for(self, day: date) -> CapturePartitionWriterV1:
@@ -528,7 +621,10 @@ class BybitPublicCaptureRecorderV1:
         try:
             self._lifecycle(CaptureLifecycleKindV1.SESSION_STARTED, str(self._session_id))
             self._capture_loop(max_records=max_records, deadline=deadline)
-            end_proof = END_PROOF_OPERATOR_BOUNDED_STOP
+            # A requested stop carries the reason it was requested for; a
+            # reached bound is an operator bounded stop.
+            requested = None if self._stop is None else self._stop.end_proof
+            end_proof = END_PROOF_OPERATOR_BOUNDED_STOP if requested is None else requested
         except KeyboardInterrupt:
             end_proof = END_PROOF_OPERATOR_INTERRUPT
             raise
@@ -541,8 +637,10 @@ class BybitPublicCaptureRecorderV1:
 
     def _capture_loop(self, *, max_records: int | None, deadline: float | None) -> None:
         def bound_reached() -> bool:
-            return (deadline is not None and time.monotonic() >= deadline) or (
-                max_records is not None and self._records_written >= max_records
+            return (
+                self._stop_requested()
+                or (deadline is not None and time.monotonic() >= deadline)
+                or (max_records is not None and self._records_written >= max_records)
             )
 
         attempt = 0
@@ -575,7 +673,10 @@ class BybitPublicCaptureRecorderV1:
                 # State must not survive the hole: a fresh snapshot after
                 # resubscribe is what re-establishes authoritative state.
                 self._clock.reset()
-                time.sleep(backoff)
+                if self._stop is None:
+                    time.sleep(backoff)
+                else:
+                    self._stop.wait(backoff)
 
     def _finish_session(self, end_proof: str, failure: BaseException | None) -> None:
         self._session_end_proof = end_proof
@@ -616,6 +717,9 @@ class BybitPublicCaptureRecorderV1:
             last_ping = time.monotonic()
 
             while True:
+                self._drain_clock_evidence()
+                if self._stop_requested():
+                    return
                 if deadline is not None and time.monotonic() >= deadline:
                     return
                 if max_records is not None and self._records_written >= max_records:
@@ -738,27 +842,303 @@ class BybitPublicCaptureRecorderV1:
 
         writer = self._writer_for(utc_day_of_nanos(reading.arrival_utc_nanos))
         self._open_coverage(reading.arrival_utc_nanos)
-        writer.append_record(record)
+        written = writer.append_record(record)
         self._sequence += 1
         self._records_written += 1
+        self._bytes_written += written
         self._coverage_records += 1
         self._coverage_last_proven_nanos = reading.arrival_utc_nanos
         self._last_arrival_nanos = reading.arrival_utc_nanos
+        if self._observer is not None:
+            # Measurement only: the record is already durable, so an observer
+            # can neither alter nor lose evidence.
+            self._observer(record, written)
 
 
 def iter_health_lines(root: Path | None = None) -> Iterator[str]:
-    """Human-readable status of every partition under an archive root."""
-    from .first_party_capture_archive_v1 import find_partitions_v1, read_partition_status_v1
+    """Human-readable status of every partition under an archive root.
 
+    Each line names the partition's symbol and purpose (production or
+    capacity measurement). A partition still being written shows the current
+    size of its records file -- it is PARTIAL until finalized, by design.
+    """
     base = default_archive_root() if root is None else root
+    production = first_party_bybit_capture_contract_v1().source_id
     for directory in find_partitions_v1(base):
         partition = read_partition_status_v1(directory)
+        claimed = session_source_id_v1(directory)
+        contract = None if claimed is None else resolve_first_party_capture_contract_v1(claimed)
+        if contract is None:
+            label = "UNATTRIBUTED"
+        else:
+            purpose = "production" if contract.source_id == production else "measurement"
+            label = f"{contract.exchange_symbol}/{purpose}"
+        extra = ""
+        if (directory / OPEN_MARKER_NAME).exists():
+            size = open_partition_bytes_v1(directory)
+            extra = " OPEN" + ("" if size is None else f" bytes={size}")
+        elif (directory / COMPACTION_FILE_NAME).exists():
+            extra = " compacted"
         reasons = "" if not partition.reasons else " reasons=" + ",".join(partition.reasons)
         yield (
-            f"{partition.status} records={partition.record_count} "
+            f"{label} {partition.status}{extra} records={partition.record_count} "
             f"coverage={len(partition.coverage)} gaps={len(partition.gaps)} "
             f"{directory}{reasons}"
         )
+
+
+# -- Phase R1A: several recorders, one process ------------------------------
+
+
+class CaptureDiskBudgetError(RuntimeError):
+    """Free disk space is below the operator's floor, so capture refuses to start."""
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureFleetResultV1:
+    """How a fleet run ended, and everything it did on the way."""
+
+    end_proof: str
+    sessions: tuple[CaptureHealthV1, ...]
+    #: ``symbol:ExceptionType:message`` -> how many times that lane failed so.
+    failures: Mapping[str, int]
+    restarts: int
+    compactions: tuple[CompactionResultV1, ...]
+    compaction_failures: tuple[tuple[Path, str], ...]
+    #: Every clock-offset sample the fleet took, as handed to the recorders.
+    clock_samples: tuple[Mapping[str, Any], ...] = ()
+    clock_sample_failures: int = 0
+
+
+#: A lane that keeps failing backs off exponentially up to this ceiling, so a
+#: persistent fault (a delisted symbol, an unwritable path) cannot spin.
+LANE_RESTART_BACKOFF_CEILING_SECONDS_V1: Final = 900.0
+
+#: A lane session that ran at least this long resets its backoff: it was
+#: healthy, and its next failure is a new fault rather than the same one.
+LANE_HEALTHY_RUN_SECONDS_V1: Final = 600.0
+
+
+@dataclass(slots=True)
+class _FleetLane:
+    """One contract's recorder slot. A restart is always a new recorder and session."""
+
+    contract: FirstPartyCaptureContractV1
+    recorder: BybitPublicCaptureRecorderV1 | None = None
+    thread: threading.Thread | None = None
+    failure: BaseException | None = None
+    collected: bool = True
+    restart_at: float | None = None
+    started_at: float = 0.0
+    consecutive_failures: int = 0
+
+
+def run_capture_fleet_v1(
+    contracts: Sequence[FirstPartyCaptureContractV1],
+    *,
+    archive_root: Path,
+    stop_signal: CaptureStopSignalV1 | None = None,
+    max_seconds: float | None = None,
+    min_free_bytes: int = 0,
+    maintenance_interval_seconds: float = 60.0,
+    compact_finalized: bool = True,
+    observer_for: Callable[[FirstPartyCaptureContractV1], RecordObserverV1 | None] | None = None,
+    on_maintenance: Callable[[], None] | None = None,
+    lane_restart_backoff_seconds: float = 30.0,
+    poll_seconds: float = 1.0,
+    recorder_factory: Callable[..., BybitPublicCaptureRecorderV1] = BybitPublicCaptureRecorderV1,
+    clock_sampler: Callable[[], Mapping[str, Any] | None] | None = None,
+    clock_sample_interval_seconds: float = 900.0,
+) -> CaptureFleetResultV1:
+    """Run one independent recorder per contract until stopped.
+
+    Every contract keeps its own socket, clock monitor, session and partitions,
+    so each symbol's archive obeys exactly the single-recorder rules and a
+    failure in one lane can never make another lane's time look covered. A lane
+    that dies unexpectedly is restarted as a *new* session after a backoff; its
+    finished session keeps its own honest end proof.
+
+    The calling thread supervises: it enforces ``max_seconds``, checks free disk
+    space against ``min_free_bytes`` (stopping every lane with
+    ``DISK_BUDGET_STOP`` when it runs short, and refusing to start at all below
+    it), compacts finalized partitions losslessly, and turns ``KeyboardInterrupt``
+    into an ``OPERATOR_INTERRUPT`` stop for all lanes. A second interrupt while
+    lanes are still closing is re-raised: recorders are daemon threads, so the
+    process exits and any unfinished partition stays honestly PARTIAL.
+
+    With a ``clock_sampler`` the fleet also takes an RTT-bounded host-clock
+    offset sample at start and every ``clock_sample_interval_seconds``, and
+    hands each one to every running recorder, which writes it into its own
+    session's lifecycle log. Every T4 partition therefore carries evidence of
+    how far its arrival clock was from the venue's -- evidence only; no
+    arrival reading is ever adjusted.
+    """
+    if not contracts:
+        raise ValueError("fleet_requires_at_least_one_contract")
+    if len({contract.source_id for contract in contracts}) != len(contracts):
+        raise ValueError("fleet_contracts_must_be_distinct")
+    if min_free_bytes > 0 and disk_free_bytes_v1(archive_root) < min_free_bytes:
+        raise CaptureDiskBudgetError("free_disk_space_below_the_capture_floor")
+
+    stop = CaptureStopSignalV1() if stop_signal is None else stop_signal
+    deadline = None if max_seconds is None else time.monotonic() + max_seconds
+    lanes = [_FleetLane(contract=contract) for contract in contracts]
+    sessions: list[CaptureHealthV1] = []
+    failures: dict[str, int] = {}
+    compactions: list[CompactionResultV1] = []
+    compaction_failures: list[tuple[Path, str]] = []
+    clock_samples: list[Mapping[str, Any]] = []
+    clock_sample_failures = 0
+    restarts = 0
+    latest_clock_detail: str | None = None
+
+    def sample_clock() -> None:
+        nonlocal clock_sample_failures, latest_clock_detail
+        if clock_sampler is None:
+            return
+        sample = clock_sampler()
+        if sample is None:
+            clock_sample_failures += 1
+            return
+        clock_samples.append(sample)
+        latest_clock_detail = json.dumps(dict(sample), sort_keys=True, separators=(",", ":"))
+        for lane in lanes:
+            if lane.recorder is not None and lane.thread is not None and lane.thread.is_alive():
+                lane.recorder.submit_clock_evidence(latest_clock_detail)
+
+    def start(lane: _FleetLane) -> None:
+        observer = None if observer_for is None else observer_for(lane.contract)
+        recorder = recorder_factory(
+            archive_root=archive_root,
+            contract=lane.contract,
+            stop_signal=stop,
+            record_observer=observer,
+        )
+        lane.recorder = recorder
+        lane.failure = None
+        lane.collected = False
+        lane.restart_at = None
+        lane.started_at = time.monotonic()
+        if latest_clock_detail is not None:
+            # A new session starts with the latest evidence, not a blank.
+            recorder.submit_clock_evidence(latest_clock_detail)
+
+        def target() -> None:
+            try:
+                recorder.run()
+            except BaseException as error:  # noqa: BLE001 - recorded and reported, never dropped
+                lane.failure = error
+
+        lane.thread = threading.Thread(
+            target=target, name=f"capture-{lane.contract.exchange_symbol}", daemon=True
+        )
+        lane.thread.start()
+
+    def compact() -> None:
+        if not compact_finalized:
+            return
+        for outcome in iter_compaction_results_v1(compaction_candidates_v1(archive_root)):
+            if isinstance(outcome, CompactionResultV1):
+                compactions.append(outcome)
+            else:
+                compaction_failures.append(outcome)
+
+    def collect(lane: _FleetLane, now: float) -> None:
+        if lane.collected or lane.thread is None or lane.thread.is_alive():
+            return
+        lane.collected = True
+        if lane.recorder is not None:
+            sessions.append(lane.recorder.health())
+        if lane.failure is not None:
+            key = f"{lane.contract.exchange_symbol}:{type(lane.failure).__name__}:{lane.failure}"
+            failures[key] = failures.get(key, 0) + 1
+        if not stop.requested:
+            # Nobody asked this lane to stop, so it is restarted -- as a new
+            # session, after a pause that grows while the fault persists,
+            # never as a continuation.
+            if now - lane.started_at >= LANE_HEALTHY_RUN_SECONDS_V1:
+                lane.consecutive_failures = 0
+            lane.consecutive_failures += 1
+            delay = min(
+                lane_restart_backoff_seconds * 2 ** (lane.consecutive_failures - 1),
+                LANE_RESTART_BACKOFF_CEILING_SECONDS_V1,
+            )
+            lane.restart_at = now + delay
+
+    sample_clock()
+    for lane in lanes:
+        start(lane)
+    next_maintenance = time.monotonic() + maintenance_interval_seconds
+    next_clock_sample = time.monotonic() + clock_sample_interval_seconds
+    try:
+        while True:
+            now = time.monotonic()
+            if deadline is not None and now >= deadline:
+                stop.request(END_PROOF_OPERATOR_BOUNDED_STOP)
+            if not stop.requested and now >= next_clock_sample:
+                sample_clock()
+                next_clock_sample = time.monotonic() + clock_sample_interval_seconds
+            if not stop.requested and now >= next_maintenance:
+                if min_free_bytes > 0 and disk_free_bytes_v1(archive_root) < min_free_bytes:
+                    stop.request(END_PROOF_DISK_BUDGET_STOP)
+                else:
+                    compact()
+                    if on_maintenance is not None:
+                        on_maintenance()
+                next_maintenance = now + maintenance_interval_seconds
+            for lane in lanes:
+                collect(lane, now)
+                if (
+                    not stop.requested
+                    and lane.restart_at is not None
+                    and now >= lane.restart_at
+                ):
+                    restarts += 1
+                    start(lane)
+            if stop.requested and all(
+                lane.thread is None or not lane.thread.is_alive() for lane in lanes
+            ):
+                for lane in lanes:
+                    collect(lane, now)
+                break
+            time.sleep(poll_seconds)
+    except KeyboardInterrupt:
+        # A second interrupt raised while waiting here propagates as-is.
+        stop.request(END_PROOF_OPERATOR_INTERRUPT)
+        for lane in lanes:
+            while lane.thread is not None and lane.thread.is_alive():
+                # A bounded join keeps the wait interruptible on Windows.
+                lane.thread.join(0.5)
+            collect(lane, time.monotonic())
+    compact()
+    return CaptureFleetResultV1(
+        end_proof=stop.end_proof or END_PROOF_OPERATOR_BOUNDED_STOP,
+        sessions=tuple(sessions),
+        failures=dict(sorted(failures.items())),
+        restarts=restarts,
+        compactions=tuple(compactions),
+        compaction_failures=tuple(compaction_failures),
+        clock_samples=tuple(clock_samples),
+        clock_sample_failures=clock_sample_failures,
+    )
+
+
+def request_keep_awake_v1() -> bool:
+    """Ask Windows not to idle-sleep while this process runs. ``False`` elsewhere.
+
+    ``SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)`` is a
+    per-process request that lapses when the process exits. It changes no
+    system setting and cannot prevent an explicit shutdown, a lid-close action
+    or a restart -- those still end the session, and the gap is derived.
+    """
+    if sys.platform != "win32":
+        return False
+    import ctypes
+
+    es_continuous = 0x80000000
+    es_system_required = 0x00000001
+    kernel32 = getattr(ctypes, "windll").kernel32  # noqa: B009 - Windows-only attribute
+    return bool(kernel32.SetThreadExecutionState(es_continuous | es_system_required))
 
 
 __all__: list[str] = [
@@ -770,6 +1150,12 @@ __all__: list[str] = [
     "BybitPublicWebSocketError",
     "CaptureClockRegressionError",
     "CaptureContractViolationError",
+    "CaptureDiskBudgetError",
+    "CaptureFleetResultV1",
     "CaptureHealthV1",
+    "CaptureStopSignalV1",
+    "RecordObserverV1",
     "iter_health_lines",
+    "request_keep_awake_v1",
+    "run_capture_fleet_v1",
 ]
