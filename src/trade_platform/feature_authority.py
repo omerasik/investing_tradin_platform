@@ -795,10 +795,18 @@ def authorized_sealed_clock_resolver_types_v1() -> tuple[type, ...]:
 
     A resolver is where T3/T4 clock facts enter; a caller-supplied callable
     could hand the doctrine invented arrivals. The professional gate therefore
-    admits only these reviewed implementations (R3A adds the first-party T4
-    one). Extending the set ships as code, like a timing contract.
+    admits only these reviewed implementations. Phase R3A adds the first-party
+    T4 resolver, which only a seal rebuilt from raw capture can construct; it is
+    imported lazily because it needs the analytics extra (pyarrow), which the
+    runtime images do not install -- where it is absent, T4 evidence cannot
+    exist and the set is simply the PostgreSQL resolver. Extending the set
+    ships as code, like a timing contract.
     """
-    return (PostgresSealedObservationClockResolverV1,)
+    try:
+        from .first_party_t4_dataset_v1 import FirstPartyT4SealedClockResolverV1
+    except ImportError:  # pragma: no cover - analytics extra not installed
+        return (PostgresSealedObservationClockResolverV1,)
+    return (PostgresSealedObservationClockResolverV1, FirstPartyT4SealedClockResolverV1)
 
 
 def require_authorized_sealed_clock_resolver_v1(resolver: object) -> None:

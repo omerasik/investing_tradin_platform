@@ -179,9 +179,90 @@ FEATURE_FRAME: Final = FrameSchemaV1(
     ("subject_id", "event_at"),
 )
 
+# Phase R3A first-party T4 frames. Every clock the doctrine re-derives is kept
+# at its native resolution: arrival and clock bound as integer nanoseconds (a
+# timestamp[us] would have to round one way or the other), venue times as the
+# integer milliseconds Bybit sent, and ``market_knowledge_at`` as the doctrine's
+# microsecond instant, rounded up. Flags are text ("true"/"false"), never bool,
+# so the canonical row encoding stays library-independent.
+_T4_ARRIVAL = [
+    pa.field("session_id", pa.string(), nullable=False),
+    pa.field("record_sequence", pa.int64(), nullable=False),
+    pa.field("record_content_hash", pa.string(), nullable=False),
+    pa.field("arrival_utc_nanos", pa.int64(), nullable=False),
+    pa.field("clock_bound_nanos", pa.int64(), nullable=False),
+    pa.field("clock_bound_evidence", pa.string(), nullable=False),
+    pa.field("market_knowledge_at", _TS, nullable=False),
+]
+T4_REFERENCE_PRICE_FRAME: Final = FrameSchemaV1(
+    "T4_REFERENCE_PRICE", "1",
+    pa.schema([pa.field("observation_reference", pa.string(), nullable=False),
+               pa.field("component", pa.string(), nullable=False),
+               pa.field("message_type", pa.string(), nullable=False),
+               pa.field("exchange_ts_millis", pa.int64(), nullable=False),
+               pa.field("event_at", _TS, nullable=False),
+               *_T4_ARRIVAL,
+               pa.field("price", _DECIMAL, nullable=False)]),
+    ("record_sequence", "component"),
+)
+T4_BASIS_FRAME: Final = FrameSchemaV1(
+    "T4_BASIS", "1",
+    pa.schema([pa.field("emitting_record_sequence", pa.int64(), nullable=False),
+               pa.field("emitting_record_hash", pa.string(), nullable=False),
+               pa.field("mark_reference", pa.string(), nullable=False),
+               pa.field("index_reference", pa.string(), nullable=False),
+               pa.field("event_at", _TS, nullable=False),
+               pa.field("market_knowledge_at", _TS, nullable=False),
+               pa.field("mark_price", _DECIMAL, nullable=False),
+               pa.field("index_price", _DECIMAL, nullable=False),
+               pa.field("basis", _DECIMAL, nullable=False)]),
+    ("emitting_record_sequence",),
+)
+T4_TRADE_FRAME: Final = FrameSchemaV1(
+    "T4_TRADE", "1",
+    pa.schema([pa.field("observation_reference", pa.string(), nullable=False),
+               pa.field("entry_index", pa.int64(), nullable=False),
+               pa.field("trade_id", pa.string(), nullable=False),
+               pa.field("trade_ts_millis", pa.int64(), nullable=False),
+               pa.field("message_ts_millis", pa.int64(), nullable=False),
+               pa.field("event_at", _TS, nullable=False),
+               pa.field("venue_seq", pa.int64(), nullable=False),
+               pa.field("side", pa.string(), nullable=False),
+               pa.field("block_trade", pa.string(), nullable=True),
+               pa.field("rpi", pa.string(), nullable=True),
+               *_T4_ARRIVAL,
+               pa.field("price", _DECIMAL, nullable=False),
+               pa.field("quantity", _DECIMAL, nullable=False)]),
+    ("record_sequence", "entry_index"),
+)
+T4_OHLCV_1M_FRAME: Final = FrameSchemaV1(
+    "T4_OHLCV_1M", "1",
+    pa.schema([pa.field("bar_open_at", _TS, nullable=False),
+               pa.field("bar_close_at", _TS, nullable=False),
+               pa.field("open", _DECIMAL, nullable=False),
+               pa.field("high", _DECIMAL, nullable=False),
+               pa.field("low", _DECIMAL, nullable=False),
+               pa.field("close", _DECIMAL, nullable=False),
+               pa.field("base_volume", _DECIMAL, nullable=False),
+               pa.field("quote_turnover", _DECIMAL, nullable=False),
+               pa.field("trade_count", pa.int64(), nullable=False),
+               pa.field("block_trade_count", pa.int64(), nullable=False),
+               pa.field("rpi_trade_count", pa.int64(), nullable=False),
+               pa.field("first_trade_reference", pa.string(), nullable=False),
+               pa.field("last_trade_reference", pa.string(), nullable=False),
+               pa.field("open_market_knowledge_at", _TS, nullable=False),
+               pa.field("complete_market_knowledge_at", _TS, nullable=False),
+               pa.field("open_is_sequence_ambiguous", pa.string(), nullable=False),
+               pa.field("close_is_sequence_ambiguous", pa.string(), nullable=False),
+               pa.field("closing_record_hash", pa.string(), nullable=False),
+               pa.field("trade_manifest_hash", pa.string(), nullable=False)]),
+    ("bar_open_at",),
+)
+
 FRAME_SCHEMAS: Final = {
     frame.kind: frame for frame in (REFERENCE_PRICE_FRAME, OHLCV_FRAME, OPEN_INTEREST_FRAME,
-                                    FEATURE_FRAME)
+                                    FEATURE_FRAME, T4_REFERENCE_PRICE_FRAME, T4_BASIS_FRAME,
+                                    T4_TRADE_FRAME, T4_OHLCV_1M_FRAME)
 }
 
 
@@ -217,6 +298,28 @@ def _sort_value(value: object) -> tuple[int, object]:
 def canonical_row_bytes(row: Sequence[object]) -> bytes:
     """One row's library-independent encoding: a JSON array plus a newline."""
     return (json.dumps([_canonical_cell(cell) for cell in row], separators=(",", ":")) + "\n").encode()
+
+
+def logical_content_hash_v1(frame: FrameSchemaV1, rows: Iterable[Sequence[object]]) -> tuple[str, int]:
+    """A frame's logical content hash and row count, computed without writing it.
+
+    Exactly the digest :meth:`ResearchFrameStoreV1.write_frame` binds (same row
+    preparation, same sort-order check), so a rebuild can be compared with a
+    sealed frame without touching the store.
+    """
+    key_index = [frame.schema.get_field_index(name) for name in frame.sort_key]
+    digest = hashlib.sha256()
+    previous: tuple[tuple[int, Any], ...] | None = None
+    count = 0
+    for raw in rows:
+        row = _prepare_row(frame, raw)
+        key = tuple(_sort_value(row[index]) for index in key_index)
+        if previous is not None and key < previous:
+            raise ResearchDataPlaneError("frame_rows_not_in_sort_key_order")
+        previous = key
+        digest.update(canonical_row_bytes(row))
+        count += 1
+    return digest.hexdigest(), count
 
 
 def _quantize_exact(value: Decimal, scale: int, name: str) -> Decimal:

@@ -502,6 +502,25 @@ def evaluate_evidence_tier_v1(
             # checked for agreement, and a disagreement is a refusal.
             reasons.append("evidence_tier_declared_timing_authority_not_granted_by_source_contract")
 
+    if (
+        proven_real
+        and provenance is not None
+        and contract is not None
+        and contract.source_id == first_party_bybit_source_id_v1()
+    ):
+        # Phase R3A. First-party timing facts are never the caller's to state:
+        # the seal derived them from the normalized observations and the
+        # provenance verdict binds them. Any disagreement is a refusal.
+        sealed = provenance.first_party_sealed_timing_facts
+        if provenance.first_party_capture_seal_evidence_id is None or sealed is None:
+            reasons.append("evidence_tier_first_party_capture_requires_sealed_capture_provenance")
+        elif (
+            facts.observations_with_knowledge_time,
+            facts.observations_missing_knowledge_time,
+            facts.distinct_knowledge_time_count,
+        ) != tuple(sealed):
+            reasons.append("evidence_tier_timing_facts_disagree_with_the_sealed_capture")
+
     if tier in _KNOWLEDGE_TIME_TIERS_V1:
         if facts.observations_missing_knowledge_time > 0:
             reasons.append("evidence_tier_observations_missing_knowledge_time")
@@ -551,6 +570,33 @@ def evaluate_evidence_tier_v1(
             if conditional and facts.publication_lag_assumption_reference is not None
             else None
         ),
+    )
+
+
+def first_party_sealed_timing_facts_v1(
+    provenance: RealMarketDataProvenanceV1,
+) -> EvidenceTimingFactsV1:
+    """The only timing facts a first-party T4 evaluation can pass with.
+
+    Read from a first-party provenance verdict (which binds what its seal
+    derived), never assembled by a caller. Raises if the verdict carries none.
+    """
+    sealed = provenance.first_party_sealed_timing_facts
+    if (
+        not provenance.is_proven_real()
+        or provenance.first_party_capture_seal_evidence_id is None
+        or sealed is None
+        or provenance.dataset_content_hash is None
+    ):
+        raise EvidenceTierAuthorityError("first_party_provenance_carries_no_sealed_timing_facts")
+    return EvidenceTimingFactsV1(
+        dataset_version_id=provenance.dataset_version_id,
+        dataset_content_hash=provenance.dataset_content_hash,
+        source_id=provenance.source_id,
+        declared_timing_authority=TimingAuthorityV1.PLATFORM_RECORDER_ARRIVAL_TIMESTAMP.value,
+        observations_with_knowledge_time=sealed[0],
+        observations_missing_knowledge_time=sealed[1],
+        distinct_knowledge_time_count=sealed[2],
     )
 
 

@@ -259,6 +259,14 @@ class RealMarketDataProvenanceV1:
     #: required. It is absent from the identity payload when it is ``None``, so
     #: every existing REST verdict keeps its exact content hash and evidence id.
     captured_source_authority_evidence_id: UUID | None = None
+    #: Phase R3A. Set only on the first-party T4 path
+    #: (:func:`evaluate_first_party_capture_provenance_v1`): the seal this
+    #: verdict was derived from, and the timing facts *the seal* derived
+    #: (observations with / missing a knowledge time, distinct instants), so the
+    #: evidence-tier authority can refuse caller-supplied facts that disagree.
+    #: Both are absent from the identity payload when ``None``.
+    first_party_capture_seal_evidence_id: UUID | None = None
+    first_party_sealed_timing_facts: tuple[int, int, int] | None = None
     _issuer: object = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -290,6 +298,12 @@ class RealMarketDataProvenanceV1:
             payload["captured_source_authority_evidence_id"] = str(
                 self.captured_source_authority_evidence_id
             )
+        if self.first_party_capture_seal_evidence_id is not None:
+            payload["first_party_capture_seal_evidence_id"] = str(
+                self.first_party_capture_seal_evidence_id
+            )
+        if self.first_party_sealed_timing_facts is not None:
+            payload["first_party_sealed_timing_facts"] = list(self.first_party_sealed_timing_facts)
         return payload
 
     def integrity_verified(self) -> bool:
@@ -427,6 +441,118 @@ def evaluate_real_market_data_provenance_v1(
             if proven_contract and captured_source_authority is not None
             else None
         ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase R3A -- first-party capture provenance
+# ---------------------------------------------------------------------------
+
+FIRST_PARTY_CAPTURE_DATASET_NAME_V1 = "bybit-v5-public-websocket-first-party-capture"
+
+
+def first_party_capture_source_contract_v1() -> CanonicalSourceContractV1:
+    """The production first-party capture contract, in the shared source-contract shape.
+
+    A projection of
+    :func:`~trade_platform.first_party_capture_authority_v1.first_party_bybit_capture_contract_v1`
+    (its deterministic ``source_id``, terms, authorization and captured
+    observation kinds). Deliberately *not* a member of
+    :func:`authorized_source_contracts_v1`: first-party datasets are catalogued
+    as sealed columnar segments, not as PostgreSQL member rows, so the
+    persisted-lineage path must keep refusing them (a first-party ``source_id``
+    there resolves to the REST contract and fails ``source_id_not_canonical``).
+    The only door is :func:`evaluate_first_party_capture_provenance_v1`.
+    """
+    from .first_party_capture_authority_v1 import first_party_bybit_capture_contract_v1
+
+    contract = first_party_bybit_capture_contract_v1()
+    return CanonicalSourceContractV1(
+        source_id=contract.source_id,
+        provider=contract.capture_provider,
+        dataset_name=FIRST_PARTY_CAPTURE_DATASET_NAME_V1,
+        provider_identifier_namespace=f"{contract.originating_exchange}:{contract.exchange_symbol}",
+        provider_terms_version=contract.provider_terms_version,
+        authorization_reference=contract.authorization_reference,
+        asset_scope="CRYPTO",
+        observation_kinds=tuple(sorted(contract.provider_captured_observations)),
+    )
+
+
+def evaluate_first_party_capture_provenance_v1(seal: Any) -> RealMarketDataProvenanceV1:
+    """Provenance of one sealed first-party T4 segment, derived from its seal only.
+
+    ``seal`` must be an intact
+    :class:`~trade_platform.first_party_t4_seal_v1.FirstPartyT4SealV1` that was
+    rebuilt from raw capture (``raw_replayed``) -- a seal restored from its
+    catalogue without replay proves only that stored frames match an identity,
+    not that the identity is what the recorder captured, so it is refused.
+    The seal's source must be the production first-party contract, bound by
+    both ``source_id`` and contract content hash. There is no provider string
+    anywhere in this decision.
+
+    The verdict binds the seal's evidence id and the timing facts the seal
+    derived; ``dataset_created_at`` is deliberately ``None`` (a platform
+    clock), so re-sealing the same raw evidence at any later time yields the
+    identical provenance identity.
+    """
+    # Imported here: the seal module needs the analytics extra (pyarrow), and
+    # this authority is imported by runtime paths that do not install it.
+    from .first_party_capture_authority_v1 import first_party_bybit_capture_contract_v1
+    from .first_party_t4_seal_v1 import FirstPartyT4SealV1
+
+    if not isinstance(seal, FirstPartyT4SealV1):
+        raise RealMarketDataProvenanceError("first_party_provenance_requires_a_first_party_seal")
+    contract = first_party_bybit_capture_contract_v1()
+    projection = first_party_capture_source_contract_v1()
+    reasons: list[str] = []
+    intact = seal.integrity_verified()
+    if not intact:
+        reasons.append("first_party_seal_integrity_failed")
+    if not seal.raw_replayed:
+        reasons.append("first_party_seal_not_rebuilt_from_raw_capture")
+    if seal.source_id != contract.source_id:
+        reasons.append("source_id_not_canonical")
+    identity = seal.identity
+    if identity.get("contract_content_hash") != contract.content_hash():
+        reasons.append("source_contract_mismatch:first_party_capture_contract")
+    if identity.get("instrument") != contract.instrument_scope:
+        reasons.append("source_contract_mismatch:instrument_scope")
+    counts = identity.get("counts", {}) if isinstance(identity.get("counts"), Mapping) else {}
+    by_kind = (
+        ("BYBIT_INDEX_PRICE_UPDATE", int(counts.get("index_updates", 0))),
+        ("BYBIT_MARK_PRICE_UPDATE", int(counts.get("mark_updates", 0))),
+        ("BYBIT_PUBLIC_TRADE", int(counts.get("trades", 0))),
+    )
+    member_count = sum(count for _, count in by_kind)
+    if member_count <= 0:
+        reasons.append("dataset_has_no_members")
+    elif intact and member_count != seal.timing_facts.observations_with_knowledge_time:
+        reasons.append("member_lineage_incomplete")
+    status = STATUS_REAL_DATA if not reasons else STATUS_UNAVAILABLE
+    proven = status == STATUS_REAL_DATA
+    window = identity.get("window", {}) if isinstance(identity.get("window"), Mapping) else {}
+    return _issue(
+        schema_version=PROVENANCE_SCHEMA_VERSION,
+        status=status,
+        reasons=tuple(reasons),
+        dataset_version_id=seal.dataset_version_id,
+        dataset_version=(
+            f"t4-segment:{identity.get('session_id')}:{window.get('utc_day')}:"
+            f"{window.get('window_index')}"
+        ),
+        dataset_content_hash=seal.content_hash if intact else None,
+        normalization_version=str(identity.get("normalization_semantic_version")),
+        valid_from=seal.segment_first_knowledge_at if intact else None,
+        valid_until=seal.segment_last_knowledge_at if intact else None,
+        dataset_created_at=None,
+        source_id=seal.source_id,
+        source_contract_content_hash=projection.content_hash() if proven else None,
+        member_count=member_count,
+        instrument_ids=(contract.instrument_scope,),
+        member_count_by_kind=by_kind,
+        first_party_capture_seal_evidence_id=seal.evidence_id if proven else None,
+        first_party_sealed_timing_facts=seal.timing_facts.as_tuple() if proven else None,
     )
 
 
