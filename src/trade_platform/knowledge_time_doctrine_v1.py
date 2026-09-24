@@ -592,9 +592,6 @@ class FeatureKnowledgeV1:
     content_hash: str
     knowledge_id: UUID
     _issuer: object = field(default=None, repr=False, compare=False)
-    #: True only for an object rebuilt from persisted data by the integrity-only
-    #: restore; decision and claim functions refuse it (never compared or hashed).
-    _restored: bool = field(default=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self._issuer is not _ISSUER:
@@ -796,19 +793,36 @@ def rederive_observation_knowledge_v1(
     return rederived
 
 
+@dataclass(frozen=True, slots=True)
+class RestoredFeatureKnowledgeV1:
+    """A persisted feature-knowledge payload that passed integrity and coherence checks.
+
+    Deliberately *not* a :class:`FeatureKnowledgeV1`: it is never issued, so
+    no decision-time or claim-ceiling function accepts it, and no copy or
+    ``dataclasses.replace`` can turn it into one. Only re-derivation from
+    sealed evidence (:func:`rederive_observation_knowledge_v1`) produces issued
+    knowledge from persisted data.
+    """
+
+    input_knowledge_hashes: tuple[str, ...]
+    event_at: datetime
+    market_knowledge_at: datetime | None
+    claim_ceiling: ClaimCeilingV1
+    market_content_hash: str
+
+
 def restore_persisted_feature_knowledge_v1(
     market_payload: Mapping[str, Any],
     *,
     platform_recorded_at: datetime,
     expected_market_content_hash: str,
-) -> FeatureKnowledgeV1:
-    """Re-issue a feature's clocks from the payload a durable row stored.
+) -> RestoredFeatureKnowledgeV1:
+    """Check a feature's clocks as a durable row stored them (integrity only).
 
     Phase R2A.2. A V3 feature materialization persists
     :meth:`FeatureKnowledgeV1.market_identity_payload` so a later reader can
-    compute decision times without recomputing the inputs. This function is
-    the only way back from that payload to an issued object, and it trusts
-    nothing it can check: the payload must re-hash to
+    audit it without recomputing the inputs. This function trusts nothing it
+    can check: the payload must re-hash to
     ``expected_market_content_hash`` (the hash bound into the row's own content
     hash), and its clocks and claim must be *coherent* -- a defined knowledge
     time only with no reasons and at least a conditional claim, an undefined
@@ -817,8 +831,9 @@ def restore_persisted_feature_knowledge_v1(
     repaired.
 
     This proves *integrity and coherence only* -- never provenance. A payload
-    anyone assembled by hand can pass it, so the object it returns is marked
-    restored and every decision-time and claim-ceiling function refuses it.
+    anyone assembled by hand can pass it, so it returns a
+    :class:`RestoredFeatureKnowledgeV1`, which no decision-time or
+    claim-ceiling function accepts.
     Anything that grants decision authority must instead re-derive every input
     from sealed evidence and its genuine verdict with
     :func:`rederive_observation_knowledge_v1` and re-propagate.
@@ -877,13 +892,13 @@ def restore_persisted_feature_knowledge_v1(
     market_hash, audit_hash = _hashes(draft.market_identity_payload(), draft.audit_payload())
     if market_hash != expected_market_content_hash:
         raise KnowledgeTimeDoctrineError("persisted_feature_knowledge_hash_mismatch")
-    return FeatureKnowledgeV1(
-        **values,
+    del audit_hash  # the audit clock is not part of what a restore vouches for
+    return RestoredFeatureKnowledgeV1(
+        input_knowledge_hashes=hashes,
+        event_at=event_at,
+        market_knowledge_at=market_knowledge_at,
+        claim_ceiling=claim,
         market_content_hash=market_hash,
-        content_hash=audit_hash,
-        knowledge_id=uuid5(_NAMESPACE, f"feature-knowledge:{market_hash}"),
-        _issuer=_ISSUER,
-        _restored=True,
     )
 
 
@@ -985,7 +1000,7 @@ def _check_features(features: Sequence[FeatureKnowledgeV1]) -> None:
     if not features:
         raise KnowledgeTimeDoctrineError("decision_time_requires_feature_knowledge")
     for item in features:
-        if not isinstance(item, FeatureKnowledgeV1) or not item.integrity_verified() or item._restored:
+        if not isinstance(item, FeatureKnowledgeV1) or not item.integrity_verified():
             raise KnowledgeTimeDoctrineError("decision_time_feature_knowledge_integrity_failed")
 
 
@@ -1168,7 +1183,7 @@ def result_claim_ceiling_v1(
         (InputRoleV1.EXECUTION_MARKING, item) for item in execution_marking_inputs
     ]
     for _, item in tagged:
-        if not isinstance(item, FeatureKnowledgeV1) or not item.integrity_verified() or item._restored:
+        if not isinstance(item, FeatureKnowledgeV1) or not item.integrity_verified():
             raise KnowledgeTimeDoctrineError("result_claim_ceiling_input_integrity_failed")
     if len({item.market_content_hash for _, item in tagged}) != len(tagged):
         raise KnowledgeTimeDoctrineError("result_claim_ceiling_duplicate_input")
@@ -1224,6 +1239,7 @@ __all__ = [
     "KnowledgeTimeDoctrineError",
     "ObservationKnowledgeV1",
     "PublicationLagBindingV1",
+    "RestoredFeatureKnowledgeV1",
     "ResultClaimCeilingV1",
     "SealedClockResolverV1",
     "SealedObservationClocksV1",

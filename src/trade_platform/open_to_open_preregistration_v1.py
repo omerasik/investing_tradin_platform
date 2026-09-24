@@ -71,7 +71,11 @@ from .evidence_tier_authority_v1 import (
     EvidenceTierVerdictV1,
     require_professional_evidence_tier_v1,
 )
-from .feature_authority import FeatureMaterializationV3
+from .feature_authority import (
+    FeatureAuthorityError,
+    FeatureMaterializationV3,
+    require_authorized_sealed_clock_resolver_v1,
+)
 from .knowledge_time_doctrine_v1 import (
     ClaimCeilingV1,
     DeclaredComputeLatencyV1,
@@ -469,12 +473,25 @@ def require_professional_historical_decisions_v1(
     least two and exactly the count the packet bound. A legacy V2 value, a T1
     value or a T2 (conditional) value refuses; nothing is skipped.
 
+    ``clock_resolver`` must be one of
+    :func:`~trade_platform.feature_authority.authorized_sealed_clock_resolver_types_v1`:
+    T3/T4 clock facts enter there, so a caller-supplied callable cannot back
+    a professional claim.
+
+    Scope: this proves the *clocks and claims* of each value against sealed
+    evidence. The value itself is proven by recomputation from the same
+    sealed inputs (the R2B feature-frame parity path), not here.
+
     The packet's fields and identity are unchanged. It does not yet bind
     ``compute_latency`` itself; a methodology version that does is the
     professional-validation phase's job, and until then the latency is a
     required, referenced argument with no default.
     """
     require_authorized_for_holdout_with_evidence_tier_v1(packet, evidence_tier)
+    try:
+        require_authorized_sealed_clock_resolver_v1(clock_resolver)
+    except FeatureAuthorityError as error:
+        raise OpenToOpenPreregistrationV1Error(str(error)) from error
     if not materializations:
         raise OpenToOpenPreregistrationV1Error("professional_decisions_require_materializations")
     for materialization in materializations:

@@ -23,6 +23,7 @@ from .knowledge_time_doctrine_v1 import (
     FeatureKnowledgeV1,
     KnowledgeTimeDoctrineError,
     ObservationKnowledgeV1,
+    RestoredFeatureKnowledgeV1,
     SealedClockResolverV1,
     SealedObservationClocksV1,
     persisted_observation_knowledge_v1,
@@ -584,8 +585,11 @@ class FeatureMaterializationV3:
             raise FeatureAuthorityError("feature_knowledge_not_derivable_from_verdicts")
         return knowledge
 
-    def feature_knowledge_v1(self) -> FeatureKnowledgeV1:
-        """The issued doctrine object behind this row, re-derived and re-checked."""
+    def integrity_checked_knowledge_v1(self) -> RestoredFeatureKnowledgeV1:
+        """This row's stored clocks, checked for integrity and coherence only.
+
+        Never decision authority -- see :meth:`verified_feature_knowledge_v1`.
+        """
         try:
             return restore_persisted_feature_knowledge_v1(
                 self.feature_knowledge,
@@ -615,7 +619,7 @@ class FeatureMaterializationV3:
             raise FeatureAuthorityError("validated_feature_requires_value")
         if _knowledge_payload_hash(self.feature_knowledge) != self.feature_knowledge_hash:
             raise FeatureAuthorityError("feature_knowledge_payload_hash_mismatch")
-        knowledge = self.feature_knowledge_v1()
+        knowledge = self.integrity_checked_knowledge_v1()
         if (
             knowledge.event_at != self.event_at
             or knowledge.market_knowledge_at != self.market_knowledge_at
@@ -784,6 +788,22 @@ class PostgresSealedObservationClockResolverV1:
                 self._load(dataset_version_id, missing)
                 cache = self._cache.get(dataset_version_id, {})
         return {reference: cache[reference] for reference in references if reference in cache}
+
+
+def authorized_sealed_clock_resolver_types_v1() -> tuple[type, ...]:
+    """The closed set of resolvers whose clock facts may back a *professional* claim.
+
+    A resolver is where T3/T4 clock facts enter; a caller-supplied callable
+    could hand the doctrine invented arrivals. The professional gate therefore
+    admits only these reviewed implementations (R3A adds the first-party T4
+    one). Extending the set ships as code, like a timing contract.
+    """
+    return (PostgresSealedObservationClockResolverV1,)
+
+
+def require_authorized_sealed_clock_resolver_v1(resolver: object) -> None:
+    if type(resolver) not in authorized_sealed_clock_resolver_types_v1():
+        raise FeatureAuthorityError("sealed_clock_resolver_not_authorized")
 
 
 class PostgresFeatureAuthority:

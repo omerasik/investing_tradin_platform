@@ -11,6 +11,8 @@ from __future__ import annotations
 import hashlib
 import json
 import unittest
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -33,6 +35,7 @@ from tests.test_knowledge_time_doctrine_v1 import (
     _t4,
 )
 from tests.test_open_to_open_preregistration_v1 import _authorized_inputs, _span
+from trade_platform import feature_authority as feature_module
 from trade_platform.evidence_tier_authority_v1 import EvidenceTierAuthorityError
 from trade_platform.feature_authority import (
     FeatureAuthorityError,
@@ -84,10 +87,29 @@ TIERS = {verdict.evidence_id: verdict for verdict in (_t1(), _t2(), _t3(), _t4()
 SEALED: dict[str, SealedObservationClocksV1] = {}
 
 
-def RESOLVER(dataset_version_id: Any, references: Any) -> dict[str, SealedObservationClocksV1]:
-    if dataset_version_id != DATASET_ID:
-        return {}
-    return {reference: SEALED[reference] for reference in references if reference in SEALED}
+class _FixtureSealedResolver:
+    def __call__(
+        self, dataset_version_id: Any, references: Any
+    ) -> dict[str, SealedObservationClocksV1]:
+        if dataset_version_id != DATASET_ID:
+            return {}
+        return {reference: SEALED[reference] for reference in references if reference in SEALED}
+
+
+RESOLVER = _FixtureSealedResolver()
+
+
+@contextmanager
+def _fixture_resolver_authorized() -> Iterator[None]:
+    """Admit the fixture resolver to the professional gate, as a registered one would be."""
+    original = feature_module.authorized_sealed_clock_resolver_types_v1
+    feature_module.authorized_sealed_clock_resolver_types_v1 = (  # type: ignore[assignment]
+        lambda: (_FixtureSealedResolver,)
+    )
+    try:
+        yield
+    finally:
+        feature_module.authorized_sealed_clock_resolver_types_v1 = original  # type: ignore[assignment]
 
 
 def _obs(verdict: Any, reference: str, **clocks: Any) -> ObservationKnowledgeV1:
@@ -324,9 +346,9 @@ class PropagationTests(unittest.TestCase):
 class PersistedKnowledgeIntegrityTests(unittest.TestCase):
     def test_round_trip_restores_the_identical_doctrine_object(self) -> None:
         row = _t4_pair()
-        restored = row.feature_knowledge_v1()
+        restored = row.integrity_checked_knowledge_v1()
         self.assertEqual(row.feature_knowledge_hash, restored.market_content_hash)
-        self.assertTrue(restored.integrity_verified())
+        self.assertEqual(row.market_knowledge_at, restored.market_knowledge_at)
 
     def test_an_earlier_knowledge_time_in_the_payload_is_refused(self) -> None:
         row = _t4_pair()
@@ -443,7 +465,9 @@ class ForgeryTests(unittest.TestCase):
             )
             for i in range(2)
         ]
-        with self.assertRaisesRegex(OpenToOpenPreregistrationV1Error, "not_admissible"):
+        with _fixture_resolver_authorized(), self.assertRaisesRegex(
+            OpenToOpenPreregistrationV1Error, "not_admissible"
+        ):
             require_professional_historical_decisions_v1(
                 packet, t4, forged, compute_latency=LATENCY, clock_resolver=RESOLVER
             )
@@ -480,11 +504,19 @@ class ForgeryTests(unittest.TestCase):
             row.verified_feature_knowledge_v1(TIERS, lambda dataset, references: {})
 
     def test_integrity_restored_knowledge_cannot_decide_or_claim(self) -> None:
-        restored = _t4_pair().feature_knowledge_v1()
+        restored = _t4_pair().integrity_checked_knowledge_v1()
         with self.assertRaises(KnowledgeTimeDoctrineError):
             historical_decision_time_v1((restored,), compute_latency=LATENCY)
         with self.assertRaises(KnowledgeTimeDoctrineError):
             result_claim_ceiling_v1(decision_inputs=(restored,))
+
+    def test_an_unregistered_resolver_cannot_back_a_professional_claim(self) -> None:
+        packet = ProfessionalGateTests()._packet()
+        rows = (_t4_pair(EVENT), _t4_pair(EVENT + BAR))
+        with self.assertRaisesRegex(OpenToOpenPreregistrationV1Error, "resolver_not_authorized"):
+            require_professional_historical_decisions_v1(
+                packet, _t4(), rows, compute_latency=LATENCY, clock_resolver=RESOLVER
+            )
 
     def test_knowledge_before_completion_is_refused(self) -> None:
         row = _t4_pair()
@@ -493,6 +525,9 @@ class ForgeryTests(unittest.TestCase):
 
 
 class ProfessionalGateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.enterContext(_fixture_resolver_authorized())
+
     def _packet(self, count: int = 2) -> Any:
         inputs = _authorized_inputs()
         inputs["market_data_provenance"] = _provenance()
