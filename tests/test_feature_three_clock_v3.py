@@ -12,7 +12,7 @@ import hashlib
 import json
 import unittest
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -110,6 +110,19 @@ def _fixture_resolver_authorized() -> Iterator[None]:
         yield
     finally:
         feature_module.authorized_sealed_clock_resolver_types_v1 = original  # type: ignore[assignment]
+
+
+#: The fixture resolver is admitted for this module (as a registered resolver
+#: would be); one test withdraws it to prove unregistered resolvers refuse.
+_MODULE_AUTHORIZATION = ExitStack()
+
+
+def setUpModule() -> None:
+    _MODULE_AUTHORIZATION.enter_context(_fixture_resolver_authorized())
+
+
+def tearDownModule() -> None:
+    _MODULE_AUTHORIZATION.close()
 
 
 def _obs(verdict: Any, reference: str, **clocks: Any) -> ObservationKnowledgeV1:
@@ -465,9 +478,7 @@ class ForgeryTests(unittest.TestCase):
             )
             for i in range(2)
         ]
-        with _fixture_resolver_authorized(), self.assertRaisesRegex(
-            OpenToOpenPreregistrationV1Error, "not_admissible"
-        ):
+        with self.assertRaisesRegex(OpenToOpenPreregistrationV1Error, "not_admissible"):
             require_professional_historical_decisions_v1(
                 packet, t4, forged, compute_latency=LATENCY, clock_resolver=RESOLVER
             )
@@ -510,13 +521,26 @@ class ForgeryTests(unittest.TestCase):
         with self.assertRaises(KnowledgeTimeDoctrineError):
             result_claim_ceiling_v1(decision_inputs=(restored,))
 
-    def test_an_unregistered_resolver_cannot_back_a_professional_claim(self) -> None:
+    def test_an_unregistered_resolver_backs_no_decision_at_all(self) -> None:
         packet = ProfessionalGateTests()._packet()
         rows = (_t4_pair(EVENT), _t4_pair(EVENT + BAR))
-        with self.assertRaisesRegex(OpenToOpenPreregistrationV1Error, "resolver_not_authorized"):
-            require_professional_historical_decisions_v1(
-                packet, _t4(), rows, compute_latency=LATENCY, clock_resolver=RESOLVER
-            )
+        _MODULE_AUTHORIZATION.close()
+        try:
+            with self.assertRaisesRegex(
+                OpenToOpenPreregistrationV1Error, "resolver_not_authorized"
+            ):
+                require_professional_historical_decisions_v1(
+                    packet, _t4(), rows, compute_latency=LATENCY, clock_resolver=RESOLVER
+                )
+            with self.assertRaisesRegex(
+                OpenToOpenValidationOrchestrationV1Error, "resolver_not_authorized"
+            ):
+                count_distinct_historical_decision_times_v1(
+                    rows, compute_latency=LATENCY, evidence_tiers=TIERS,
+                    clock_resolver=RESOLVER, minimum_claim=ClaimCeilingV1.PROFESSIONAL,
+                )
+        finally:
+            _MODULE_AUTHORIZATION.enter_context(_fixture_resolver_authorized())
 
     def test_knowledge_before_completion_is_refused(self) -> None:
         row = _t4_pair()
@@ -525,9 +549,6 @@ class ForgeryTests(unittest.TestCase):
 
 
 class ProfessionalGateTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.enterContext(_fixture_resolver_authorized())
-
     def _packet(self, count: int = 2) -> Any:
         inputs = _authorized_inputs()
         inputs["market_data_provenance"] = _provenance()

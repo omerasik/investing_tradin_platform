@@ -34,6 +34,7 @@ from .feature_authority import (
     FeatureAuthorityError,
     FeatureMaterializationV2,
     FeatureMaterializationV3,
+    require_authorized_sealed_clock_resolver_v1,
 )
 from .knowledge_time_doctrine_v1 import (
     ClaimCeilingV1,
@@ -329,6 +330,9 @@ def historical_feature_decision_v1(
             "historical_decision_requires_three_clock_materialization"
         )
     try:
+        # T3/T4 clock facts enter through the resolver; only reviewed resolver
+        # types may back any historical decision time.
+        require_authorized_sealed_clock_resolver_v1(clock_resolver)
         knowledge = materialization.verified_feature_knowledge_v1(evidence_tiers, clock_resolver)
         return historical_decision_time_v1((knowledge,), compute_latency=compute_latency)
     except (KnowledgeTimeDoctrineError, FeatureAuthorityError) as error:
