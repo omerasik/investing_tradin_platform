@@ -259,10 +259,54 @@ T4_OHLCV_1M_FRAME: Final = FrameSchemaV1(
     ("bar_open_at",),
 )
 
+# Phase R3B free-archive (T2 event-time) frames. ``market_knowledge_at`` is
+# nullable and is written NULL until the owner authorizes a publication lag
+# (OR-5); no zero lag is ever implied.
+T2_ARCHIVE_TRADE_FRAME: Final = FrameSchemaV1(
+    "T2_ARCHIVE_TRADE", "1",
+    pa.schema([pa.field("utc_day", pa.string(), nullable=False),
+               pa.field("row_index", pa.int64(), nullable=False),
+               pa.field("trade_id", pa.string(), nullable=False),
+               pa.field("timestamp_text", pa.string(), nullable=False),
+               pa.field("trade_ts_micros", pa.int64(), nullable=False),
+               pa.field("event_at", _TS, nullable=False),
+               pa.field("market_knowledge_at", _TS, nullable=True),
+               pa.field("side", pa.string(), nullable=False),
+               pa.field("tick_direction", pa.string(), nullable=False),
+               pa.field("rpi", pa.string(), nullable=False),
+               pa.field("price", _DECIMAL, nullable=False),
+               pa.field("quantity", _DECIMAL, nullable=False),
+               pa.field("published_foreign_notional", _DECIMAL, nullable=False),
+               pa.field("source_file_sha256", pa.string(), nullable=False)]),
+    ("utc_day", "row_index"),
+)
+T2_ARCHIVE_OHLCV_1M_FRAME: Final = FrameSchemaV1(
+    "T2_ARCHIVE_OHLCV_1M", "1",
+    pa.schema([pa.field("bar_open_at", _TS, nullable=False),
+               pa.field("bar_close_at", _TS, nullable=False),
+               pa.field("market_knowledge_at", _TS, nullable=True),
+               pa.field("open", _DECIMAL, nullable=False),
+               pa.field("high", _DECIMAL, nullable=False),
+               pa.field("low", _DECIMAL, nullable=False),
+               pa.field("close", _DECIMAL, nullable=False),
+               pa.field("base_volume", _DECIMAL, nullable=False),
+               pa.field("quote_turnover", _DECIMAL, nullable=False),
+               pa.field("trade_count", pa.int64(), nullable=False),
+               pa.field("rpi_trade_count", pa.int64(), nullable=False),
+               pa.field("open_is_order_ambiguous", pa.string(), nullable=False),
+               pa.field("close_is_order_ambiguous", pa.string(), nullable=False),
+               pa.field("boundary_ambiguous_trade_count", pa.int64(), nullable=False),
+               pa.field("first_trade_id", pa.string(), nullable=False),
+               pa.field("last_trade_id", pa.string(), nullable=False)]),
+    ("bar_open_at",),
+)
+
+
 FRAME_SCHEMAS: Final = {
     frame.kind: frame for frame in (REFERENCE_PRICE_FRAME, OHLCV_FRAME, OPEN_INTEREST_FRAME,
                                     FEATURE_FRAME, T4_REFERENCE_PRICE_FRAME, T4_BASIS_FRAME,
-                                    T4_TRADE_FRAME, T4_OHLCV_1M_FRAME)
+                                    T4_TRADE_FRAME, T4_OHLCV_1M_FRAME, T2_ARCHIVE_TRADE_FRAME,
+                                    T2_ARCHIVE_OHLCV_1M_FRAME)
 }
 
 
