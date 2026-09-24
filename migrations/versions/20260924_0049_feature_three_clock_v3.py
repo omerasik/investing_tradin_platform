@@ -16,11 +16,14 @@ composite all 216,000 basis rows share it, which collapses every decision time
 
 **What changes, additively.**
 
-1. Five nullable columns, populated only by ``hash_version='V3'`` rows:
+1. Six nullable columns, populated only by ``hash_version='V3'`` rows:
    ``market_knowledge_at`` (NULL = undefined, the honest T0/T1 answer),
    ``platform_recorded_at`` (the old instant under its honest name),
    ``claim_ceiling``, ``feature_knowledge`` (the doctrine's market identity
-   payload) and ``feature_knowledge_hash``. Existing rows get NULLs through a
+   payload), ``feature_knowledge_hash`` and ``knowledge_inputs`` (every input
+   observation's recorded clock facts, so a later reader can re-derive the
+   knowledge time from the genuine evidence-tier verdict instead of trusting
+   the row). Existing rows get NULLs through a
    metadata-only ``ADD COLUMN``: nothing is recomputed, no immutability
    trigger is disabled, no V1/V2 hash changes.
 2. ``hash_version`` admits ``V3``. CHECKs keep the columns coherent: V1/V2
@@ -28,7 +31,8 @@ composite all 216,000 basis rows share it, which collapses every decision time
    mirrors ``platform_recorded_at`` into the legacy ``knowledge_at`` (so the
    table's temporal CHECK keeps its meaning), and has a defined market
    knowledge time exactly when its claim is CONDITIONAL or PROFESSIONAL, never
-   before its own ``event_at``. Every nullable comparison is guarded by an
+   before its own ``effective_at`` (a value is not knowable before it is
+   complete). Every nullable comparison is guarded by an
    explicit ``IS [NOT] NULL`` -- a bare comparison against NULL passes a CHECK.
 3. A V3 natural key that excludes every operational clock -- subject, dataset,
    ``event_at``, ``effective_at`` -- as a partial unique index, so recomputing
@@ -54,7 +58,7 @@ _TABLE = "feature_materializations"
 
 _V3_ONLY_COLUMNS = (
     "market_knowledge_at", "platform_recorded_at", "claim_ceiling", "feature_knowledge",
-    "feature_knowledge_hash",
+    "feature_knowledge_hash", "knowledge_inputs",
 )
 
 _SUBJECT_FUNCTION_V2_ONLY = """CREATE OR REPLACE FUNCTION require_valid_feature_subject() RETURNS trigger AS $$
@@ -115,6 +119,7 @@ def upgrade() -> None:
         f"ALTER TABLE {_TABLE} ADD COLUMN claim_ceiling TEXT",
         f"ALTER TABLE {_TABLE} ADD COLUMN feature_knowledge JSONB",
         f"ALTER TABLE {_TABLE} ADD COLUMN feature_knowledge_hash CHAR(64)",
+        f"ALTER TABLE {_TABLE} ADD COLUMN knowledge_inputs JSONB",
         f"ALTER TABLE {_TABLE} DROP CONSTRAINT feature_materialization_hash_version_check",
         (
             f"ALTER TABLE {_TABLE} ADD CONSTRAINT feature_materialization_hash_version_check "
@@ -125,13 +130,16 @@ def upgrade() -> None:
             "CHECK("
             "(hash_version IN ('V1','V2') AND market_knowledge_at IS NULL "
             "AND platform_recorded_at IS NULL AND claim_ceiling IS NULL "
-            "AND feature_knowledge IS NULL AND feature_knowledge_hash IS NULL) "
+            "AND feature_knowledge IS NULL AND feature_knowledge_hash IS NULL "
+            "AND knowledge_inputs IS NULL) "
             "OR (hash_version='V3' AND platform_recorded_at IS NOT NULL "
             "AND knowledge_at=platform_recorded_at AND feature_knowledge IS NOT NULL "
             "AND jsonb_typeof(feature_knowledge)='object' AND feature_knowledge_hash IS NOT NULL "
+            "AND feature_knowledge_hash ~ '^[0-9a-f]{64}$' AND knowledge_inputs IS NOT NULL "
+            "AND jsonb_typeof(knowledge_inputs)='array' AND jsonb_array_length(knowledge_inputs)>0 "
             "AND claim_ceiling IS NOT NULL AND ("
             "(market_knowledge_at IS NOT NULL AND claim_ceiling IN ('CONDITIONAL','PROFESSIONAL') "
-            "AND market_knowledge_at>=event_at) "
+            "AND market_knowledge_at>=effective_at) "
             "OR (market_knowledge_at IS NULL AND claim_ceiling IN ('NONE','DESCRIPTIVE')))))"
         ),
         (

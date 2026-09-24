@@ -1668,6 +1668,8 @@ class PostgresOperatorDashboardQueries:
                 "SELECT x.*,d.name,d.semantic_version FROM (SELECT m.*,ROW_NUMBER() OVER "
                 "(PARTITION BY m.event_at ORDER BY m.knowledge_at DESC,m.computed_at DESC,m.materialization_id) rank "
                 "FROM feature_materializations m WHERE m.feature_id=%s AND m.instrument_id=%s "
+                # V3 knowledge_at is platform availability, not market knowledge.
+                "AND m.hash_version<>'V3' "
                 "AND m.dataset_version=%s AND m.event_at<=%s AND m.effective_at<=%s "
                 "AND m.knowledge_at<=%s AND m.computed_at<=%s) x "
                 "JOIN feature_definition_versions d ON d.feature_id=x.feature_id WHERE x.rank=1 "
@@ -2089,7 +2091,7 @@ class PostgresOperatorDashboardQueries:
                 ))
             knowledge = None
             if materialization_ids:
-                cursor.execute("SELECT MAX(knowledge_at) FROM feature_materializations WHERE materialization_id=ANY(%s)", (materialization_ids,))
+                cursor.execute("SELECT MAX(knowledge_at) FROM feature_materializations WHERE materialization_id=ANY(%s) AND hash_version<>'V3'", (materialization_ids,))
                 found = cursor.fetchone()
                 knowledge = None if found is None else found[0]
             cursor.execute("SELECT * FROM regime_risk_adjustment_candidates WHERE run_id=%s ORDER BY created_at,candidate_id", (run_id,))

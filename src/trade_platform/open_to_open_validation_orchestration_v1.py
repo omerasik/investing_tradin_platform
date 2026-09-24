@@ -29,7 +29,12 @@ from .crypto_liquidity_capacity_v1 import (
     canonical_contract_conflicts,
     evaluate_crypto_liquidity_capacity_v1,
 )
-from .feature_authority import FeatureMaterializationV2, FeatureMaterializationV3
+from .evidence_tier_authority_v1 import EvidenceTierVerdictV1
+from .feature_authority import (
+    FeatureAuthorityError,
+    FeatureMaterializationV2,
+    FeatureMaterializationV3,
+)
 from .knowledge_time_doctrine_v1 import (
     ClaimCeilingV1,
     DecisionTimeV1,
@@ -301,23 +306,29 @@ def legacy_platform_availability_at_v2(materialization: FeatureMaterializationV2
 
 
 def historical_feature_decision_v1(
-    materialization: FeatureMaterializationV3, *, compute_latency: DeclaredComputeLatencyV1
+    materialization: FeatureMaterializationV3,
+    *,
+    compute_latency: DeclaredComputeLatencyV1,
+    evidence_tiers: Mapping[UUID, EvidenceTierVerdictV1],
 ) -> DecisionTimeV1:
     """The doctrine's historical replay decision for one V3 value (may be a refusal).
 
     ``max(market_knowledge_at) + declared compute latency`` -- no
-    ``computed_at``, no ``platform_recorded_at``. A T1 value yields a refusal
-    with its principled reason, never an instant.
+    ``computed_at``, no ``platform_recorded_at``. The row's own clocks are
+    never trusted: every input is re-derived from the genuine verdict in
+    ``evidence_tiers`` that its payload names
+    (:meth:`FeatureMaterializationV3.verified_feature_knowledge_v1`), so a
+    hand-built or mismatched row refuses. A T1 value yields a refusal with its
+    principled reason, never an instant.
     """
     if not isinstance(materialization, FeatureMaterializationV3):
         raise OpenToOpenValidationOrchestrationV1Error(
             "historical_decision_requires_three_clock_materialization"
         )
     try:
-        return historical_decision_time_v1(
-            (materialization.feature_knowledge_v1(),), compute_latency=compute_latency
-        )
-    except KnowledgeTimeDoctrineError as error:
+        knowledge = materialization.verified_feature_knowledge_v1(evidence_tiers)
+        return historical_decision_time_v1((knowledge,), compute_latency=compute_latency)
+    except (KnowledgeTimeDoctrineError, FeatureAuthorityError) as error:
         raise OpenToOpenValidationOrchestrationV1Error(str(error)) from error
 
 
@@ -325,11 +336,13 @@ def canonical_feature_decision_at(
     materialization: FeatureMaterializationV2 | FeatureMaterializationV3,
     *,
     compute_latency: DeclaredComputeLatencyV1 | None = None,
+    evidence_tiers: Mapping[UUID, EvidenceTierVerdictV1] | None = None,
 ) -> datetime:
     """The instant a feature value may drive a decision (Phase R2A.2 rewrite).
 
     * A three-clock (V3) value: the doctrine's historical replay decision
-      time, which requires a declared ``compute_latency`` and at least a
+      time, which requires a declared ``compute_latency``, the genuine
+      ``evidence_tiers`` its inputs were derived from, and at least a
       ``CONDITIONAL`` claim. A T1 (or clock-less T3/T4) value raises: it
       cannot drive a historical decision at all.
     * A legacy V2 value: :func:`legacy_platform_availability_at_v2`, the
@@ -341,14 +354,20 @@ def canonical_feature_decision_at(
             raise OpenToOpenValidationOrchestrationV1Error(
                 "historical_decision_requires_declared_compute_latency"
             )
-        decision = historical_feature_decision_v1(materialization, compute_latency=compute_latency)
+        if evidence_tiers is None:
+            raise OpenToOpenValidationOrchestrationV1Error(
+                "historical_decision_requires_evidence_tier_verdicts"
+            )
+        decision = historical_feature_decision_v1(
+            materialization, compute_latency=compute_latency, evidence_tiers=evidence_tiers
+        )
         try:
             return require_admissible_decision_v1(
                 decision, minimum_claim=ClaimCeilingV1.CONDITIONAL
             )
         except KnowledgeTimeDoctrineError as error:
             raise OpenToOpenValidationOrchestrationV1Error(str(error)) from error
-    if compute_latency is not None:
+    if compute_latency is not None or evidence_tiers is not None:
         raise OpenToOpenValidationOrchestrationV1Error(
             "legacy_v2_materialization_has_no_market_knowledge_time"
         )
@@ -359,6 +378,7 @@ def count_distinct_historical_decision_times_v1(
     materializations: Sequence[FeatureMaterializationV3],
     *,
     compute_latency: DeclaredComputeLatencyV1,
+    evidence_tiers: Mapping[UUID, EvidenceTierVerdictV1],
     minimum_claim: ClaimCeilingV1,
 ) -> int:
     """How many distinct historical decision instants a V3 feature series carries.
@@ -373,7 +393,9 @@ def count_distinct_historical_decision_times_v1(
         raise OpenToOpenValidationOrchestrationV1Error("decision_count_requires_materializations")
     instants: set[datetime] = set()
     for materialization in materializations:
-        decision = historical_feature_decision_v1(materialization, compute_latency=compute_latency)
+        decision = historical_feature_decision_v1(
+            materialization, compute_latency=compute_latency, evidence_tiers=evidence_tiers
+        )
         try:
             instants.add(require_admissible_decision_v1(decision, minimum_claim=minimum_claim))
         except KnowledgeTimeDoctrineError as error:

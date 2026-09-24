@@ -94,8 +94,9 @@ class FeatureMaterializationV2Tests(unittest.TestCase):
         with self.assertRaises(FeatureAuthorityError):
             v2(computed_at=T0, knowledge_at=T0 + timedelta(seconds=1)).validate()
 
-    def test_hash_version_enum_has_exactly_v1_and_v2(self) -> None:
-        self.assertEqual({member.value for member in FeatureHashVersion}, {"V1", "V2"})
+    def test_hash_version_enum_has_exactly_v1_v2_and_v3(self) -> None:
+        # Phase R2A.2 adds V3 (three-clock rows); V1 and V2 stay as they were.
+        self.assertEqual({member.value for member in FeatureHashVersion}, {"V1", "V2", "V3"})
 
 
 if __name__ == "__main__":

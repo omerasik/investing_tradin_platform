@@ -86,7 +86,13 @@ class FeatureThreeClockV3PostgresTests(unittest.TestCase):
             PostgresHistoricalMarketDataPipeline,
             RawHistoricalObservation,
         )
-        from trade_platform.knowledge_time_doctrine_v1 import ClaimCeilingV1
+        from trade_platform.knowledge_time_doctrine_v1 import (
+            ClaimCeilingV1,
+            DeclaredComputeLatencyV1,
+        )
+        from trade_platform.open_to_open_validation_orchestration_v1 import (
+            canonical_feature_decision_at,
+        )
         from trade_platform.persistence import PersistenceError, PostgresDatabase
         from trade_platform.professional_instruments import (
             IdentifierMapping,
@@ -275,6 +281,22 @@ class FeatureThreeClockV3PostgresTests(unittest.TestCase):
         lag = timedelta(seconds=2)
         self.assertEqual([event + lag for event in events], [row.market_knowledge_at for row in t2_rows])
         self.assertTrue(all(row.claim_ceiling is ClaimCeilingV1.CONDITIONAL for row in t2_rows))
+        # Rows read back re-derive from their genuine verdict -- and only from it.
+        latency = DeclaredComputeLatencyV1(500_000_000, "test-only declared compute latency")
+        self.assertEqual(
+            [event + lag + timedelta(milliseconds=500) for event in events],
+            [
+                canonical_feature_decision_at(
+                    row, compute_latency=latency, evidence_tiers={t2.evidence_id: t2}
+                )
+                for row in t2_rows
+            ],
+        )
+        with self.assertRaises(FeatureAuthorityError):
+            t2_rows[0].verified_feature_knowledge_v1({t1.evidence_id: t1})
+        self.assertIsNone(
+            rows[0].verified_feature_knowledge_v1({t1.evidence_id: t1}).market_knowledge_at
+        )
 
         def visible(as_of: datetime, minimum: Any = ClaimCeilingV1.CONDITIONAL) -> int:
             return len(
@@ -311,6 +333,7 @@ class FeatureThreeClockV3PostgresTests(unittest.TestCase):
                 "market_knowledge_at": row.market_knowledge_at,
                 "platform_recorded_at": row.platform_recorded_at, "claim_ceiling": "CONDITIONAL",
                 "feature_knowledge": "{}", "feature_knowledge_hash": "f" * 64,
+                "knowledge_inputs": "[{}]",
             }
             values.update(overrides)
             columns = ",".join(values)
@@ -333,6 +356,10 @@ class FeatureThreeClockV3PostgresTests(unittest.TestCase):
             {"market_knowledge_at": row.event_at - timedelta(seconds=1)},  # known before it happened
             {"knowledge_at": row.platform_recorded_at + timedelta(seconds=1)},  # legacy column drift
             {"claim_ceiling": None},
+            {"market_knowledge_at": row.effective_at - timedelta(microseconds=1)},  # before completion
+            {"feature_knowledge_hash": "F" * 64},  # not a lowercase hex digest
+            {"knowledge_inputs": "[]"},  # no input provenance
+            {"knowledge_inputs": None},
             {"hash_version": "V2"},  # a legacy row may not carry three-clock columns
         ):
             with self.subTest(overrides=overrides), self.assertRaises(PersistenceError):

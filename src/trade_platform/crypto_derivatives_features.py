@@ -90,7 +90,7 @@ from __future__ import annotations
 from collections.abc import Callable, Generator, Iterator, Sequence
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from itertools import groupby, pairwise
 from typing import Any, cast
@@ -116,7 +116,6 @@ from .feature_authority import (
 from .knowledge_time_doctrine_v1 import (
     ObservationKnowledgeV1,
     derive_observation_knowledge_v1,
-    propagate_feature_knowledge_v1,
 )
 from .persistence import PostgresDatabase
 
@@ -398,6 +397,39 @@ def _mark_index_basis_manifest_tokens(
         f"index_event_at:{index.event_at.isoformat()}",
         f"index_revision:{index.revision}",
         f"index_ingested_at:{index.ingested_at.isoformat()}",
+        f"price_asset:{mark.price_asset}",
+    )
+
+
+def _utc(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat()
+
+
+def _mark_index_basis_manifest_tokens_v3(
+    *, dataset: _DatasetInfo, instrument_id: str, mark: _ReferencePriceObservation,
+    index: _ReferencePriceObservation, evidence_tier: EvidenceTierVerdictV1,
+) -> tuple[str, ...]:
+    """The V3 manifest: evidence identity only, every instant in UTC.
+
+    Unlike the v1 manifest (kept byte-for-byte for existing V2 hashes) it
+    carries no ``ingested_at`` -- a platform clock -- and formats instants in
+    UTC, so the V3 identity cannot depend on ingestion time or on the
+    database session's time zone.
+    """
+    return (
+        f"historical_dataset_version_id:{dataset.dataset_version_id}",
+        f"historical_dataset_content_hash:{dataset.content_hash}",
+        f"source_id:{dataset.source_id}",
+        f"evidence_tier_verdict_id:{evidence_tier.evidence_id}",
+        f"instrument_id:{instrument_id}",
+        f"mark_normalized_observation_id:{mark.normalized_observation_id}",
+        f"mark_raw_observation_id:{mark.raw_observation_id}",
+        f"mark_event_at:{_utc(mark.event_at)}",
+        f"mark_revision:{mark.revision}",
+        f"index_normalized_observation_id:{index.normalized_observation_id}",
+        f"index_raw_observation_id:{index.raw_observation_id}",
+        f"index_event_at:{_utc(index.event_at)}",
+        f"index_revision:{index.revision}",
         f"price_asset:{mark.price_asset}",
     )
 
@@ -721,9 +753,11 @@ class PostgresCryptoDerivativesFeatureCalculator:
         maximum. ``normalized_at`` and the dataset seal time enter only as the
         observation's ``platform_recorded_at`` -- audit, never knowledge.
 
-        An observation's doctrine ``event_at`` is its ``effective_at``, not its
-        bar-open ``event_at``: a bar's value is complete only when the bar
-        closes, so knowledge measured from the open would be look-ahead.
+        An observation's doctrine ``event_at`` is its ``effective_at`` -- the
+        instant its value is complete. For the Bybit mark/index inputs the two
+        already coincide (their ``event_at`` is the bar close); measuring from
+        ``effective_at`` keeps the rule look-ahead-free for any source whose
+        ``event_at`` is a bar open.
         """
         if mark.price_asset != index.price_asset:
             return None
@@ -747,21 +781,20 @@ class PostgresCryptoDerivativesFeatureCalculator:
                 platform_recorded_at=max(observation.normalized_at, dataset.created_at),
             )
 
-        knowledge = propagate_feature_knowledge_v1((observed(mark), observed(index)), event_at=event_at)
-        if knowledge.platform_recorded_at > platform_as_of:
+        inputs = (observed(mark), observed(index))
+        platform_recorded_at = max(item.platform_recorded_at for item in inputs)
+        if platform_recorded_at > platform_as_of:
             raise CryptoDerivativesFeatureError("platform_recorded_at_exceeds_platform_as_of")
         value = ((mark.price - index.price) / index.price).quantize(_VALUE_SCALE)
         return FeatureMaterializationV3.create(
             feature_id=feature_id, subject_type=FeatureSubjectType.INSTRUMENT,
             subject_id=instrument_id, dataset_version=str(dataset.dataset_version_id),
             event_at=event_at, effective_at=max(mark.effective_at, index.effective_at),
-            knowledge=knowledge,
-            computed_at=knowledge.platform_recorded_at if computed_at is None else computed_at,
-            source_observation_manifest=(
-                *_mark_index_basis_manifest_tokens(
-                    dataset=dataset, instrument_id=instrument_id, mark=mark, index=index,
-                ),
-                f"evidence_tier_verdict_id:{evidence_tier.evidence_id}",
+            inputs=inputs,
+            computed_at=platform_recorded_at if computed_at is None else computed_at,
+            source_observation_manifest=_mark_index_basis_manifest_tokens_v3(
+                dataset=dataset, instrument_id=instrument_id, mark=mark, index=index,
+                evidence_tier=evidence_tier,
             ),
             value=value, quality_status=FeatureQualityStatus.VALIDATED,
         )

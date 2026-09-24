@@ -17,10 +17,16 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
+from .evidence_tier_authority_v1 import EvidenceTierVerdictV1
 from .knowledge_time_doctrine_v1 import (
     ClaimCeilingV1,
     FeatureKnowledgeV1,
     KnowledgeTimeDoctrineError,
+    ObservationKnowledgeV1,
+    persisted_observation_knowledge_v1,
+    persisted_observation_market_hash_v1,
+    propagate_feature_knowledge_v1,
+    rederive_observation_knowledge_v1,
     restore_persisted_feature_knowledge_v1,
 )
 from .persistence import PostgresDatabase
@@ -423,6 +429,15 @@ class FeatureMaterializationV3:
     sealed evidence at any later wall time is the *same* materialization
     (idempotent), and neither operational clock can move a historical decision
     time. V1/V2 hashes are untouched and never recomputed.
+
+    Provenance. A row also stores :attr:`knowledge_inputs` -- every input
+    observation's recorded clock facts, whose market hashes the feature
+    knowledge binds. Integrity checks (:meth:`validate`) prove the row is
+    self-consistent, which a hand-built row can also be. Decision authority
+    therefore never rests on them: :meth:`verified_feature_knowledge_v1`
+    re-derives every input from its *genuine* evidence-tier verdict and
+    re-propagates, so a claim or knowledge time the verdict does not support
+    cannot survive.
     """
 
     feature_id: UUID
@@ -437,6 +452,7 @@ class FeatureMaterializationV3:
     claim_ceiling: ClaimCeilingV1
     feature_knowledge: Mapping[str, Any]
     feature_knowledge_hash: str
+    knowledge_inputs: tuple[Mapping[str, Any], ...]
     source_observation_manifest: tuple[str, ...]
     value: Decimal | None
     quality_status: FeatureQualityStatus
@@ -488,17 +504,23 @@ class FeatureMaterializationV3:
         dataset_version: str,
         event_at: datetime,
         effective_at: datetime,
-        knowledge: FeatureKnowledgeV1,
+        inputs: Sequence[ObservationKnowledgeV1],
         computed_at: datetime,
         source_observation_manifest: tuple[str, ...],
         value: Decimal | None,
         quality_status: FeatureQualityStatus,
     ) -> FeatureMaterializationV3:
-        """Build a V3 row from an issued, intact feature-knowledge object only."""
-        if not isinstance(knowledge, FeatureKnowledgeV1) or not knowledge.integrity_verified():
-            raise FeatureAuthorityError("feature_knowledge_integrity_failed")
-        if knowledge.event_at != event_at:
-            raise FeatureAuthorityError("feature_knowledge_event_mismatch")
+        """Build a V3 row from issued observation knowledge; the doctrine propagates it."""
+        try:
+            knowledge = propagate_feature_knowledge_v1(inputs, event_at=event_at)
+            persisted_inputs = tuple(
+                sorted(
+                    (persisted_observation_knowledge_v1(item) for item in inputs),
+                    key=persisted_observation_market_hash_v1,
+                )
+            )
+        except KnowledgeTimeDoctrineError as error:
+            raise FeatureAuthorityError(f"feature_knowledge_invalid:{error}") from error
         payload = knowledge.market_identity_payload()
         content_hash = cls._hash(
             feature_id=feature_id, subject_type=subject_type, subject_id=subject_id,
@@ -512,9 +534,37 @@ class FeatureMaterializationV3:
         return cls(
             feature_id, subject_type, subject_id, dataset_version, event_at, effective_at,
             knowledge.market_knowledge_at, knowledge.platform_recorded_at, computed_at,
-            knowledge.claim_ceiling, payload, knowledge.market_content_hash,
+            knowledge.claim_ceiling, payload, knowledge.market_content_hash, persisted_inputs,
             source_observation_manifest, value, quality_status, content_hash,
         )
+
+    def verified_feature_knowledge_v1(
+        self, verdicts: Mapping[UUID, EvidenceTierVerdictV1]
+    ) -> FeatureKnowledgeV1:
+        """This row's clocks, re-derived from genuine verdicts -- the provenance check.
+
+        Every stored input is fed back through the doctrine with the verdict
+        its own payload names (which must be supplied), the inputs are
+        re-propagated, and the result must reproduce this row's feature
+        knowledge hash. Only the object this returns may carry decision
+        authority.
+        """
+        self.validate()
+        try:
+            rederived = []
+            for persisted in self.knowledge_inputs:
+                market = persisted.get("market")
+                verdict_id = None if not isinstance(market, Mapping) else market.get("verdict_evidence_id")
+                verdict = verdicts.get(UUID(str(verdict_id))) if verdict_id is not None else None
+                if verdict is None:
+                    raise FeatureAuthorityError("feature_knowledge_input_verdict_not_supplied")
+                rederived.append(rederive_observation_knowledge_v1(verdict, persisted))
+            knowledge = propagate_feature_knowledge_v1(rederived, event_at=self.event_at)
+        except KnowledgeTimeDoctrineError as error:
+            raise FeatureAuthorityError(f"feature_knowledge_not_verified:{error}") from error
+        if knowledge.market_content_hash != self.feature_knowledge_hash:
+            raise FeatureAuthorityError("feature_knowledge_not_derivable_from_verdicts")
+        return knowledge
 
     def feature_knowledge_v1(self) -> FeatureKnowledgeV1:
         """The issued doctrine object behind this row, re-derived and re-checked."""
@@ -536,6 +586,9 @@ class FeatureMaterializationV3:
             _aware(timestamp)
         if self.market_knowledge_at is not None:
             _aware(self.market_knowledge_at)
+            # A value cannot be known before it is complete.
+            if self.market_knowledge_at < self.effective_at:
+                raise FeatureAuthorityError("feature_market_knowledge_precedes_effective_at")
         if self.effective_at < self.event_at or self.platform_recorded_at < self.effective_at:
             raise FeatureAuthorityError("feature_materialization_invalid_temporal_order")
         if self.computed_at < self.platform_recorded_at:
@@ -551,6 +604,18 @@ class FeatureMaterializationV3:
             or knowledge.claim_ceiling is not self.claim_ceiling
         ):
             raise FeatureAuthorityError("feature_knowledge_columns_disagree_with_payload")
+        try:
+            input_hashes = [persisted_observation_market_hash_v1(item) for item in self.knowledge_inputs]
+            input_recorded = [
+                datetime.fromisoformat(str(item["platform_recorded_at"]))
+                for item in self.knowledge_inputs
+            ]
+        except (KnowledgeTimeDoctrineError, KeyError, TypeError, ValueError) as error:
+            raise FeatureAuthorityError("feature_knowledge_inputs_malformed") from error
+        if tuple(input_hashes) != knowledge.input_knowledge_hashes:
+            raise FeatureAuthorityError("feature_knowledge_inputs_disagree_with_payload")
+        if max(input_recorded) != self.platform_recorded_at:
+            raise FeatureAuthorityError("feature_platform_recorded_at_disagrees_with_inputs")
         expected = self._hash(
             feature_id=self.feature_id, subject_type=self.subject_type,
             subject_id=self.subject_id, dataset_version=self.dataset_version,
@@ -568,19 +633,23 @@ _V3_COLUMNS = (
     "materialization_id,feature_id,subject_type,subject_id,dataset_version,event_at,"
     "effective_at,market_knowledge_at,platform_recorded_at,computed_at,claim_ceiling,"
     "feature_knowledge,feature_knowledge_hash,source_observation_manifest,value,"
-    "quality_status,content_hash"
+    "quality_status,content_hash,knowledge_inputs"
 )
 
 
+def _json(value: Any) -> Any:
+    return value if isinstance(value, (dict, list)) else json.loads(value)
+
+
 def _row_v3(row: tuple[Any, ...]) -> FeatureMaterializationV3:
-    manifest = row[13] if isinstance(row[13], list) else json.loads(row[13])
-    knowledge = row[11] if isinstance(row[11], dict) else json.loads(row[11])
+    manifest = _json(row[13])
     value = FeatureMaterializationV3(
         feature_id=UUID(str(row[1])), subject_type=FeatureSubjectType(str(row[2])),
         subject_id=str(row[3]), dataset_version=str(row[4]), event_at=row[5],
         effective_at=row[6], market_knowledge_at=row[7], platform_recorded_at=row[8],
         computed_at=row[9], claim_ceiling=ClaimCeilingV1[str(row[10])],
-        feature_knowledge=knowledge, feature_knowledge_hash=str(row[12]),
+        feature_knowledge=_json(row[11]), feature_knowledge_hash=str(row[12]),
+        knowledge_inputs=tuple(_json(row[17])),
         source_observation_manifest=tuple(str(item) for item in manifest),
         value=None if row[14] is None else Decimal(str(row[14])),
         quality_status=FeatureQualityStatus(str(row[15])), content_hash=str(row[16]),
@@ -891,20 +960,20 @@ class PostgresFeatureAuthority:
                     "effective_at,knowledge_at,computed_at,source_observation_manifest,value,"
                     "quality_status,content_hash,subject_type,subject_id,hash_version,"
                     "market_knowledge_at,platform_recorded_at,claim_ceiling,feature_knowledge,"
-                    "feature_knowledge_hash) "
+                    "feature_knowledge_hash,knowledge_inputs) "
                     "SELECT materialization_id,feature_id,instrument_id,dataset_version,event_at,"
                     "effective_at,platform_recorded_at,computed_at,source_observation_manifest::jsonb,"
                     "value,quality_status,content_hash,subject_type,subject_id,%s,"
                     "market_knowledge_at,platform_recorded_at,claim_ceiling,feature_knowledge::jsonb,"
-                    "feature_knowledge_hash FROM unnest("
+                    "feature_knowledge_hash,knowledge_inputs::jsonb FROM unnest("
                     "%s::uuid[],%s::uuid[],%s::text[],%s::text[],%s::timestamptz[],"
                     "%s::timestamptz[],%s::timestamptz[],%s::text[],%s::numeric[],%s::text[],"
                     "%s::text[],%s::text[],%s::text[],%s::timestamptz[],%s::timestamptz[],"
-                    "%s::text[],%s::text[],%s::text[]) AS v("
+                    "%s::text[],%s::text[],%s::text[],%s::text[]) AS v("
                     "materialization_id,feature_id,instrument_id,dataset_version,event_at,"
                     "effective_at,computed_at,source_observation_manifest,value,quality_status,"
                     "content_hash,subject_type,subject_id,market_knowledge_at,platform_recorded_at,"
-                    "claim_ceiling,feature_knowledge,feature_knowledge_hash) "
+                    "claim_ceiling,feature_knowledge,feature_knowledge_hash,knowledge_inputs) "
                     "ON CONFLICT (feature_id,subject_type,subject_id,dataset_version,event_at,"
                     "effective_at) WHERE hash_version='V3' DO NOTHING",
                     (
@@ -926,6 +995,7 @@ class PostgresFeatureAuthority:
                         [value.claim_ceiling.name for value in values],
                         [_canonical(value.feature_knowledge) for value in values],
                         [value.feature_knowledge_hash for value in values],
+                        [json.dumps(list(value.knowledge_inputs), sort_keys=True) for value in values],
                     ),
                 )
                 cursor.execute(
@@ -972,7 +1042,11 @@ class PostgresFeatureAuthority:
     ) -> tuple[FeatureMaterializationV3, ...]:
         """Historical replay read: what the *market* could know at ``market_as_of``.
 
-        Gated on ``event_at`` and ``market_knowledge_at`` only -- never on
+        Rows come back integrity-checked, not provenance-verified: anything
+        that grants decision authority must still call
+        :meth:`FeatureMaterializationV3.verified_feature_knowledge_v1`.
+
+        Gated on ``event_at``, ``effective_at`` and ``market_knowledge_at`` only -- never on
         ``platform_recorded_at`` or ``computed_at``, which say when this
         platform wrote the row, not when the value was knowable. A row whose
         market knowledge time is undefined (T0/T1, missing clock evidence) is
@@ -989,10 +1063,11 @@ class PostgresFeatureAuthority:
                 f"SELECT {_V3_COLUMNS} FROM feature_materializations "  # nosec B608 - constant column list
                 "WHERE hash_version='V3' AND feature_id=%s AND subject_type=%s AND subject_id=%s "
                 "AND dataset_version=%s AND market_knowledge_at IS NOT NULL "
-                "AND event_at<=%s AND market_knowledge_at<=%s AND claim_ceiling=ANY(%s) "
+                "AND event_at<=%s AND effective_at<=%s AND market_knowledge_at<=%s "
+                "AND claim_ceiling=ANY(%s) "
                 "ORDER BY event_at, effective_at",
                 (feature_id, subject_type.value, subject_id, dataset_version, market_as_of,
-                 market_as_of, admitted),
+                 market_as_of, market_as_of, admitted),
             )
             rows = cursor.fetchall()
         return tuple(_row_v3(row) for row in rows)

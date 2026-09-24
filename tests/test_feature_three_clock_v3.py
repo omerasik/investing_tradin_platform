@@ -8,6 +8,8 @@ no source is enrolled into the shipped closed set.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -44,7 +46,6 @@ from trade_platform.knowledge_time_doctrine_v1 import (
     DeclaredComputeLatencyV1,
     KnowledgeTimeDoctrineError,
     ObservationKnowledgeV1,
-    propagate_feature_knowledge_v1,
     restore_persisted_feature_knowledge_v1,
 )
 from trade_platform.open_to_open_preregistration_v1 import (
@@ -70,6 +71,8 @@ ARRIVAL = CLOSE + timedelta(milliseconds=180)
 #: Measured venue-minus-host bound for one session, e.g. a host ~9.47 s behind.
 BOUND_NANOS = 9_650_000_000
 MANIFEST = ("historical_dataset_version_id:fixture", "mark:1", "index:2")
+#: Genuine verdicts, keyed as a decision path receives them.
+TIERS = {verdict.evidence_id: verdict for verdict in (_t1(), _t2(), _t3(), _t4())}
 
 
 def _obs(verdict: Any, reference: str, **clocks: Any) -> ObservationKnowledgeV1:
@@ -83,12 +86,12 @@ def _materialize(
     computed_at: datetime | None = None,
     value: Decimal = Decimal("0.000512345678"),
 ) -> FeatureMaterializationV3:
-    knowledge = propagate_feature_knowledge_v1(inputs, event_at=event_at)
+    recorded = max(item.platform_recorded_at for item in inputs)
     return FeatureMaterializationV3.create(
         feature_id=FEATURE_ID, subject_type=FeatureSubjectType.INSTRUMENT, subject_id=SUBJECT,
         dataset_version=str(DATASET_ID), event_at=event_at, effective_at=event_at + BAR,
-        knowledge=knowledge,
-        computed_at=knowledge.platform_recorded_at if computed_at is None else computed_at,
+        inputs=inputs,
+        computed_at=recorded if computed_at is None else computed_at,
         source_observation_manifest=MANIFEST, value=value,
         quality_status=FeatureQualityStatus.VALIDATED,
     )
@@ -138,9 +141,9 @@ class LegacyIdentityPreservationTests(unittest.TestCase):
             quality_status=FeatureQualityStatus.VALIDATED,
         )
         with self.assertRaisesRegex(OpenToOpenValidationOrchestrationV1Error, "no_market_knowledge"):
-            canonical_feature_decision_at(row, compute_latency=LATENCY)
+            canonical_feature_decision_at(row, compute_latency=LATENCY, evidence_tiers=TIERS)
         with self.assertRaises(OpenToOpenValidationOrchestrationV1Error):
-            historical_feature_decision_v1(row, compute_latency=LATENCY)  # type: ignore[arg-type]
+            historical_feature_decision_v1(row, compute_latency=LATENCY, evidence_tiers=TIERS)  # type: ignore[arg-type]
 
     def test_preregistration_packet_identity_is_unchanged(self) -> None:
         packet = build_open_to_open_preregistration_v1(
@@ -163,14 +166,14 @@ class T1CannotDecideTests(unittest.TestCase):
 
     def test_t1_value_cannot_drive_a_historical_decision(self) -> None:
         row = _materialize(_obs(_t1(), "mark"), _obs(_t1(), "index"))
-        decision = historical_feature_decision_v1(row, compute_latency=LATENCY)
+        decision = historical_feature_decision_v1(row, compute_latency=LATENCY, evidence_tiers=TIERS)
         self.assertIsNone(decision.decision_at)
         self.assertIn("input:knowledge_time_undefined_for_retrospective_evidence", decision.reasons)
         with self.assertRaisesRegex(OpenToOpenValidationOrchestrationV1Error, "not_admissible"):
-            canonical_feature_decision_at(row, compute_latency=LATENCY)
+            canonical_feature_decision_at(row, compute_latency=LATENCY, evidence_tiers=TIERS)
         with self.assertRaises(OpenToOpenValidationOrchestrationV1Error):
             count_distinct_historical_decision_times_v1(
-                (row,), compute_latency=LATENCY, minimum_claim=ClaimCeilingV1.CONDITIONAL
+                (row,), compute_latency=LATENCY, evidence_tiers=TIERS, minimum_claim=ClaimCeilingV1.CONDITIONAL
             )
 
     def test_a_v3_decision_needs_a_declared_latency(self) -> None:
@@ -188,7 +191,7 @@ class T1CannotDecideTests(unittest.TestCase):
 
 class DistinctCausalDecisionTests(unittest.TestCase):
     def _decision(self, row: FeatureMaterializationV3) -> datetime:
-        return canonical_feature_decision_at(row, compute_latency=LATENCY)
+        return canonical_feature_decision_at(row, compute_latency=LATENCY, evidence_tiers=TIERS)
 
     def test_t2_t3_t4_decisions_are_distinct_and_causal(self) -> None:
         t2 = _materialize(_obs(_t2(), "mark"), _obs(_t2(), "index"))
@@ -218,7 +221,7 @@ class DistinctCausalDecisionTests(unittest.TestCase):
         self.assertEqual(
             5,
             count_distinct_historical_decision_times_v1(
-                rows, compute_latency=LATENCY, minimum_claim=ClaimCeilingV1.PROFESSIONAL
+                rows, compute_latency=LATENCY, evidence_tiers=TIERS, minimum_claim=ClaimCeilingV1.PROFESSIONAL
             ),
         )
 
@@ -244,8 +247,8 @@ class OperationalClocksDoNotMoveHistoryTests(unittest.TestCase):
         self.assertEqual(first.content_hash, recomputed.content_hash)
         later.validate()
         self.assertEqual(
-            canonical_feature_decision_at(first, compute_latency=LATENCY),
-            canonical_feature_decision_at(recomputed, compute_latency=LATENCY),
+            canonical_feature_decision_at(first, compute_latency=LATENCY, evidence_tiers=TIERS),
+            canonical_feature_decision_at(recomputed, compute_latency=LATENCY, evidence_tiers=TIERS),
         )
 
     def test_renormalizing_later_moves_no_market_knowledge(self) -> None:
@@ -259,8 +262,8 @@ class OperationalClocksDoNotMoveHistoryTests(unittest.TestCase):
         self.assertEqual(early.feature_knowledge_hash, late.feature_knowledge_hash)
         self.assertEqual(early.content_hash, late.content_hash)
         self.assertEqual(
-            historical_feature_decision_v1(early, compute_latency=LATENCY).decision_time_id,
-            historical_feature_decision_v1(late, compute_latency=LATENCY).decision_time_id,
+            historical_feature_decision_v1(early, compute_latency=LATENCY, evidence_tiers=TIERS).decision_time_id,
+            historical_feature_decision_v1(late, compute_latency=LATENCY, evidence_tiers=TIERS).decision_time_id,
         )
 
     def test_seal_or_storage_time_cannot_make_t1_evidence_known(self) -> None:
@@ -270,7 +273,7 @@ class OperationalClocksDoNotMoveHistoryTests(unittest.TestCase):
                 _obs(_t1(), "index", platform_recorded_at=recorded),
             )
             self.assertIsNone(row.market_knowledge_at)
-            self.assertIsNone(historical_feature_decision_v1(row, compute_latency=LATENCY).decision_at)
+            self.assertIsNone(historical_feature_decision_v1(row, compute_latency=LATENCY, evidence_tiers=TIERS).decision_at)
 
 
 class PropagationTests(unittest.TestCase):
@@ -321,6 +324,107 @@ class PersistedKnowledgeIntegrityTests(unittest.TestCase):
                 payload, platform_recorded_at=SEALED_AT,
                 expected_market_content_hash=row.feature_knowledge_hash,
             )
+
+
+def _sha(payload: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
+
+
+def _forged_professional(row: FeatureMaterializationV3, verdict_id: Any = None) -> FeatureMaterializationV3:
+    """A fully self-consistent row claiming PROFESSIONAL knowledge it was never derived to."""
+    known = CLOSE.isoformat()
+    inputs = []
+    for item in row.knowledge_inputs:
+        market = dict(item["market"])
+        market.update(
+            claim_ceiling="PROFESSIONAL", market_knowledge_at=known, reasons=[],
+            knowledge_basis="recorder_arrival_plus_venue_clock_bound",
+        )
+        if verdict_id is not None:
+            market["verdict_evidence_id"] = str(verdict_id)
+        inputs.append({"market": market, "platform_recorded_at": item["platform_recorded_at"]})
+    inputs.sort(key=lambda item: _sha(item["market"]))
+    knowledge = dict(row.feature_knowledge)
+    knowledge.update(
+        input_knowledge_hashes=[_sha(item["market"]) for item in inputs],
+        market_knowledge_at=known, claim_ceiling="PROFESSIONAL", reasons=[],
+    )
+    knowledge_hash = _sha(knowledge)
+    content_hash = FeatureMaterializationV3._hash(
+        feature_id=row.feature_id, subject_type=row.subject_type, subject_id=row.subject_id,
+        dataset_version=row.dataset_version, event_at=row.event_at, effective_at=row.effective_at,
+        market_knowledge_at=CLOSE, claim_ceiling=ClaimCeilingV1.PROFESSIONAL,
+        feature_knowledge_hash=knowledge_hash,
+        source_observation_manifest=row.source_observation_manifest, value=row.value,
+        quality_status=row.quality_status,
+    )
+    return replace(
+        row, knowledge_inputs=tuple(inputs), feature_knowledge=knowledge,
+        feature_knowledge_hash=knowledge_hash, market_knowledge_at=CLOSE,
+        claim_ceiling=ClaimCeilingV1.PROFESSIONAL, content_hash=content_hash,
+    )
+
+
+class ForgeryTests(unittest.TestCase):
+    """Integrity is not provenance: a self-consistent forged row must still refuse."""
+
+    def test_a_forged_row_is_self_consistent_yet_never_decides(self) -> None:
+        t1_row = _materialize(_obs(_t1(), "mark"), _obs(_t1(), "index"))
+        forged = _forged_professional(t1_row)
+        forged.validate()  # integrity alone cannot tell -- which is the point
+        with self.assertRaises(FeatureAuthorityError):
+            forged.verified_feature_knowledge_v1(TIERS)
+        with self.assertRaises(OpenToOpenValidationOrchestrationV1Error):
+            canonical_feature_decision_at(forged, compute_latency=LATENCY, evidence_tiers=TIERS)
+
+    def test_a_forged_row_naming_a_genuine_t4_verdict_still_refuses(self) -> None:
+        t4 = _t4()
+        forged = _forged_professional(
+            _materialize(_obs(_t1(), "mark"), _obs(_t1(), "index")), verdict_id=t4.evidence_id
+        )
+        with self.assertRaises(FeatureAuthorityError):
+            forged.verified_feature_knowledge_v1({t4.evidence_id: t4})
+
+    def test_a_forged_earlier_arrival_is_caught(self) -> None:
+        row = _t4_pair()
+        tampered_inputs = []
+        for item in row.knowledge_inputs:
+            market = dict(item["market"])
+            market["arrival_at"] = (ARRIVAL - timedelta(seconds=30)).isoformat()
+            tampered_inputs.append({"market": market, "platform_recorded_at": item["platform_recorded_at"]})
+        with self.assertRaises(FeatureAuthorityError):
+            replace(row, knowledge_inputs=tuple(tampered_inputs)).verified_feature_knowledge_v1(TIERS)
+
+    def test_a_genuine_row_verifies_only_against_its_own_verdict(self) -> None:
+        row = _t4_pair()
+        self.assertEqual(
+            row.feature_knowledge_hash, row.verified_feature_knowledge_v1(TIERS).market_content_hash
+        )
+        t2 = _t2()
+        with self.assertRaises(FeatureAuthorityError):
+            row.verified_feature_knowledge_v1({t2.evidence_id: t2})
+
+    def test_the_gate_refuses_a_forged_row(self) -> None:
+        packet = ProfessionalGateTests()._packet()
+        t4 = _t4()
+        forged = [
+            _forged_professional(
+                _materialize(_obs(_t1(), f"m{i}"), _obs(_t1(), f"i{i}"), event_at=EVENT + i * BAR),
+                verdict_id=t4.evidence_id,
+            )
+            for i in range(2)
+        ]
+        with self.assertRaisesRegex(OpenToOpenPreregistrationV1Error, "not_admissible"):
+            require_professional_historical_decisions_v1(
+                packet, t4, forged, compute_latency=LATENCY
+            )
+
+    def test_knowledge_before_completion_is_refused(self) -> None:
+        row = _t4_pair()
+        with self.assertRaises(FeatureAuthorityError):
+            replace(row, effective_at=row.market_knowledge_at + timedelta(seconds=1)).validate()  # type: ignore[operator]
 
 
 class ProfessionalGateTests(unittest.TestCase):

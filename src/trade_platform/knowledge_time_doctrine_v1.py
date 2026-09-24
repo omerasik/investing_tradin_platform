@@ -706,6 +706,77 @@ def _parse_instant(value: object, name: str) -> datetime | None:
     return parsed
 
 
+def persisted_observation_knowledge_v1(observation: ObservationKnowledgeV1) -> dict[str, Any]:
+    """What a durable row stores about one input: its market payload and audit clock."""
+    if not isinstance(observation, ObservationKnowledgeV1) or not observation.integrity_verified():
+        raise KnowledgeTimeDoctrineError("persisted_observation_knowledge_integrity_failed")
+    return {
+        "market": observation.market_identity_payload(),
+        "platform_recorded_at": _iso(observation.platform_recorded_at),
+    }
+
+
+def persisted_observation_market_hash_v1(persisted: Mapping[str, Any]) -> str:
+    """The observation market hash a persisted input claims to be."""
+    market = persisted.get("market")
+    if not isinstance(market, Mapping):
+        raise KnowledgeTimeDoctrineError("persisted_observation_knowledge_malformed")
+    return _sha256(market)
+
+
+def rederive_observation_knowledge_v1(
+    verdict: EvidenceTierVerdictV1, persisted: Mapping[str, Any]
+) -> ObservationKnowledgeV1:
+    """Re-run the doctrine on a persisted input's recorded clocks, from its genuine verdict.
+
+    Phase R2A.2. This is the provenance check :func:`restore_persisted_feature_knowledge_v1`
+    cannot make: the stored *facts* (dataset binding, reference, event,
+    publication and arrival clocks, clock bound, platform time) are fed back
+    through :func:`derive_observation_knowledge_v1` with ``verdict``, and the
+    result must reproduce the stored market hash exactly. A hand-built payload
+    -- an invented claim, an earlier knowledge time, a verdict it was never
+    derived from -- cannot survive this, because the knowledge time and claim
+    are recomputed rather than read.
+    """
+    market = persisted.get("market")
+    if not isinstance(market, Mapping):
+        raise KnowledgeTimeDoctrineError("persisted_observation_knowledge_malformed")
+    try:
+        if UUID(str(market["verdict_evidence_id"])) != verdict.evidence_id:
+            raise KnowledgeTimeDoctrineError("persisted_observation_knowledge_verdict_mismatch")
+        bound_payload = market["arrival_clock_bound"]
+        bound = (
+            None
+            if bound_payload is None
+            else HostClockBoundV1(
+                int(bound_payload["venue_minus_host_upper_bound_nanos"]),
+                str(bound_payload["evidence_reference"]),
+            )
+        )
+        event_at = _parse_instant(market["event_at"], "event_at")
+        platform_recorded_at = _parse_instant(
+            persisted.get("platform_recorded_at"), "platform_recorded_at"
+        )
+        rederived = derive_observation_knowledge_v1(
+            verdict,
+            dataset_version_id=UUID(str(market["dataset_version_id"])),
+            dataset_content_hash=str(market["dataset_content_hash"]),
+            observation_reference=str(market["observation_reference"]),
+            event_at=event_at,  # type: ignore[arg-type]
+            platform_recorded_at=platform_recorded_at,  # type: ignore[arg-type]
+            publication_at=_parse_instant(market["publication_at"], "publication_at"),
+            arrival_at=_parse_instant(market["arrival_at"], "arrival_at"),
+            arrival_clock_bound=bound,
+        )
+    except KnowledgeTimeDoctrineError:
+        raise
+    except (KeyError, TypeError, ValueError, AttributeError) as error:
+        raise KnowledgeTimeDoctrineError("persisted_observation_knowledge_malformed") from error
+    if rederived.market_content_hash != _sha256(market):
+        raise KnowledgeTimeDoctrineError("persisted_observation_knowledge_not_derivable_from_verdict")
+    return rederived
+
+
 def restore_persisted_feature_knowledge_v1(
     market_payload: Mapping[str, Any],
     *,
@@ -724,9 +795,12 @@ def restore_persisted_feature_knowledge_v1(
     time only with no reasons and at least a conditional claim, an undefined
     one only with a reason and at most a descriptive claim, knowledge never
     before the event. A payload that fails any of this is refused, never
-    repaired. Provenance of the payload itself is the persistence authority's
-    job (append-only rows, deterministic content hashes); this function proves
-    only that what came back is exactly what the doctrine could have issued.
+    repaired.
+
+    This proves *integrity and coherence only* -- never provenance. A payload
+    anyone assembled by hand can pass it. Anything that grants decision
+    authority must instead re-derive every input from its genuine verdict
+    with :func:`rederive_observation_knowledge_v1` and re-propagate.
     """
     _require_aware(platform_recorded_at, "platform_recorded_at")
     if market_payload.get("schema_version") != KNOWLEDGE_TIME_DOCTRINE_SCHEMA_VERSION:
@@ -759,6 +833,12 @@ def restore_persisted_feature_knowledge_v1(
         if not reasons or claim > ClaimCeilingV1.DESCRIPTIVE:
             raise KnowledgeTimeDoctrineError("persisted_feature_knowledge_incoherent")
     elif reasons or claim < ClaimCeilingV1.CONDITIONAL or market_knowledge_at < event_at:
+        raise KnowledgeTimeDoctrineError("persisted_feature_knowledge_incoherent")
+    # Only a T2 input carries a lag binding and caps the claim at CONDITIONAL,
+    # so a defined CONDITIONAL value has at least one and a PROFESSIONAL none.
+    if claim is ClaimCeilingV1.CONDITIONAL and market_knowledge_at is not None and not bindings:
+        raise KnowledgeTimeDoctrineError("persisted_feature_knowledge_incoherent")
+    if claim is ClaimCeilingV1.PROFESSIONAL and bindings:
         raise KnowledgeTimeDoctrineError("persisted_feature_knowledge_incoherent")
     values: dict[str, Any] = {
         "schema_version": KNOWLEDGE_TIME_DOCTRINE_SCHEMA_VERSION,
@@ -1126,7 +1206,10 @@ __all__ = [
     "derive_observation_knowledge_v1",
     "historical_decision_time_v1",
     "live_decision_time_v1",
+    "persisted_observation_knowledge_v1",
+    "persisted_observation_market_hash_v1",
     "propagate_feature_knowledge_v1",
+    "rederive_observation_knowledge_v1",
     "require_admissible_decision_v1",
     "restore_persisted_feature_knowledge_v1",
     "result_claim_ceiling_v1",

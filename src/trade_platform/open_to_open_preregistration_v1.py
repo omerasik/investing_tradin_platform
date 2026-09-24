@@ -454,7 +454,9 @@ def require_professional_historical_decisions_v1(
     value derived from T4 capture through the legacy V2 path would still carry
     a platform ingestion instant as its "knowledge". So every feature value
     the run would use must also be a three-clock (V3) row of this exact
-    dataset whose historical decision -- market knowledge plus the declared
+    dataset, every input of which re-derives from *this* verdict (so a
+    hand-built row, or one derived from another verdict, refuses), whose
+    historical decision -- market knowledge plus the declared
     compute latency, no operational clock -- is admissible at
     ``PROFESSIONAL``, and the distinct decision instants they carry must be at
     least two and exactly the count the packet bound. A legacy V2 value, a T1
@@ -479,6 +481,7 @@ def require_professional_historical_decisions_v1(
         count = count_distinct_historical_decision_times_v1(
             materializations,
             compute_latency=compute_latency,
+            evidence_tiers={evidence_tier.evidence_id: evidence_tier},
             minimum_claim=ClaimCeilingV1.PROFESSIONAL,
         )
     except OpenToOpenValidationOrchestrationV1Error as error:
