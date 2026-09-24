@@ -13,44 +13,43 @@ updated: 2026-09-24
 # -> R8 opportunity engine -> R9 accounts/risk -> R10 paper; R7 (T3 spine) is
 # the one parallel track.
 phase:
-  id: "R3A"
-  name: First-party T4 normalization, canonical segment sealing and tier issuance (FIN)
+  id: "R3B"
+  name: Free historical T2 archive acquisition and reconstruction (owner-independent part)
   status: in_progress
-  base_commit: 01057d1       # R2B (PR #151) merged; R2A + R2B complete
+  base_commit: 65c8ae8       # R3A (PR #152) merged; exact-main CI green
+  source_verified_2026_09_24: >-
+    https://public.bybit.com/trading/<SYMBOL>/<SYMBOL><YYYY-MM-DD>.csv.gz,
+    unauthenticated S3/CloudFront; BTCUSDT 2020-03-25 .. previous UTC day
+    (2,374 files), each day published ~01:12Z next day; no publisher checksum;
+    timestamp = float text, <=14 significant digits (100 us resolution,
+    rounding undocumented); no venue seq. premium_index/spot_index: inverse
+    *USD only, ended 2020. Bybit ToS text not machine-verifiable: owner
+    confirmation item.
   delivered: >-
-    first_party_t4_normalization_v1.py (clock-bound rule
-    session-rtt-sample-bracket-max-upper-v1 re-derived from sealed
-    CLOCK_OFFSET_SAMPLE events; one record-at-a-time normalizer for replay and
-    future R8 live: independent mark/index, basis knowledge=max, checked
-    (T, seq) trade order, 1m bars only with same-segment open+close proof),
-    first_party_t4_seal_v1.py (COMPLETE+replayed production partitions only,
-    one dataset per coverage window x clock bracket, deterministic identity
-    excluding platform clocks/library versions, rebuild-from-raw verify),
-    first_party_t4_dataset_v1.py (catalog, registered T4 sealed-clock
-    resolver, provenance->tier from the seal only, V3 basis 3.0.0 sampled
-    first-at/after-minute), T4 frames on the R2B plane, migration 0051
-    first_party_t4_datasets, scripts/first_party_t4.py.
-  acceptance_status: >-
-    Engineering complete and fixture-proven. Real acceptance needs the first
-    COMPLETE partition carrying clock samples (session 7439cf8c rolls over at
-    2026-09-25T00:00Z). The only COMPLETE partition today (04fb6d26, 21 s) has
-    no clock samples and is correctly excluded (no T4).
+    bybit_public_archive_v1.py (deterministic source contract, lag slot
+    UNSET_PENDING_OWNER_DECISION_OR_5, resumable ranged acquisition with
+    content-length/etag/gzip/sha256 proof, strict parse, source-neutral trade
+    frame, 1m event-time bars with order and boundary ambiguity, rebuild
+    verification, catalog migration 0052), scripts/bybit_public_archive.py.
+  real_evidence: >-
+    BTCUSDT 2026-09-21..23 engineering sample (not a research universe; OR-2):
+    289 MB, 8,368,287 trades, 4,320 bars, dataset 3d6467c1 (content fa6914fa),
+    byte-identical rebuild. market_knowledge_at NULL everywhere.
   scope_paths:
-    - src/trade_platform/first_party_t4_normalization_v1.py
-    - src/trade_platform/first_party_t4_seal_v1.py
-    - src/trade_platform/first_party_t4_dataset_v1.py
-    - src/trade_platform/real_market_data_provenance_v1.py
-    - src/trade_platform/evidence_tier_authority_v1.py
-    - src/trade_platform/feature_authority.py
+    - src/trade_platform/bybit_public_archive_v1.py
     - src/trade_platform/research_data_plane_v1.py
-    - migrations/versions/20260924_0051_first_party_t4_datasets.py
-    - scripts/first_party_t4.py
-    - tests/test_first_party_t4_v1.py
-    - tests/test_first_party_t4_postgres.py
+    - migrations/versions/20260924_0052_public_archive_datasets.py
+    - scripts/bybit_public_archive.py
+    - tests/test_bybit_public_archive_v1.py
   not_in_scope: >-
-    Relabelling the T1 composite (stays T1, its packet stays non-professional,
-    its holdout unopened), bid/ask normalization (not in the capture
-    contract), live clock bound (R8), T2 lag (OR-5), Strategy Lab (R4).
+    Any publication-lag value or timing-contract registration (OR-5), the
+    research symbol universe (OR-2), strategy work (R4).
+
+r3a_completed: >-
+  PR #152 (merge 65c8ae8): first-party T4 normalization, final-segment sealing,
+  provenance->T4 tier from the seal only, registered T4 sealed-clock resolver,
+  V3 basis 3.0.0; two-round independent PIT review. Real acceptance awaits the
+  first COMPLETE partition with clock samples (rollover 2026-09-25T00:00Z).
 
 r2a_completed: >-
   R2A.1 PR #149, R2A.2 PR #150 (merge 97c55dd): V3 three-clock feature rows,
