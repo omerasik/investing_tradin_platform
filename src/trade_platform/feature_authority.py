@@ -23,6 +23,8 @@ from .knowledge_time_doctrine_v1 import (
     FeatureKnowledgeV1,
     KnowledgeTimeDoctrineError,
     ObservationKnowledgeV1,
+    SealedClockResolverV1,
+    SealedObservationClocksV1,
     persisted_observation_knowledge_v1,
     persisted_observation_market_hash_v1,
     propagate_feature_knowledge_v1,
@@ -539,28 +541,44 @@ class FeatureMaterializationV3:
         )
 
     def verified_feature_knowledge_v1(
-        self, verdicts: Mapping[UUID, EvidenceTierVerdictV1]
+        self,
+        verdicts: Mapping[UUID, EvidenceTierVerdictV1],
+        clock_resolver: SealedClockResolverV1,
     ) -> FeatureKnowledgeV1:
-        """This row's clocks, re-derived from genuine verdicts -- the provenance check.
+        """This row's clocks, re-derived from sealed evidence -- the provenance check.
 
-        Every stored input is fed back through the doctrine with the verdict
-        its own payload names (which must be supplied), the inputs are
-        re-propagated, and the result must reproduce this row's feature
-        knowledge hash. Only the object this returns may carry decision
-        authority.
+        Every stored input is re-derived by the doctrine from the genuine
+        verdict its payload names (which must be supplied) and from the clock
+        facts ``clock_resolver`` reads out of the *sealed dataset* for that
+        observation reference -- never from the row itself. The inputs are
+        re-propagated and must reproduce this row's feature-knowledge hash.
+        Only the object this returns may carry decision authority.
         """
         self.validate()
         try:
             rederived = []
+            by_dataset: dict[UUID, list[tuple[str, Mapping[str, Any], EvidenceTierVerdictV1]]] = {}
             for persisted in self.knowledge_inputs:
                 market = persisted.get("market")
-                verdict_id = None if not isinstance(market, Mapping) else market.get("verdict_evidence_id")
-                verdict = verdicts.get(UUID(str(verdict_id))) if verdict_id is not None else None
+                if not isinstance(market, Mapping):
+                    raise FeatureAuthorityError("feature_knowledge_inputs_malformed")
+                verdict = verdicts.get(UUID(str(market.get("verdict_evidence_id"))))
                 if verdict is None:
                     raise FeatureAuthorityError("feature_knowledge_input_verdict_not_supplied")
-                rederived.append(rederive_observation_knowledge_v1(verdict, persisted))
+                by_dataset.setdefault(UUID(str(market["dataset_version_id"])), []).append(
+                    (str(market["observation_reference"]), persisted, verdict)
+                )
+            for dataset_version_id, items in by_dataset.items():
+                sealed = clock_resolver(dataset_version_id, [reference for reference, _, _ in items])
+                for reference, persisted, verdict in items:
+                    clocks = sealed.get(reference)
+                    if clocks is None:
+                        raise FeatureAuthorityError("feature_knowledge_input_not_in_sealed_evidence")
+                    rederived.append(
+                        rederive_observation_knowledge_v1(verdict, persisted, sealed=clocks)
+                    )
             knowledge = propagate_feature_knowledge_v1(rederived, event_at=self.event_at)
-        except KnowledgeTimeDoctrineError as error:
+        except (KnowledgeTimeDoctrineError, KeyError, TypeError, ValueError) as error:
             raise FeatureAuthorityError(f"feature_knowledge_not_verified:{error}") from error
         if knowledge.market_content_hash != self.feature_knowledge_hash:
             raise FeatureAuthorityError("feature_knowledge_not_derivable_from_verdicts")
@@ -691,6 +709,81 @@ def _write_in_chunks(
         if close is not None:
             close()
     return count
+
+
+_OBSERVATION_REFERENCE_PREFIX = "historical_normalized_observation:"
+
+
+def historical_observation_reference_v1(normalized_observation_id: UUID) -> str:
+    """The doctrine ``observation_reference`` of one sealed normalized observation."""
+    return f"{_OBSERVATION_REFERENCE_PREFIX}{normalized_observation_id}"
+
+
+class PostgresSealedObservationClockResolverV1:
+    """Sealed clock facts for historical observations, read from the sealed dataset.
+
+    Phase R2A.2. For a member of a ``SEALED`` historical dataset it returns
+    ``event_at`` = the raw observation's ``effective_at`` (the instant its
+    value was complete) and ``platform_recorded_at`` = ``max(normalized_at,
+    dataset.created_at)``. The historical tables record no publisher
+    publication time and no recorder arrival or clock bound, so those are
+    ``None``: a T3/T4 claim over this evidence cannot be verified and fails
+    closed. First-party T4 sealing (R3A) supplies its own resolver.
+
+    Results are cached per dataset; :meth:`preload` fetches a whole dataset's
+    members in one query for bulk verification.
+    """
+
+    def __init__(self, database: PostgresDatabase) -> None:
+        self._database = database
+        self._cache: dict[UUID, dict[str, SealedObservationClocksV1]] = {}
+        self._preloaded: set[UUID] = set()
+
+    _SELECT = (
+        "SELECT n.normalized_observation_id, r.effective_at, n.normalized_at, d.created_at "
+        "FROM historical_dataset_members m "
+        "JOIN historical_dataset_versions d ON d.dataset_version_id=m.dataset_version_id "
+        "JOIN historical_normalized_observations n ON n.normalized_observation_id=m.normalized_observation_id "
+        "JOIN historical_raw_observations r ON r.raw_observation_id=n.raw_observation_id "
+        "WHERE m.dataset_version_id=%s AND d.status='SEALED'"
+    )
+
+    def _load(self, dataset_version_id: UUID, ids: Sequence[UUID] | None) -> None:
+        statement = self._SELECT + ("" if ids is None else " AND m.normalized_observation_id=ANY(%s)")
+        params: tuple[object, ...] = (
+            (dataset_version_id,) if ids is None else (dataset_version_id, list(ids))
+        )
+        with self._database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute(statement, params)
+            rows = cursor.fetchall()
+        cache = self._cache.setdefault(dataset_version_id, {})
+        for row in rows:
+            cache[historical_observation_reference_v1(UUID(str(row[0])))] = SealedObservationClocksV1(
+                event_at=row[1], platform_recorded_at=max(row[2], row[3])
+            )
+
+    def preload(self, dataset_version_id: UUID) -> None:
+        if dataset_version_id not in self._preloaded:
+            self._load(dataset_version_id, None)
+            self._preloaded.add(dataset_version_id)
+
+    def __call__(
+        self, dataset_version_id: UUID, references: Sequence[str]
+    ) -> Mapping[str, SealedObservationClocksV1]:
+        cache = self._cache.get(dataset_version_id, {})
+        if dataset_version_id not in self._preloaded:
+            missing: list[UUID] = []
+            for reference in references:
+                if reference in cache or not reference.startswith(_OBSERVATION_REFERENCE_PREFIX):
+                    continue
+                try:
+                    missing.append(UUID(reference[len(_OBSERVATION_REFERENCE_PREFIX):]))
+                except ValueError:
+                    continue
+            if missing:
+                self._load(dataset_version_id, missing)
+                cache = self._cache.get(dataset_version_id, {})
+        return {reference: cache[reference] for reference in references if reference in cache}
 
 
 class PostgresFeatureAuthority:
@@ -1039,12 +1132,16 @@ class PostgresFeatureAuthority:
         market_as_of: datetime,
         *,
         minimum_claim: ClaimCeilingV1,
+        evidence_tiers: Mapping[UUID, EvidenceTierVerdictV1],
+        clock_resolver: SealedClockResolverV1,
     ) -> tuple[FeatureMaterializationV3, ...]:
         """Historical replay read: what the *market* could know at ``market_as_of``.
 
-        Rows come back integrity-checked, not provenance-verified: anything
-        that grants decision authority must still call
-        :meth:`FeatureMaterializationV3.verified_feature_knowledge_v1`.
+        Every returned row has been provenance-verified
+        (:meth:`FeatureMaterializationV3.verified_feature_knowledge_v1`)
+        against ``evidence_tiers`` and the sealed evidence ``clock_resolver``
+        reads; one row that fails verification fails the whole read rather
+        than being silently dropped.
 
         Gated on ``event_at``, ``effective_at`` and ``market_knowledge_at`` only -- never on
         ``platform_recorded_at`` or ``computed_at``, which say when this
@@ -1070,7 +1167,12 @@ class PostgresFeatureAuthority:
                  market_as_of, market_as_of, admitted),
             )
             rows = cursor.fetchall()
-        return tuple(_row_v3(row) for row in rows)
+        values = tuple(_row_v3(row) for row in rows)
+        for value in values:
+            knowledge = value.verified_feature_knowledge_v1(evidence_tiers, clock_resolver)
+            if knowledge.claim_ceiling < minimum_claim or knowledge.market_knowledge_at is None:
+                raise FeatureAuthorityError("historical_read_row_failed_verification")
+        return values
 
     def v3_rows_for_dataset(
         self, feature_id: UUID, subject_type: FeatureSubjectType, subject_id: str,

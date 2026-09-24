@@ -72,7 +72,11 @@ from .evidence_tier_authority_v1 import (
     require_professional_evidence_tier_v1,
 )
 from .feature_authority import FeatureMaterializationV3
-from .knowledge_time_doctrine_v1 import ClaimCeilingV1, DeclaredComputeLatencyV1
+from .knowledge_time_doctrine_v1 import (
+    ClaimCeilingV1,
+    DeclaredComputeLatencyV1,
+    SealedClockResolverV1,
+)
 from .open_to_open_validation_orchestration_v1 import (
     OpenToOpenEvaluationSpanV1,
     OpenToOpenNeighborStepsV1,
@@ -445,6 +449,7 @@ def require_professional_historical_decisions_v1(
     materializations: Sequence[FeatureMaterializationV3],
     *,
     compute_latency: DeclaredComputeLatencyV1,
+    clock_resolver: SealedClockResolverV1,
 ) -> None:
     """The Phase R2A.2 gate: professional evidence *and* professional decision times.
 
@@ -454,8 +459,10 @@ def require_professional_historical_decisions_v1(
     value derived from T4 capture through the legacy V2 path would still carry
     a platform ingestion instant as its "knowledge". So every feature value
     the run would use must also be a three-clock (V3) row of this exact
-    dataset, every input of which re-derives from *this* verdict (so a
-    hand-built row, or one derived from another verdict, refuses), whose
+    dataset, every input of which re-derives from *this* verdict and the
+    clock facts ``clock_resolver`` reads from the sealed evidence (so a
+    hand-built row, one built on invented clock facts, or one derived from
+    another verdict refuses), whose
     historical decision -- market knowledge plus the declared
     compute latency, no operational clock -- is admissible at
     ``PROFESSIONAL``, and the distinct decision instants they carry must be at
@@ -482,6 +489,7 @@ def require_professional_historical_decisions_v1(
             materializations,
             compute_latency=compute_latency,
             evidence_tiers={evidence_tier.evidence_id: evidence_tier},
+            clock_resolver=clock_resolver,
             minimum_claim=ClaimCeilingV1.PROFESSIONAL,
         )
     except OpenToOpenValidationOrchestrationV1Error as error:

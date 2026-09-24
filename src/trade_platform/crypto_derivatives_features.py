@@ -112,6 +112,7 @@ from .feature_authority import (
     FeatureQualityStatus,
     FeatureSubjectType,
     PostgresFeatureAuthority,
+    historical_observation_reference_v1,
 )
 from .knowledge_time_doctrine_v1 import (
     ObservationKnowledgeV1,
@@ -774,8 +775,8 @@ class PostgresCryptoDerivativesFeatureCalculator:
                 evidence_tier,
                 dataset_version_id=dataset.dataset_version_id,
                 dataset_content_hash=dataset.content_hash,
-                observation_reference=(
-                    f"historical_normalized_observation:{observation.normalized_observation_id}"
+                observation_reference=historical_observation_reference_v1(
+                    observation.normalized_observation_id
                 ),
                 event_at=observation.effective_at,
                 platform_recorded_at=max(observation.normalized_at, dataset.created_at),

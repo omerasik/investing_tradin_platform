@@ -77,6 +77,7 @@ class FeatureThreeClockV3PostgresTests(unittest.TestCase):
             FeatureAuthorityError,
             FeatureSubjectType,
             PostgresFeatureAuthority,
+            PostgresSealedObservationClockResolverV1,
         )
         from trade_platform.historical_market_data import (
             AdjustmentStatus,
@@ -111,6 +112,7 @@ class FeatureThreeClockV3PostgresTests(unittest.TestCase):
         pipeline = PostgresHistoricalMarketDataPipeline(database)
         authority = PostgresFeatureAuthority(database)
         calculator = PostgresCryptoDerivativesFeatureCalculator(database)
+        resolver = PostgresSealedObservationClockResolverV1(database)
 
         registered_at = datetime(2025, 1, 2, tzinfo=UTC)
         tag = uuid4().hex[:10].upper()
@@ -227,7 +229,8 @@ class FeatureThreeClockV3PostgresTests(unittest.TestCase):
             authority.historical_as_of_subject_v3(
                 t1_definition.feature_id, FeatureSubjectType.INSTRUMENT, instrument_id,
                 str(dataset.dataset_version_id), datetime(2026, 1, 1, tzinfo=UTC),
-                minimum_claim=ClaimCeilingV1.CONDITIONAL,
+                minimum_claim=ClaimCeilingV1.CONDITIONAL, evidence_tiers={t1.evidence_id: t1},
+                clock_resolver=resolver,
             ),
         )
         # The legacy read never sees a V3 row.
@@ -287,15 +290,16 @@ class FeatureThreeClockV3PostgresTests(unittest.TestCase):
             [event + lag + timedelta(milliseconds=500) for event in events],
             [
                 canonical_feature_decision_at(
-                    row, compute_latency=latency, evidence_tiers={t2.evidence_id: t2}
+                    row, compute_latency=latency, evidence_tiers={t2.evidence_id: t2},
+                    clock_resolver=resolver,
                 )
                 for row in t2_rows
             ],
         )
         with self.assertRaises(FeatureAuthorityError):
-            t2_rows[0].verified_feature_knowledge_v1({t1.evidence_id: t1})
+            t2_rows[0].verified_feature_knowledge_v1({t1.evidence_id: t1}, resolver)
         self.assertIsNone(
-            rows[0].verified_feature_knowledge_v1({t1.evidence_id: t1}).market_knowledge_at
+            rows[0].verified_feature_knowledge_v1({t1.evidence_id: t1}, resolver).market_knowledge_at
         )
 
         def visible(as_of: datetime, minimum: Any = ClaimCeilingV1.CONDITIONAL) -> int:
@@ -303,6 +307,7 @@ class FeatureThreeClockV3PostgresTests(unittest.TestCase):
                 authority.historical_as_of_subject_v3(
                     t2_definition.feature_id, FeatureSubjectType.INSTRUMENT, instrument_id,
                     str(dataset.dataset_version_id), as_of, minimum_claim=minimum,
+                    evidence_tiers={t2.evidence_id: t2}, clock_resolver=resolver,
                 )
             )
 
