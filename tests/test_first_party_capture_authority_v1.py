@@ -22,18 +22,28 @@ from trade_platform.canonical_captured_source_authority_v1 import (
 from trade_platform.canonical_captured_source_authority_v1 import (
     canonical_tardis_captured_bybit_source_contract_v1,
 )
+from trade_platform.evidence_tier_authority_v1 import authorized_timing_contracts_v1
 from trade_platform.first_party_capture_authority_v1 import (
     BAR_TEMPORAL_RULES_V1,
     GAP_AUTHORITY_RULES_V1,
+    MEASUREMENT_SAMPLE_SYMBOLS_V1,
     TICKER_AVAILABILITY_RULES_V1,
     BybitPublicChannelV1,
     FirstPartyCaptureAuthorityError,
     FirstPartyCaptureContractV1,
+    authorized_first_party_capture_contracts_v1,
     first_party_bybit_capture_contract_v1,
+    first_party_bybit_measurement_contract_v1,
+    first_party_bybit_measurement_contracts_v1,
     first_party_bybit_source_id_v1,
+    resolve_first_party_capture_contract_v1,
 )
 from trade_platform.real_market_data_provenance_v1 import canonical_bybit_source_contract_v1
 
+PINNED_FIRST_PARTY_SOURCE_ID = UUID("1a4abe35-ff28-5f3a-9a12-592634f7ccb4")
+PINNED_FIRST_PARTY_CONTRACT_HASH = (
+    "d76a51fcd3b7420e55f02acb52ddb6ee9b668ec6e09ec5962139f5d0ea675753"  # pragma: allowlist secret
+)
 PINNED_REST_SOURCE_ID = UUID("a337be59-2019-5458-bc17-dd33750fa359")
 PINNED_TARDIS_SOURCE_ID = UUID("b4f161e8-3ebd-53f5-bfdb-e527f598b08a")
 PINNED_TARDIS_CONTRACT_HASH = (
@@ -133,6 +143,64 @@ class ProvenSemanticsCarriedOverTests(unittest.TestCase):
             semantics,
         )
         self.assertIn("arrival_is_not_event_at_not_effective_at_and_not_ingested_at", semantics)
+
+
+class MeasurementContractTests(unittest.TestCase):
+    """Phase R1A: measurement contracts are capture contracts, never a universe."""
+
+    def test_production_v1_identity_is_pinned_and_unchanged(self) -> None:
+        contract = first_party_bybit_capture_contract_v1()
+        self.assertEqual(PINNED_FIRST_PARTY_SOURCE_ID, contract.source_id)
+        self.assertEqual(PINNED_FIRST_PARTY_CONTRACT_HASH, contract.content_hash())
+
+    def test_every_sample_symbol_has_a_distinct_deterministic_identity(self) -> None:
+        contracts = first_party_bybit_measurement_contracts_v1()
+        self.assertEqual(MEASUREMENT_SAMPLE_SYMBOLS_V1, tuple(c.exchange_symbol for c in contracts))
+        ids = {contract.source_id for contract in contracts}
+        self.assertEqual(len(contracts), len(ids))
+        self.assertNotIn(first_party_bybit_source_id_v1(), ids)
+        again = first_party_bybit_measurement_contracts_v1()
+        self.assertEqual([c.content_hash() for c in contracts], [c.content_hash() for c in again])
+
+    def test_measurement_btcusdt_is_not_the_production_contract(self) -> None:
+        measurement = first_party_bybit_measurement_contract_v1("BTCUSDT")
+        production = first_party_bybit_capture_contract_v1()
+        self.assertEqual(production.topics(), measurement.topics())
+        self.assertNotEqual(production.source_id, measurement.source_id)
+        self.assertIn("Not a production capture universe", measurement.authorization_reference)
+
+    def test_a_symbol_outside_the_pinned_sample_is_refused(self) -> None:
+        with self.assertRaises(FirstPartyCaptureAuthorityError):
+            first_party_bybit_measurement_contract_v1("PEPEUSDT")
+
+    def test_measurement_contracts_keep_every_v1_rule(self) -> None:
+        production = first_party_bybit_capture_contract_v1()
+        for contract in first_party_bybit_measurement_contracts_v1():
+            self.assertEqual(production.authorized_channels, contract.authorized_channels)
+            self.assertEqual(production.clock_semantics, contract.clock_semantics)
+            self.assertEqual(production.gap_authority_rules, contract.gap_authority_rules)
+            self.assertEqual(production.capture_refusal_rules, contract.capture_refusal_rules)
+            self.assertEqual(production.record_schema_version, contract.record_schema_version)
+            self.assertFalse(contract.credential_required)
+            self.assertEqual(
+                (f"publicTrade.{contract.exchange_symbol}", f"tickers.{contract.exchange_symbol}"),
+                contract.topics(),
+            )
+
+    def test_closed_set_resolution(self) -> None:
+        for contract in authorized_first_party_capture_contracts_v1():
+            self.assertEqual(contract, resolve_first_party_capture_contract_v1(contract.source_id))
+            self.assertEqual(
+                contract, resolve_first_party_capture_contract_v1(str(contract.source_id))
+            )
+        self.assertIsNone(resolve_first_party_capture_contract_v1(PINNED_TARDIS_SOURCE_ID))
+        self.assertIsNone(resolve_first_party_capture_contract_v1("not-a-source"))
+
+    def test_measurement_contracts_are_not_registered_for_evidence_tiers(self) -> None:
+        registered = {contract.source_id for contract in authorized_timing_contracts_v1()}
+        self.assertIn(first_party_bybit_source_id_v1(), registered)
+        for contract in first_party_bybit_measurement_contracts_v1():
+            self.assertNotIn(contract.source_id, registered)
 
 
 class UnchangedIdentityTests(unittest.TestCase):
