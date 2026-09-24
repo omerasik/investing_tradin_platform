@@ -13,50 +13,54 @@ updated: 2026-09-24
 # -> R8 opportunity engine -> R9 accounts/risk -> R10 paper; R7 (T3 spine) is
 # the one parallel track.
 phase:
-  id: "R2B"
-  name: Columnar research data plane (SCALE)
+  id: "R3A"
+  name: First-party T4 normalization, canonical segment sealing and tier issuance (FIN)
   status: in_progress
-  base_commit: 97c55dd       # R2A.2 (PR #150) merged; R2A complete, exact-main CI green
-  stack: >-
-    pyarrow (Parquet, exact Arrow schema, decimal128(38,18), timestamp[us,UTC],
-    byte-deterministic writer) + duckdb (query plane: filters, joins, ranking,
-    exact decimal sums). Economic arithmetic stays Python Decimal: DuckDB and
-    Polars turn DECIMAL/DECIMAL into binary float (DuckDB returns DOUBLE and
-    rounds half away from zero); measured, and the evidence for OR-3.
+  base_commit: 01057d1       # R2B (PR #151) merged; R2A + R2B complete
   delivered: >-
-    research_data_plane_v1.py (content-addressed objects + manifests,
-    library-independent logical content hash, per-object sha256, streaming
-    bounded-memory writer, verify), research_data_export_v1.py (sealed dataset
-    -> REFERENCE_PRICE/OHLCV/OPEN_INTEREST frames, independent PostgreSQL
-    reconciliation digest, basis feature frame with deterministic cache key,
-    Feature Authority parity, research_frame_manifests catalog, migration
-    0050), scripts/research_data_plane.py (export/verify/bench), analytics
-    extra (never in runtime images).
-  real_export_evidence: >-
-    Composite f07ebfc1 (T1): 691,200 rows exported in ~34 s (~20k rows/s incl.
-    PostgreSQL read), 43.2 MB Parquet (reference 54.6 B/row, OHLCV 79.4 B/row,
-    OI 56.0 B/row), all three frames reconciled with PostgreSQL, repeat export
-    byte-identical manifests, basis frame 216,000 rows = V2 materializations
-    with 0 mismatches (cache hit on rebuild), peak working set ~513 MiB.
-    Synthetic streaming bench: 1M rows 349 MiB peak, 6M rows 411 MiB peak
-    (bounded), ~37k rows/s write and verify (Python-side validation/hashing is
-    the known throughput limit). market_knowledge_at NULL in every T1 row.
+    first_party_t4_normalization_v1.py (clock-bound rule
+    session-rtt-sample-bracket-max-upper-v1 re-derived from sealed
+    CLOCK_OFFSET_SAMPLE events; one record-at-a-time normalizer for replay and
+    future R8 live: independent mark/index, basis knowledge=max, checked
+    (T, seq) trade order, 1m bars only with same-segment open+close proof),
+    first_party_t4_seal_v1.py (COMPLETE+replayed production partitions only,
+    one dataset per coverage window x clock bracket, deterministic identity
+    excluding platform clocks/library versions, rebuild-from-raw verify),
+    first_party_t4_dataset_v1.py (catalog, registered T4 sealed-clock
+    resolver, provenance->tier from the seal only, V3 basis 3.0.0 sampled
+    first-at/after-minute), T4 frames on the R2B plane, migration 0051
+    first_party_t4_datasets, scripts/first_party_t4.py.
+  acceptance_status: >-
+    Engineering complete and fixture-proven. Real acceptance needs the first
+    COMPLETE partition carrying clock samples (session 7439cf8c rolls over at
+    2026-09-25T00:00Z). The only COMPLETE partition today (04fb6d26, 21 s) has
+    no clock samples and is correctly excluded (no T4).
   scope_paths:
+    - src/trade_platform/first_party_t4_normalization_v1.py
+    - src/trade_platform/first_party_t4_seal_v1.py
+    - src/trade_platform/first_party_t4_dataset_v1.py
+    - src/trade_platform/real_market_data_provenance_v1.py
+    - src/trade_platform/evidence_tier_authority_v1.py
+    - src/trade_platform/feature_authority.py
     - src/trade_platform/research_data_plane_v1.py
-    - src/trade_platform/research_data_export_v1.py
-    - scripts/research_data_plane.py
-    - migrations/versions/20260924_0050_research_frame_manifests.py
-    - tests/test_research_data_plane_v1.py
-    - tests/test_research_data_plane_postgres.py
+    - migrations/versions/20260924_0051_first_party_t4_datasets.py
+    - scripts/first_party_t4.py
+    - tests/test_first_party_t4_v1.py
+    - tests/test_first_party_t4_postgres.py
   not_in_scope: >-
-    Any evidence-tier change (the T1 composite stays T1, blocker not cleared),
-    float/vectorized candidate search (OR-3), Strategy Lab (R4), T2/T4 frames
-    (R3B/R3A reuse this plane).
+    Relabelling the T1 composite (stays T1, its packet stays non-professional,
+    its holdout unopened), bid/ask normalization (not in the capture
+    contract), live clock bound (R8), T2 lag (OR-5), Strategy Lab (R4).
 
 r2a_completed: >-
   R2A.1 PR #149, R2A.2 PR #150 (merge 97c55dd): V3 three-clock feature rows,
   doctrine decision time, professional gate re-deriving every input from its
   verdict and sealed clock facts; three-round independent PIT review.
+
+r2b_completed: >-
+  PR #151 (merge 01057d1): Parquet/DuckDB research data plane, frame catalog,
+  T1 composite f07ebfc1 exported + reconciled (691,200 rows), basis parity
+  216,000/0 mismatches. DuckDB/Polars DECIMAL division returns float: OR-3 evidence.
 
 r1a_follow_up:                # R1A merged (PR #148); its measurement is still running
   measurement_run: >-
@@ -99,6 +103,9 @@ blocker:                      # unchanged; resolved structurally by R2A + R3A/R3
     includes computed_at. All 216,000 basis materializations of the T1
     composite f07ebfc1-19ce-4757-af4b-10525f6a6992 share one knowledge_at.
   resolution_path: R2A three-clock doctrine, then T4 (R3A) / T2 (R3B) evidence.
+  scope_of_clearance: >-
+    Cleared only per sealed T4 dataset where V3 rows prove >=2 distinct
+    PROFESSIONAL decision times; never globally, never for f07ebfc1.
 
 evidence_tiers:               # implemented by 3Z.1, evidence_tier_authority_v1.py
   T0_SYNTHETIC: engineering only.
