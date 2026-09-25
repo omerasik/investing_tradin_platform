@@ -2,9 +2,12 @@
 
     python scripts/bybit_public_archive.py acquire --symbol BTCUSDT --from 2026-09-21 --to 2026-09-23
     python scripts/bybit_public_archive.py build --symbol BTCUSDT --from ... --to ... [--dsn ...]
+    python scripts/bybit_public_archive.py crosscheck --symbol BTCUSDT --from ... --to ...
 
-Downloads only from https://public.bybit.com/trading/ (unauthenticated public
-market data), resumably, into ``~/.trade_platform/public-archive``. Reports
+Downloads only from https://public.bybit.com/trading/ and, for ``crosscheck``,
+the public REST kline endpoint (unauthenticated public market data), resumably,
+into ``~/.trade_platform/public-archive``. ``crosscheck`` reports disagreements
+between the archive-reconstructed bars and the REST klines; it bridges nothing. Reports
 engineering counts only -- never prices, returns or P&L. The T2 publication
 lag stays UNSET (owner decision OR-5): every frame's market_knowledge_at is NULL.
 """
@@ -36,7 +39,7 @@ def _days(first: str, last: str) -> list[date]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("acquire", "build"))
+    parser.add_argument("command", choices=("acquire", "build", "crosscheck"))
     parser.add_argument("--symbol", required=True)
     parser.add_argument("--from", dest="first", required=True)
     parser.add_argument("--to", dest="last", required=True)
@@ -57,6 +60,22 @@ def main() -> None:
         load_archive_file_manifest_v1(directory / f"{args.symbol}{day.isoformat()}.csv.gz.manifest.json")
         for day in days
     ]
+    if args.command == "crosscheck":
+        from trade_platform.bybit_archive_rest_crosscheck_v1 import (
+            acquire_rest_klines_day_v1,
+            build_crosscheck_report_v1,
+            write_crosscheck_report_v1,
+        )
+
+        rest_days = [acquire_rest_klines_day_v1(args.root, args.symbol, day) for day in days]
+        report = build_crosscheck_report_v1(args.root, manifests, rest_days)
+        path = write_crosscheck_report_v1(args.root, report)
+        print(json.dumps({"content_hash": report.content_hash, "report": str(path),
+                          "totals": report.identity["totals"],
+                          "rpi_trades": sum(d["archive_rpi_trade_count"] for d in report.identity["days"]),
+                          "trades": sum(d["archive_trade_count"] for d in report.identity["days"])},
+                         indent=1))
+        return
     dataset = build_archive_dataset_v1(args.root, manifests, store=ResearchFrameStoreV1(args.data_root))
     if args.dsn:
         from trade_platform.persistence import PostgresDatabase
