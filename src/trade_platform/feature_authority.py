@@ -267,6 +267,29 @@ class FeatureDefinitionVersion:
                 raise FeatureAuthorityError("feature_retired_before_creation")
 
 
+def _semantic_fields(definition: FeatureDefinitionVersion) -> str:
+    """Everything that defines what a version computes; not ``feature_id`` or ``created_at``."""
+    return _canonical(
+        {
+            "name": definition.name, "family": definition.family.value,
+            "semantic_version": definition.semantic_version, "owner": definition.owner,
+            "description": definition.description,
+            "required_dataset_types": list(definition.required_dataset_types),
+            "required_fields": list(definition.required_fields),
+            "frequency": definition.frequency, "timestamp_semantics": definition.timestamp_semantics,
+            "lookback": definition.lookback, "parameters": dict(definition.parameters),
+            "missing_value_policy": definition.missing_value_policy,
+            "outlier_policy": definition.outlier_policy, "leakage_policy": definition.leakage_policy,
+            "expected_minimum": None if definition.expected_minimum is None
+            else format(definition.expected_minimum.normalize(), "f"),
+            "expected_maximum": None if definition.expected_maximum is None
+            else format(definition.expected_maximum.normalize(), "f"),
+            "units": definition.units, "calculation_version": definition.calculation_version,
+            "retired_at": None if definition.retired_at is None else definition.retired_at.astimezone(UTC).isoformat(),
+        }
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class FeatureMaterialization:
     feature_id: UUID
@@ -841,6 +864,43 @@ class PostgresFeatureAuthority:
                 )
         except Exception as error:
             raise FeatureAuthorityError("feature_definition_registration_failed") from error
+
+    def register_or_resolve(self, definition: FeatureDefinitionVersion) -> FeatureDefinitionVersion:
+        """Return the stored definition for ``(name, semantic_version)``, registering it if absent.
+
+        ``feature_id`` is minted per instance, so a rebuilt definition never
+        carries the registered id. Rows must reference the stored definition,
+        and only when every semantic field agrees with the code: any drift is a
+        new version, never a silent reuse. ``created_at`` and ``feature_id`` are
+        registration facts and are taken from the stored row.
+        """
+        definition.validate()
+        stored = self._definition_by_name_version(definition.name, definition.semantic_version)
+        if stored is None:
+            try:
+                self.register(definition)
+                return definition
+            except FeatureAuthorityError:
+                # A concurrent registration of the same version: re-read it.
+                stored = self._definition_by_name_version(definition.name, definition.semantic_version)
+                if stored is None:
+                    raise
+        if _semantic_fields(stored) != _semantic_fields(definition):
+            raise FeatureAuthorityError(
+                f"feature_definition_drift:{definition.name}:{definition.semantic_version}"
+            )
+        return stored
+
+    def _definition_by_name_version(
+        self, name: str, semantic_version: str
+    ) -> FeatureDefinitionVersion | None:
+        with self._database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT feature_id FROM feature_definition_versions WHERE name=%s AND semantic_version=%s",
+                (name, semantic_version),
+            )
+            row = cursor.fetchone()
+        return None if row is None else self.definition(UUID(str(row[0])))
 
     def materialize(self, value: FeatureMaterialization) -> None:
         """The unchanged INSTRUMENT convenience wrapper -- V1 identity, forever.
