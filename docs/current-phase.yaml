@@ -29,8 +29,17 @@ phase:
     sidebar grouped by operator job, and the authority-proxy allowlist fixed:
     historical-datasets, data-health assessments, feature-definitions list and
     instrument detail were never allowlisted, so those pages always showed
-    UNAVAILABLE.
+    UNAVAILABLE. Merged: PR #155 (aab3671).
+  ui_1b: >-
+    instrument_chart_v1.py: catalogued bar frames only (T1 OHLCV, T2 archive,
+    T4 seals), each with its tier ceiling as the chart's claim ceiling; exact
+    DECIMAL buckets (first open, last close, max, min, sum; nothing averaged,
+    gaps never filled); manifest + object hashes re-checked per read. /chart
+    page with a server-rendered SVG. Real T1 composite: 216,000 1m bars -> 400
+    points in 0.3 s.
   scope_paths:
+    - src/trade_platform/instrument_chart_v1.py
+    - tests/test_instrument_chart_v1.py
     - src/trade_platform/evidence_catalog_v1.py
     - src/trade_platform/operator_dashboard.py
     - src/trade_platform/api.py

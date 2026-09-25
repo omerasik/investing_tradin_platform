@@ -1669,3 +1669,14 @@ footer {
 }
 
 
+
+/* Phase R5 UI-1b: server-rendered candlestick chart */
+.bar-chart { margin: 0 0 16px; background: var(--bg-surface-inset); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 8px; }
+.bar-chart svg { display: block; height: auto; min-height: 220px; }
+.bar-chart-grid { stroke: var(--border-default); stroke-dasharray: 4 4; }
+.bar-chart-up line, .bar-chart-up rect { stroke: var(--status-available); fill: var(--status-available); }
+.bar-chart-down line, .bar-chart-down rect { stroke: var(--status-danger); fill: var(--status-danger); }
+.bar-chart-label { fill: var(--text-muted); font-family: var(--font-mono); font-size: 12px; }
+.chart-series-list { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; padding: 0; list-style: none; }
+.chart-series-list a { display: inline-block; padding: 4px 10px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); color: var(--text-secondary); text-decoration: none; }
+.chart-series-list a[aria-current="page"] { border-color: var(--border-focus); color: var(--text-primary); }

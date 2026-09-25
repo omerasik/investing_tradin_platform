@@ -25,6 +25,7 @@ const NAVIGATION_GROUPS: NavGroup[] = [
       { href: "/evidence", label: "Evidence & Data" },
       { href: "/markets", label: "Market Sources" },
       { href: "/instruments", label: "Instruments" },
+      { href: "/chart", label: "Instrument Chart" },
       { href: "/data-health", label: "Data Health" },
       { href: "/features", label: "Features" },
     ],

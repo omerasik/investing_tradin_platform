@@ -18,6 +18,14 @@ from .evidence_catalog_v1 import (
     read_capture_availability_v1,
 )
 from .fundamentals import SQLiteFundamentalStore
+from .instrument_chart_v1 import (
+    DEFAULT_CHART_POINTS_V1,
+    MAX_CHART_POINTS_V1,
+    ChartSeriesNotFound,
+    ChartSeriesRefPage,
+    ChartSeriesView,
+    read_chart_series_v1,
+)
 from .investments import (
     InvestmentValidationError,
     SQLiteInvestmentStore,
@@ -300,6 +308,7 @@ def build_app(
     operator_dashboard_queries: PostgresOperatorDashboardQueries | None = None,
     authorization_decision_sink: AuthorizationDecisionSink | None = None,
     capture_archive_root: Path | None = None,
+    research_data_root: Path | None = None,
 ) -> FastAPI:
     platform_config = config or PlatformConfig()
     store = audit_store or SQLiteAuditStore()
@@ -338,6 +347,7 @@ def build_app(
     app.state.promotion_ledger = promotion_ledger
     app.state.operator_dashboard_queries = operator_dashboard_queries
     app.state.capture_archive_root = capture_archive_root
+    app.state.research_data_root = research_data_root
 
     @app.get("/health/live")
     def liveness() -> dict[str, str]:
@@ -490,6 +500,39 @@ def build_app(
             return read_capture_availability_v1(app.state.capture_archive_root)
         except Exception as error:
             raise HTTPException(status_code=503, detail="Capture availability unavailable.") from error
+
+    @app.get("/operator-dashboard/chart-series", response_model=ChartSeriesRefPage)
+    def dashboard_chart_series(
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """Catalogued chartable bar frames with their claim ceiling."""
+        return read_dashboard(queries.chart_series)
+
+    @app.get("/operator-dashboard/chart-series/{manifest_hash}", response_model=ChartSeriesView)
+    def dashboard_chart_series_bars(
+        manifest_hash: str,
+        instrument: str | None = Query(default=None, min_length=1, max_length=160),
+        max_points: int = Query(default=DEFAULT_CHART_POINTS_V1, ge=1, le=MAX_CHART_POINTS_V1),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """Exact bucketed bars of one catalogued frame; 503 when no research data root is configured."""
+        try:
+            series = queries.chart_series_ref(manifest_hash)
+        except DashboardObjectNotFound as error:
+            raise HTTPException(status_code=404, detail="Chart series not found.") from error
+        except DashboardQueryError as error:
+            raise HTTPException(status_code=503, detail="Dashboard evidence unavailable.") from error
+        if app.state.research_data_root is None:
+            raise HTTPException(status_code=503, detail="Research data plane is not configured.")
+        try:
+            return read_chart_series_v1(
+                series, research_root=app.state.research_data_root,
+                instrument=instrument, max_points=max_points,
+            )
+        except ChartSeriesNotFound as error:
+            raise HTTPException(status_code=404, detail="Chart series not found.") from error
+        except Exception as error:
+            raise HTTPException(status_code=503, detail="Chart series unavailable.") from error
 
     @app.get("/operator-dashboard/data-health/assessments", response_model=DataHealthAssessmentPage)
     def dashboard_data_health_assessments(

@@ -355,6 +355,37 @@ export type CaptureAvailability = {
   limitations: string[];
 };
 
+/** Phase R5 UI-1b: a catalogued bar frame and its claim ceiling. */
+export type ChartSeriesRef = {
+  manifest_hash: string;
+  frame_kind: "OHLCV" | "T2_ARCHIVE_OHLCV_1M" | "T4_OHLCV_1M";
+  label: string;
+  dataset_version_id: string;
+  instrument: string | null;
+  row_count: number;
+  tier_ceiling: string;
+};
+
+export type ChartSeriesRefPage = { state: "AVAILABLE" | "UNAVAILABLE"; version: string; items: ChartSeriesRef[] };
+
+/** Exact buckets: first open, last close, max high, min low, summed volume -- decimal text. */
+export type ChartBucket = {
+  first_bar_at: string; last_bar_at: string; bar_count: number;
+  open: string; high: string; low: string; close: string; volume: string;
+};
+
+export type ChartSeries = {
+  state: "AVAILABLE" | "UNAVAILABLE";
+  version: string;
+  series: ChartSeriesRef;
+  instrument: string;
+  instruments: string[];
+  bars_in_frame_for_instrument: number;
+  bars_per_bucket: number;
+  buckets: ChartBucket[];
+  limitations: string[];
+};
+
 export function utc(value: string | null | undefined): string {
   if (!value) return "UNAVAILABLE";
   const instant = new Date(value);
@@ -475,6 +506,27 @@ export async function getCaptureAvailability(ctx: WorkspaceContext): Promise<Evi
     authorityUrl(ctx.origin, "/operator-dashboard/capture-availability"),
     ctx.protectedApi,
     "Capture availability is unavailable.",
+  );
+}
+
+export async function getChartSeriesCatalog(ctx: WorkspaceContext): Promise<EvidenceResult<ChartSeriesRefPage>> {
+  return readEvidence<ChartSeriesRefPage>(
+    authorityUrl(ctx.origin, "/operator-dashboard/chart-series"),
+    ctx.protectedApi,
+    "Chart series catalog is unavailable.",
+  );
+}
+
+export async function getChartSeries(
+  ctx: WorkspaceContext,
+  params: { manifestHash: string; instrument?: string; maxPoints?: number },
+): Promise<EvidenceResult<ChartSeries>> {
+  const query = new URLSearchParams({ max_points: String(params.maxPoints ?? 400) });
+  if (params.instrument) query.set("instrument", params.instrument);
+  return readEvidence<ChartSeries>(
+    authorityUrl(ctx.origin, `/operator-dashboard/chart-series/${encodeURIComponent(params.manifestHash)}?${query.toString()}`),
+    Boolean(/^[0-9a-f]{64}$/.test(params.manifestHash) && ctx.protectedApi),
+    "Chart series reference is unavailable.",
   );
 }
 

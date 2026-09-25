@@ -35,6 +35,9 @@ def create_dev_app(database: PostgresDatabase | None = None) -> FastAPI:
     # The dev API runs on the recorder host, so it reads the default capture
     # archive unless pointed elsewhere; the protected runtime stays UNCONFIGURED.
     capture_root = os.environ.get("TRADE_PLATFORM_CAPTURE_ARCHIVE_ROOT")
+    # Same for the R2B research data plane (charts); the default mirrors
+    # research_data_plane_v1.default_research_data_root without importing pyarrow.
+    research_root = os.environ.get("TRADE_PLATFORM_RESEARCH_DATA_ROOT")
 
     return build_app(
         config=config,
@@ -43,6 +46,9 @@ def create_dev_app(database: PostgresDatabase | None = None) -> FastAPI:
         rate_limiter=InMemoryRateLimiter(max_requests=10_000),
         operator_dashboard_queries=PostgresOperatorDashboardQueries(db),
         capture_archive_root=Path(capture_root) if capture_root else default_archive_root(),
+        research_data_root=(
+            Path(research_root) if research_root else Path.home() / ".trade_platform" / "research-data"
+        ),
     )
 
 

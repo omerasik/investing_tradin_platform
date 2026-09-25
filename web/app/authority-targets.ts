@@ -12,10 +12,13 @@ const paperAccountReconciliationPath = /^\/operator-dashboard\/paper-accounts\/[
 // Only the ":" escape is accepted, and never "..", so no encoded "/" can reach the backend.
 const instrumentDetailPath = /^\/operator-dashboard\/instruments\/(?:[A-Za-z0-9_-]|\.(?!\.)|:|%3[Aa]){1,240}$/;
 
+const chartSeriesPath = /^\/operator-dashboard\/chart-series\/[0-9a-f]{64}$/;
+
 const parameterlessTargets = new Set([
   "/operator-dashboard/workspace-references",
   "/operator-dashboard/evidence-catalog",
   "/operator-dashboard/capture-availability",
+  "/operator-dashboard/chart-series",
 ]);
 
 const queryTargets: Record<string, { allowed: string[]; required?: string[] }> = {
@@ -67,6 +70,9 @@ export function allowedAuthorityTarget(target: string): boolean {
   if (bare && exactUuidPath.test(parsed.pathname)) return true;
   if (bare && paperAccountReconciliationPath.test(parsed.pathname)) return true;
   if (bare && instrumentDetailPath.test(parsed.pathname)) return true;
+  if (chartSeriesPath.test(parsed.pathname)) {
+    return [...parsed.searchParams.keys()].every((key) => key === "instrument" || key === "max_points");
+  }
   const rule = queryTargets[parsed.pathname];
   if (!rule) return false;
   const allowed = new Set(rule.allowed);
