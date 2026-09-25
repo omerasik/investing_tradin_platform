@@ -13,10 +13,39 @@ updated: 2026-09-25
 # -> R8 opportunity engine -> R9 accounts/risk -> R10 paper; R7 (T3 spine) is
 # the one parallel track.
 phase:
-  id: "R3B"
-  name: Free historical T2 archive acquisition and reconstruction (owner-independent part)
+  id: "R5 UI-1"
+  name: Research terminal UI truth fixes and Evidence & Data surfaces (no owner gate)
   status: in_progress
-  base_commit: 65c8ae8       # R3A (PR #152) merged; exact-main CI green
+  base_commit: 99b5585       # R3B.2 (PR #154) merged; exact-main CI green
+  why_now: >-
+    R3A real acceptance and the R1A report are calendar-blocked until the
+    2026-09-26 rollover; R4 waits on OR-3 + OR-6. UI-1 needs only R2B/R3A/R3B
+    catalogs, which exist. UI-2 (Lab explorer) waits for R4 APIs.
+  ui_1a: >-
+    evidence_catalog_v1.py read model (timing-contract tier ceilings, T1/T4/T2
+    catalogs, R2B frames, capture availability + latest clock offset), two
+    protected GET endpoints, /evidence page, truthful /markets and dashboard
+    data-sources card (they claimed "zero external market feeds authorized"),
+    sidebar grouped by operator job, and the authority-proxy allowlist fixed:
+    historical-datasets, data-health assessments, feature-definitions list and
+    instrument detail were never allowlisted, so those pages always showed
+    UNAVAILABLE.
+  scope_paths:
+    - src/trade_platform/evidence_catalog_v1.py
+    - src/trade_platform/operator_dashboard.py
+    - src/trade_platform/api.py
+    - src/trade_platform/dev_app.py
+    - tests/test_evidence_catalog_v1.py
+    - web/
+  not_in_scope: >-
+    UI-2 Strategy Lab workflows (need R4 APIs), any tier verdict or
+    professional-eligibility display, a cosmetic redesign.
+
+r3b_completed: >-
+  Owner-independent part complete: PR #153 (bybit_public_archive_v1, catalog
+  migration 0052) and PR #154 (R3B.2 archive-vs-REST cross-check, merge 99b5585).
+  Details below stay as evidence for OR-1 / OR-5.
+r3b_evidence:
   source_verified_2026_09_24: >-
     https://public.bybit.com/trading/<SYMBOL>/<SYMBOL><YYYY-MM-DD>.csv.gz,
     unauthenticated S3/CloudFront; BTCUSDT 2020-03-25 .. previous UTC day
@@ -48,17 +77,6 @@ phase:
     is ~75-80 GB gzip 2020-03..2026-09 (HEAD-sampled every 61 days) against
     ~57 GB free while R0 + R1A capture run. T2 symbol set defaults to OR-2's
     universe. No T2 result is conditional until OR-5.
-  scope_paths:
-    - src/trade_platform/bybit_public_archive_v1.py
-    - src/trade_platform/bybit_archive_rest_crosscheck_v1.py
-    - src/trade_platform/research_data_plane_v1.py
-    - migrations/versions/20260924_0052_public_archive_datasets.py
-    - scripts/bybit_public_archive.py
-    - tests/test_bybit_public_archive_v1.py
-    - tests/test_bybit_archive_rest_crosscheck_v1.py
-  not_in_scope: >-
-    Any publication-lag value or timing-contract registration (OR-5), the
-    research symbol universe (OR-2), strategy work (R4).
 
 r3a_completed: >-
   PR #152 (merge 65c8ae8): first-party T4 normalization, final-segment sealing,

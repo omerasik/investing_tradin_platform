@@ -1,12 +1,15 @@
 import React from "react";
+import Link from "next/link";
 import {
   getWorkspaceContext,
   getDataHealthEvidence,
   getCadenceEvidence,
+  getEvidenceCatalog,
   getHistoricalDatasets,
   stateText,
   utc,
 } from "../../lib/data-access";
+import { TimingSourcesTable } from "../../components/timing-sources-table";
 import { WorkspaceToolbar } from "../../components/workspace-toolbar";
 import { QualityStateBadge } from "../../components/quality-state-badge";
 import { ResearchStatusBadge } from "../../components/research-status-badge";
@@ -29,41 +32,50 @@ export default async function MarketsPage({
   const limit = Number(resolvedParams?.limit ?? 50) || 50;
 
   const ctx = await getWorkspaceContext();
-  const [dataHealth, cadence, datasetsResult] = await Promise.all([
+  const [dataHealth, cadence, datasetsResult, catalogResult] = await Promise.all([
     getDataHealthEvidence(ctx),
     getCadenceEvidence(ctx),
     getHistoricalDatasets(ctx, { limit, offset }),
+    getEvidenceCatalog(ctx),
   ]);
 
   const health = dataHealth.state === "AVAILABLE" ? dataHealth.value : undefined;
   const schedule = cadence.state === "AVAILABLE" ? cadence.value[0] : undefined;
   const datasetsPage = datasetsResult.state === "AVAILABLE" ? datasetsResult.value : undefined;
   const datasets = datasetsPage?.items ?? [];
+  const catalog = catalogResult.state === "AVAILABLE" ? catalogResult.value : undefined;
+  const registeredTimingSources = catalog?.timing_sources.filter((source) => source.timing_contract_hash) ?? [];
 
   const hasDemoDatasets = datasets.some((d) => d.synthetic_demo);
 
   return (
     <div className="workspace-container">
       <WorkspaceToolbar
-        title="Market & Data Workspaces"
-        subtitle="Provider authorization status, ingestion checkpoints, and historical sealed dataset versions."
-        status={health ? "AVAILABLE" : dataHealth.state}
-        statusLabel={health ? "EXTERNAL_BLOCKED (TRUTHFUL)" : dataHealth.state}
+        title="Market Data Sources"
+        subtitle="Public market-data sources, the timing claim each can support, and sealed historical dataset versions."
+        status={catalog ? "AVAILABLE" : catalogResult.state}
+        statusLabel={catalog ? "PUBLIC MARKET DATA ONLY" : catalogResult.state}
         asOf={ctx.evidenceTime}
       />
 
       {hasDemoDatasets && (
-        <DemoEvidenceBanner message="Market datasets listed below include sealed synthetic engineering versions produced in controlled sandbox environments. Live market data feeds remain disabled." />
+        <DemoEvidenceBanner message="Market datasets listed below include sealed synthetic engineering versions produced in controlled sandbox environments. They are engineering evidence, not market observations." />
       )}
 
-      {/* Provider Status and Ingestion Checkpoints Strip */}
+      {/* Scope and Ingestion Checkpoints Strip */}
       <div className="metrics-strip">
         <div className="metric-card">
-          <span className="metric-label">Provider Status</span>
+          <span className="metric-label">Market Data Scope</span>
           <div className="metric-value">
-            <QualityStateBadge status="EXTERNAL_BLOCKED" label="EXTERNAL_BLOCKED" />
+            <QualityStateBadge status="AVAILABLE" label="PUBLIC ONLY" />
           </div>
-          <span className="metric-sub">Zero external market feeds authorized</span>
+          <span className="metric-sub">Public exchange data only. No broker, account or order access.</span>
+        </div>
+
+        <div className="metric-card">
+          <span className="metric-label">Timing Contracts</span>
+          <span className="metric-value tabular-num">{catalog ? registeredTimingSources.length : "UNAVAILABLE"}</span>
+          <span className="metric-sub">Sources granted a historical timing ceiling</span>
         </div>
 
         <div className="metric-card">
@@ -84,23 +96,28 @@ export default async function MarketsPage({
       </div>
 
       <div className="grid-2col margin-bottom-24">
-        {/* Provider Authorization & Terms */}
+        {/* Source Authorization Boundary */}
         <article className="panel">
           <h2>
-            <span>Provider Authorization &amp; Terms</span>
-            <QualityStateBadge status="EXTERNAL_BLOCKED" label="BLOCKED" />
+            <span>Source Authorization Boundary</span>
+            <QualityStateBadge status="AVAILABLE" label="PUBLIC DATA" />
           </h2>
           <p>
-            Cryptographic credential and provider isolation policy. External market data feeds are blocked by system invariant.
+            Authorized: public Bybit V5 REST history, first-party capture of the public Bybit V5 WebSocket, and
+            the free public trade archive. Still gated and fail-closed: provider credentials, paid data, broker and
+            account APIs, and order placement.
           </p>
           <KeyValueGrid
             items={[
-              { key: "provider", label: "Active Provider", value: health?.provider ?? "EXTERNAL_BLOCKED" },
-              { key: "authorization", label: "Authorization Reference", value: "EXTERNAL_BLOCKED (NO_LIVE_PROVIDER_AUTHORIZED)" },
-              { key: "freshness", label: "Cadence Freshness", value: health ? `${health.healthy ? "HEALTHY" : "BLOCKING"}; checked ${utc(health.checked_at)}` : stateText(dataHealth) },
-              { key: "sandbox_mode", label: "Sandbox Invariant", value: <code>LIVE_MARKET_FEED: BLOCKED</code> },
+              { key: "credentials", label: "Provider Credentials", value: <code>NONE USED</code> },
+              { key: "paid", label: "Paid Market Data", value: <code>NONE (RECURRING COST $0)</code> },
+              { key: "broker", label: "Broker / Account / Orders", value: <code>NOT AUTHORIZED</code> },
+              { key: "freshness", label: "Return Cadence Freshness", value: health ? `${health.healthy ? "HEALTHY" : "BLOCKING"}; checked ${utc(health.checked_at)}` : stateText(dataHealth) },
             ]}
           />
+          <p>
+            <Link href="/evidence" className="workspace-link">Open Evidence &amp; Data &rarr;</Link>
+          </p>
         </article>
 
         {/* Ingestion Cadences */}
@@ -126,6 +143,23 @@ export default async function MarketsPage({
           />
         </article>
       </div>
+
+      {/* Sources and Timing Ceilings */}
+      <article className="panel margin-bottom-24">
+        <h2>
+          <span>Sources &amp; Timing Ceilings</span>
+          <QualityStateBadge status={catalog ? "AVAILABLE" : catalogResult.state} />
+        </h2>
+        <p>
+          The highest historical timing claim each source could ever support. A ceiling is not a verdict: a dataset
+          reaches a tier only when its evidence is re-derived and proven.
+        </p>
+        {catalog ? (
+          <TimingSourcesTable sources={catalog.timing_sources} />
+        ) : (
+          <p className="empty-notice">{stateText(catalogResult)}</p>
+        )}
+      </article>
 
       {/* Historical Sealed Dataset Versions */}
       <article className="panel">
@@ -198,7 +232,11 @@ export default async function MarketsPage({
             )}
           </>
         ) : (
-          <p className="empty-notice">No sealed historical dataset versions found in database.</p>
+          <p className="empty-notice">
+            {datasetsResult.state === "AVAILABLE"
+              ? "No sealed historical dataset versions found in database."
+              : stateText(datasetsResult)}
+          </p>
         )}
 
         <ProvenancePanel
@@ -206,8 +244,9 @@ export default async function MarketsPage({
           version="market-datasets-v1"
           asOf={ctx.evidenceTime}
           limitations={[
-            "External provider data feeds are blocked by policy.",
+            "Only public market data is acquired; broker, account and order APIs stay unauthorized.",
             "All datasets shown are durable sealed snapshots in PostgreSQL authority.",
+            "The Evidence column is provenance (real vs synthetic), not an evidence-tier verdict.",
           ]}
         />
       </article>

@@ -19,9 +19,11 @@ const NAVIGATION_GROUPS: NavGroup[] = [
     items: [{ href: "/dashboard", label: "Dashboard" }],
   },
   {
-    title: "Market & Data",
+    // What evidence exists and what it can prove -- the first question of every study.
+    title: "Data & Evidence",
     items: [
-      { href: "/markets", label: "Markets" },
+      { href: "/evidence", label: "Evidence & Data" },
+      { href: "/markets", label: "Market Sources" },
       { href: "/instruments", label: "Instruments" },
       { href: "/data-health", label: "Data Health" },
       { href: "/features", label: "Features" },
@@ -34,14 +36,14 @@ const NAVIGATION_GROUPS: NavGroup[] = [
       { href: "/backtests", label: "Backtests" },
       { href: "/scorecards", label: "Scorecards" },
       { href: "/signals", label: "Signals" },
+      { href: "/regimes", label: "Regimes" },
     ],
   },
   {
     title: "Portfolio & Risk",
     items: [
-      { href: "/risk", label: "Risk" },
-      { href: "/regimes", label: "Regimes" },
       { href: "/portfolio", label: "Portfolio" },
+      { href: "/risk", label: "Risk" },
     ],
   },
   {
@@ -52,7 +54,7 @@ const NAVIGATION_GROUPS: NavGroup[] = [
     ],
   },
   {
-    title: "Execution",
+    title: "Paper Trading",
     items: [{ href: "/paper", label: "Paper" }],
   },
   {

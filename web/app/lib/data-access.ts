@@ -293,6 +293,68 @@ export type AuditEventDiscovery = {
   mutation_route_exposed_by_dashboard: boolean;
 };
 
+/** Phase R5 UI-1: a source's tier *ceiling* under its timing contract -- never a dataset verdict. */
+export type TimingSource = {
+  source_id: string;
+  label: string;
+  timing_authority: string;
+  tier_ceiling: string;
+  timing_contract_hash: string | null;
+  requires_declared_publication_lag: boolean;
+  publication_lag_state: string;
+  tier_ceiling_reason: string | null;
+};
+
+export type EvidenceCatalog = {
+  state: "AVAILABLE" | "UNAVAILABLE";
+  version: string;
+  as_of: string;
+  timing_sources: TimingSource[];
+  historical_sources: {
+    source_id: string; provider: string; dataset_name: string; dataset_count: number;
+    sealed_count: number; latest_created_at: string; tier_ceiling: string; synthetic_marker: boolean;
+  }[];
+  t4_dataset_total: number;
+  t4_datasets: {
+    dataset_version_id: string; content_hash: string; source_id: string; session_id: string;
+    utc_day: string; window_index: number; first_market_knowledge_at: string;
+    last_market_knowledge_at: string; observation_count: number;
+    distinct_knowledge_time_count: number; sealed_at: string; registered_at: string;
+  }[];
+  public_archive_dataset_total: number;
+  public_archive_datasets: {
+    dataset_version_id: string; content_hash: string; source_id: string; symbol: string;
+    first_utc_day: string; last_utc_day: string; file_count: number; trade_count: number;
+    publication_lag_slot: string; registered_at: string;
+  }[];
+  research_frames: { frame_kind: string; manifest_count: number; row_count: number; total_bytes: number }[];
+  limitations: string[];
+};
+
+export type CaptureExclusion = { partition: string; reasons: string[] };
+
+export type CaptureAvailability = {
+  state: "AVAILABLE" | "UNCONFIGURED" | "UNAVAILABLE";
+  version: string;
+  as_of: string;
+  disk_free_bytes: number | null;
+  sources: {
+    source_id: string;
+    exchange_symbol: string;
+    purpose: "PRODUCTION" | "MEASUREMENT";
+    proven_record_count: number;
+    proven_seconds: number;
+    windows: { session_id: string; start_at: string; last_proven_at: string; end_proof: string; record_count: number }[];
+    gaps: { start_at: string; end_at: string | null; kind: string; detail: string | null }[];
+    not_finalized: CaptureExclusion[];
+    latest_clock_offset: {
+      sampled_at: string; offset_estimate_seconds: number; offset_bound_seconds: number; partition: string;
+    } | null;
+  }[];
+  unattributed: CaptureExclusion[];
+  limitations: string[];
+};
+
 export function utc(value: string | null | undefined): string {
   if (!value) return "UNAVAILABLE";
   const instant = new Date(value);
@@ -397,6 +459,22 @@ export async function getHistoricalDatasets(
     authorityUrl(ctx.origin, `/operator-dashboard/historical-datasets?${query.toString()}`),
     ctx.protectedApi,
     "Historical dataset discovery is unavailable.",
+  );
+}
+
+export async function getEvidenceCatalog(ctx: WorkspaceContext): Promise<EvidenceResult<EvidenceCatalog>> {
+  return readEvidence<EvidenceCatalog>(
+    authorityUrl(ctx.origin, "/operator-dashboard/evidence-catalog"),
+    ctx.protectedApi,
+    "Evidence catalog is unavailable.",
+  );
+}
+
+export async function getCaptureAvailability(ctx: WorkspaceContext): Promise<EvidenceResult<CaptureAvailability>> {
+  return readEvidence<CaptureAvailability>(
+    authorityUrl(ctx.origin, "/operator-dashboard/capture-availability"),
+    ctx.protectedApi,
+    "Capture availability is unavailable.",
   );
 }
 

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from fastapi import FastAPI
 
 from .api import build_app
 from .audit import SQLiteAuditStore
 from .config import PlatformConfig
+from .first_party_capture_archive_v1 import default_archive_root
 from .operator_dashboard import PostgresOperatorDashboardQueries
 from .persistence import PersistenceTarget, PostgresDatabase
 from .security import InMemoryRateLimiter, OperatorAuthenticator
@@ -30,12 +32,17 @@ def create_dev_app(database: PostgresDatabase | None = None) -> FastAPI:
         persistence_location=dsn,
     )
 
+    # The dev API runs on the recorder host, so it reads the default capture
+    # archive unless pointed elsewhere; the protected runtime stays UNCONFIGURED.
+    capture_root = os.environ.get("TRADE_PLATFORM_CAPTURE_ARCHIVE_ROOT")
+
     return build_app(
         config=config,
         audit_store=SQLiteAuditStore(),
         authenticator=OperatorAuthenticator(token),
         rate_limiter=InMemoryRateLimiter(max_requests=10_000),
         operator_dashboard_queries=PostgresOperatorDashboardQueries(db),
+        capture_archive_root=Path(capture_root) if capture_root else default_archive_root(),
     )
 
 

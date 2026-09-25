@@ -3,6 +3,7 @@
 import json
 from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -11,6 +12,11 @@ from pydantic import BaseModel, Field
 from .agent_research import AgentResearchError, AgentResearchOutput, SQLiteAgentResearchStore
 from .audit import AuditEvent, AuditStore, SQLiteAuditStore
 from .config import PlatformConfig
+from .evidence_catalog_v1 import (
+    CaptureAvailabilityView,
+    EvidenceCatalogView,
+    read_capture_availability_v1,
+)
 from .fundamentals import SQLiteFundamentalStore
 from .investments import (
     InvestmentValidationError,
@@ -293,6 +299,7 @@ def build_app(
     promotion_ledger: SQLitePromotionLedger | None = None,
     operator_dashboard_queries: PostgresOperatorDashboardQueries | None = None,
     authorization_decision_sink: AuthorizationDecisionSink | None = None,
+    capture_archive_root: Path | None = None,
 ) -> FastAPI:
     platform_config = config or PlatformConfig()
     store = audit_store or SQLiteAuditStore()
@@ -330,6 +337,7 @@ def build_app(
     app.state.experiment_store = experiment_store
     app.state.promotion_ledger = promotion_ledger
     app.state.operator_dashboard_queries = operator_dashboard_queries
+    app.state.capture_archive_root = capture_archive_root
 
     @app.get("/health/live")
     def liveness() -> dict[str, str]:
@@ -467,6 +475,21 @@ def build_app(
         _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
     ) -> object:
         return read_dashboard(lambda: queries.historical_datasets(limit=limit, offset=offset))
+
+    @app.get("/operator-dashboard/evidence-catalog", response_model=EvidenceCatalogView)
+    def dashboard_evidence_catalog(
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """Sources, tier ceilings and catalogued datasets. Never a tier verdict."""
+        return read_dashboard(queries.evidence_catalog)
+
+    @app.get("/operator-dashboard/capture-availability", response_model=CaptureAvailabilityView)
+    def dashboard_capture_availability(_: None = Depends(protected_operator)) -> object:
+        """Proven first-party capture coverage under the configured root (UNCONFIGURED if none)."""
+        try:
+            return read_capture_availability_v1(app.state.capture_archive_root)
+        except Exception as error:
+            raise HTTPException(status_code=503, detail="Capture availability unavailable.") from error
 
     @app.get("/operator-dashboard/data-health/assessments", response_model=DataHealthAssessmentPage)
     def dashboard_data_health_assessments(
