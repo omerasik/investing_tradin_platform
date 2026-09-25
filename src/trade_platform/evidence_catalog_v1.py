@@ -49,7 +49,6 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from .bybit_public_archive_v1 import bybit_public_trade_archive_contract_v1
 from .evidence_tier_authority_v1 import authorized_timing_contracts_v1
 from .first_party_capture_archive_v1 import (
     derive_archive_availability_by_source_v1,
@@ -224,6 +223,21 @@ class CaptureAvailabilityView(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def _public_archive_contract() -> Any | None:
+    """The free-archive contract, or ``None`` where the analytics extra is absent.
+
+    Its module needs pyarrow (the R2B ``analytics`` extra), which the hardened
+    API container does not install. The API must still start there, so the
+    import is deferred and a missing extra drops the row -- the catalog then
+    says so in its limitations rather than inventing the contract.
+    """
+    try:
+        from .bybit_public_archive_v1 import bybit_public_trade_archive_contract_v1
+    except ImportError:
+        return None
+    return bybit_public_trade_archive_contract_v1()
+
+
 def timing_sources_v1() -> list[TimingSourceView]:
     """Every source the code knows how to time, including the one with no authority yet.
 
@@ -250,7 +264,9 @@ def timing_sources_v1() -> list[TimingSourceView]:
         )
         for contract in authorized_timing_contracts_v1()
     ]
-    archive = bybit_public_trade_archive_contract_v1()
+    archive = _public_archive_contract()
+    if archive is None:
+        return views
     views.append(TimingSourceView(
         source_id=archive.source_id,
         label="Bybit free public trade archive (public.bybit.com)",
@@ -341,10 +357,15 @@ def read_evidence_catalog_v1(cursor: _Cursor, *, now: datetime | None = None) ->
     ]
 
     has_evidence = bool(historical or t4 or archive or frames)
+    timing_sources = timing_sources_v1()
+    runtime_limitations = (
+        [] if _public_archive_contract() is not None
+        else ["The public-archive source contract is not loadable in this runtime (analytics extra absent)."]
+    )
     return EvidenceCatalogView(
         state="AVAILABLE" if has_evidence else "UNAVAILABLE",
         as_of=now or datetime.now(UTC),
-        timing_sources=timing_sources_v1(),
+        timing_sources=timing_sources,
         historical_sources=historical,
         t4_dataset_total=t4_total,
         t4_datasets=t4,
@@ -356,6 +377,7 @@ def read_evidence_catalog_v1(cursor: _Cursor, *, now: datetime | None = None) ->
             "A catalogued T4 seal is identity only; its tier is re-derived from raw capture when used.",
             "T2 archive datasets carry no publication lag until owner decision OR-5.",
             f"Dataset lists show at most {CATALOG_ROW_LIMIT_V1} newest rows; totals count all rows.",
+            *runtime_limitations,
         ],
     )
 

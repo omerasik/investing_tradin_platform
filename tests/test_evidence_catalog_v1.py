@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from datetime import UTC, date, datetime
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -155,6 +155,15 @@ class EvidenceCatalogTests(unittest.TestCase):
         self.assertEqual(T2_PUBLICATION_LAG_SLOT_V1, view.public_archive_datasets[0].publication_lag_slot)
         self.assertEqual(691_200, view.research_frames[0].row_count)
         self.assertTrue(all(statement.lstrip().upper().startswith("SELECT") for statement in cursor.statements))
+
+    def test_without_the_analytics_extra_the_archive_row_is_dropped_and_said_so(self) -> None:
+        # The hardened API container has no pyarrow; the API must start and not invent the contract.
+        with patch("trade_platform.evidence_catalog_v1._public_archive_contract", return_value=None):
+            view = read_evidence_catalog_v1(_ScriptedCursor([[], [(0,)], [], [(0,)], [], []]), now=NOW)
+        self.assertEqual(
+            {"T1_RETROSPECTIVE", "T4_FIRST_PARTY_CAPTURE"}, {item.tier_ceiling for item in view.timing_sources},
+        )
+        self.assertTrue(any("analytics extra absent" in item for item in view.limitations))
 
     def test_an_empty_catalog_is_unavailable_not_healthy(self) -> None:
         view = read_evidence_catalog_v1(_ScriptedCursor([[], [(0,)], [], [(0,)], [], []]), now=NOW)
