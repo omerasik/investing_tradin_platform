@@ -84,6 +84,37 @@ test.describe("Module 2B-1 Professional Market & Data Workspaces", () => {
     await context.close();
   });
 
+  test("/chart workspace names its claim ceiling or states that nothing is catalogued, and passes a11y", async ({
+    browser,
+  }) => {
+    const consoleErrors: string[] = [];
+    const context = await browser.newContext({ baseURL: dashboardUrl, extraHTTPHeaders: {} });
+    const page = await context.newPage();
+    page.on("console", (msg) => {
+      if (msg.type() === "error") consoleErrors.push(msg.text());
+    });
+
+    await page.goto("/login");
+    await page.getByLabel("Operator Access Credential").fill(viewToken);
+    await page.getByRole("button", { name: "Sign In" }).click();
+    await expect(page).toHaveURL(/\/dashboard/);
+
+    await page.goto("/chart");
+    await expect(page.getByRole("heading", { name: "Instrument Chart", level: 1 })).toBeVisible();
+    const series = page.getByRole("article", { name: "Chart Series" });
+    await expect(series).toBeVisible();
+    // Either a series with its claim ceiling, or an honest empty catalogue -- never a bare chart.
+    await expect(page.getByText(/CLAIM CEILING: |No chartable bar frame is catalogued/).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: /execute|trade|buy|sell/i })).toHaveCount(0);
+
+    const a11yResults = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
+      .analyze();
+    expect(a11yResults.violations).toEqual([]);
+    expect(consoleErrors).toEqual([]);
+    await context.close();
+  });
+
   test("/instruments workstation supports filtering, search, and deep interactive inspector", async ({
     browser,
   }) => {

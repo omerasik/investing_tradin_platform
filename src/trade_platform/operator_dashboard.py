@@ -16,6 +16,13 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from .evidence_catalog_v1 import EvidenceCatalogView, read_evidence_catalog_v1
+from .instrument_chart_v1 import (
+    ChartSeriesNotFound,
+    ChartSeriesRefPage,
+    ChartSeriesRefView,
+    find_chart_series_v1,
+    list_chart_series_v1,
+)
 from .persistence import PostgresDatabase
 from .real_market_data_provenance_v1 import (
     STATUS_SYNTHETIC as PROVENANCE_STATUS_SYNTHETIC,
@@ -1270,6 +1277,18 @@ class PostgresOperatorDashboardQueries:
     def evidence_catalog(self) -> EvidenceCatalogView:
         """Phase R5 UI-1: sources, tier ceilings and catalogued datasets (see evidence_catalog_v1)."""
         return self._read(read_evidence_catalog_v1)
+
+    def chart_series(self) -> ChartSeriesRefPage:
+        """Phase R5 UI-1b: catalogued chartable bar frames (see instrument_chart_v1)."""
+        return self._read(list_chart_series_v1)
+
+    def chart_series_ref(self, manifest_hash: str) -> ChartSeriesRefView:
+        def operation(cursor: _Cursor) -> ChartSeriesRefView:
+            try:
+                return find_chart_series_v1(cursor, manifest_hash)
+            except ChartSeriesNotFound as error:
+                raise DashboardObjectNotFound("chart_series_not_found") from error
+        return self._read(operation)
 
     def data_health_assessments(
         self, *, scope_type: str | None = None, scope_value: str | None = None,
