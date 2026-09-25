@@ -2,7 +2,7 @@
 # This is NOT a second roadmap: requirements stay in MASTER_ROADMAP.md, design
 # stays in module docstrings, history stays in git.
 
-updated: 2026-09-24
+updated: 2026-09-25
 
 # Phase naming. Since 2026-09-24 the owner-approved canonical roadmap uses an
 # "R" series (R0-R15, owner review points OR-1..OR-14). It is distinct from the
@@ -35,12 +35,27 @@ phase:
     BTCUSDT 2026-09-21..23 engineering sample (not a research universe; OR-2):
     289 MB, 8,368,287 trades, 4,320 bars, dataset 3d6467c1 (content fa6914fa),
     byte-identical rebuild. market_knowledge_at NULL everywhere.
+  rest_crosscheck: >-
+    R3B.2 bybit_archive_rest_crosscheck_v1.py: archive-rebuilt 1m bars vs
+    /v5/market/kline, raw REST pages kept + hashed, disagreements reported,
+    never bridged. Real sample 2026-09-21..23 (report e2ca9922, deterministic):
+    4,320/4,320 minutes on both sides; close, volume, turnover exact in every
+    minute; open differs in 2,096, high 113, low 119 -- all but the sample's
+    first minute match the REST prior-trade-open convention (kline opens at the
+    previous trade price). 0 RPI trades in the sample.
+  remaining_acceptance: >-
+    Multi-year bars need OR-1 (raw retention vs refetch-by-hash): BTCUSDT alone
+    is ~75-80 GB gzip 2020-03..2026-09 (HEAD-sampled every 61 days) against
+    ~57 GB free while R0 + R1A capture run. T2 symbol set defaults to OR-2's
+    universe. No T2 result is conditional until OR-5.
   scope_paths:
     - src/trade_platform/bybit_public_archive_v1.py
+    - src/trade_platform/bybit_archive_rest_crosscheck_v1.py
     - src/trade_platform/research_data_plane_v1.py
     - migrations/versions/20260924_0052_public_archive_datasets.py
     - scripts/bybit_public_archive.py
     - tests/test_bybit_public_archive_v1.py
+    - tests/test_bybit_archive_rest_crosscheck_v1.py
   not_in_scope: >-
     Any publication-lag value or timing-contract registration (OR-5), the
     research symbol universe (OR-2), strategy work (R4).
@@ -48,8 +63,11 @@ phase:
 r3a_completed: >-
   PR #152 (merge 65c8ae8): first-party T4 normalization, final-segment sealing,
   provenance->T4 tier from the seal only, registered T4 sealed-clock resolver,
-  V3 basis 3.0.0; two-round independent PIT review. Real acceptance awaits the
-  first COMPLETE partition with clock samples (rollover 2026-09-25T00:00Z).
+  V3 basis 3.0.0; two-round independent PIT review. Real acceptance still
+  PENDING: an owner shutdown at 2026-09-24T18:20Z ended R0 before the rollover;
+  the only COMPLETE partition (04fb6d26, 21 s) has no bracketing clock samples
+  and is correctly excluded. R0 restarted 2026-09-25T04:34Z; first eligible
+  partition finalizes at the 2026-09-26T00:00Z rollover if the host stays up.
 
 r2a_completed: >-
   R2A.1 PR #149, R2A.2 PR #150 (merge 97c55dd): V3 three-clock feature rows,
@@ -65,7 +83,9 @@ r1a_follow_up:                # R1A merged (PR #148); its measurement is still r
   measurement_run: >-
     scripts/capture_bybit_public.py measure --seconds 86400. The 03:06 run was
     ended at 04:39 local by a host shutdown (no report, PARTIAL partitions);
-    restarted 2026-09-24 13:10 local (11:10Z), due ~2026-09-25 13:10 local.
+    the 11:10Z restart was ended at 18:20Z by an owner Start-menu shutdown (no
+    report). Third run started 2026-09-25T04:34Z, due 2026-09-26T04:34Z; the
+    host must stay on until then.
   ends_with: capacity report + 2-4 capture-universe options for the owner (OR-2), then R1B.
 
 r0_operations:                # the T4 clock; runs beside every phase
