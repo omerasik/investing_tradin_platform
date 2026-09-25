@@ -15,6 +15,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from .evidence_catalog_v1 import EvidenceCatalogView, read_evidence_catalog_v1
 from .persistence import PostgresDatabase
 from .real_market_data_provenance_v1 import (
     STATUS_SYNTHETIC as PROVENANCE_STATUS_SYNTHETIC,
@@ -1265,6 +1266,10 @@ class PostgresOperatorDashboardQueries:
             ) for row in rows]
             return HistoricalDatasetPage(state="AVAILABLE" if items else "UNAVAILABLE", items=items, page=page)
         return self._read(operation)
+
+    def evidence_catalog(self) -> EvidenceCatalogView:
+        """Phase R5 UI-1: sources, tier ceilings and catalogued datasets (see evidence_catalog_v1)."""
+        return self._read(read_evidence_catalog_v1)
 
     def data_health_assessments(
         self, *, scope_type: str | None = None, scope_value: str | None = None,

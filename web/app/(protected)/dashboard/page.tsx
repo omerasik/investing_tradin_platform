@@ -192,12 +192,12 @@ export default async function DashboardPage() {
             <span>Data Sources / Providers</span>
             <StatusBadge status={health ? "AVAILABLE" : dataHealth.state} />
           </h2>
-          <p>Provider status, ingestion cadences, and sealed dataset versioning.</p>
+          <p>Market-data scope, ingestion cadences, and sealed dataset versioning.</p>
           <dl>
-            <dt>Provider Status</dt>
-            <dd><code>EXTERNAL_BLOCKED (TRUTHFUL)</code></dd>
+            <dt>Market Data Scope</dt>
+            <dd><code>PUBLIC MARKET DATA ONLY</code></dd>
             <dt>Authorization State</dt>
-            <dd>No real market data provider authorized</dd>
+            <dd>Public Bybit V5 REST, first-party public capture and the free public archive; no broker, account or order access</dd>
             <dt>Ingestion Cadence</dt>
             <dd>
               {schedule
@@ -206,9 +206,9 @@ export default async function DashboardPage() {
             </dd>
           </dl>
           <div className="panel-footer-row">
-            <span className="status">{health ? "READ ONLY" : "EXTERNAL_BLOCKED"}</span>
-            <Link href="/markets" className="workspace-link">
-              Open Markets Workspace &rarr;
+            <span className="status">READ ONLY</span>
+            <Link href="/evidence" className="workspace-link">
+              Open Evidence &amp; Data &rarr;
             </Link>
           </div>
         </article>

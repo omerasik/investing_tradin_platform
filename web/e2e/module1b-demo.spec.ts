@@ -28,7 +28,8 @@ test("Module 1B synthetic demo auto-discovers every read-only workspace", async 
 
   await expect(page.locator("#news")).toContainText("NOT LIVE NEWS");
   await expect(page.locator("#investment")).toContainText("NOT A REAL INVESTMENT RECOMMENDATION");
-  await expect(page.locator("#data-sources")).toContainText("EXTERNAL_BLOCKED");
+  await expect(page.locator("#data-sources")).toContainText("PUBLIC MARKET DATA ONLY");
+  await expect(page.locator("#data-sources")).toContainText("no broker, account or order access");
   await expect(page.getByRole("button", { name: /execute|submit|buy|sell/i })).toHaveCount(0);
 
   // The Instrument card is a bounded preview: the first 20 canonical instruments by

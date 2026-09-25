@@ -41,7 +41,7 @@ test.describe("Module 2A App Shell & Navigation Foundation", () => {
     await expect(sidebar.getByText("Operator Workstation")).toBeVisible();
 
     // Verify Sidebar navigation groups
-    for (const group of ["Overview", "Market & Data", "Research", "Portfolio & Risk", "Investing", "Execution", "System"]) {
+    for (const group of ["Overview", "Data & Evidence", "Research", "Portfolio & Risk", "Investing", "Paper Trading", "System"]) {
       await expect(sidebar.locator(".nav-group-title", { hasText: group })).toBeVisible();
     }
 

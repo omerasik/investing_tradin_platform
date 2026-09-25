@@ -5,7 +5,7 @@ const viewToken = process.env.TRADE_PLATFORM_DASHBOARD_VIEW_TOKEN ?? "module1b-v
 const dashboardUrl = process.env.DASHBOARD_URL ?? "http://127.0.0.1:3000";
 
 test.describe("Module 2B-1 Professional Market & Data Workspaces", () => {
-  test("/markets workspace renders provider status, ingestion checkpoints, sealed datasets, and passes WCAG a11y", async ({
+  test("/markets workspace renders the public-data scope, timing ceilings, sealed datasets, and passes WCAG a11y", async ({
     browser,
   }) => {
     const consoleErrors: string[] = [];
@@ -22,11 +22,17 @@ test.describe("Module 2B-1 Professional Market & Data Workspaces", () => {
 
     await page.goto("/markets");
     await expect(page).toHaveURL(/\/markets/);
-    await expect(page.getByRole("heading", { name: "Market & Data Workspaces", level: 1 })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Market Data Sources", level: 1 })).toBeVisible();
 
-    // Verify Provider status is truthfully displayed as EXTERNAL_BLOCKED
-    await expect(page.locator(".metric-card", { hasText: "Provider Status" })).toContainText("EXTERNAL_BLOCKED");
-    await expect(page.getByText("Zero external market feeds authorized")).toBeVisible();
+    // Phase R5 UI-1: public market data is authorized; broker/account/order access is not.
+    // The page used to claim "zero external market feeds authorized", which stopped being
+    // true when the public Bybit V5 paths were authorized.
+    await expect(page.locator(".metric-card", { hasText: "Market Data Scope" })).toContainText("PUBLIC ONLY");
+    await expect(page.getByText("No broker, account or order access.")).toBeVisible();
+    await expect(page.getByText("Zero external market feeds authorized")).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Sources & Timing Ceilings" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Market Data Sources and Timing Ceilings" })).toContainText("T4_FIRST_PARTY_CAPTURE");
+    await expect(page.getByRole("region", { name: "Market Data Sources and Timing Ceilings" })).toContainText("UNSET_PENDING_OWNER_DECISION_OR_5");
 
     // Verify ingestion checkpoint panel
     await expect(page.locator(".metric-card", { hasText: "Ingestion Checkpoint" })).toBeVisible();
@@ -38,6 +44,38 @@ test.describe("Module 2B-1 Professional Market & Data Workspaces", () => {
     await expect(page.getByRole("button", { name: /execute|trade|buy|sell/i })).toHaveCount(0);
 
     // Accessibility scan
+    const a11yResults = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
+      .analyze();
+    expect(a11yResults.violations).toEqual([]);
+    expect(consoleErrors).toEqual([]);
+    await context.close();
+  });
+
+  test("/evidence workspace shows timing ceilings, capture availability and catalogs without claiming verdicts", async ({
+    browser,
+  }) => {
+    const consoleErrors: string[] = [];
+    const context = await browser.newContext({ baseURL: dashboardUrl, extraHTTPHeaders: {} });
+    const page = await context.newPage();
+    page.on("console", (msg) => {
+      if (msg.type() === "error") consoleErrors.push(msg.text());
+    });
+
+    await page.goto("/login");
+    await page.getByLabel("Operator Access Credential").fill(viewToken);
+    await page.getByRole("button", { name: "Sign In" }).click();
+    await expect(page).toHaveURL(/\/dashboard/);
+
+    await page.goto("/evidence");
+    await expect(page.getByRole("heading", { name: "Evidence & Data", level: 1 })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Market Data Sources and Timing Ceilings" })).toContainText("T1_RETROSPECTIVE");
+    // Capture availability is reported honestly whether or not this host holds an archive.
+    await expect(page.getByRole("heading", { name: "First-Party Capture Availability" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Sealed First-Party Segments" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Public Trade Archive (T2 Event Time)" })).toBeVisible();
+    await expect(page.getByRole("button", { name: /execute|trade|buy|sell/i })).toHaveCount(0);
+
     const a11yResults = await new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
       .analyze();
