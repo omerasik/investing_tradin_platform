@@ -108,7 +108,7 @@ def _verify(args: argparse.Namespace) -> None:
 
 
 def _features(args: argparse.Namespace) -> None:
-    from trade_platform.feature_authority import FeatureAuthorityError, PostgresFeatureAuthority
+    from trade_platform.feature_authority import PostgresFeatureAuthority
     from trade_platform.first_party_t4_dataset_v1 import (
         FirstPartyT4SealedClockResolverV1,
         PostgresFirstPartyT4CatalogV1,
@@ -129,12 +129,12 @@ def _features(args: argparse.Namespace) -> None:
     seal = t4_seal_from_catalog_v1(catalog.load(UUID(args.dataset)), store=store, capture_root=args.capture_root)
     _, verdict = issue_t4_evidence_tier_v1(seal)
     resolver = FirstPartyT4SealedClockResolverV1(seal, store=store)
-    definition = crypto_mark_index_basis_first_party_t4_definition(datetime.now(UTC))
     authority = PostgresFeatureAuthority(database)
-    try:
-        authority.register(definition)
-    except FeatureAuthorityError:
-        pass  # already registered: the definition id is deterministic
+    # feature_id is minted per instance: rows must carry the stored version's id,
+    # and a definition that drifted from the stored one fails closed.
+    definition = authority.register_or_resolve(
+        crypto_mark_index_basis_first_party_t4_definition(datetime.now(UTC))
+    )
     rows = build_t4_basis_features_v3(
         seal, verdict=verdict, resolver=resolver, store=store, feature_id=definition.feature_id,
         computed_at=datetime.now(UTC),

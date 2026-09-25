@@ -83,3 +83,38 @@ class FeatureAuthorityPostgresTests(unittest.TestCase):
             (revised,),
         )
         reopened.close()
+
+    def test_register_or_resolve_reuses_the_stored_id_and_fails_closed_on_drift(self) -> None:
+        from alembic import command
+        from alembic.config import Config
+
+        from trade_platform.feature_authority import (
+            FeatureAuthorityError,
+            FeatureDefinitionVersion,
+            FeatureFamily,
+            PostgresFeatureAuthority,
+        )
+        from trade_platform.persistence import PostgresDatabase
+
+        config = Config("alembic.ini")
+        config.set_main_option("sqlalchemy.url", os.environ["POSTGRES_TEST_DSN"].replace("postgresql://", "postgresql+psycopg://", 1))
+        command.upgrade(config, "head")
+        database = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        authority = PostgresFeatureAuthority(database)
+
+        def build(created_at: datetime, description: str = "Fixture definition for register_or_resolve.") -> FeatureDefinitionVersion:
+            return FeatureDefinitionVersion(
+                "fixture_register_or_resolve", FeatureFamily.PRICE_RETURNS, "1.0.0", "quant", description,
+                ("OHLCV",), ("close",), "1m", "event only", 0, {}, "reject", "reject",
+                "reject_future_knowledge", Decimal("-1.0"), Decimal("1"), "dimensionless", "fixture-v1", created_at,
+            )
+
+        first = authority.register_or_resolve(build(datetime(2025, 1, 2, tzinfo=UTC)))
+        rebuilt = build(datetime(2025, 6, 1, tzinfo=UTC))  # a fresh instance mints a fresh uuid4
+        self.assertNotEqual(rebuilt.feature_id, first.feature_id)
+        resolved = authority.register_or_resolve(rebuilt)
+        self.assertEqual(resolved.feature_id, first.feature_id)
+        self.assertEqual(authority.definition(first.feature_id).feature_id, first.feature_id)
+        with self.assertRaisesRegex(FeatureAuthorityError, "feature_definition_drift"):
+            authority.register_or_resolve(build(datetime(2025, 6, 1, tzinfo=UTC), description="changed semantics"))
+        database.close()
