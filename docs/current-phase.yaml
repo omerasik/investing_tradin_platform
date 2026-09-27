@@ -2,7 +2,7 @@
 # This is NOT a second roadmap: requirements stay in MASTER_ROADMAP.md, design
 # stays in module docstrings, history stays in git.
 
-updated: 2026-09-25
+updated: 2026-09-27
 
 # Phase naming. Since 2026-09-24 the owner-approved canonical roadmap uses an
 # "R" series (R0-R15, owner review points OR-1..OR-14). It is distinct from the
@@ -13,33 +13,33 @@ updated: 2026-09-25
 # -> R8 opportunity engine -> R9 accounts/risk -> R10 paper; R7 (T3 spine) is
 # the one parallel track.
 phase:
-  id: "R3A.2"
-  name: First-party T4 top-of-book and funding sidecars of a sealed segment (no owner gate)
-  status: in_progress
-  base_commit: d9fd1df       # R3A follow-up PR #157 merged
+  id: "R3B.3"
+  name: Trade-level overlap of the free archive (T2) and first-party capture (T4) (no owner gate)
+  status: in_review
+  base_commit: 385497b       # R3A.2 PR #158 merged
   why_now: >-
-    The R3A roadmap row names tickers -> mark/index/funding/OI/top-of-book, but
-    R3A.1 normalized mark/index/trades only. Measured level-1 spread is the one
-    OR-6 input that needs T4 evidence, and R10 fill calibration needs it too.
-    Invariant to every open owner decision; calendar gates (R3A real acceptance,
-    R1A report) do not block it.
+    OR-5 (T2 publication lag) needs the factual premise that the archive is
+    the tape the public feed disseminated in real time, and first-party
+    capture completeness is invisible to the capture archive's own proofs.
+    Sets no lag; invariant to every open owner decision.
   design: >-
-    first_party_t4_quotes_v1.py: derives T4_TOP_OF_BOOK and T4_FUNDING frames
-    from exactly the records a raw-replayed seal admitted, under the same clock
-    bounds (seal module now exposes that single admission iterator). A sidecar:
-    identity binds the parent seal content hash; the seal, its identity and its
-    tier verdict are unchanged; no new verdict, provenance or authority.
-    Venue-published, conflated level-1 and funding state only -- not an order
-    book, not a settled funding payment. CLI: first_party_t4.py quotes.
+    bybit_archive_t4_overlap_v1.py: joins verified archive days with one
+    raw-replayed sealed T4 segment's trades on venue trade id over the
+    segment's captured span. Counts and disagreeing ids only; HTTP
+    Last-Modified and T4 knowledge-minus-event distribution reported as OR-5
+    context, never a lag value. CLI: bybit_public_archive.py overlap.
   scope_paths:
-    - src/trade_platform/first_party_t4_quotes_v1.py
-    - tests/test_first_party_t4_quotes_v1.py
-    - src/trade_platform/first_party_t4_seal_v1.py
-    - src/trade_platform/research_data_plane_v1.py
-    - scripts/first_party_t4.py
+    - src/trade_platform/bybit_archive_t4_overlap_v1.py
+    - tests/test_bybit_archive_t4_overlap_v1.py
+    - scripts/bybit_public_archive.py
   not_in_scope: >-
-    Any cost model, fill model, slippage parameter or funding assumption (OR-6);
-    open-interest normalization (no consumer yet).
+    Any T2 publication-lag value (OR-5); real run waits for R3A real acceptance
+    (a sealed segment whose day the archive has published).
+
+r3a2_completed: >-
+  PR #158 (merge 385497b): T4_TOP_OF_BOOK and T4_FUNDING sidecars derived from
+  exactly the records a raw-replayed seal admitted; no cost/fill/funding
+  assumption (OR-6 open).
 
 r5_ui1_completed: >-
   UI-1 complete: PR #155 (aab3671, Evidence & Data read model, truthful market
@@ -98,8 +98,9 @@ r3a_completed: >-
   V3 basis 3.0.0; two-round independent PIT review. Real acceptance still
   PENDING: an owner shutdown at 2026-09-24T18:20Z ended R0 before the rollover;
   the only COMPLETE partition (04fb6d26, 21 s) has no bracketing clock samples
-  and is correctly excluded. R0 restarted 2026-09-25T04:34Z; first eligible
-  partition finalizes at the 2026-09-26T00:00Z rollover if the host stays up.
+  and is correctly excluded. R0 was down 2026-09-25T16:09Z..2026-09-27T12:03Z
+  (host shutdowns); restarted then, first eligible partition finalizes at the
+  2026-09-28T00:00Z rollover if the host stays up.
 
 r2a_completed: >-
   R2A.1 PR #149, R2A.2 PR #150 (merge 97c55dd): V3 three-clock feature rows,
@@ -116,8 +117,9 @@ r1a_follow_up:                # R1A merged (PR #148); its measurement is still r
     scripts/capture_bybit_public.py measure --seconds 86400. The 03:06 run was
     ended at 04:39 local by a host shutdown (no report, PARTIAL partitions);
     the 11:10Z restart was ended at 18:20Z by an owner Start-menu shutdown (no
-    report). Third run started 2026-09-25T04:34Z, due 2026-09-26T04:34Z; the
-    host must stay on until then.
+    report). Third run (2026-09-25T04:34Z) ended at 16:09Z by another Start-menu
+    shutdown, no report. Fourth run started 2026-09-27T12:03Z, due
+    2026-09-28T12:03Z; the host must stay on until then.
   ends_with: capacity report + 2-4 capture-universe options for the owner (OR-2), then R1B.
 
 r0_operations:                # the T4 clock; runs beside every phase
