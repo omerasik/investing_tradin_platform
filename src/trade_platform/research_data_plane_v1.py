@@ -258,6 +258,35 @@ T4_OHLCV_1M_FRAME: Final = FrameSchemaV1(
                pa.field("trade_manifest_hash", pa.string(), nullable=False)]),
     ("bar_open_at",),
 )
+# Phase R3A.2 provider-published quote state from the same sealed segment. Both
+# are venue-conflated ``tickers`` fields (level 1 only), never an order book.
+T4_TOP_OF_BOOK_FRAME: Final = FrameSchemaV1(
+    "T4_TOP_OF_BOOK", "1",
+    pa.schema([pa.field("observation_reference", pa.string(), nullable=False),
+               pa.field("message_type", pa.string(), nullable=False),
+               pa.field("exchange_ts_millis", pa.int64(), nullable=False),
+               pa.field("event_at", _TS, nullable=False),
+               *_T4_ARRIVAL,
+               pa.field("bid_price", _DECIMAL, nullable=False),
+               pa.field("bid_size", _DECIMAL, nullable=False),
+               pa.field("ask_price", _DECIMAL, nullable=False),
+               pa.field("ask_size", _DECIMAL, nullable=False),
+               pa.field("book_state", pa.string(), nullable=False)]),
+    ("record_sequence",),
+)
+T4_FUNDING_FRAME: Final = FrameSchemaV1(
+    "T4_FUNDING", "1",
+    pa.schema([pa.field("observation_reference", pa.string(), nullable=False),
+               pa.field("message_type", pa.string(), nullable=False),
+               pa.field("exchange_ts_millis", pa.int64(), nullable=False),
+               pa.field("event_at", _TS, nullable=False),
+               *_T4_ARRIVAL,
+               pa.field("published_funding_rate", _DECIMAL, nullable=False),
+               pa.field("next_funding_at", _TS, nullable=False),
+               pa.field("funding_interval_hours", pa.int64(), nullable=False),
+               pa.field("funding_cap", _DECIMAL, nullable=False)]),
+    ("record_sequence",),
+)
 
 # Phase R3B free-archive (T2 event-time) frames. ``market_knowledge_at`` is
 # nullable and is written NULL until the owner authorizes a publication lag
@@ -305,7 +334,8 @@ T2_ARCHIVE_OHLCV_1M_FRAME: Final = FrameSchemaV1(
 FRAME_SCHEMAS: Final = {
     frame.kind: frame for frame in (REFERENCE_PRICE_FRAME, OHLCV_FRAME, OPEN_INTEREST_FRAME,
                                     FEATURE_FRAME, T4_REFERENCE_PRICE_FRAME, T4_BASIS_FRAME,
-                                    T4_TRADE_FRAME, T4_OHLCV_1M_FRAME, T2_ARCHIVE_TRADE_FRAME,
+                                    T4_TRADE_FRAME, T4_OHLCV_1M_FRAME, T4_TOP_OF_BOOK_FRAME,
+                                    T4_FUNDING_FRAME, T2_ARCHIVE_TRADE_FRAME,
                                     T2_ARCHIVE_OHLCV_1M_FRAME)
 }
 

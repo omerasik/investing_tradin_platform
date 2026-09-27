@@ -80,6 +80,7 @@ from .first_party_capture_archive_v1 import (
     CaptureCoverageIntervalV1,
     CaptureLifecycleKindV1,
     FirstPartyCaptureArchiveError,
+    FirstPartyCaptureRecordV1,
     find_partitions_v1,
     read_lifecycle_v1,
     read_partition_status_v1,
@@ -96,6 +97,7 @@ from .first_party_t4_normalization_v1 import (
     BASIS_FORMULA_V1,
     CLOCK_BOUND_RULE_V1,
     T4_NORMALIZATION_SEMANTIC_VERSION_V1,
+    ArrivalClockBoundEvidenceV1,
     ClockOffsetSampleEvidenceV1,
     SessionClockEvidenceV1,
     T4BasisV1,
@@ -501,6 +503,32 @@ def _plan(
 # ---------------------------------------------------------------------------
 
 
+def iter_admitted_segment_records_v1(
+    plan: T4SegmentPlanV1, *, contract: FirstPartyCaptureContractV1 | None = None
+) -> Iterator[tuple[FirstPartyCaptureRecordV1, ArrivalClockBoundEvidenceV1]]:
+    """The segment's admitted records, each with the clock bound it is admitted under.
+
+    The one admission rule every consumer of a segment shares -- sealing and any
+    sidecar derived from the same seal -- so none can admit a different record
+    set. The clock-only partitions are fully verified first, and the window's
+    partition is replayed in full (so every record-level claim is re-proven).
+    The replay's final reconciliation (counts against the manifest) runs only
+    when it is exhausted, so a consumer must exhaust this iterator before
+    relying on anything it yielded; both current consumers do.
+    """
+    authorized = first_party_bybit_capture_contract_v1() if contract is None else contract
+    for partition in plan.clock_partitions:
+        if partition.directory != plan.partition.directory:
+            verify_partition_v1(partition.directory, contract=authorized)
+    for record in replay_partition_v1(plan.partition.directory, contract=authorized):
+        if not plan.window.contains(record.arrival_utc_nanos) or not plan.admits(record.arrival_utc_nanos):
+            continue
+        bound = plan.clock.bound_for(record.arrival_utc_nanos)
+        if bound is None:  # unreachable inside the admissible range; refused, not skipped
+            raise FirstPartyT4SealError("admitted_arrival_has_no_clock_bracket")
+        yield record, bound
+
+
 def normalize_t4_segment_v1(
     plan: T4SegmentPlanV1, *, contract: FirstPartyCaptureContractV1 | None = None
 ) -> tuple[T4SegmentOutputV1, dict[str, int], tuple[int, int, int]]:
@@ -512,20 +540,12 @@ def normalize_t4_segment_v1(
     partitions are fully verified as well.
     """
     authorized = first_party_bybit_capture_contract_v1() if contract is None else contract
-    for partition in plan.clock_partitions:
-        if partition.directory != plan.partition.directory:
-            verify_partition_v1(partition.directory, contract=authorized)
     normalizer = T4SegmentNormalizerV1(
         exchange_symbol=authorized.exchange_symbol, session_id=plan.partition.session_id
     )
     admitted = 0
     first_sequence = last_sequence = -1
-    for record in replay_partition_v1(plan.partition.directory, contract=authorized):
-        if not plan.window.contains(record.arrival_utc_nanos) or not plan.admits(record.arrival_utc_nanos):
-            continue
-        bound = plan.clock.bound_for(record.arrival_utc_nanos)
-        if bound is None:  # unreachable inside the admissible range; refused, not skipped
-            raise FirstPartyT4SealError("admitted_arrival_has_no_clock_bracket")
+    for record, bound in iter_admitted_segment_records_v1(plan, contract=authorized):
         normalizer.feed(record, bound)
         admitted += 1
         if first_sequence < 0:
@@ -929,6 +949,17 @@ def _plan_from_identity(discovery: T4DiscoveryV1, identity: Mapping[str, Any]) -
     return _plan(session_clock, partition, index, window, start, end)
 
 
+def plan_for_sealed_identity_v1(
+    identity: Mapping[str, Any],
+    *,
+    capture_root: Path,
+    contract: FirstPartyCaptureContractV1 | None = None,
+) -> T4SegmentPlanV1:
+    """The exact segment a sealed identity names, re-derived from today's COMPLETE evidence."""
+    authorized = first_party_bybit_capture_contract_v1() if contract is None else contract
+    return _plan_from_identity(discover_t4_segments_v1(capture_root, contract=authorized), identity)
+
+
 def verify_t4_dataset_v1(
     identity: Mapping[str, Any],
     *,
@@ -1040,8 +1071,10 @@ __all__ = [
     "T4SegmentPlanV1",
     "T4TimingFactsV1",
     "discover_t4_segments_v1",
+    "iter_admitted_segment_records_v1",
     "iter_frame_rows_v1",
     "normalize_t4_segment_v1",
+    "plan_for_sealed_identity_v1",
     "restore_t4_seal_without_replay_v1",
     "seal_t4_segment_v1",
     "t4_dataset_version_id_v1",

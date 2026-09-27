@@ -4,6 +4,7 @@
     python scripts/first_party_t4.py seal --dsn postgresql://...      # seals + catalogs every segment
     python scripts/first_party_t4.py verify --dsn ...                 # rebuilds every catalogued dataset
     python scripts/first_party_t4.py features --dsn ... --dataset <id> # V3 basis rows + decision-time proof
+    python scripts/first_party_t4.py quotes --dsn ... --dataset <id>   # level-1 + funding sidecar, spread evidence
 
 Reads the immutable capture archive (default ``~/.trade_platform/capture``) and
 writes frames to the research data root (default
@@ -17,6 +18,7 @@ import argparse
 import json
 import sys
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -163,18 +165,54 @@ def _features(args: argparse.Namespace) -> None:
     )
 
 
+def _quotes(args: argparse.Namespace) -> None:
+    from trade_platform.first_party_t4_dataset_v1 import (
+        PostgresFirstPartyT4CatalogV1,
+        t4_seal_from_catalog_v1,
+    )
+    from trade_platform.first_party_t4_quotes_v1 import (
+        derive_t4_quotes_v1,
+        describe_level1_spread_v1,
+    )
+    from trade_platform.persistence import PostgresDatabase
+
+    database = PostgresDatabase(args.dsn)
+    store = ResearchFrameStoreV1(args.data_root)
+    seal = t4_seal_from_catalog_v1(
+        PostgresFirstPartyT4CatalogV1(database).load(UUID(args.dataset)), store=store, capture_root=args.capture_root
+    )
+    quotes = derive_t4_quotes_v1(seal, capture_root=args.capture_root, store=store if args.write else None)
+    instrument = str(seal.identity["instrument"])
+    with database.transaction() as connection, connection.cursor() as cursor:
+        cursor.execute("SELECT tick_size FROM professional_instruments WHERE instrument_id=%s", (instrument,))
+        row = cursor.fetchone()
+    if row is None:
+        raise SystemExit(f"instrument_not_registered:{instrument}")
+    _print(
+        {"parent_dataset_version_id": str(seal.dataset_version_id), "quote_dataset_id": str(quotes.quote_dataset_id),
+         "content_hash": quotes.content_hash, "frames": quotes.identity["frames"],
+         "frame_manifests": quotes.frame_manifests, "counts": quotes.identity["counts"],
+         "funding_intervals_hours": sorted({item.funding_interval_hours for item in quotes.funding}),
+         "level1_spread": describe_level1_spread_v1(
+             quotes.top_of_book, unobserved_from=quotes.book_unobserved_from,
+             tick_size=Decimal(str(row[0])).normalize(),
+         )}
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("discover", "seal", "verify", "features"))
+    parser.add_argument("command", choices=("discover", "seal", "verify", "features", "quotes"))
     parser.add_argument("--capture-root", type=Path, default=default_archive_root())
     parser.add_argument("--data-root", type=Path, default=None)
     parser.add_argument("--dsn")
     parser.add_argument("--dataset")
-    parser.add_argument("--write", action="store_true", help="features: persist V3 rows")
+    parser.add_argument("--write", action="store_true", help="features: persist V3 rows; quotes: write frames")
     args = parser.parse_args()
     if args.command != "discover" and not args.dsn:
         parser.error("--dsn is required")
-    {"discover": _discover, "seal": _seal, "verify": _verify, "features": _features}[args.command](args)
+    {"discover": _discover, "seal": _seal, "verify": _verify, "features": _features,
+     "quotes": _quotes}[args.command](args)
 
 
 if __name__ == "__main__":

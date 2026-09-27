@@ -13,43 +13,48 @@ updated: 2026-09-25
 # -> R8 opportunity engine -> R9 accounts/risk -> R10 paper; R7 (T3 spine) is
 # the one parallel track.
 phase:
-  id: "R5 UI-1"
-  name: Research terminal UI truth fixes and Evidence & Data surfaces (no owner gate)
+  id: "R3A.2"
+  name: First-party T4 top-of-book and funding sidecars of a sealed segment (no owner gate)
   status: in_progress
-  base_commit: 99b5585       # R3B.2 (PR #154) merged; exact-main CI green
+  base_commit: d9fd1df       # R3A follow-up PR #157 merged
   why_now: >-
-    R3A real acceptance and the R1A report are calendar-blocked until the
-    2026-09-26 rollover; R4 waits on OR-3 + OR-6. UI-1 needs only R2B/R3A/R3B
-    catalogs, which exist. UI-2 (Lab explorer) waits for R4 APIs.
-  ui_1a: >-
-    evidence_catalog_v1.py read model (timing-contract tier ceilings, T1/T4/T2
-    catalogs, R2B frames, capture availability + latest clock offset), two
-    protected GET endpoints, /evidence page, truthful /markets and dashboard
-    data-sources card (they claimed "zero external market feeds authorized"),
-    sidebar grouped by operator job, and the authority-proxy allowlist fixed:
-    historical-datasets, data-health assessments, feature-definitions list and
-    instrument detail were never allowlisted, so those pages always showed
-    UNAVAILABLE. Merged: PR #155 (aab3671).
-  ui_1b: >-
-    instrument_chart_v1.py: catalogued bar frames only (T1 OHLCV, T2 archive,
-    T4 seals), each with its tier ceiling as the chart's claim ceiling; exact
-    DECIMAL buckets (first open, last close, max, min, sum; nothing averaged,
-    gaps never filled); manifest + object hashes re-checked per read. /chart
-    page with a server-rendered SVG. Real T1 composite: 216,000 1m bars -> 400
-    points in 0.3 s.
+    The R3A roadmap row names tickers -> mark/index/funding/OI/top-of-book, but
+    R3A.1 normalized mark/index/trades only. Measured level-1 spread is the one
+    OR-6 input that needs T4 evidence, and R10 fill calibration needs it too.
+    Invariant to every open owner decision; calendar gates (R3A real acceptance,
+    R1A report) do not block it.
+  design: >-
+    first_party_t4_quotes_v1.py: derives T4_TOP_OF_BOOK and T4_FUNDING frames
+    from exactly the records a raw-replayed seal admitted, under the same clock
+    bounds (seal module now exposes that single admission iterator). A sidecar:
+    identity binds the parent seal content hash; the seal, its identity and its
+    tier verdict are unchanged; no new verdict, provenance or authority.
+    Venue-published, conflated level-1 and funding state only -- not an order
+    book, not a settled funding payment. CLI: first_party_t4.py quotes.
   scope_paths:
-    - src/trade_platform/instrument_chart_v1.py
-    - tests/test_instrument_chart_v1.py
-    - src/trade_platform/evidence_catalog_v1.py
-    - src/trade_platform/operator_dashboard.py
-    - src/trade_platform/api.py
-    - src/trade_platform/dev_app.py
-    - tests/test_evidence_catalog_v1.py
-    - web/
+    - src/trade_platform/first_party_t4_quotes_v1.py
+    - tests/test_first_party_t4_quotes_v1.py
+    - src/trade_platform/first_party_t4_seal_v1.py
+    - src/trade_platform/research_data_plane_v1.py
+    - scripts/first_party_t4.py
   not_in_scope: >-
-    UI-2 Strategy Lab workflows (need R4 APIs), any tier verdict or
-    professional-eligibility display, a cosmetic redesign.
+    Any cost model, fill model, slippage parameter or funding assumption (OR-6);
+    open-interest normalization (no consumer yet).
 
+r5_ui1_completed: >-
+  UI-1 complete: PR #155 (aab3671, Evidence & Data read model, truthful market
+  surfaces, IA by operator job, proxy allowlist fixes) and PR #156 (8771d3d,
+  instrument chart over catalogued bar frames), both with E2E + axe AA in
+  module2b1-market-data.spec.ts. The acceptance path's remaining steps
+  (study -> compare -> validation report) are UI-2 and wait for R4 APIs.
+
+r3a_follow_up: >-
+  PR #157 (merge d9fd1df): a real-scale acceptance dry run (scratch copy of a
+  real 8 h partition, throwaway DB) showed `features` re-runs wrote V3 rows under
+  an unregistered feature_id (uuid4 definition id, swallowed registration
+  error). Fixed with PostgresFeatureAuthority.register_or_resolve (fail closed on
+  drift). Dry-run timings for a 538k-record segment: seal 245 s / 1.1 GB,
+  verify ~350 s, features 640 s / 1.6 GB, quotes 357 s / 1.6 GB.
 r3b_completed: >-
   Owner-independent part complete: PR #153 (bybit_public_archive_v1, catalog
   migration 0052) and PR #154 (R3B.2 archive-vs-REST cross-check, merge 99b5585).
