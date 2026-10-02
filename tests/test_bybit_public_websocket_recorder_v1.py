@@ -10,6 +10,7 @@ summoned on demand from a live exchange.
 
 from __future__ import annotations
 
+import json
 import tempfile
 import time
 import unittest
@@ -838,6 +839,40 @@ class ObserverAndClockEvidenceTests(_TempRootTest):
         self.assertEqual([detail], [event.detail for event in events])
         self.assertEqual(PARTITION_STATUS_COMPLETE, read_partition_status_v1(directory).status)
 
+    def test_session_started_is_set_only_after_its_event_is_logged(self) -> None:
+        recorder = BybitPublicCaptureRecorderV1(archive_root=self.root, contract=CONTRACT)
+        seen: list[tuple[bool, list[str]]] = []
+
+        def loop(**_: object) -> None:
+            directory = recorder._writer.directory  # type: ignore[union-attr]
+            seen.append((recorder.session_started, [e.kind for e in read_lifecycle_v1(directory)]))
+
+        self.assertFalse(recorder.session_started)
+        with mock.patch.object(recorder, "_capture_loop", side_effect=loop):
+            recorder.run()
+        self.assertEqual([(True, [CaptureLifecycleKindV1.SESSION_STARTED.value])], seen)
+
+    def test_a_queued_closing_sample_is_written_before_session_closed(self) -> None:
+        recorder = BybitPublicCaptureRecorderV1(archive_root=self.root, contract=CONTRACT)
+        recorder._session_id = uuid4()
+        recorder._handle_subscription_reply(SUBSCRIBE_ACK, set(CONTRACT.topics()), _reading(0))
+        detail = '{"offset_estimate_nanos":83626774,"offset_bound_nanos":191015600}'
+        recorder.submit_clock_evidence(detail)  # no connection loop drains it
+        recorder._finish_session(END_PROOF_OPERATOR_BOUNDED_STOP, None)
+        # Lifecycle events land in the partition of the day they are written.
+        (directory,) = [
+            path.parent for path in self.root.rglob("lifecycle.ndjson")
+            if any(
+                event.kind == CaptureLifecycleKindV1.SESSION_CLOSED.value
+                for event in read_lifecycle_v1(path.parent)
+            )
+        ]
+        kinds = [(event.kind, event.detail) for event in read_lifecycle_v1(directory)]
+        sample = kinds.index((CaptureLifecycleKindV1.CLOCK_OFFSET_SAMPLE.value, detail))
+        closed = [kind for kind, _ in kinds].index(CaptureLifecycleKindV1.SESSION_CLOSED.value)
+        self.assertLess(sample, closed)
+        self.assertEqual(PARTITION_STATUS_COMPLETE, read_partition_status_v1(directory).status)
+
 
 class _FakeRecorderFactory:
     """Stands in for recorders so fleet supervision is proven without sockets."""
@@ -866,12 +901,17 @@ class _FakeRecorder:
         self.contract = contract
         self.stop = stop_signal
         self.evidence: list[str] = []
+        #: (session already started, stop already requested) at each submission.
+        self.evidence_states: list[tuple[bool, bool]] = []
+        self.session_started = False
         self.symbol = contract.exchange_symbol  # type: ignore[attr-defined]
 
     def submit_clock_evidence(self, detail: str) -> None:
         self.evidence.append(detail)
+        self.evidence_states.append((self.session_started, self.stop.requested))
 
     def run(self) -> None:
+        self.session_started = True
         if self.factory.failing.get(self.symbol, 0) > 0:
             self.factory.failing[self.symbol] -= 1
             raise RuntimeError("simulated lane failure")
@@ -967,6 +1007,48 @@ class CaptureFleetTests(_TempRootTest):
         self.assertGreaterEqual(result.clock_sample_failures, 1)
         for recorder in factory.instances:
             self.assertIn('{"offset_estimate_nanos":5}', recorder.evidence)
+
+    def test_every_session_gets_a_head_and_a_closing_sample(self) -> None:
+        # The cadence never fires here: only the head and closing samples exist.
+        counter = iter(range(1_000))
+        factory = _FakeRecorderFactory(failing={"ETHUSDT": 1})
+        result = run_capture_fleet_v1(
+            self._contracts(), archive_root=self.root, max_seconds=0.3,
+            recorder_factory=factory,
+            clock_sampler=lambda: {"n": next(counter)},
+            clock_sample_interval_seconds=3_600.0, **self.FAST,
+        )
+        self.assertEqual(1, result.restarts)
+        # The last session per symbol ran until the stop -- including the restart.
+        survivors = {recorder.symbol: recorder for recorder in factory.instances}.values()
+        self.assertEqual(2, len([r for r in factory.instances if r.symbol == "ETHUSDT"]))
+        for recorder in survivors:
+            # A head sample taken after this session had started, before any stop ...
+            self.assertEqual((True, False), recorder.evidence_states[0], recorder.symbol)
+            self.assertGreaterEqual(len(recorder.evidence), 2)
+            # ... and the closing sample, also before the stop was requested.
+            self.assertEqual((True, False), recorder.evidence_states[-1])
+            self.assertEqual(json.dumps(result.clock_samples[-1], sort_keys=True,
+                                        separators=(",", ":")), recorder.evidence[-1])
+
+    def test_a_disk_floor_stop_takes_a_closing_sample_first(self) -> None:
+        readings = iter([1_000] + [1_000] * 5 + [10] * 1_000)
+        counter = iter(range(1_000))
+        factory = _FakeRecorderFactory()
+        with mock.patch.object(
+            recorder_module, "disk_free_bytes_v1", side_effect=lambda _: next(readings)
+        ):
+            result = run_capture_fleet_v1(
+                self._contracts(), archive_root=self.root, min_free_bytes=100,
+                max_seconds=5.0, recorder_factory=factory,
+                clock_sampler=lambda: {"n": next(counter)},
+                clock_sample_interval_seconds=3_600.0, **self.FAST,
+            )
+        self.assertEqual(END_PROOF_DISK_BUDGET_STOP, result.end_proof)
+        last = json.dumps(result.clock_samples[-1], sort_keys=True, separators=(",", ":"))
+        for recorder in factory.instances:
+            self.assertEqual(last, recorder.evidence[-1])
+            self.assertEqual((True, False), recorder.evidence_states[-1])
 
     def test_finalized_partitions_are_compacted(self) -> None:
         session = uuid4()

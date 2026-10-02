@@ -417,6 +417,9 @@ class BybitPublicCaptureRecorderV1:
         self._observer = record_observer
         #: Clock evidence handed over by another thread; written by this one.
         self._clock_evidence: queue.SimpleQueue[str] = queue.SimpleQueue()
+        #: Set only once SESSION_STARTED is in the log: a clock sample taken
+        #: after this can be the session's own evidence (R3A drops earlier ones).
+        self._session_started = threading.Event()
         self._bytes_written = 0
         self._session_id: UUID | None = None
         self._writer: CapturePartitionWriterV1 | None = None
@@ -471,6 +474,11 @@ class BybitPublicCaptureRecorderV1:
     @property
     def contract(self) -> FirstPartyCaptureContractV1:
         return self._contract
+
+    @property
+    def session_started(self) -> bool:
+        """True once this session's SESSION_STARTED event has been written."""
+        return self._session_started.is_set()
 
     def _stop_requested(self) -> bool:
         return self._stop is not None and self._stop.requested
@@ -620,6 +628,7 @@ class BybitPublicCaptureRecorderV1:
         failure: BaseException | None = None
         try:
             self._lifecycle(CaptureLifecycleKindV1.SESSION_STARTED, str(self._session_id))
+            self._session_started.set()
             self._capture_loop(max_records=max_records, deadline=deadline)
             # A requested stop carries the reason it was requested for; a
             # reached bound is an operator bounded stop.
@@ -690,6 +699,9 @@ class BybitPublicCaptureRecorderV1:
                 self._lifecycle(
                     CaptureLifecycleKindV1.RECORDER_FAILED, f"{type(failure).__name__}:{failure}"
                 )
+            # A closing sample queued while no connection loop was draining
+            # (e.g. during a reconnect backoff) is still this session's evidence.
+            self._drain_clock_evidence()
             self._lifecycle(
                 CaptureLifecycleKindV1.SESSION_CLOSED,
                 f"session={self._session_id} end_proof={end_proof}",
@@ -931,6 +943,7 @@ class _FleetLane:
     restart_at: float | None = None
     started_at: float = 0.0
     consecutive_failures: int = 0
+    head_sample_pending: bool = False
 
 
 def run_capture_fleet_v1(
@@ -967,11 +980,16 @@ def run_capture_fleet_v1(
     process exits and any unfinished partition stays honestly PARTIAL.
 
     With a ``clock_sampler`` the fleet also takes an RTT-bounded host-clock
-    offset sample at start and every ``clock_sample_interval_seconds``, and
-    hands each one to every running recorder, which writes it into its own
-    session's lifecycle log. Every T4 partition therefore carries evidence of
-    how far its arrival clock was from the venue's -- evidence only; no
-    arrival reading is ever adjusted.
+    offset sample every ``clock_sample_interval_seconds`` and hands each one to
+    every running recorder, which writes it into its own session's lifecycle
+    log. Every T4 partition therefore carries evidence of how far its arrival
+    clock was from the venue's -- evidence only; no arrival reading is ever
+    adjusted. R3A brackets an arrival only between two samples of its own
+    session, so two more are taken: a *head* sample as soon as a newly started
+    lane has logged SESSION_STARTED (an earlier sample is not that session's
+    evidence), and a *closing* sample just before a bounded or disk-floor stop.
+    Without them a session's first and last sampling interval have no
+    knowledge time. An interrupt or a crash gets no closing sample.
     """
     if not contracts:
         raise ValueError("fleet_requires_at_least_one_contract")
@@ -990,10 +1008,9 @@ def run_capture_fleet_v1(
     clock_samples: list[Mapping[str, Any]] = []
     clock_sample_failures = 0
     restarts = 0
-    latest_clock_detail: str | None = None
 
     def sample_clock() -> None:
-        nonlocal clock_sample_failures, latest_clock_detail
+        nonlocal clock_sample_failures
         if clock_sampler is None:
             return
         sample = clock_sampler()
@@ -1001,10 +1018,10 @@ def run_capture_fleet_v1(
             clock_sample_failures += 1
             return
         clock_samples.append(sample)
-        latest_clock_detail = json.dumps(dict(sample), sort_keys=True, separators=(",", ":"))
+        detail = json.dumps(dict(sample), sort_keys=True, separators=(",", ":"))
         for lane in lanes:
             if lane.recorder is not None and lane.thread is not None and lane.thread.is_alive():
-                lane.recorder.submit_clock_evidence(latest_clock_detail)
+                lane.recorder.submit_clock_evidence(detail)
 
     def start(lane: _FleetLane) -> None:
         observer = None if observer_for is None else observer_for(lane.contract)
@@ -1019,9 +1036,9 @@ def run_capture_fleet_v1(
         lane.collected = False
         lane.restart_at = None
         lane.started_at = time.monotonic()
-        if latest_clock_detail is not None:
-            # A new session starts with the latest evidence, not a blank.
-            recorder.submit_clock_evidence(latest_clock_detail)
+        # Its evidence is the head sample taken once its session has started; an
+        # earlier sample would predate SESSION_STARTED and is not its evidence.
+        lane.head_sample_pending = True
 
         def target() -> None:
             try:
@@ -1065,7 +1082,19 @@ def run_capture_fleet_v1(
             )
             lane.restart_at = now + delay
 
-    sample_clock()
+    def sample_started_heads() -> None:
+        started = [
+            lane for lane in lanes
+            if lane.head_sample_pending
+            and lane.recorder is not None
+            and lane.recorder.session_started
+        ]
+        if started:
+            # One attempt per start; a failed sample falls back to the cadence.
+            sample_clock()
+            for lane in started:
+                lane.head_sample_pending = False
+
     for lane in lanes:
         start(lane)
     next_maintenance = time.monotonic() + maintenance_interval_seconds
@@ -1073,13 +1102,17 @@ def run_capture_fleet_v1(
     try:
         while True:
             now = time.monotonic()
-            if deadline is not None and now >= deadline:
+            if not stop.requested and deadline is not None and now >= deadline:
+                sample_clock()  # closing evidence for every lane's last arrivals
                 stop.request(END_PROOF_OPERATOR_BOUNDED_STOP)
+            if not stop.requested:
+                sample_started_heads()
             if not stop.requested and now >= next_clock_sample:
                 sample_clock()
                 next_clock_sample = time.monotonic() + clock_sample_interval_seconds
             if not stop.requested and now >= next_maintenance:
                 if min_free_bytes > 0 and disk_free_bytes_v1(archive_root) < min_free_bytes:
+                    sample_clock()  # closing evidence, as for a bounded stop
                     stop.request(END_PROOF_DISK_BUDGET_STOP)
                 else:
                     compact()
