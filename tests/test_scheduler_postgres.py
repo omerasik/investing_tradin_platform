@@ -97,6 +97,20 @@ class SchedulerWorkerPostgresTests(unittest.TestCase):
         # Not due again immediately -- a second tick at the same instant does nothing.
         self.assertEqual(self.worker.run_tick(due_at), ())
 
+    def test_monitor_at_an_earlier_as_of_leaves_a_later_alert_untouched(self) -> None:
+        from trade_platform.operational_alerts import AlertStatus
+
+        policy = self._policy("pit-recovery")
+        resource = f"job:{policy.job_name}"
+        later = self.now + timedelta(hours=1)
+        opened = [alert for alert in self.job_store.monitor_overdue(later) if alert.resource == resource]
+        self.assertEqual(len(opened), 1)
+
+        # Not yet due at this earlier instant, so the monitor takes its recovery
+        # branch -- the alert opened at ``later`` did not exist yet and is untouched.
+        self.job_store.monitor_overdue(self.now - timedelta(minutes=6))
+        self.assertIs(self.alerts.get(opened[0].alert_id).status, AlertStatus.OPEN)
+
     def test_unregistered_job_name_is_left_untouched(self) -> None:
         policy = self._policy("no-such-runner-registered")
         completed = self.worker.run_tick(self.now)

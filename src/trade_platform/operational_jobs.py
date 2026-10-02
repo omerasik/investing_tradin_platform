@@ -390,10 +390,16 @@ class PostgresOperationalJobStore:
                             "operational_job_monitor:OPERATIONAL_JOB_OVERDUE:"
                             f"job:{state.policy.job_name}"
                         )
+                        # Point in time: only an alert whose whole history precedes
+                        # ``as_of`` can be resolved as of ``as_of``. One opened or
+                        # moved later did not exist yet for this evaluation.
                         cursor.execute(
                             "SELECT alert_id FROM operational_alerts WHERE "
-                            "payload->>'fingerprint'=%s AND status <> 'RESOLVED'",
-                            (fingerprint,),
+                            "payload->>'fingerprint'=%s AND status <> 'RESOLVED' "
+                            "AND opened_at<=%s AND NOT EXISTS (SELECT 1 FROM "
+                            "operational_alert_events e WHERE "
+                            "e.alert_id=operational_alerts.alert_id AND e.occurred_at>%s)",
+                            (fingerprint, as_of, as_of),
                         )
                         active = cursor.fetchone()
                         if active is not None:

@@ -1429,7 +1429,19 @@ class PostgresIntegrationTests(unittest.TestCase):
         self.assertEqual(jobs.append_policy(policy), policy)
         self.assertEqual(jobs.append_route_policy(route), route)
         overdue_at = self.now + timedelta(minutes=8)
-        self.assertTrue(jobs.due_jobs(overdue_at)[-1].overdue)
+        resource = f"job:{policy.job_name}"
+
+        def own(alerts_opened):
+            # The shared database holds other tests' jobs, some overdue in real time;
+            # assert only on this test's own job.
+            return tuple(alert for alert in alerts_opened if alert.resource == resource)
+
+        self.assertTrue(
+            next(
+                state for state in jobs.due_jobs(overdue_at)
+                if state.policy.policy_id == policy.policy_id
+            ).overdue
+        )
 
         self._install_failure_trigger("operational_alert_delivery_outbox")
         try:
@@ -1437,18 +1449,13 @@ class PostgresIntegrationTests(unittest.TestCase):
                 jobs.monitor_overdue(overdue_at)
         finally:
             self._remove_failure_trigger("operational_alert_delivery_outbox")
-        self.assertFalse(
-            any(
-                alert.resource == f"job:{policy.job_name}"
-                for alert in alerts.active()
-            )
-        )
+        self.assertFalse(own(alerts.active()))
 
-        opened = jobs.monitor_overdue(overdue_at)
+        opened = own(jobs.monitor_overdue(overdue_at))
         self.assertEqual(len(opened), 1)
         self.assertEqual(opened[0].code, "OPERATIONAL_JOB_OVERDUE")
         self.assertEqual(len(jobs.outbox(opened[0].alert_id)), 1)
-        self.assertEqual(jobs.monitor_overdue(overdue_at), opened)
+        self.assertEqual(own(jobs.monitor_overdue(overdue_at)), opened)
         self.assertEqual(len(jobs.outbox(opened[0].alert_id)), 1)
 
         run = build_job_run(
@@ -1462,13 +1469,8 @@ class PostgresIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(jobs.append_run(run), run)
         self.assertEqual(jobs.append_run(run), run)
-        self.assertEqual(jobs.monitor_overdue(self.now + timedelta(minutes=9)), ())
-        self.assertFalse(
-            any(
-                alert.resource == f"job:{policy.job_name}"
-                for alert in alerts.active()
-            )
-        )
+        self.assertEqual(own(jobs.monitor_overdue(self.now + timedelta(minutes=9))), ())
+        self.assertFalse(own(alerts.active()))
         database.close()
 
         restarted = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
