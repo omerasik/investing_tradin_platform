@@ -11,6 +11,11 @@ cleanly (and stay stopped) when free disk space falls below the floor::
 
     .venv\\Scripts\\python scripts/capture_bybit_public.py supervise
 
+On a host that is often shut down, record hourly bounded segments instead, so a
+shutdown loses only the open hour (the R0 local-host operating mode)::
+
+    .venv\\Scripts\\python scripts/capture_bybit_public.py supervise --segment-seconds 3600
+
 Measure what multi-symbol capture costs on this host (R1A; a pinned engineering
 sample, not a production universe; written to a separate archive root)::
 
@@ -52,6 +57,7 @@ from trade_platform.bybit_public_websocket_recorder_v1 import (
 from trade_platform.first_party_capture_archive_v1 import (
     BACKUP_COPIED_AND_VERIFIED,
     END_PROOF_DISK_BUDGET_STOP,
+    END_PROOF_OPERATOR_BOUNDED_STOP,
     CompactionResultV1,
     backup_archive_v1,
     compaction_candidates_v1,
@@ -85,6 +91,10 @@ DEFAULT_MIN_FREE_GIB = 20.0
 
 #: Clock-offset samples during a measurement run are this far apart.
 _CLOCK_OFFSET_INTERVAL_SECONDS = 900.0
+
+#: Shortest bounded segment ``supervise --segment-seconds`` will record; an
+#: operational limit against sliver sessions, not an evidence rule.
+_MIN_SEGMENT_SECONDS = 60.0
 
 
 def _root(args: argparse.Namespace) -> Path:
@@ -143,18 +153,49 @@ def _run(args: argparse.Namespace) -> int:
     return 2 if result.end_proof == END_PROOF_DISK_BUDGET_STOP else 0
 
 
+def segment_bound_seconds(now_epoch_seconds: float, segment_seconds: float) -> float:
+    """Seconds until the next UTC multiple of ``segment_seconds``.
+
+    Segments end on the UTC grid (an hourly segment ends at :00), so partitions
+    are predictable and none straddles a UTC day. A remainder shorter than
+    ``_MIN_SEGMENT_SECONDS`` is folded into the following segment instead of
+    producing a sliver session.
+    """
+    if segment_seconds < _MIN_SEGMENT_SECONDS:
+        raise ValueError("segment_seconds_below_minimum")
+    remaining = segment_seconds - (now_epoch_seconds % segment_seconds)
+    if remaining < _MIN_SEGMENT_SECONDS:
+        remaining += segment_seconds
+    return remaining
+
+
 def _supervise(args: argparse.Namespace) -> int:
-    """Keep the production recorder running; each restart is a new session."""
+    """Keep the production recorder running; each restart is a new session.
+
+    With ``--segment-seconds`` the recorder runs as consecutive bounded
+    sessions, each ending with OPERATOR_BOUNDED_STOP, a closing clock sample and
+    a finalized COMPLETE partition. A shutdown then loses only the open segment
+    (left honestly PARTIAL) instead of an unfinalized day. The seconds between
+    two segments are a real, visible gap in ``availability``; nothing bridges
+    them and no coverage is claimed across a segment boundary.
+    """
     contract = first_party_bybit_capture_contract_v1()
     root = _root(args)
+    segment = args.segment_seconds
+    if segment is not None:
+        segment_bound_seconds(time.time(), segment)  # reject a too-short segment up front
     awake = request_keep_awake_v1()
     print(f"supervising {contract.exchange_symbol} into {root}; keep-awake requested={awake}")
+    if segment is not None:
+        print(f"bounded segments of {segment:g} s on the UTC grid; gaps between them are real")
     print("Ctrl-C to stop. A reboot, shutdown or lid-close still ends the session.\n")
     while True:
+        bound = None if segment is None else segment_bound_seconds(time.time(), segment)
         try:
             result = run_capture_fleet_v1(
                 (contract,),
                 archive_root=root,
+                max_seconds=bound,
                 min_free_bytes=_min_free_bytes(args),
                 clock_sampler=bybit_clock_offset_payload_v1,
             )
@@ -171,7 +212,9 @@ def _supervise(args: argparse.Namespace) -> int:
         if result.end_proof == END_PROOF_DISK_BUDGET_STOP:
             print("stopped: free disk space fell below the floor")
             return 2
-        return 0
+        if segment is None or result.end_proof != END_PROOF_OPERATOR_BOUNDED_STOP:
+            return 0
+        print(f"{datetime.now(UTC).isoformat()} segment finalized; starting the next")
 
 
 def _measure(args: argparse.Namespace) -> int:
@@ -391,6 +434,12 @@ def main(argv: list[str] | None = None) -> int:
 
     supervise = sub.add_parser("supervise", help="run the production recorder unattended")
     supervise.add_argument("--restart-delay", type=float, default=60.0)
+    supervise.add_argument(
+        "--segment-seconds",
+        type=float,
+        default=None,
+        help="record consecutive bounded sessions ending on this UTC grid (e.g. 3600)",
+    )
     with_floor(supervise)
     supervise.set_defaults(handler=_supervise)
 
