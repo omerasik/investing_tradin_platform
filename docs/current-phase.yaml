@@ -124,7 +124,13 @@ r1a_follow_up:                # R1A merged (PR #148); its measurement is still r
 
 r0_operations:                # the T4 clock; runs beside every phase
   status: running             # BTCUSDT production contract v1, default root
-  command: scripts/capture_bybit_public.py run   # `supervise` is available since R1A merged
+  command: scripts/capture_bybit_public.py supervise --segment-seconds 3600
+  operating_mode: >-
+    Hourly bounded segments on the UTC grid (2026-10-02). The host is shut down
+    often; a shutdown now loses only the open hour (PARTIAL, excluded) instead
+    of an unfinalized day. Each segment is its own session with head and
+    closing clock samples (PR #164); the seconds between segments are real
+    gaps and coverage is never claimed across a segment boundary.
   host_clock_finding: >-
     2026-09-24: Windows Time service (W32Time) is not running on the capture
     host and the host clock read ~9.47 s behind Bybit server time (RTT-bounded,
