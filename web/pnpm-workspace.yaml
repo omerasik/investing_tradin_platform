@@ -5,3 +5,11 @@ overrides:
   brace-expansion@>=5.0.0 <5.0.11: 5.0.11
   js-yaml: 4.3.2
   nanoid: 3.3.18
+# GHSA-vfj7-8cjw-p6xm (braces <=3.0.3, stack-exhaustion DoS on deeply nested
+# patterns) has no patched release (braces latest is 3.0.3). It is reachable only
+# through the dev-time lint tree (eslint-config-next > @next/eslint-plugin-next >
+# fast-glob > micromatch > braces; 16.3.8 is the same) and never ships in the app.
+# Owner-approved narrow exception 2026-10-03; remove once a patched braces exists.
+auditConfig:
+  ignoreGhsas:
+    - GHSA-vfj7-8cjw-p6xm
