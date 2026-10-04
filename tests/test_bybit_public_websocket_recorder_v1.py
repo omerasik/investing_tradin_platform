@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import time
 import unittest
 from collections.abc import Callable
@@ -852,6 +853,70 @@ class ObserverAndClockEvidenceTests(_TempRootTest):
             recorder.run()
         self.assertEqual([(True, [CaptureLifecycleKindV1.SESSION_STARTED.value])], seen)
 
+    def test_the_first_subscribe_waits_for_the_head_sample(self) -> None:
+        """The subscribe-time snapshot must arrive after the session's head sample."""
+        recorder = BybitPublicCaptureRecorderV1(
+            archive_root=self.root, contract=CONTRACT, await_head_clock_evidence=True
+        )
+        detail = '{"offset_estimate_nanos":261500000,"offset_bound_nanos":124700000}'
+        seen: list[list[str]] = []
+
+        def supervisor() -> None:
+            while not recorder.session_started:
+                time.sleep(0.001)
+            time.sleep(0.05)  # the head sample's round trip
+            recorder.submit_clock_evidence(detail)
+            recorder.release_head_wait()
+
+        def loop(**_: object) -> None:
+            directory = recorder._writer.directory  # type: ignore[union-attr]
+            seen.append([e.kind for e in read_lifecycle_v1(directory)])
+
+        thread = threading.Thread(target=supervisor)
+        thread.start()
+        with mock.patch.object(recorder, "_capture_loop", side_effect=loop):
+            recorder.run()
+        thread.join()
+        self.assertEqual(
+            [[CaptureLifecycleKindV1.SESSION_STARTED.value,
+              CaptureLifecycleKindV1.CLOCK_OFFSET_SAMPLE.value]],
+            seen,
+        )
+
+    def test_a_failed_head_sample_releases_the_subscribe_without_evidence(self) -> None:
+        recorder = BybitPublicCaptureRecorderV1(
+            archive_root=self.root, contract=CONTRACT, await_head_clock_evidence=True
+        )
+        recorder.release_head_wait()  # the attempt failed: nothing was queued
+        seen: list[list[str]] = []
+
+        def loop(**_: object) -> None:
+            directory = recorder._writer.directory  # type: ignore[union-attr]
+            seen.append([e.kind for e in read_lifecycle_v1(directory)])
+
+        with mock.patch.object(recorder, "_capture_loop", side_effect=loop):
+            recorder.run()
+        self.assertEqual([[CaptureLifecycleKindV1.SESSION_STARTED.value]], seen)
+
+    def test_a_stop_ends_the_head_wait(self) -> None:
+        stop = CaptureStopSignalV1()
+        stop.request(END_PROOF_OPERATOR_BOUNDED_STOP)
+        recorder = BybitPublicCaptureRecorderV1(
+            archive_root=self.root, contract=CONTRACT, stop_signal=stop,
+            await_head_clock_evidence=True,
+        )
+        started = time.monotonic()
+        with mock.patch.object(recorder, "_capture_loop"):
+            recorder.run()
+        self.assertLess(time.monotonic() - started, 1.0)
+
+    def test_without_the_flag_the_subscribe_does_not_wait(self) -> None:
+        recorder = BybitPublicCaptureRecorderV1(archive_root=self.root, contract=CONTRACT)
+        started = time.monotonic()
+        with mock.patch.object(recorder, "_capture_loop"):
+            recorder.run()
+        self.assertLess(time.monotonic() - started, 1.0)
+
     def test_a_queued_closing_sample_is_written_before_session_closed(self) -> None:
         recorder = BybitPublicCaptureRecorderV1(archive_root=self.root, contract=CONTRACT)
         recorder._session_id = uuid4()
@@ -896,10 +961,14 @@ class _FakeRecorder:
         contract: object,
         stop_signal: CaptureStopSignalV1,
         record_observer: object,
+        await_head_clock_evidence: bool = False,
     ) -> None:
         self.factory = factory
         self.contract = contract
         self.stop = stop_signal
+        self.await_head = await_head_clock_evidence
+        #: How many samples had been submitted when the head wait was released.
+        self.evidence_at_release: int | None = None
         self.evidence: list[str] = []
         #: (session already started, stop already requested) at each submission.
         self.evidence_states: list[tuple[bool, bool]] = []
@@ -909,6 +978,10 @@ class _FakeRecorder:
     def submit_clock_evidence(self, detail: str) -> None:
         self.evidence.append(detail)
         self.evidence_states.append((self.session_started, self.stop.requested))
+
+    def release_head_wait(self) -> None:
+        if self.evidence_at_release is None:
+            self.evidence_at_release = len(self.evidence)
 
     def run(self) -> None:
         self.session_started = True
@@ -1030,6 +1103,40 @@ class CaptureFleetTests(_TempRootTest):
             self.assertEqual((True, False), recorder.evidence_states[-1])
             self.assertEqual(json.dumps(result.clock_samples[-1], sort_keys=True,
                                         separators=(",", ":")), recorder.evidence[-1])
+
+    def test_the_head_wait_is_released_after_the_head_sample(self) -> None:
+        counter = iter(range(1_000))
+        factory = _FakeRecorderFactory(failing={"ETHUSDT": 1})
+        run_capture_fleet_v1(
+            self._contracts(), archive_root=self.root, max_seconds=0.3,
+            recorder_factory=factory, clock_sampler=lambda: {"n": next(counter)},
+            clock_sample_interval_seconds=3_600.0, **self.FAST,
+        )
+        self.assertTrue(all(recorder.await_head for recorder in factory.instances))
+        # Every session that ran -- including the restarted lane -- had its head
+        # sample queued before its wait was released.
+        survivors = {recorder.symbol: recorder for recorder in factory.instances}.values()
+        for recorder in survivors:
+            self.assertEqual(1, recorder.evidence_at_release, recorder.symbol)
+
+    def test_a_failed_head_sample_still_releases_the_wait(self) -> None:
+        factory = _FakeRecorderFactory()
+        result = run_capture_fleet_v1(
+            self._contracts(), archive_root=self.root, max_seconds=0.1,
+            recorder_factory=factory, clock_sampler=lambda: None,
+            clock_sample_interval_seconds=3_600.0, **self.FAST,
+        )
+        self.assertGreaterEqual(result.clock_sample_failures, 1)
+        self.assertEqual([0, 0], [r.evidence_at_release for r in factory.instances])
+
+    def test_without_a_sampler_no_recorder_waits(self) -> None:
+        factory = _FakeRecorderFactory()
+        run_capture_fleet_v1(
+            self._contracts(), archive_root=self.root, max_seconds=0.05,
+            recorder_factory=factory, **self.FAST,
+        )
+        self.assertEqual([False, False], [r.await_head for r in factory.instances])
+        self.assertEqual([None, None], [r.evidence_at_release for r in factory.instances])
 
     def test_a_disk_floor_stop_takes_a_closing_sample_first(self) -> None:
         readings = iter([1_000] + [1_000] * 5 + [10] * 1_000)

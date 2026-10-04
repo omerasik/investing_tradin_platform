@@ -125,6 +125,10 @@ from .first_party_capture_authority_v1 import (
 #: hammering a public endpoint after a failure is neither polite nor useful.
 RECONNECT_BACKOFF_SECONDS_V1: Final = (1.0, 2.0, 4.0, 8.0, 15.0, 30.0)
 
+#: Longest a recorder holds its first subscribe for the supervisor's head clock
+#: sample (one RTT-bounded HTTP request); past it, it subscribes unbracketed.
+HEAD_CLOCK_EVIDENCE_WAIT_SECONDS_V1: Final = 20.0
+
 #: Bybit closes an idle public connection; a client ping well inside that window
 #: keeps it open without pretending silence is liveness.
 PING_INTERVAL_SECONDS_V1: Final = 20.0
@@ -409,6 +413,7 @@ class BybitPublicCaptureRecorderV1:
         clock_monitor: CaptureClockMonitorV1 | None = None,
         stop_signal: CaptureStopSignalV1 | None = None,
         record_observer: RecordObserverV1 | None = None,
+        await_head_clock_evidence: bool = False,
     ) -> None:
         self._contract = first_party_bybit_capture_contract_v1() if contract is None else contract
         self._root = default_archive_root() if archive_root is None else archive_root
@@ -420,6 +425,11 @@ class BybitPublicCaptureRecorderV1:
         #: Set only once SESSION_STARTED is in the log: a clock sample taken
         #: after this can be the session's own evidence (R3A drops earlier ones).
         self._session_started = threading.Event()
+        #: With ``await_head_clock_evidence`` the first subscribe waits until the
+        #: supervisor has attempted this session's head clock sample, so the
+        #: subscribe-time snapshot arrives after it and can be bracketed.
+        self._await_head = await_head_clock_evidence
+        self._head_released = threading.Event()
         self._bytes_written = 0
         self._session_id: UUID | None = None
         self._writer: CapturePartitionWriterV1 | None = None
@@ -490,6 +500,32 @@ class BybitPublicCaptureRecorderV1:
         next loop turn, so no other thread ever touches the partition files.
         """
         self._clock_evidence.put(detail)
+
+    def release_head_wait(self) -> None:
+        """Let the first subscribe proceed: the head sample was attempted (or abandoned).
+
+        Thread-safe. A head sample submitted before this call is written to the
+        log before the first subscribe; a failed attempt simply releases.
+        """
+        self._head_released.set()
+
+    def _await_head_clock_evidence(self) -> None:
+        """Hold the first subscribe until the head sample was attempted, a stop, or the bound.
+
+        Bybit pushes the ``tickers`` snapshot -- the only record carrying the
+        complete funding state -- within a fraction of a second of subscribing.
+        R3A brackets an arrival only after a sample of its own session, so a
+        snapshot that beats the head sample is unbracketed and dropped. Waiting
+        here costs seconds that were unbracketed anyway; nothing is recorded or
+        claimed meanwhile, and coverage still opens only at acknowledgement.
+        """
+        deadline = time.monotonic() + HEAD_CLOCK_EVIDENCE_WAIT_SECONDS_V1
+        while not self._head_released.is_set() and not self._stop_requested():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            self._head_released.wait(min(remaining, 0.1))
+        self._drain_clock_evidence()
 
     def _drain_clock_evidence(self) -> None:
         while True:
@@ -629,6 +665,8 @@ class BybitPublicCaptureRecorderV1:
         try:
             self._lifecycle(CaptureLifecycleKindV1.SESSION_STARTED, str(self._session_id))
             self._session_started.set()
+            if self._await_head:
+                self._await_head_clock_evidence()
             self._capture_loop(max_records=max_records, deadline=deadline)
             # A requested stop carries the reason it was requested for; a
             # reached bound is an operator bounded stop.
@@ -989,7 +1027,10 @@ def run_capture_fleet_v1(
     lane has logged SESSION_STARTED (an earlier sample is not that session's
     evidence), and a *closing* sample just before a bounded or disk-floor stop.
     Without them a session's first and last sampling interval have no
-    knowledge time. An interrupt or a crash gets no closing sample.
+    knowledge time. An interrupt or a crash gets no closing sample. Each
+    recorder holds its first subscribe until its head sample was attempted, so
+    the subscribe-time ``tickers`` snapshot (the only record with the complete
+    funding state) arrives after that sample and can be bracketed.
     """
     if not contracts:
         raise ValueError("fleet_requires_at_least_one_contract")
@@ -1030,6 +1071,7 @@ def run_capture_fleet_v1(
             contract=lane.contract,
             stop_signal=stop,
             record_observer=observer,
+            await_head_clock_evidence=clock_sampler is not None,
         )
         lane.recorder = recorder
         lane.failure = None
@@ -1094,6 +1136,9 @@ def run_capture_fleet_v1(
             sample_clock()
             for lane in started:
                 lane.head_sample_pending = False
+                if clock_sampler is not None and lane.recorder is not None:
+                    # Queued before release, so the head sample precedes the subscribe.
+                    lane.recorder.release_head_wait()
 
     for lane in lanes:
         start(lane)
