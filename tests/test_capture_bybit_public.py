@@ -61,13 +61,16 @@ class SegmentedSuperviseTests(unittest.TestCase):
             calls.append(kwargs)
             return results[len(calls) - 1]
 
+        import tempfile
+
         with (
+            tempfile.TemporaryDirectory() as root,  # the recorder lock lives at the root
             patch.object(CLI, "run_capture_fleet_v1", side_effect=fleet),
             patch.object(CLI, "request_keep_awake_v1", return_value=True),
             patch.object(CLI.time, "time", return_value=NOW),
             redirect_stdout(io.StringIO()),
         ):
-            code = CLI.main(["--root", "unused-root", "supervise", *argv])
+            code = CLI.main(["--root", root, "supervise", *argv])
         return code, calls
 
     def test_bounded_segments_repeat_until_the_disk_floor_stops_capture(self) -> None:
