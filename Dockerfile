@@ -14,8 +14,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Pinning the exact patched version (never a broad `apt-get upgrade`) keeps
 # the base image itself as the reproducibility anchor while still failing
 # the build closed if that exact patched version ever becomes unavailable.
+# perl-base (Essential; CVE-2026-13221, -42496, -8376 critical, -42497, -48962,
+# -57432, -57433 high) is fixed in 5.36.0-7+deb12u4 on bookworm-security; the
+# base image ships deb12u3. Same exact-pin rule.
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends libpcre2-8-0=10.42-1+deb12u2 \
+    && apt-get install --yes --no-install-recommends \
+        libpcre2-8-0=10.42-1+deb12u2 \
+        perl-base=5.36.0-7+deb12u4 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --gid 10001 tradeplatform \
