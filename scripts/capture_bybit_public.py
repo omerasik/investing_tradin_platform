@@ -78,6 +78,7 @@ from trade_platform.first_party_capture_measurement_v1 import (
     CapacityMeasurementV1,
     build_capacity_report_v1,
     bybit_clock_offset_payload_v1,
+    observed_seconds_by_source_v1,
     render_capacity_report_text_v1,
     sample_bybit_server_clock_offset_v1,
     write_capacity_report_v1,
@@ -288,6 +289,9 @@ def _measure(args: argparse.Namespace) -> int:
         end_proof=result.end_proof,
         clock_samples=result.clock_samples,
         clock_sample_failures=result.clock_sample_failures,
+        observed_seconds_by_source=observed_seconds_by_source_v1(
+            [health.partition_directory for health in result.sessions if health.partition_directory is not None]
+        ),
     )
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     path = write_capacity_report_v1(report, root / "reports", stamp=stamp)
