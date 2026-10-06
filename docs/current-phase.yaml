@@ -14,16 +14,29 @@ updated: 2026-10-06
 # the one parallel track.
 phase:
   id: "OWNER-GATE-R4"
-  name: Owner review of OR-1, OR-2, OR-3, OR-5, OR-6 (blocks R1B and R4)
+  name: Owner review of OR-1, OR-2, OR-3, OR-5, OR-6 (blocks R1B and R4 evaluators)
   status: waiting_for_owner
-  base_commit: 07411c1       # PR #166 merged
+  base_commit: f2e3b14       # R4.3 merged; R4.4/R4.5 follow in order
   why_now: >-
-    R3A real acceptance, the R3A.2 sidecars, the R3B.3 real overlap and the R1A
-    capacity evidence are complete. R4 Strategy Lab is next in canonical order
-    and needs OR-3 (numeric doctrine) and OR-6 (cost methodology); R1B needs
-    OR-2. No owner-independent engineering remains on the critical path.
+    The owner-independent R4 foundation (study identity, ledger, queue, workers,
+    purged time splits, manifests, frozen candidates, read API) is built with the
+    OR-3/OR-6 slots pinned unset. Strategy evaluators, the search engine, the
+    Decimal authority re-run and cost-dependent studies need OR-3 and OR-6; R1B
+    needs OR-2. Every OR packet below is evidence-complete for a decision.
   not_in_scope: >-
-    Implementing R4 on guessed assumptions; R1B before OR-2; UI-2 before R4 APIs.
+    Evaluators or cost models on guessed assumptions; R1B before OR-2; UI-2 pages
+    before a study can exist (no evaluator before OR-3/OR-6).
+
+r4_foundation:                # owner-independent; every study stays NON_AUTHORITATIVE
+  r4_0: "PR #172 strategy_lab_study_v1: content-addressed study/trial ids, exact parameter spaces, OR-3/OR-6 slots unset-only, holdout bound"
+  r4_1: "PR #173 migration 0053 + strategy_lab_ledger_v1: immutable ledger, SKIP LOCKED leased queue, terminal-state trigger"
+  r4_2: "PR #174 strategy_lab_worker_v1: injected evaluator, recorded failures, stop/resume, bounded process pool"
+  r4_3: "PR #175 strategy_lab_splits_v1: decision/label-time purged walk-forward with embargo and censoring"
+  r4_4: "PR #178 migration 0054 + strategy_lab_manifest_v1: study manifests, frozen candidate sets (rerun PENDING_OWNER_DECISION_OR_3)"
+  r4_5: "strategy_lab_read_model_v1: GET /operator-dashboard/strategy-lab/studies[/{id}], authority restated NON_AUTHORITATIVE"
+  blocked_by_owner: >-
+    Strategy SDK evaluators and vectorized search (OR-3), Decimal authority re-run
+    (OR-3), cost/funding/slippage in studies (OR-6), basis-MR port (OR-6).
 
 r3b3_completed: >-
   PR #159 merged. Real run 2026-10-03 on archive day 2026-10-02 (sha256
@@ -104,7 +117,10 @@ r3a_real_acceptance: >-
   and tail exclusions 0 s; 30,594 records; rebuild a192b8bd): T4_FUNDING 10
   rows (8 h interval, 0 before state complete), T4_TOP_OF_BOOK 16,740 rows,
   0 locked/crossed, 1 tick for 99.94 % of time; V3 50 rows, 50/50 distinct
-  PROFESSIONAL decision times at 0/250 ms.
+  PROFESSIONAL decision times at 0/250 ms. 2026-10-06: f5773f76 (session
+  27cc4cb0, 3,577.2 s, 65,055 obs) and e3196676 (session 9b7e69ff, 36,795 obs)
+  also T4 PROFESSIONAL, 61/61 distinct decision times at 0/250 ms,
+  recompute-identical (computed, not written).
 
 r2a_completed: >-
   R2A.1 PR #149, R2A.2 PR #150 (merge 97c55dd): V3 three-clock feature rows,
@@ -132,6 +148,15 @@ or_packet_evidence:           # facts only; every decision stays with the owner
   or1_refetch: >-
     2026-10-03: BTCUSDT archive days 2026-09-21..24 re-downloaded 9-11 days
     after first acquisition: 4/4 byte-identical (size, sha256, Last-Modified).
+    2026-10-06: 09-21 (15 days later) and 10-02 byte-identical again. HEAD census
+    (no bodies): BTCUSDT 2,386/2,386 days 2020-03-25..2026-10-05 = 85.08 GiB
+    (last 365 d 25.6 GiB); 8 measured symbols last 365 d = 76.6 GiB. ETags are
+    multipart (not content MD5). Files before ~2020-10 carry Last-Modified in
+    Aug-Oct 2020: the publisher has rewritten history at least once (a re-fetch
+    detects a rewrite, it cannot recover the old bytes). T2 trade Parquet is
+    0.90x the gzip archive (3-day sample 259 vs 289 MB); 1m bars ~0.13 MB/day.
+    On disk: production capture 1.98 GB (1.91 GB raw PARTIAL/open), measurement
+    7.46 GB, research DB 2.0 GB; free 39.5 GiB vs 20 GiB recorder floor.
   or3_numeric: >-
     T0 synthetic tick-grid sweep (no dates, no holdout), 68 causal candidates
     (48 SMA-cross + 20 ratio-breakout). 200k bars: Polars float64 0.68-0.95 s,
@@ -141,16 +166,45 @@ or_packet_evidence:           # facts only; every decision stays with the owner
     (1 bar per 200k, 4 per 1M, 1 trade each). Exact ratio-boundary probe:
     float says below threshold for ~60 % of exact ties at r = 0.001/0.003/0.005
     (0 % at 0.002/0.01). All modes byte-deterministic on rerun.
+    2026-10-06 Strategy-Lab-shaped sweep (T0, 48 candidates: 16 SMA-cross,
+    20 k-bar momentum +/-threshold, 12 vol-gated momentum; gross cost-free
+    metrics): 1M bars Polars float64 5.4 s / 668 MB vs Decimal(prec 50) 132.4 s /
+    1,062 MB; float rerun byte-identical. Spearman(total) 1.0, top-1/5/10
+    identical, Kendall 0.957 (float noise orders exact metric ties). 16/48
+    candidates diverge in signals (max 47 bars, 45 trades, 2 % rel. metric),
+    all at exact Decimal ties, all caught by a 1e-9 near-tie flag (16/16; 12/12
+    at 200k, 4/4 at 20k); identical signals -> metric error <= 8.8e-14.
+    Option A top-10 Decimal re-run 19.3 s; top-10 + all 31 tie-flagged 110.5 s.
+    Exact-tie probe: 'a/b - 1 > th' never reports equality on exact ties
+    (below for 56-85 % at 0.0005/0.001/0.0025/0.003/0.005, above for 100 % at
+    0.002/0.01/0.02); algebraically equal float forms disagree with each other.
   or5_publication: >-
     Archive Last-Modified = UTC day end + 1h12m08s..1h13m58s (2026-09-21..24,
     10-02); T2 vs T4 trades identical on 114,031 ids. T4 knowledge-minus-event
     upper bound p50 0.25-0.32 s. Event time, T4 knowledge time and archive file
-    availability stay three separate clocks.
+    availability stay three separate clocks. 2026-10-06 HEAD census: BTCUSDT lag
+    p50 61.9 min (2022) -> 71.1 min (2026), p99 64-93 min since 2022; late days
+    2024-10-22 4.1 h, 2024-11-04 33.1 h, 2024-11-05 9.2 h; 2020-10..2021-12
+    batch backfills up to ~3 days. Last 365 d, 8 symbols (2,920 symbol-days):
+    <= 75 min 89.5 %, <= 90 min 98.6 %, <= 2 h 98.9 %, <= 3 h 99.86 %, <= 5 h
+    100 % (one incident: 2025-12-30, ETH/LINK/HBAR/GMT ~4.87 h). Live
+    first-availability poll of day 2026-10-05: public CDN served BTC/ETH/GMT
+    within ~2-13 s of Last-Modified (01:11:27/01:12:09/01:12:22Z); CloudFront
+    404s before that were not cached long enough to delay it.
   or6_cost_inputs: >-
     Observed BTCUSDT level 1 (tickers bid1/ask1, 4 seals, ~2.2 h): 1 tick (0.1,
     ~0.0117 bps) for 99.66-99.99 % of time, 0 locked/crossed, per-seal max
     2/38/85/127 ticks briefly; level-1 size p10 0.05-0.7 BTC. Venue fees not machine-
-    verifiable (Bybit pages bot-protected): owner verification required.
+    verifiable (Bybit pages bot-protected; the only rate API is account-authenticated):
+    OWNER_VERIFICATION_REQUIRED. 2026-10-06 pooled 7 seals (5.04 h, 112,320 quotes):
+    0 locked/crossed, 1 tick 99.907 % of time, p99.9 by time 1 tick, > 10 ticks
+    0.026 %, max 234 ticks; funding 83 published-state rows, 8 h interval, cap
+    0.00333, 3 funding windows. Slippage: against the conflated (~100 ms) tickers
+    level 1, 33-71 % of trades print beyond the last published best (51 % even
+    with quote age <= 20 ms) -- tickers L1 cannot reference execution cost. An
+    empirical method needs orderbook depth joined to trades by venue seq: BTCUSDT
+    10-min quiet sample orderbook.1 0.26, .50 0.81, .200 1.04 GB/day raw
+    (gzip 10.0x / 7.8x / 6.1x); scale for busier hours.
 
 r0_operations:                # the T4 clock; runs beside every phase
   status: running             # BTCUSDT production contract v1, default root
@@ -174,6 +228,11 @@ r0_operations:                # the T4 clock; runs beside every phase
     conservative (max upper bound), but knowledge times widen as it drifts.
     2026-10-05T23:12Z, after a host restart: +64 ms +/- 126 ms (W32Time still
     stopped, Manual); seal cfbe615a upper bounds 0.29-0.34 s. Drift will regrow.
+  single_instance: >-
+    run/supervise/measure hold an OS-released lock on their archive root (a second
+    recorder exits 4); 'capture_bybit_public.py status' shows both roots;
+    scripts/start_r0_capture.ps1 starts R0 unless a recorder process exists and
+    installs nothing (-ShowLogonTaskCommand only prints an owner opt-in).
   timestamp_delta_rule: >-
     arrival - exchange ts is an OBSERVED TIMESTAMP DELTA, never latency, and is
     never the justification for a T2 publication-lag value (OR-5).
