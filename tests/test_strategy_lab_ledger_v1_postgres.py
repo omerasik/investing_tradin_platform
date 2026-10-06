@@ -170,6 +170,21 @@ class StrategyLabLedgerPostgresTests(unittest.TestCase):
             ((1, "CLAIMED", "dead"), (1, "LEASE_EXPIRED", "dead"), (2, "CLAIMED", "alive"), (2, "SUCCEEDED", "alive")),
         )
 
+    def test_renewal_keeps_a_held_lease_and_is_refused_once_lost(self) -> None:
+        from trade_platform.strategy_lab_ledger_v1 import StrategyLabLedgerError, TrialOutcomeV1
+
+        spec = _study(2)
+        self.ledger.register_study(spec)
+        first, second = self.ledger.claim(spec.study_id, worker="w", limit=2, lease_seconds=30)
+        self.clock.now += timedelta(seconds=20)
+        renewed = self.ledger.renew(first, lease_seconds=30)
+        self.clock.now += timedelta(seconds=20)  # past the original expiry, inside the renewed one
+        self.assertEqual(self.ledger.claim(spec.study_id, worker="x", limit=2, lease_seconds=30)[0].trial_id,
+                         second.trial_id)
+        self.ledger.complete(renewed, outcome=TrialOutcomeV1.EVALUATED, metrics={})
+        with self.assertRaisesRegex(StrategyLabLedgerError, "lease_lost"):
+            self.ledger.renew(second, lease_seconds=30)
+
     def test_failure_retry_and_cancellation(self) -> None:
         from trade_platform.strategy_lab_ledger_v1 import StrategyLabLedgerError, TrialOutcomeV1
 

@@ -45,7 +45,7 @@ import json
 import re
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Final
@@ -305,6 +305,20 @@ class PostgresStrategyLabLedgerV1:
             raise StrategyLabLedgerError("lease_lost")
         if expires <= now:
             raise StrategyLabLedgerError("lease_expired")
+
+    def renew(self, claim: TrialClaimV1, *, lease_seconds: float) -> TrialClaimV1:
+        """Extend a lease the caller still holds; refused exactly like :meth:`complete`."""
+        if not lease_seconds > 0:
+            raise StrategyLabLedgerError("lease_seconds_must_be_positive")
+        now = self._now()
+        expires = now + timedelta(seconds=lease_seconds)
+        with self._cursor() as cursor:
+            self._hold_lease(cursor, claim, now)
+            cursor.execute(
+                "UPDATE strategy_lab_trial_queue SET lease_expires_at=%s, updated_at=%s WHERE trial_id=%s",
+                (expires, now, claim.trial_id),
+            )
+        return replace(claim, lease_expires_at=expires)
 
     def complete(self, claim: TrialClaimV1, *, outcome: TrialOutcomeV1, metrics: Mapping[str, Any]) -> TrialResultV1:
         if not isinstance(outcome, TrialOutcomeV1):
