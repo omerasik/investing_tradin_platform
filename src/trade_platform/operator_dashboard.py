@@ -31,6 +31,13 @@ from .real_market_data_provenance_v1 import (
     PostgresRealMarketDataProvenanceAuthorityV1,
     RealMarketDataProvenanceV1,
 )
+from .strategy_lab_read_model_v1 import (
+    StrategyLabObjectNotFound,
+    StrategyLabStudyDetailView,
+    StrategyLabStudyPage,
+    read_strategy_lab_studies_v1,
+    read_strategy_lab_study_v1,
+)
 
 Availability = Literal["AVAILABLE", "UNAVAILABLE", "STALE", "BLOCKED", "ERROR", "EXTERNAL_BLOCKED"]
 MetricEvidence = Literal["MEASURED", "ASSUMED", "UNAVAILABLE"]
@@ -1277,6 +1284,19 @@ class PostgresOperatorDashboardQueries:
     def evidence_catalog(self) -> EvidenceCatalogView:
         """Phase R5 UI-1: sources, tier ceilings and catalogued datasets (see evidence_catalog_v1)."""
         return self._read(read_evidence_catalog_v1)
+
+    def strategy_lab_studies(self, *, limit: int = 50, offset: int = 0) -> StrategyLabStudyPage:
+        """Phase R4.5: registered Strategy Lab studies, newest first; always NON_AUTHORITATIVE."""
+        return self._read(lambda cursor: read_strategy_lab_studies_v1(cursor, limit=limit, offset=offset))
+
+    def strategy_lab_study(self, study_id: UUID) -> StrategyLabStudyDetailView:
+        """Phase R4.5: one study's identity, progress, manifests and frozen candidate sets."""
+        def operation(cursor: _Cursor) -> StrategyLabStudyDetailView:
+            try:
+                return read_strategy_lab_study_v1(cursor, study_id)
+            except StrategyLabObjectNotFound as error:
+                raise DashboardObjectNotFound("strategy_lab_study_not_found") from error
+        return self._read(operation)
 
     def chart_series(self) -> ChartSeriesRefPage:
         """Phase R5 UI-1b: catalogued chartable bar frames (see instrument_chart_v1)."""
