@@ -100,3 +100,34 @@ class SegmentedSuperviseTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SingleRecorderTests(unittest.TestCase):
+    def test_a_second_recorder_on_a_held_root_is_refused_before_recording(self) -> None:
+        import tempfile
+
+        from trade_platform.single_instance_lock_v1 import exclusive_instance_lock_v1
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with exclusive_instance_lock_v1(root, CLI.RECORDER_LOCK_NAME, description="first"), \
+                    patch.object(CLI, "run_capture_fleet_v1") as fleet:
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    code = CLI.main(["--root", str(root), "supervise", "--segment-seconds", "3600"])
+            self.assertEqual(code, CLI.EXIT_ALREADY_RUNNING)
+            self.assertIn("already running", out.getvalue())
+            fleet.assert_not_called()
+
+    def test_status_reports_a_held_root(self) -> None:
+        import tempfile
+
+        from trade_platform.single_instance_lock_v1 import exclusive_instance_lock_v1
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with exclusive_instance_lock_v1(root, CLI.RECORDER_LOCK_NAME, description="r0"):
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    self.assertEqual(CLI.main(["--root", str(root), "status"]), 0)
+            self.assertIn("production   RUNNING", out.getvalue())
