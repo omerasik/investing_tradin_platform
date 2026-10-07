@@ -25,7 +25,8 @@ class EvidenceCatalogPostgresTests(unittest.TestCase):
             view = PostgresOperatorDashboardQueries(database).evidence_catalog()
         finally:
             database.close()
-        self.assertEqual(3, len(view.timing_sources))
+        # REST, production capture, three OR-2 universe sources (R1B.2), archive.
+        self.assertEqual(6, len(view.timing_sources))
         self.assertEqual(len(view.t4_datasets), min(view.t4_dataset_total, 100))
         self.assertEqual(len(view.public_archive_datasets), min(view.public_archive_dataset_total, 100))
         self.assertTrue(all(item.publication_lag_slot == T2_PUBLICATION_LAG_SLOT_V1 for item in view.public_archive_datasets))
