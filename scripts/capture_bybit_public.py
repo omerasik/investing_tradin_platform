@@ -78,12 +78,24 @@ from trade_platform.first_party_capture_measurement_v1 import (
     CapacityMeasurementV1,
     build_capacity_report_v1,
     bybit_clock_offset_payload_v1,
+    observed_seconds_by_source_v1,
     render_capacity_report_text_v1,
     sample_bybit_server_clock_offset_v1,
     write_capacity_report_v1,
 )
+from trade_platform.single_instance_lock_v1 import (
+    InstanceLockHeldError,
+    exclusive_instance_lock_v1,
+    instance_lock_status_v1,
+)
 
 _GIB = 1024**3
+
+#: One recorder per archive root: run/supervise hold it on the production root,
+#: measure on the measurement root (so R0 and R1A can run side by side).
+RECORDER_LOCK_NAME = "recorder"
+#: Exit code when another live recorder already holds the root.
+EXIT_ALREADY_RUNNING = 4
 
 #: An engineering safety floor, not an economic parameter: below it capture
 #: stops cleanly rather than filling the system volume.
@@ -277,6 +289,9 @@ def _measure(args: argparse.Namespace) -> int:
         end_proof=result.end_proof,
         clock_samples=result.clock_samples,
         clock_sample_failures=result.clock_sample_failures,
+        observed_seconds_by_source=observed_seconds_by_source_v1(
+            [health.partition_directory for health in result.sessions if health.partition_directory is not None]
+        ),
     )
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     path = write_capacity_report_v1(report, root / "reports", stamp=stamp)
@@ -325,6 +340,24 @@ def _health(args: argparse.Namespace) -> int:
         print(f"no capture partitions under {root}")
         return 0
     for line in lines:
+        print(line)
+    print(f"disk_free      {disk_free_bytes_v1(root) / _GIB:.1f} GiB")
+    return 0
+
+
+def _status(args: argparse.Namespace) -> int:
+    """Read-only operator view: is a recorder running on each root, newest partitions, disk."""
+    root = _root(args)
+    for label, directory in (("production", root), ("measurement", _measurement_root(args))):
+        status = instance_lock_status_v1(directory, RECORDER_LOCK_NAME)
+        owner = status.owner or {}
+        state = (
+            f"RUNNING pid={owner.get('pid')} since={owner.get('started_at')} ({owner.get('description')})"
+            if status.held else "NOT RUNNING (or a recorder started before this guard existed)"
+        )
+        print(f"{label:<12} {state}  root={directory}")
+    lines = list(iter_health_lines(root))
+    for line in lines[-args.recent:]:
         print(line)
     print(f"disk_free      {disk_free_bytes_v1(root) / _GIB:.1f} GiB")
     return 0
@@ -456,6 +489,10 @@ def main(argv: list[str] | None = None) -> int:
     health = sub.add_parser("health", help="show partition status under the archive root")
     health.set_defaults(handler=_health)
 
+    status = sub.add_parser("status", help="is a recorder running on each root; newest partitions")
+    status.add_argument("--recent", type=int, default=3)
+    status.set_defaults(handler=_status)
+
     replay = sub.add_parser("replay", help="re-verify and replay one partition")
     replay.add_argument("partition")
     replay.add_argument("--allow-partial", action="store_true")
@@ -473,7 +510,17 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     handler = args.handler
-    return int(handler(args))
+    lock_root = {"run": _root, "supervise": _root, "measure": _measurement_root}.get(args.command)
+    if lock_root is None:
+        return int(handler(args))
+    try:
+        with exclusive_instance_lock_v1(
+            lock_root(args), RECORDER_LOCK_NAME, description=f"capture_bybit_public.py {args.command}"
+        ):
+            return int(handler(args))
+    except InstanceLockHeldError as error:
+        print(f"refused: {error}")
+        return EXIT_ALREADY_RUNNING
 
 
 if __name__ == "__main__":

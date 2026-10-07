@@ -46,9 +46,11 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from .first_party_capture_archive_v1 import (
+    PARTITION_STATUS_COMPLETE,
     CompactionResultV1,
     FirstPartyCaptureRecordV1,
     measure_clock_resolution_nanos,
+    read_partition_status_v1,
 )
 from .first_party_capture_authority_v1 import (
     MEASUREMENT_SAMPLE_V1,
@@ -346,6 +348,32 @@ def _per_day(amount: float, seconds: float) -> float | None:
     return None if seconds <= 0 else amount * _SECONDS_PER_DAY / seconds
 
 
+#: Wall time beyond the longest observed coverage that marks a run as having
+#: unobserved time (suspend, sleep, a stalled feed). An operational threshold
+#: for the label only; it never changes a rate.
+UNOBSERVED_LABEL_THRESHOLD_SECONDS: Final = 60.0
+
+
+def observed_seconds_by_source_v1(partitions: Sequence[Path]) -> dict[str, float]:
+    """Proven coverage time per source id, from finalized partitions only.
+
+    A run's wall clock is not its observation time: on Windows the monotonic
+    clock keeps counting while the host is suspended, and a dead feed records
+    nothing until it times out. Coverage windows are what the recorder proved it
+    observed, so rates divided by them mean "per second of observation". A
+    PARTIAL partition proves no coverage and contributes nothing.
+    """
+    observed: dict[str, float] = {}
+    for directory in partitions:
+        partition = read_partition_status_v1(directory)
+        if partition.status != PARTITION_STATUS_COMPLETE or partition.source_id is None:
+            continue
+        span = sum(window.last_proven_utc_nanos - window.start_utc_nanos for window in partition.coverage)
+        key = str(partition.source_id)
+        observed[key] = observed.get(key, 0.0) + span / 1e9
+    return observed
+
+
 def build_capacity_report_v1(
     measurement: CapacityMeasurementV1,
     *,
@@ -360,11 +388,18 @@ def build_capacity_report_v1(
     end_proof: str,
     clock_samples: Sequence[Mapping[str, Any]] = (),
     clock_sample_failures: int = 0,
+    observed_seconds_by_source: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
     """The capacity report as plain JSON-ready data. Measured facts only.
 
     ``session_summaries`` maps a source id to per-symbol recorder counters
     (``reconnects``, ``gaps``, ``contract_violations``, ``clock_discontinuities``).
+
+    With ``observed_seconds_by_source`` (see :func:`observed_seconds_by_source_v1`)
+    every per-symbol rate is divided by that symbol's proven observation time
+    rather than by ``measured_seconds`` (wall time, which includes any host
+    suspend); a symbol with no proven coverage has no rate. CPU share uses the
+    longest observed time. Without it, the wall time is used as before.
     """
     ranks = dict(MEASUREMENT_SAMPLE_V1)
     compaction_by_source: dict[str, tuple[int, int]] = {}
@@ -378,12 +413,25 @@ def build_capacity_report_v1(
     total_bytes = 0
     total_compressed_per_day = 0.0
     compressed_complete = True
+    total_rate = 0.0
+    total_raw_per_day = 0.0
+    rates_complete = True
     for contract in contracts:
         key = str(contract.source_id)
         stats = measurement.stats.get(key) or SymbolCaptureStatsV1(contract)
         raw, packed = compaction_by_source.get(key, (0, 0))
         ratio = None if packed == 0 else raw / packed
-        raw_per_day = _per_day(stats.bytes, measured_seconds)
+        seconds = (
+            measured_seconds if observed_seconds_by_source is None
+            else observed_seconds_by_source.get(key, 0.0)
+        )
+        raw_per_day = _per_day(stats.bytes, seconds)
+        rate = None if seconds <= 0 else stats.records / seconds
+        if raw_per_day is None or rate is None:
+            rates_complete = False
+        else:
+            total_raw_per_day += raw_per_day
+            total_rate += rate
         compressed_per_day = (
             None if raw_per_day is None or ratio is None else raw_per_day / ratio
         )
@@ -400,9 +448,8 @@ def build_capacity_report_v1(
                 "source_id": key,
                 "records": stats.records,
                 "records_by_channel": dict(sorted(stats.records_by_channel.items())),
-                "records_per_second": (
-                    None if measured_seconds <= 0 else stats.records / measured_seconds
-                ),
+                "observed_seconds": seconds,
+                "records_per_second": rate,
                 "raw_bytes": stats.bytes,
                 "raw_bytes_by_channel": dict(sorted(stats.bytes_by_channel.items())),
                 "raw_bytes_per_day_projected": raw_per_day,
@@ -422,21 +469,31 @@ def build_capacity_report_v1(
     end = measurement.resource_end
     cpu_seconds = None if start is None or end is None else end.cpu_seconds - start.cpu_seconds
     wall = None if start is None or end is None else end.monotonic_seconds - start.monotonic_seconds
+    observed_max = (
+        None if not observed_seconds_by_source else max(observed_seconds_by_source.values())
+    )
+    active = wall if observed_max is None else observed_max
     offsets = list(clock_samples)
     return {
         "schema_version": CAPACITY_REPORT_SCHEMA_VERSION,
         "measured_seconds": measured_seconds,
+        "rate_denominator": (
+            "wall_seconds" if observed_seconds_by_source is None else "observed_coverage_seconds_per_symbol"
+        ),
+        "observed_seconds_max": observed_max,
+        "unobserved_time_excluded": (
+            observed_max is not None
+            and measured_seconds - observed_max > UNOBSERVED_LABEL_THRESHOLD_SECONDS
+        ),
         "end_proof": end_proof,
         "projection_label": PROJECTION_LABEL_V1,
         "delta_caveat": DELTA_CAVEAT_V1,
         "symbols": symbols,
         "totals": {
             "records": total_records,
-            "records_per_second": (
-                None if measured_seconds <= 0 else total_records / measured_seconds
-            ),
+            "records_per_second": total_rate if rates_complete else None,
             "raw_bytes": total_bytes,
-            "raw_bytes_per_day_projected": _per_day(total_bytes, measured_seconds),
+            "raw_bytes_per_day_projected": total_raw_per_day if rates_complete else None,
             "compressed_bytes_per_day_projected": (
                 total_compressed_per_day if compressed_complete else None
             ),
@@ -445,7 +502,7 @@ def build_capacity_report_v1(
             "cpu_count": os.cpu_count(),
             "process_cpu_seconds": cpu_seconds,
             "process_cpu_percent_of_one_core": (
-                None if not cpu_seconds or not wall else 100.0 * cpu_seconds / wall
+                None if not cpu_seconds or not active else 100.0 * cpu_seconds / active
             ),
             "peak_working_set_bytes": measurement.peak_working_set_bytes,
             "disk_free_start_bytes": disk_free_start_bytes,
@@ -478,7 +535,12 @@ def render_capacity_report_text_v1(report: Mapping[str, Any]) -> str:
     lines = [
         (
             f"capacity report ({report['schema_version']}), measured "
-            f"{report['measured_seconds']:.0f}s, end_proof={report['end_proof']}"
+            f"{report['measured_seconds']:.0f}s wall"
+            + (
+                "" if report.get("observed_seconds_max") is None
+                else f", {report['observed_seconds_max']:.0f}s observed (rates per observed second)"
+            )
+            + f", end_proof={report['end_proof']}"
         ),
         f"per-day figures: {report['projection_label']}",
         "",
@@ -530,6 +592,11 @@ def render_capacity_report_text_v1(report: Mapping[str, Any]) -> str:
             f" bound <= {offset['max_offset_bound_nanos'] / 1e6:.1f} ms"
         )
     lines += [f"note: {report['delta_caveat']}"]
+    if report.get("unobserved_time_excluded"):
+        lines.append(
+            "WARNING: wall time exceeds observed coverage (host suspend or a dead feed); "
+            "rates use observed seconds per symbol, never wall time"
+        )
     for failure, count in report["failures"].items():
         lines.append(f"lane failure x{count}: {failure}")
     lines.append(f"restarts: {report['restarts']}")
@@ -551,6 +618,7 @@ __all__ = [
     "DELTA_CAVEAT_V1",
     "DELTA_LABEL_V1",
     "PROJECTION_LABEL_V1",
+    "UNOBSERVED_LABEL_THRESHOLD_SECONDS",
     "CapacityMeasurementV1",
     "ClockOffsetSampleV1",
     "ProcessResourceSampleV1",
@@ -558,6 +626,7 @@ __all__ = [
     "TimestampDeltaHistogramV1",
     "build_capacity_report_v1",
     "bybit_clock_offset_payload_v1",
+    "observed_seconds_by_source_v1",
     "parse_bybit_server_time_nanos_v1",
     "render_capacity_report_text_v1",
     "sample_bybit_server_clock_offset_v1",

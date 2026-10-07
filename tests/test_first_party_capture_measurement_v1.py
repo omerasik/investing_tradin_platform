@@ -229,5 +229,66 @@ class ReportTests(unittest.TestCase):
             self.assertTrue(path.with_suffix(".txt").exists())
 
 
+class ObservedTimeTests(unittest.TestCase):
+    """A suspended host keeps the monotonic clock running; rates must not divide by it."""
+
+    def _report(self, observed: dict | None, measured: float = 1_000.0) -> dict:
+        measurement = CapacityMeasurementV1()
+        stats = measurement.stats_for(ETH)
+        arrival = TS_MILLIS * 1_000_000
+        for index in range(10):
+            stats.observe(_record(arrival + index, index), 1_000)
+        return build_capacity_report_v1(
+            measurement, contracts=(ETH,), measured_seconds=measured, compactions=(),
+            session_summaries={}, disk_free_start_bytes=1, disk_free_end_bytes=1, failures={},
+            restarts=0, end_proof="OPERATOR_BOUNDED_STOP", observed_seconds_by_source=observed,
+        )
+
+    def test_rates_use_observed_coverage_not_wall_time(self) -> None:
+        report = self._report({str(ETH.source_id): 50.0})
+        eth = report["symbols"][0]
+        self.assertEqual(50.0, eth["observed_seconds"])
+        self.assertAlmostEqual(10 / 50.0, eth["records_per_second"])
+        self.assertAlmostEqual(10_000 * 86_400 / 50.0, eth["raw_bytes_per_day_projected"])
+        self.assertAlmostEqual(eth["records_per_second"], report["totals"]["records_per_second"])
+        self.assertTrue(report["unobserved_time_excluded"])
+        self.assertEqual("observed_coverage_seconds_per_symbol", report["rate_denominator"])
+        self.assertIn("WARNING: wall time exceeds observed coverage", render_capacity_report_text_v1(report))
+        self.assertIn("50s observed", render_capacity_report_text_v1(report))
+
+    def test_without_proven_coverage_there_is_no_rate(self) -> None:
+        report = self._report({})
+        self.assertIsNone(report["symbols"][0]["records_per_second"])
+        self.assertIsNone(report["totals"]["records_per_second"])
+        self.assertIsNone(report["totals"]["raw_bytes_per_day_projected"])
+
+    def test_legacy_callers_keep_wall_time(self) -> None:
+        report = self._report(None, measured=100.0)
+        self.assertAlmostEqual(0.1, report["symbols"][0]["records_per_second"])
+        self.assertEqual("wall_seconds", report["rate_denominator"])
+        self.assertFalse(report["unobserved_time_excluded"])
+
+    def test_observed_seconds_come_from_complete_partitions_only(self) -> None:
+        from tests.test_first_party_t4_v1 import (
+            BASE,
+            CONTRACT,
+            SECOND,
+            FixtureArchive,
+            _standard_samples,
+        )
+        from trade_platform.first_party_capture_archive_v1 import find_partitions_v1
+        from trade_platform.first_party_capture_measurement_v1 import observed_seconds_by_source_v1
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            archive = FixtureArchive(root)
+            # Two proven windows with a declared gap between them (a dead feed or a suspend).
+            archive.session(windows=[(BASE, BASE + 120 * SECOND), (BASE + 600 * SECOND, BASE + 660 * SECOND)],
+                            samples=_standard_samples(700))
+            archive.session(windows=[(BASE, BASE + 30 * SECOND)], samples=_standard_samples(60), crash=True)
+            observed = observed_seconds_by_source_v1(list(find_partitions_v1(root)))
+        self.assertEqual({str(CONTRACT.source_id): 180.0}, observed)
+
+
 if __name__ == "__main__":
     unittest.main()

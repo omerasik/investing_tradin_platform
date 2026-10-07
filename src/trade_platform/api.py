@@ -97,6 +97,7 @@ from .security import (
     risk_reviewer_operator,
 )
 from .signal_engine import DetailedSignalStatus
+from .strategy_lab_read_model_v1 import StrategyLabStudyDetailView, StrategyLabStudyPage
 from .strategy_promotion import SQLitePromotionLedger
 from .strategy_validation import SQLiteStrategyRegistry, StrategyRunCard, StrategyValidationError
 
@@ -492,6 +493,22 @@ def build_app(
     ) -> object:
         """Sources, tier ceilings and catalogued datasets. Never a tier verdict."""
         return read_dashboard(queries.evidence_catalog)
+
+    @app.get("/operator-dashboard/strategy-lab/studies", response_model=StrategyLabStudyPage)
+    def dashboard_strategy_lab_studies(
+        limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10_000),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """R4.5: registered studies with progress; every one NON_AUTHORITATIVE and not promotable."""
+        return read_dashboard(lambda: queries.strategy_lab_studies(limit=limit, offset=offset))
+
+    @app.get("/operator-dashboard/strategy-lab/studies/{study_id}", response_model=StrategyLabStudyDetailView)
+    def dashboard_strategy_lab_study(
+        study_id: UUID, _: None = Depends(protected_operator),
+        queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """R4.5: study identity, manifests and frozen candidate sets (search tier, rerun pending OR-3)."""
+        return read_dashboard(lambda: queries.strategy_lab_study(study_id))
 
     @app.get("/operator-dashboard/capture-availability", response_model=CaptureAvailabilityView)
     def dashboard_capture_availability(_: None = Depends(protected_operator)) -> object:

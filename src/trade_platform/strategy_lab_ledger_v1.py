@@ -392,6 +392,17 @@ class PostgresStrategyLabLedgerV1:
 
     # -- read models ---------------------------------------------------------
 
+    def stored_study(self, study_id: UUID) -> tuple[str, int]:
+        """The stored content hash and planned trial count of a registered study."""
+        with self._cursor() as cursor:
+            cursor.execute(
+                "SELECT content_hash, planned_trial_count FROM strategy_lab_studies WHERE study_id=%s", (study_id,)
+            )
+            row = cursor.fetchone()
+        if row is None:
+            raise StrategyLabLedgerError("study_not_registered")
+        return str(row[0]).strip(), int(row[1])
+
     def progress(self, study_id: UUID) -> StudyProgressV1:
         with self._cursor() as cursor:
             cursor.execute("SELECT planned_trial_count FROM strategy_lab_studies WHERE study_id=%s", (study_id,))

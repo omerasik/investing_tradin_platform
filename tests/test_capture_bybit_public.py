@@ -61,13 +61,16 @@ class SegmentedSuperviseTests(unittest.TestCase):
             calls.append(kwargs)
             return results[len(calls) - 1]
 
+        import tempfile
+
         with (
+            tempfile.TemporaryDirectory() as root,  # the recorder lock lives at the root
             patch.object(CLI, "run_capture_fleet_v1", side_effect=fleet),
             patch.object(CLI, "request_keep_awake_v1", return_value=True),
             patch.object(CLI.time, "time", return_value=NOW),
             redirect_stdout(io.StringIO()),
         ):
-            code = CLI.main(["--root", "unused-root", "supervise", *argv])
+            code = CLI.main(["--root", root, "supervise", *argv])
         return code, calls
 
     def test_bounded_segments_repeat_until_the_disk_floor_stops_capture(self) -> None:
@@ -100,3 +103,34 @@ class SegmentedSuperviseTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SingleRecorderTests(unittest.TestCase):
+    def test_a_second_recorder_on_a_held_root_is_refused_before_recording(self) -> None:
+        import tempfile
+
+        from trade_platform.single_instance_lock_v1 import exclusive_instance_lock_v1
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with exclusive_instance_lock_v1(root, CLI.RECORDER_LOCK_NAME, description="first"), \
+                    patch.object(CLI, "run_capture_fleet_v1") as fleet:
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    code = CLI.main(["--root", str(root), "supervise", "--segment-seconds", "3600"])
+            self.assertEqual(code, CLI.EXIT_ALREADY_RUNNING)
+            self.assertIn("already running", out.getvalue())
+            fleet.assert_not_called()
+
+    def test_status_reports_a_held_root(self) -> None:
+        import tempfile
+
+        from trade_platform.single_instance_lock_v1 import exclusive_instance_lock_v1
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with exclusive_instance_lock_v1(root, CLI.RECORDER_LOCK_NAME, description="r0"):
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    self.assertEqual(CLI.main(["--root", str(root), "status"]), 0)
+            self.assertIn("production   RUNNING", out.getvalue())
