@@ -2,7 +2,7 @@
 # This is NOT a second roadmap: requirements stay in MASTER_ROADMAP.md, design
 # stays in module docstrings, history stays in git.
 
-updated: 2026-10-06
+updated: 2026-10-07
 
 # Phase naming. Since 2026-09-24 the owner-approved canonical roadmap uses an
 # "R" series (R0-R15, owner review points OR-1..OR-14). It is distinct from the
@@ -16,7 +16,7 @@ phase:
   id: "OWNER-GATE-R4"
   name: Owner review of OR-1, OR-2, OR-3, OR-5, OR-6 (blocks R1B and R4 evaluators)
   status: waiting_for_owner
-  base_commit: f2e3b14       # R4.3 merged; R4.4/R4.5 follow in order
+  base_commit: 2905a37       # R4.0-R4.5 merged (#172-#179), ops lock #180, R1A fix #181
   why_now: >-
     The owner-independent R4 foundation (study identity, ledger, queue, workers,
     purged time splits, manifests, frozen candidates, read API) is built with the
@@ -33,7 +33,7 @@ r4_foundation:                # owner-independent; every study stays NON_AUTHORI
   r4_2: "PR #174 strategy_lab_worker_v1: injected evaluator, recorded failures, stop/resume, bounded process pool"
   r4_3: "PR #175 strategy_lab_splits_v1: decision/label-time purged walk-forward with embargo and censoring"
   r4_4: "PR #178 migration 0054 + strategy_lab_manifest_v1: study manifests, frozen candidate sets (rerun PENDING_OWNER_DECISION_OR_3)"
-  r4_5: "strategy_lab_read_model_v1: GET /operator-dashboard/strategy-lab/studies[/{id}], authority restated NON_AUTHORITATIVE"
+  r4_5: "PR #179 strategy_lab_read_model_v1: GET /operator-dashboard/strategy-lab/studies[/{id}], authority restated NON_AUTHORITATIVE"
   blocked_by_owner: >-
     Strategy SDK evaluators and vectorized search (OR-3), Decimal authority re-run
     (OR-3), cost/funding/slippage in studies (OR-6), basis-MR port (OR-6).
@@ -138,10 +138,45 @@ r1a_capacity_evidence:        # 24 h runs abandoned: five were ended by host shu
     symbol, 0 torn lines. Mean raw GB/day: BTC 2.07, ETH 2.02, SOL 1.04,
     DOGE 0.80, LINK 0.69, HBAR 0.38, ATOM 0.21, GMT 0.10 (8 symbols 7.29;
     busiest window per symbol summed 8.66).
-  bounded_run: >-
-    1 h report capacity-report-20261003T124722Z (Saturday midday, quiet: 33
-    rec/s vs 73 mean): gzip 6.6-6.9x, CPU 2.2 % of one core, peak working set
-    39 MiB, 0 restarts, host clock resolution 15.625 ms.
+  bounded_runs: >-
+    PARTIAL, 6.53 h pooled, never 24 h. Rates per OBSERVED coverage second
+    (PR #181). run0 capacity-report-20261003T124722Z, 10-03 11:47-12:47Z,
+    3,610.7 s, CPU 2.16 %, WS 39.1 MiB. run1 ...20261006T104928Z, 10-06
+    00:13:26-02:15:19.9Z, 7,313.7 s observed (wall 38,164 s incl. suspend,
+    CONNECTION_LOST), 43.35 rec/s, CPU 2.73 %, WS 39.1 MiB. run2
+    ...20261006T142240Z, 10-06 10:52:21-14:22:19.7Z, 12,598.2 s observed vs
+    12,621.5 s report (startup), 1 session/symbol, 0 gaps/reconnects/restarts,
+    max BTCUSDT arrival gap 1.67 s (3 clock-sample failures were REST only),
+    49.4 rec/s, CPU 2.88 %, WS 51.1 MiB. gzip 6.7-6.9x every symbol and run.
+  uncertainty: >-
+    Raw GB/day per symbol, run0/run1/run2 vs 25.9 h mean: BTC 0.81/1.20/1.46
+    vs 2.07, ETH 0.55/0.86/0.97 vs 2.02, SOL 0.47/0.57/0.68 vs 1.04, DOGE
+    0.37/0.38/0.48 vs 0.80, LINK 0.21/0.27/0.30 vs 0.69, HBAR 0.17/0.18/0.26 vs
+    0.38, ATOM 0.10/0.13/0.10 vs 0.21, GMT 0.05/0.06/0.05 vs 0.10. Bounded runs
+    sit 0.4-0.85x of the 25.9 h mean; the mean is the upper envelope and is used
+    for sizing. Volatile days can exceed it (busiest windows summed 8.66 vs 7.29).
+  or2_options: >-
+    Free 46.7 GiB, 20 GiB floor -> 28.7 GB usable, shared with R0, research DB
+    and backups. gzip GB/day; storage 7/30/90 d; runway above floor.
+    U1 BTCUSDT (R0 status quo): raw 2.07, gzip 0.30; 2.1/9.1/27.2 GB; ~95 d;
+    14 rec/s. U2 BTC ETH SOL: raw 5.13, gzip 0.75; 5.2/22.5/67.4 GB; ~38 d;
+    32 rec/s. U3 + DOGE LINK: raw 6.62, gzip 0.97; 6.8/29.0/86.9 GB; ~29 d;
+    40 rec/s. U4 all 8 (+ HBAR ATOM GMT): raw 7.31, gzip 1.07; 7.5/32.0/96.1 GB;
+    ~27 d; 45 rec/s. CPU < 3 % of one core and WS < 52 MiB for all 8, so disk,
+    not CPU/RAM, binds. If R0 v1 keeps running beside R1B, add U1 again.
+  depth_cost: >-
+    Only if OR-6 wants empirical slippage. orderbook.50 BTCUSDT 0.81 GB/day raw
+    in a 10-min quiet sample (gzip 7.8x). Proxy, not measured: scale by each
+    symbol's tickers bytes vs BTC and by 2.54x (BTC 25.9 h mean / quietest
+    run). Raw GB/day U1 0.81-2.06, U2 2.24-5.70, U3 3.10-7.89, U4 3.58-9.12;
+    gzip worst 0.26/0.73/1.01/1.17; runway worst ~50/19/14/13 d. Measure
+    before adopting.
+  recommendation: >-
+    Not a decision. U2 (BTC ETH SOL, trades + tickers) is the widest set
+    whose runway (~38 d) outlasts a 72 h burn-in plus a month of
+    capture; add BTCUSDT orderbook.50 only if OR-6 picks an empirical slippage
+    method (U2 + BTC depth ~1.0 GB/day gzip, ~27 d). Every option beyond U1
+    needs OR-1 (retention/offload) decided within weeks.
   ends_with: OR-2 (owner), then R1B.
 
 or_packet_evidence:           # facts only; every decision stays with the owner
@@ -233,6 +268,12 @@ r0_operations:                # the T4 clock; runs beside every phase
     recorder exits 4); 'capture_bybit_public.py status' shows both roots;
     scripts/start_r0_capture.ps1 starts R0 unless a recorder process exists and
     installs nothing (-ShowLogonTaskCommand only prints an owner opt-in).
+  outages_2026_10_07: >-
+    Recorder pid started 2026-10-06 01:10 local, before the lock (status shows
+    NOT RUNNING; not restarted, no duplicate). UNPROVEN 10-06 15:00-15:14Z and
+    10-06 18:46:58Z (CONNECTION_LOST) -> 10-07 19:49:33Z (~25 h, host asleep;
+    no reboot since 10-06 01:02 local); never bridged. Clock 10-07 21:46Z
+    +553 ms +/- 126 ms, W32Time stopped/Manual.
   timestamp_delta_rule: >-
     arrival - exchange ts is an OBSERVED TIMESTAMP DELTA, never latency, and is
     never the justification for a T2 publication-lag value (OR-5).
