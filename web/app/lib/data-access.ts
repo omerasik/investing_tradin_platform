@@ -341,7 +341,7 @@ export type CaptureAvailability = {
   sources: {
     source_id: string;
     exchange_symbol: string;
-    purpose: "PRODUCTION" | "MEASUREMENT";
+    purpose: "PRODUCTION" | "UNIVERSE" | "MEASUREMENT";
     proven_record_count: number;
     proven_seconds: number;
     windows: { session_id: string; start_at: string; last_proven_at: string; end_proof: string; record_count: number }[];

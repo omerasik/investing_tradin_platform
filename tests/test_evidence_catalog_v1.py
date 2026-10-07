@@ -40,6 +40,7 @@ from trade_platform.first_party_capture_archive_v1 import (
 from trade_platform.first_party_capture_authority_v1 import (
     first_party_bybit_capture_contract_v1,
     first_party_bybit_measurement_contract_v1,
+    first_party_bybit_universe_contract_v1,
 )
 from trade_platform.security import InMemoryRateLimiter, OperatorAuthenticator
 
@@ -209,6 +210,12 @@ class CaptureAvailabilityTests(unittest.TestCase):
         (source,) = view.sources
         self.assertEqual(("ETHUSDT", "MEASUREMENT"), (source.exchange_symbol, source.purpose))
         self.assertIsNone(source.latest_clock_offset)
+
+    def test_universe_is_labelled_as_its_own_purpose(self) -> None:
+        _partition(self.root, contract=first_party_bybit_universe_contract_v1("ETHUSDT"))
+        view = read_capture_availability_v1(self.root, now=NOW)
+        (source,) = view.sources
+        self.assertEqual(("ETHUSDT", "UNIVERSE"), (source.exchange_symbol, source.purpose))
 
 
 class EvidenceEndpointTests(unittest.TestCase):

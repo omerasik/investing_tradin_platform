@@ -117,6 +117,7 @@ from .first_party_capture_archive_v1 import (
 )
 from .first_party_capture_authority_v1 import (
     FirstPartyCaptureContractV1,
+    capture_purpose_v1,
     first_party_bybit_capture_contract_v1,
     resolve_first_party_capture_contract_v1,
 )
@@ -913,7 +914,6 @@ def iter_health_lines(root: Path | None = None) -> Iterator[str]:
     size of its records file -- it is PARTIAL until finalized, by design.
     """
     base = default_archive_root() if root is None else root
-    production = first_party_bybit_capture_contract_v1().source_id
     for directory in find_partitions_v1(base):
         partition = read_partition_status_v1(directory)
         claimed = session_source_id_v1(directory)
@@ -921,8 +921,7 @@ def iter_health_lines(root: Path | None = None) -> Iterator[str]:
         if contract is None:
             label = "UNATTRIBUTED"
         else:
-            purpose = "production" if contract.source_id == production else "measurement"
-            label = f"{contract.exchange_symbol}/{purpose}"
+            label = f"{contract.exchange_symbol}/{capture_purpose_v1(contract).value.lower()}"
         extra = ""
         if (directory / OPEN_MARKER_NAME).exists():
             size = open_partition_bytes_v1(directory)

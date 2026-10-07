@@ -73,6 +73,7 @@ from trade_platform.first_party_capture_authority_v1 import (
     FirstPartyCaptureContractV1,
     first_party_bybit_capture_contract_v1,
     first_party_bybit_measurement_contract_v1,
+    first_party_bybit_universe_contract_v1,
 )
 
 CONTRACT = first_party_bybit_capture_contract_v1()
@@ -994,6 +995,15 @@ class ContractResolutionTests(_RootTest):
         forced = read_partition_status_v1(directory, contract=CONTRACT)
         self.assertEqual(PARTITION_STATUS_PARTIAL, forced.status)
         self.assertIn("manifest_source_is_not_the_authorized_first_party_source", forced.reasons)
+
+    def test_a_universe_partition_is_proven_against_its_own_contract(self) -> None:
+        contract = first_party_bybit_universe_contract_v1("SOLUSDT")
+        directory = _complete_partition(self.root, contract=contract)
+        partition = read_partition_status_v1(directory)
+        self.assertEqual(PARTITION_STATUS_COMPLETE, partition.status, partition.reasons)
+        self.assertEqual(3, verify_partition_v1(directory).record_count)
+        forced = read_partition_status_v1(directory, contract=CONTRACT)
+        self.assertEqual(PARTITION_STATUS_PARTIAL, forced.status)
 
     def test_an_unknown_source_falls_back_to_production_and_fails(self) -> None:
         directory = _complete_partition(self.root)
