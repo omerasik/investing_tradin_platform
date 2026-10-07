@@ -768,6 +768,92 @@ class UniverseT4Tests(_TempRoots):
         with self.assertRaisesRegex(FirstPartyT4DatasetError, "not_t4_registered"):
             t4_seal_from_catalog_v1(forged, store=self.store(), capture_root=self.capture)
 
+    def test_a_catalogued_identity_naming_another_registered_source_never_rebuilds(self) -> None:
+        from trade_platform.first_party_capture_authority_v1 import (
+            first_party_bybit_capture_contract_v1,
+            first_party_bybit_universe_contract_v1,
+        )
+        from trade_platform.first_party_t4_dataset_v1 import (
+            CataloguedT4DatasetV1,
+            t4_seal_from_catalog_v1,
+        )
+
+        seal = self._seal(self.eth)
+        others = (
+            first_party_bybit_universe_contract_v1("SOLUSDT"),
+            first_party_bybit_universe_contract_v1("BTCUSDT"),
+            first_party_bybit_capture_contract_v1(),
+        )
+        for other in others:
+            for contract_hash in (seal.identity["contract_content_hash"], other.content_hash()):
+                forged = CataloguedT4DatasetV1(
+                    dataset_version_id=seal.dataset_version_id, content_hash=seal.content_hash,
+                    identity={
+                        **seal.identity, "source_id": str(other.source_id),
+                        "contract_content_hash": contract_hash,
+                    },
+                    frame_manifests=seal.frame_manifests, sealed_at=seal.sealed_at,
+                )
+                with (
+                    self.subTest(source=other.exchange_symbol, contract_hash=contract_hash[:8]),
+                    self.assertRaises(ValueError),
+                ):
+                    t4_seal_from_catalog_v1(forged, store=self.store(), capture_root=self.capture)
+
+    def test_no_registered_capture_source_reaches_t4_without_its_seal(self) -> None:
+        from dataclasses import fields
+
+        from trade_platform import real_market_data_provenance_v1 as provenance_module
+        from trade_platform.evidence_tier_authority_v1 import (
+            evaluate_evidence_tier_v1,
+            first_party_sealed_timing_facts_v1,
+        )
+        from trade_platform.first_party_capture_authority_v1 import (
+            t4_registered_first_party_capture_contracts_v1,
+        )
+
+        honest = provenance_module.evaluate_first_party_capture_provenance_v1(self._seal(self.eth))
+        facts = first_party_sealed_timing_facts_v1(honest)
+        values = {
+            item.name: getattr(honest, item.name) for item in fields(honest)
+            if item.name not in {"content_hash", "evidence_id", "_issuer"}
+        }
+        for contract in t4_registered_first_party_capture_contracts_v1():
+            # A proven-real verdict that no seal produced (reaches a private
+            # issuer deliberately: no public path can build one).
+            unsealed = provenance_module._issue(
+                **{**values, "source_id": contract.source_id,
+                   "first_party_capture_seal_evidence_id": None,
+                   "first_party_sealed_timing_facts": None},
+            )
+            self.assertTrue(unsealed.is_proven_real())
+            verdict = evaluate_evidence_tier_v1(replace(facts, source_id=contract.source_id), unsealed)
+            with self.subTest(source=str(contract.source_id)):
+                self.assertIn(
+                    "evidence_tier_first_party_capture_requires_sealed_capture_provenance",
+                    verdict.reasons,
+                )
+                self.assertFalse(verdict.is_professional_evidence())
+
+    def test_a_measurement_source_seal_is_never_catalogued(self) -> None:
+        from trade_platform.first_party_capture_authority_v1 import (
+            first_party_bybit_measurement_contract_v1,
+        )
+        from trade_platform.first_party_t4_dataset_v1 import (
+            FirstPartyT4DatasetError,
+            PostgresFirstPartyT4CatalogV1,
+        )
+
+        measurement = first_party_bybit_measurement_contract_v1("SOLUSDT")
+        self.archive.session(
+            windows=[(BASE, BASE + 300 * SECOND)], samples=_standard_samples(320),
+            contract=measurement, tamper=_as_symbol("SOLUSDT"),
+        )
+        # Refused before any database access.
+        catalog = PostgresFirstPartyT4CatalogV1(database=None)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(FirstPartyT4DatasetError, "t4_registered_source"):
+            catalog.register(self._seal(measurement))
+
     def test_a_measurement_source_seal_is_never_real_provenance(self) -> None:
         from trade_platform.first_party_capture_authority_v1 import (
             first_party_bybit_measurement_contract_v1,
@@ -785,6 +871,7 @@ class UniverseT4Tests(_TempRoots):
         self.assertFalse(provenance.is_proven_real())
         self.assertIn("source_id_not_canonical", provenance.reasons)
         self.assertIsNone(provenance.first_party_sealed_timing_facts)
+        self.assertEqual((), provenance.instrument_ids)
 
 
 class T4AuthorityTests(_TempRoots):

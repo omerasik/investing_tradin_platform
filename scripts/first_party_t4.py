@@ -2,8 +2,7 @@
 
     python scripts/first_party_t4.py discover
     python scripts/first_party_t4.py seal --dsn postgresql://...      # seals + catalogs every segment
-    python scripts/first_party_t4.py seal --dsn ... --source ETHUSDT \\
-        --capture-root ~/.trade_platform/capture-universe-r1b          # an OR-2 universe source (R1B.2)
+    python scripts/first_party_t4.py seal --dsn ... --source ETHUSDT  # an OR-2 universe source (R1B.2)
     python scripts/first_party_t4.py verify --dsn ...                 # rebuilds every catalogued dataset
     python scripts/first_party_t4.py features --dsn ... --dataset <id> # V3 basis rows + decision-time proof
     python scripts/first_party_t4.py quotes --dsn ... --dataset <id>   # level-1 + funding sidecar, spread evidence
@@ -219,18 +218,27 @@ def _quotes(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("discover", "seal", "verify", "features", "quotes"))
-    parser.add_argument("--capture-root", type=Path, default=default_archive_root())
+    parser.add_argument(
+        "--capture-root", type=Path, default=None,
+        help="default: ~/.trade_platform/capture for production, "
+        "~/.trade_platform/capture-universe-r1b for a universe --source",
+    )
     parser.add_argument(
         "--source", choices=("production", *UNIVERSE_R1B_SYMBOLS_V1), default="production",
-        help="discover/seal: the T4-registered source (an OR-2 universe symbol needs "
-        "--capture-root ~/.trade_platform/capture-universe-r1b); other commands "
-        "resolve the source from the sealed identity",
+        help="discover/seal: the T4-registered source; other commands resolve the "
+        "source from the sealed identity (verify/features/quotes still read one "
+        "--capture-root, so run them per root)",
     )
     parser.add_argument("--data-root", type=Path, default=None)
     parser.add_argument("--dsn")
     parser.add_argument("--dataset")
     parser.add_argument("--write", action="store_true", help="features: persist V3 rows; quotes: write frames")
     args = parser.parse_args()
+    if args.capture_root is None:
+        production = default_archive_root()
+        args.capture_root = (
+            production if args.source == "production" else production.parent / "capture-universe-r1b"
+        )
     if args.command != "discover" and not args.dsn:
         parser.error("--dsn is required")
     {"discover": _discover, "seal": _seal, "verify": _verify, "features": _features,

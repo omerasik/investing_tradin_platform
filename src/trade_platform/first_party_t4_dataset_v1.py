@@ -122,6 +122,9 @@ class PostgresFirstPartyT4CatalogV1:
         """
         if not seal.integrity_verified() or not seal.raw_replayed:
             raise FirstPartyT4DatasetError("only_a_raw_replayed_intact_seal_may_be_catalogued")
+        if resolve_t4_registered_first_party_capture_contract_v1(seal.source_id) is None:
+            # e.g. a capacity-measurement seal: never catalogued as a T4 dataset.
+            raise FirstPartyT4DatasetError("only_a_t4_registered_source_may_be_catalogued")
         identity = seal.identity
         window = identity["window"]
         segment = identity["segment"]

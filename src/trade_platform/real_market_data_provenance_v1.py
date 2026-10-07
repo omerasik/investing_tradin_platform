@@ -66,8 +66,11 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import NAMESPACE_URL, UUID, uuid5
+
+if TYPE_CHECKING:
+    from .first_party_capture_authority_v1 import FirstPartyCaptureContractV1
 
 from .bybit_instrument_onboarding import (
     bybit_authorized_historical_source,
@@ -451,7 +454,9 @@ def evaluate_real_market_data_provenance_v1(
 FIRST_PARTY_CAPTURE_DATASET_NAME_V1 = "bybit-v5-public-websocket-first-party-capture"
 
 
-def first_party_capture_source_contract_v1(contract: Any = None) -> CanonicalSourceContractV1:
+def first_party_capture_source_contract_v1(
+    contract: FirstPartyCaptureContractV1 | None = None,
+) -> CanonicalSourceContractV1:
     """A T4-registered first-party capture contract, in the shared source-contract shape.
 
     A projection of ``contract`` (default: the production contract
@@ -558,7 +563,8 @@ def evaluate_first_party_capture_provenance_v1(seal: Any) -> RealMarketDataProve
         source_id=seal.source_id,
         source_contract_content_hash=projection.content_hash() if proven else None,
         member_count=member_count,
-        instrument_ids=(contract.instrument_scope,),
+        # Never the stand-in's instrument for an unresolved source.
+        instrument_ids=() if resolved is None else (contract.instrument_scope,),
         member_count_by_kind=by_kind,
         first_party_capture_seal_evidence_id=seal.evidence_id if proven else None,
         first_party_sealed_timing_facts=seal.timing_facts.as_tuple() if proven else None,
