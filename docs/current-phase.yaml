@@ -2,7 +2,7 @@
 # This is NOT a second roadmap: requirements stay in MASTER_ROADMAP.md, design
 # stays in module docstrings, history stays in git.
 
-updated: 2026-10-07
+updated: 2026-10-08
 
 # Phase naming. Since 2026-09-24 the owner-approved canonical roadmap uses an
 # "R" series (R0-R15, owner review points OR-1..OR-14). It is distinct from the
@@ -14,7 +14,7 @@ updated: 2026-10-07
 # the one parallel track.
 phase:
   id: "OWNER-GATE-R4"
-  name: Owner review of OR-1, OR-2, OR-3, OR-5, OR-6 (blocks R1B and R4 evaluators)
+  name: R1B universe capture (OR-2 decided); owner review of OR-1, OR-3, OR-5, OR-6 (blocks R4 evaluators)
   status: waiting_for_owner
   base_commit: 2905a37       # R4.0-R4.5 merged (#172-#179), ops lock #180, R1A fix #181
   why_now: >-
@@ -177,7 +177,20 @@ r1a_capacity_evidence:        # 24 h runs abandoned: five were ended by host shu
     capture; add BTCUSDT orderbook.50 only if OR-6 picks an empirical slippage
     method (U2 + BTC depth ~1.0 GB/day gzip, ~27 d). Every option beyond U1
     needs OR-1 (retention/offload) decided within weeks.
-  ends_with: OR-2 (owner), then R1B.
+  ends_with: OR-2 decided 2026-10-08 (owner) -> R1B.
+
+r1b_universe:                 # OR-2 = U2: BTCUSDT ETHUSDT SOLUSDT, tickers + publicTrade, no depth
+  r1b_1: >-
+    first_party_bybit_universe_contracts_v1: one contract per symbol, v1 rules,
+    own semantic version and source_ids (BTC ee317fbf, ETH 14ffac30, SOL
+    9101dd6a); v1 R0 and R1A measurement identities unchanged. Not registered
+    for evidence tiers (T4 sealing of universe sources is a later, separately
+    reviewed slice). 'capture_bybit_public.py universe': hourly segments on
+    ~/.trade_platform/capture-universe-r1b with its own recorder lock.
+  burn_in: 72 h on the universe root beside R0, then re-measure runway.
+  open_point: >-
+    R0 v1 keeps recording BTCUSDT beside the universe (+~0.30 GB/day gzip)
+    until the owner retires it; not changed here.
 
 or_packet_evidence:           # facts only; every decision stays with the owner
   or1_refetch: >-

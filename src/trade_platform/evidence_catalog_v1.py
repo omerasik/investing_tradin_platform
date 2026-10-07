@@ -58,7 +58,7 @@ from .first_party_capture_archive_v1 import (
     read_lifecycle_v1,
     session_source_id_v1,
 )
-from .first_party_capture_authority_v1 import first_party_bybit_capture_contract_v1
+from .first_party_capture_authority_v1 import capture_purpose_v1
 
 EVIDENCE_CATALOG_VERSION_V1: Final = "evidence-catalog-v1"
 CAPTURE_AVAILABILITY_VERSION_V1: Final = "capture-availability-v1"
@@ -199,7 +199,7 @@ class ClockOffsetSampleView(BaseModel):
 class CaptureSourceAvailabilityView(BaseModel):
     source_id: UUID
     exchange_symbol: str
-    purpose: Literal["PRODUCTION", "MEASUREMENT"]
+    purpose: Literal["PRODUCTION", "UNIVERSE", "MEASUREMENT"]
     proven_record_count: int
     proven_seconds: float
     windows: list[CaptureWindowView]
@@ -451,7 +451,6 @@ def read_capture_availability_v1(
             state="UNAVAILABLE", as_of=as_of, disk_free_bytes=None, sources=[], unattributed=[],
             limitations=["The configured capture archive root does not exist on this host."],
         )
-    production = first_party_bybit_capture_contract_v1().source_id
     per_source, unattributed = derive_archive_availability_by_source_v1(root)
     sources = []
     for item in per_source:
@@ -469,7 +468,7 @@ def read_capture_availability_v1(
         sources.append(CaptureSourceAvailabilityView(
             source_id=item.contract.source_id,
             exchange_symbol=item.contract.exchange_symbol,
-            purpose="PRODUCTION" if item.contract.source_id == production else "MEASUREMENT",
+            purpose=capture_purpose_v1(item.contract).value,
             proven_record_count=sum(window.record_count for window in windows),
             proven_seconds=sum(
                 (window.interval.last_proven_utc_nanos - window.interval.start_utc_nanos) / 1e9

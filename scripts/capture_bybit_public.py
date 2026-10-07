@@ -16,6 +16,12 @@ shutdown loses only the open hour (the R0 local-host operating mode)::
 
     .venv\\Scripts\\python scripts/capture_bybit_public.py supervise --segment-seconds 3600
 
+Record the owner-chosen R1B universe (OR-2: BTCUSDT, ETHUSDT, SOLUSDT; tickers and
+publicTrade; hourly segments) on its own archive root beside R0; inspect it with
+``--root ~/.trade_platform/capture-universe-r1b``::
+
+    .venv\\Scripts\\python scripts/capture_bybit_public.py universe
+
 Measure what multi-symbol capture costs on this host (R1A; a pinned engineering
 sample, not a production universe; written to a separate archive root)::
 
@@ -71,8 +77,11 @@ from trade_platform.first_party_capture_archive_v1 import (
     verify_partition_v1,
 )
 from trade_platform.first_party_capture_authority_v1 import (
+    FirstPartyCaptureContractV1,
+    capture_purpose_v1,
     first_party_bybit_capture_contract_v1,
     first_party_bybit_measurement_contracts_v1,
+    first_party_bybit_universe_contracts_v1,
 )
 from trade_platform.first_party_capture_measurement_v1 import (
     CapacityMeasurementV1,
@@ -117,6 +126,12 @@ def _measurement_root(args: argparse.Namespace) -> Path:
     if args.root:
         return Path(args.root)
     return default_archive_root().parent / "capture-measurement"
+
+
+def _universe_root(args: argparse.Namespace) -> Path:
+    if args.root:
+        return Path(args.root)
+    return default_archive_root().parent / "capture-universe-r1b"
 
 
 def _min_free_bytes(args: argparse.Namespace) -> int:
@@ -191,13 +206,23 @@ def _supervise(args: argparse.Namespace) -> int:
     two segments are a real, visible gap in ``availability``; nothing bridges
     them and no coverage is claimed across a segment boundary.
     """
-    contract = first_party_bybit_capture_contract_v1()
-    root = _root(args)
+    return _supervise_contracts(args, (first_party_bybit_capture_contract_v1(),), _root(args))
+
+
+def _universe(args: argparse.Namespace) -> int:
+    """Record the owner-chosen R1B universe (OR-2) unattended, on its own root."""
+    return _supervise_contracts(args, first_party_bybit_universe_contracts_v1(), _universe_root(args))
+
+
+def _supervise_contracts(
+    args: argparse.Namespace, contracts: tuple[FirstPartyCaptureContractV1, ...], root: Path
+) -> int:
     segment = args.segment_seconds
     if segment is not None:
         segment_bound_seconds(time.time(), segment)  # reject a too-short segment up front
     awake = request_keep_awake_v1()
-    print(f"supervising {contract.exchange_symbol} into {root}; keep-awake requested={awake}")
+    symbols = ", ".join(contract.exchange_symbol for contract in contracts)
+    print(f"supervising {symbols} into {root}; keep-awake requested={awake}")
     if segment is not None:
         print(f"bounded segments of {segment:g} s on the UTC grid; gaps between them are real")
     print("Ctrl-C to stop. A reboot, shutdown or lid-close still ends the session.\n")
@@ -205,7 +230,7 @@ def _supervise(args: argparse.Namespace) -> int:
         bound = None if segment is None else segment_bound_seconds(time.time(), segment)
         try:
             result = run_capture_fleet_v1(
-                (contract,),
+                contracts,
                 archive_root=root,
                 max_seconds=bound,
                 min_free_bytes=_min_free_bytes(args),
@@ -348,7 +373,10 @@ def _health(args: argparse.Namespace) -> int:
 def _status(args: argparse.Namespace) -> int:
     """Read-only operator view: is a recorder running on each root, newest partitions, disk."""
     root = _root(args)
-    for label, directory in (("production", root), ("measurement", _measurement_root(args))):
+    roots = (
+        ("production", root), ("universe", _universe_root(args)), ("measurement", _measurement_root(args))
+    )
+    for label, directory in roots:
         status = instance_lock_status_v1(directory, RECORDER_LOCK_NAME)
         owner = status.owner or {}
         state = (
@@ -391,9 +419,8 @@ def _replay(args: argparse.Namespace) -> int:
 def _availability(args: argparse.Namespace) -> int:
     root = _root(args)
     sources, unattributed = derive_archive_availability_by_source_v1(root)
-    production = first_party_bybit_capture_contract_v1().source_id
     for source in sources:
-        purpose = "production" if source.contract.source_id == production else "measurement"
+        purpose = capture_purpose_v1(source.contract).value.lower()
         print(f"== {source.contract.exchange_symbol} ({purpose}) source={source.contract.source_id}")
         availability = source.availability
         for window in availability.windows:
@@ -476,6 +503,19 @@ def main(argv: list[str] | None = None) -> int:
     with_floor(supervise)
     supervise.set_defaults(handler=_supervise)
 
+    universe = sub.add_parser(
+        "universe", help="run the R1B universe recorder (OR-2: BTCUSDT ETHUSDT SOLUSDT) unattended"
+    )
+    universe.add_argument("--restart-delay", type=float, default=60.0)
+    universe.add_argument(
+        "--segment-seconds",
+        type=float,
+        default=3600.0,
+        help="bounded sessions ending on this UTC grid (default 3600, the local-host mode)",
+    )
+    with_floor(universe)
+    universe.set_defaults(handler=_universe)
+
     measure = sub.add_parser("measure", help="R1A capacity measurement over the pinned sample")
     measure.add_argument("--seconds", type=float, default=600.0)
     with_floor(measure)
@@ -510,7 +550,9 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     handler = args.handler
-    lock_root = {"run": _root, "supervise": _root, "measure": _measurement_root}.get(args.command)
+    lock_root = {
+        "run": _root, "supervise": _root, "universe": _universe_root, "measure": _measurement_root
+    }.get(args.command)
     if lock_root is None:
         return int(handler(args))
     try:

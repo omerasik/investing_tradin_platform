@@ -448,14 +448,120 @@ def first_party_bybit_measurement_contracts_v1() -> tuple[FirstPartyCaptureContr
     )
 
 
+# ---------------------------------------------------------------------------
+# Phase R1B -- the owner-chosen capture universe (OR-2)
+# ---------------------------------------------------------------------------
+#
+# OR-2 was decided by the owner on 2026-10-08: option U2 (BTCUSDT, ETHUSDT,
+# SOLUSDT), channels tickers and publicTrade only, no orderbook depth. Each
+# symbol gets its own contract with the exact v1 record, clock, gap and refusal
+# semantics; the purpose, terms marker and semantic version differ, so every
+# universe contract has its own ``source_id`` -- BTCUSDT included, which stays a
+# distinct source from the R0 v1 contract above (untouched byte for byte).
+#
+# Not registered with the evidence-tier authority: registration and T4 sealing
+# of universe sources are a separate, independently reviewed slice. Until then a
+# universe partition is proven capture evidence with no tier verdict.
+
+UNIVERSE_R1B_SEMANTIC_VERSION_V1: Final = (
+    "trade-platform-bybit-v5-public-websocket-first-party-capture-universe-r1b-1.0.0"
+)
+
+UNIVERSE_R1B_TERMS_VERSION_V1: Final = (
+    "operator-declared:trade-platform-first-party-bybit-v5-public-websocket-"
+    "capture-universe-r1b:v1"
+)
+
+#: The owner-decided OR-2 universe, in decision order. Widening it is a new owner
+#: decision and a code change, never a runtime argument.
+UNIVERSE_R1B_SYMBOLS_V1: Final = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
+
+
+def _universe_authorization_reference(symbol: str) -> str:
+    return (
+        "owner decision OR-2 (2026-10-08, option U2: BTCUSDT ETHUSDT SOLUSDT, no "
+        "orderbook depth): this platform records the official public "
+        "wss://stream.bybit.com/v5/public/linear feed for "
+        f"CRYPTO:BYBIT:{symbol}:PERP, channels tickers and publicTrade only, with no "
+        "credential, no account and no paid tier. Not registered for evidence-tier "
+        "evaluation. Public market data only: no broker, account, order, execution "
+        "or live-trading authority is implied."
+    )
+
+
+def first_party_bybit_universe_contract_v1(symbol: str) -> FirstPartyCaptureContractV1:
+    """The R1B capture-universe contract for one OR-2 symbol.
+
+    Refuses any symbol outside :data:`UNIVERSE_R1B_SYMBOLS_V1`.
+    """
+    if symbol not in UNIVERSE_R1B_SYMBOLS_V1:
+        raise FirstPartyCaptureAuthorityError(f"universe_symbol_not_in_owner_decision_or_2:{symbol}")
+    return FirstPartyCaptureContractV1(
+        schema_version=FIRST_PARTY_CAPTURE_CONTRACT_SCHEMA_VERSION,
+        capture_provider=CAPTURE_PROVIDER_FIRST_PARTY,
+        originating_exchange=ORIGINATING_EXCHANGE_BYBIT_V1,
+        origin_transport=OriginTransportV1.BYBIT_V5_PUBLIC_WEBSOCKET.value,
+        endpoint=BYBIT_PUBLIC_LINEAR_ENDPOINT_V1,
+        instrument_scope=f"CRYPTO:BYBIT:{symbol}:PERP",
+        exchange_symbol=symbol,
+        authorized_channels=tuple(
+            sorted((BybitPublicChannelV1.TICKERS.value, BybitPublicChannelV1.PUBLIC_TRADE.value))
+        ),
+        capture_methodology=CaptureMethodologyV1.FIRST_PARTY_LIVE_WEBSOCKET_RECORDING.value,
+        source_availability_clock=SourceAvailabilityClockV1.PLATFORM_RECORDER_WALL_CLOCK.value,
+        credential_required=False,
+        generated_records_permitted=False,
+        provider_captured_observations=PROVIDER_CAPTURED_OBSERVATIONS_V1,
+        platform_derived_artifacts=PLATFORM_DERIVED_ARTIFACTS_V1,
+        ticker_availability_rules=TICKER_AVAILABILITY_RULES_V1,
+        bar_temporal_rules=BAR_TEMPORAL_RULES_V1,
+        gap_authority_rules=GAP_AUTHORITY_RULES_V1,
+        clock_semantics=CLOCK_SEMANTICS_V1,
+        capture_refusal_rules=CAPTURE_REFUSAL_RULES_V1,
+        record_schema_version=FIRST_PARTY_RECORD_SCHEMA_VERSION_V1,
+        capture_semantic_version=UNIVERSE_R1B_SEMANTIC_VERSION_V1,
+        provider_terms_version=UNIVERSE_R1B_TERMS_VERSION_V1,
+        authorization_reference=_universe_authorization_reference(symbol),
+        _issuer=_ISSUER,
+    )
+
+
+def first_party_bybit_universe_contracts_v1() -> tuple[FirstPartyCaptureContractV1, ...]:
+    """Every R1B universe contract, in OR-2 decision order."""
+    return tuple(first_party_bybit_universe_contract_v1(symbol) for symbol in UNIVERSE_R1B_SYMBOLS_V1)
+
+
+class CapturePurposeV1(StrEnum):
+    """Why a contract exists. Derived from identity, never from a flag."""
+
+    PRODUCTION = "PRODUCTION"
+    UNIVERSE = "UNIVERSE"
+    MEASUREMENT = "MEASUREMENT"
+
+
+def capture_purpose_v1(contract: FirstPartyCaptureContractV1) -> CapturePurposeV1:
+    """The purpose of an authorized contract; refuses one outside the closed set."""
+    if contract.source_id == first_party_bybit_source_id_v1():
+        return CapturePurposeV1.PRODUCTION
+    if any(contract.source_id == c.source_id for c in first_party_bybit_universe_contracts_v1()):
+        return CapturePurposeV1.UNIVERSE
+    if any(contract.source_id == c.source_id for c in first_party_bybit_measurement_contracts_v1()):
+        return CapturePurposeV1.MEASUREMENT
+    raise FirstPartyCaptureAuthorityError(f"contract_not_in_authorized_set:{contract.source_id}")
+
+
 def authorized_first_party_capture_contracts_v1() -> tuple[FirstPartyCaptureContractV1, ...]:
     """The closed set of capture contracts a partition may belong to.
 
-    The production v1 contract first, then the R1A measurement contracts.
-    Membership is by deterministic identity only; a partition that names a
-    ``source_id`` outside this set resolves to nothing.
+    The production v1 contract first, then the R1B universe contracts, then the
+    R1A measurement contracts. Membership is by deterministic identity only; a
+    partition that names a ``source_id`` outside this set resolves to nothing.
     """
-    return (first_party_bybit_capture_contract_v1(), *first_party_bybit_measurement_contracts_v1())
+    return (
+        first_party_bybit_capture_contract_v1(),
+        *first_party_bybit_universe_contracts_v1(),
+        *first_party_bybit_measurement_contracts_v1(),
+    )
 
 
 def resolve_first_party_capture_contract_v1(source_id: UUID | str) -> FirstPartyCaptureContractV1 | None:

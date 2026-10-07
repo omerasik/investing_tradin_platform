@@ -101,8 +101,53 @@ class SegmentedSuperviseTests(unittest.TestCase):
         self.assertIsNone(calls[0]["max_seconds"])
 
 
-if __name__ == "__main__":
-    unittest.main()
+class UniverseRecorderTests(unittest.TestCase):
+    """R1B: the OR-2 universe records exactly its three contracts, hourly by default."""
+
+    def test_universe_records_the_owner_decided_contracts_in_hourly_segments(self) -> None:
+        import tempfile
+
+        from trade_platform.first_party_capture_authority_v1 import (
+            first_party_bybit_universe_contracts_v1,
+        )
+
+        seen: list = []
+
+        def fleet(contracts, **kwargs):
+            seen.append((contracts, kwargs))
+            return _result(CLI.END_PROOF_DISK_BUDGET_STOP if seen[1:] else CLI.END_PROOF_OPERATOR_BOUNDED_STOP)
+
+        with (
+            tempfile.TemporaryDirectory() as root,
+            patch.object(CLI, "run_capture_fleet_v1", side_effect=fleet),
+            patch.object(CLI, "request_keep_awake_v1", return_value=True),
+            patch.object(CLI.time, "time", return_value=NOW),
+            redirect_stdout(io.StringIO()),
+        ):
+            code = CLI.main(["--root", root, "universe"])
+        self.assertEqual(code, 2)
+        self.assertEqual(2, len(seen))
+        for contracts, kwargs in seen:
+            self.assertEqual(first_party_bybit_universe_contracts_v1(), contracts)
+            self.assertEqual(1495.0, kwargs["max_seconds"])
+            self.assertEqual(Path(root), kwargs["archive_root"])
+
+    def test_the_universe_root_is_its_own_and_lock_guarded(self) -> None:
+        import tempfile
+
+        from trade_platform.single_instance_lock_v1 import exclusive_instance_lock_v1
+
+        args = SimpleNamespace(root=None)
+        self.assertEqual("capture-universe-r1b", CLI._universe_root(args).name)
+        self.assertNotEqual(CLI._root(args), CLI._universe_root(args))
+        self.assertNotEqual(CLI._measurement_root(args), CLI._universe_root(args))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with exclusive_instance_lock_v1(root, CLI.RECORDER_LOCK_NAME, description="first"), \
+                    patch.object(CLI, "run_capture_fleet_v1") as fleet, redirect_stdout(io.StringIO()):
+                code = CLI.main(["--root", str(root), "universe"])
+            self.assertEqual(code, CLI.EXIT_ALREADY_RUNNING)
+            fleet.assert_not_called()
 
 
 class SingleRecorderTests(unittest.TestCase):
@@ -134,3 +179,7 @@ class SingleRecorderTests(unittest.TestCase):
                 with redirect_stdout(out):
                     self.assertEqual(CLI.main(["--root", str(root), "status"]), 0)
             self.assertIn("production   RUNNING", out.getvalue())
+
+
+if __name__ == "__main__":
+    unittest.main()

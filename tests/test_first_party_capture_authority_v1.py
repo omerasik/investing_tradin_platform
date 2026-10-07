@@ -28,14 +28,19 @@ from trade_platform.first_party_capture_authority_v1 import (
     GAP_AUTHORITY_RULES_V1,
     MEASUREMENT_SAMPLE_SYMBOLS_V1,
     TICKER_AVAILABILITY_RULES_V1,
+    UNIVERSE_R1B_SYMBOLS_V1,
     BybitPublicChannelV1,
+    CapturePurposeV1,
     FirstPartyCaptureAuthorityError,
     FirstPartyCaptureContractV1,
     authorized_first_party_capture_contracts_v1,
+    capture_purpose_v1,
     first_party_bybit_capture_contract_v1,
     first_party_bybit_measurement_contract_v1,
     first_party_bybit_measurement_contracts_v1,
     first_party_bybit_source_id_v1,
+    first_party_bybit_universe_contract_v1,
+    first_party_bybit_universe_contracts_v1,
     resolve_first_party_capture_contract_v1,
 )
 from trade_platform.real_market_data_provenance_v1 import canonical_bybit_source_contract_v1
@@ -200,6 +205,86 @@ class MeasurementContractTests(unittest.TestCase):
         registered = {contract.source_id for contract in authorized_timing_contracts_v1()}
         self.assertIn(first_party_bybit_source_id_v1(), registered)
         for contract in first_party_bybit_measurement_contracts_v1():
+            self.assertNotIn(contract.source_id, registered)
+
+
+PINNED_UNIVERSE_R1B_SOURCE_IDS = {
+    "BTCUSDT": UUID("ee317fbf-6dac-51e7-8e20-ea171d53e207"),
+    "ETHUSDT": UUID("14ffac30-2faf-51b3-9f4e-f8658569c1e0"),
+    "SOLUSDT": UUID("9101dd6a-5e41-515d-aec2-9bbb552353f8"),
+}
+PINNED_MEASUREMENT_BTCUSDT_SOURCE_ID = UUID("26fe7ff2-8ab5-5981-978d-883861eb9462")
+
+
+class UniverseContractTests(unittest.TestCase):
+    """Phase R1B: the owner-chosen OR-2 universe is a closed set of new sources."""
+
+    def test_universe_is_exactly_the_owner_decision(self) -> None:
+        self.assertEqual(("BTCUSDT", "ETHUSDT", "SOLUSDT"), UNIVERSE_R1B_SYMBOLS_V1)
+        contracts = first_party_bybit_universe_contracts_v1()
+        self.assertEqual(UNIVERSE_R1B_SYMBOLS_V1, tuple(c.exchange_symbol for c in contracts))
+        self.assertEqual(
+            PINNED_UNIVERSE_R1B_SOURCE_IDS, {c.exchange_symbol: c.source_id for c in contracts}
+        )
+        for contract in contracts:
+            self.assertIn("owner decision OR-2", contract.authorization_reference)
+            self.assertIn("no orderbook depth", contract.authorization_reference)
+
+    def test_symbols_outside_the_universe_are_refused(self) -> None:
+        for symbol in ("DOGEUSDT", "PEPEUSDT", "btcusdt", ""):
+            with self.assertRaises(FirstPartyCaptureAuthorityError):
+                first_party_bybit_universe_contract_v1(symbol)
+
+    def test_universe_btcusdt_is_a_distinct_source_from_r0_and_measurement(self) -> None:
+        universe = first_party_bybit_universe_contract_v1("BTCUSDT")
+        production = first_party_bybit_capture_contract_v1()
+        self.assertEqual(production.topics(), universe.topics())
+        self.assertNotEqual(production.source_id, universe.source_id)
+        self.assertNotEqual(
+            first_party_bybit_measurement_contract_v1("BTCUSDT").source_id, universe.source_id
+        )
+        # Adding the universe moved neither existing identity.
+        self.assertEqual(PINNED_FIRST_PARTY_SOURCE_ID, production.source_id)
+        self.assertEqual(PINNED_FIRST_PARTY_CONTRACT_HASH, production.content_hash())
+        self.assertEqual(
+            PINNED_MEASUREMENT_BTCUSDT_SOURCE_ID,
+            first_party_bybit_measurement_contract_v1("BTCUSDT").source_id,
+        )
+
+    def test_universe_contracts_keep_every_v1_rule_and_no_depth_channel(self) -> None:
+        production = first_party_bybit_capture_contract_v1()
+        for contract in first_party_bybit_universe_contracts_v1():
+            self.assertEqual(production.authorized_channels, contract.authorized_channels)
+            self.assertEqual(production.ticker_availability_rules, contract.ticker_availability_rules)
+            self.assertEqual(production.bar_temporal_rules, contract.bar_temporal_rules)
+            self.assertEqual(production.clock_semantics, contract.clock_semantics)
+            self.assertEqual(production.gap_authority_rules, contract.gap_authority_rules)
+            self.assertEqual(production.capture_refusal_rules, contract.capture_refusal_rules)
+            self.assertEqual(production.record_schema_version, contract.record_schema_version)
+            self.assertFalse(contract.credential_required)
+            self.assertFalse(contract.generated_records_permitted)
+            self.assertEqual(
+                (f"publicTrade.{contract.exchange_symbol}", f"tickers.{contract.exchange_symbol}"),
+                contract.topics(),
+            )
+            self.assertFalse(any(topic.startswith("orderbook") for topic in contract.topics()))
+
+    def test_universe_resolves_in_the_closed_set_with_its_purpose(self) -> None:
+        authorized = authorized_first_party_capture_contracts_v1()
+        self.assertEqual(1 + 3 + len(MEASUREMENT_SAMPLE_SYMBOLS_V1), len(authorized))
+        self.assertEqual(len(authorized), len({c.source_id for c in authorized}))
+        for contract in first_party_bybit_universe_contracts_v1():
+            self.assertEqual(contract, resolve_first_party_capture_contract_v1(contract.source_id))
+            self.assertEqual(CapturePurposeV1.UNIVERSE, capture_purpose_v1(contract))
+        self.assertEqual(
+            CapturePurposeV1.PRODUCTION, capture_purpose_v1(first_party_bybit_capture_contract_v1())
+        )
+        for contract in first_party_bybit_measurement_contracts_v1():
+            self.assertEqual(CapturePurposeV1.MEASUREMENT, capture_purpose_v1(contract))
+
+    def test_universe_contracts_are_not_registered_for_evidence_tiers(self) -> None:
+        registered = {contract.source_id for contract in authorized_timing_contracts_v1()}
+        for contract in first_party_bybit_universe_contracts_v1():
             self.assertNotIn(contract.source_id, registered)
 
 
