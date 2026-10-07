@@ -98,7 +98,10 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from .first_party_capture_authority_v1 import (
     FIRST_PARTY_TIMING_AUTHORIZATION_REFERENCE_V1,
+    UNIVERSE_R1B_TIMING_AUTHORIZATION_REFERENCE_V1,
     first_party_bybit_source_id_v1,
+    first_party_bybit_universe_contracts_v1,
+    t4_registered_first_party_capture_contracts_v1,
 )
 from .real_market_data_provenance_v1 import (
     STATUS_SYNTHETIC,
@@ -284,16 +287,40 @@ def first_party_bybit_capture_timing_contract_v1() -> EvidenceTimingContractV1:
     )
 
 
+def first_party_bybit_universe_timing_contracts_v1() -> tuple[EvidenceTimingContractV1, ...]:
+    """Phase R1B.2: each OR-2 universe source, recorder arrival -> ``T4_FIRST_PARTY_CAPTURE``.
+
+    Same timing authority and the same sealed-facts requirement as the
+    production source; the source ids come from the universe contracts' own
+    identity payloads.
+    """
+    return tuple(
+        _issue_contract(
+            source_id=contract.source_id,
+            timing_authority=TimingAuthorityV1.PLATFORM_RECORDER_ARRIVAL_TIMESTAMP,
+            tier_ceiling_reason=None,
+            authorization_reference=UNIVERSE_R1B_TIMING_AUTHORIZATION_REFERENCE_V1,
+        )
+        for contract in first_party_bybit_universe_contracts_v1()
+    )
+
+
 def authorized_timing_contracts_v1() -> tuple[EvidenceTimingContractV1, ...]:
     """The closed, explicit set of sources granted any timing authority.
 
-    Two entries. Adding one is an owner decision that ships as code: a persisted
-    row can never enrol itself, whatever its ``provider`` text says.
+    The REST source, the production first-party source and the three OR-2
+    universe sources. Adding one is an owner decision that ships as code: a
+    persisted row can never enrol itself, whatever its ``provider`` text says.
     """
     return (
         canonical_bybit_rest_timing_contract_v1(),
         first_party_bybit_capture_timing_contract_v1(),
+        *first_party_bybit_universe_timing_contracts_v1(),
     )
+
+
+def _t4_registered_capture_source_ids() -> frozenset[UUID]:
+    return frozenset(contract.source_id for contract in t4_registered_first_party_capture_contracts_v1())
 
 
 def _resolve_timing_contract(source_id: UUID | None) -> EvidenceTimingContractV1 | None:
@@ -506,11 +533,16 @@ def evaluate_evidence_tier_v1(
         proven_real
         and provenance is not None
         and contract is not None
-        and contract.source_id == first_party_bybit_source_id_v1()
+        and contract.source_id in _t4_registered_capture_source_ids()
     ):
-        # Phase R3A. First-party timing facts are never the caller's to state:
-        # the seal derived them from the normalized observations and the
-        # provenance verdict binds them. Any disagreement is a refusal.
+        # Phase R3A, widened by R1B.2 from the production source to every
+        # T4-registered first-party capture source (production and the OR-2
+        # universe). Every recorder-arrival contract shipped in
+        # authorized_timing_contracts_v1 belongs to that set; a test pins it,
+        # so no newly registered recorder source can skip this. First-party
+        # timing facts are never the caller's to state: the seal derived them
+        # from the normalized observations and the provenance verdict binds
+        # them. Any disagreement is a refusal.
         sealed = provenance.first_party_sealed_timing_facts
         if provenance.first_party_capture_seal_evidence_id is None or sealed is None:
             reasons.append("evidence_tier_first_party_capture_requires_sealed_capture_provenance")

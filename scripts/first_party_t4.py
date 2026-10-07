@@ -2,6 +2,8 @@
 
     python scripts/first_party_t4.py discover
     python scripts/first_party_t4.py seal --dsn postgresql://...      # seals + catalogs every segment
+    python scripts/first_party_t4.py seal --dsn ... --source ETHUSDT \\
+        --capture-root ~/.trade_platform/capture-universe-r1b          # an OR-2 universe source (R1B.2)
     python scripts/first_party_t4.py verify --dsn ...                 # rebuilds every catalogued dataset
     python scripts/first_party_t4.py features --dsn ... --dataset <id> # V3 basis rows + decision-time proof
     python scripts/first_party_t4.py quotes --dsn ... --dataset <id>   # level-1 + funding sidecar, spread evidence
@@ -26,6 +28,7 @@ from uuid import UUID
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from trade_platform.first_party_capture_archive_v1 import default_archive_root
+from trade_platform.first_party_capture_authority_v1 import UNIVERSE_R1B_SYMBOLS_V1
 from trade_platform.research_data_plane_v1 import ResearchFrameStoreV1
 
 
@@ -33,10 +36,22 @@ def _print(payload: Any) -> None:
     print(json.dumps(payload, indent=1, sort_keys=True, default=str))
 
 
+def _contract(args: argparse.Namespace) -> Any:
+    """The T4-registered capture contract ``--source`` names (production by default)."""
+    from trade_platform.first_party_capture_authority_v1 import (
+        first_party_bybit_capture_contract_v1,
+        first_party_bybit_universe_contract_v1,
+    )
+
+    if args.source == "production":
+        return first_party_bybit_capture_contract_v1()
+    return first_party_bybit_universe_contract_v1(args.source)
+
+
 def _discover(args: argparse.Namespace) -> None:
     from trade_platform.first_party_t4_seal_v1 import discover_t4_segments_v1
 
-    discovery = discover_t4_segments_v1(args.capture_root)
+    discovery = discover_t4_segments_v1(args.capture_root, contract=_contract(args))
     _print(
         {
             "complete_partitions": [
@@ -67,10 +82,11 @@ def _seal(args: argparse.Namespace) -> None:
     store = ResearchFrameStoreV1(args.data_root)
     catalog = PostgresFirstPartyT4CatalogV1(PostgresDatabase(args.dsn))
     results = []
-    for plan in discover_t4_segments_v1(args.capture_root).segments:
+    contract = _contract(args)
+    for plan in discover_t4_segments_v1(args.capture_root, contract=contract).segments:
         reference = f"{plan.partition.session_id}:{plan.partition.utc_day}:window={plan.window_index}"
         try:
-            seal = seal_t4_segment_v1(plan, store=store)
+            seal = seal_t4_segment_v1(plan, store=store, contract=contract)
         except (ValueError, OSError) as error:  # reported per segment; nothing partial is catalogued
             results.append({"segment": reference, "sealed": False, "reason": f"{type(error).__name__}:{error}"})
             continue
@@ -204,6 +220,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("discover", "seal", "verify", "features", "quotes"))
     parser.add_argument("--capture-root", type=Path, default=default_archive_root())
+    parser.add_argument(
+        "--source", choices=("production", *UNIVERSE_R1B_SYMBOLS_V1), default="production",
+        help="discover/seal: the T4-registered source (an OR-2 universe symbol needs "
+        "--capture-root ~/.trade_platform/capture-universe-r1b); other commands "
+        "resolve the source from the sealed identity",
+    )
     parser.add_argument("--data-root", type=Path, default=None)
     parser.add_argument("--dsn")
     parser.add_argument("--dataset")

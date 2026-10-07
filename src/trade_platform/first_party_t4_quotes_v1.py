@@ -58,7 +58,7 @@ from .first_party_capture_authority_v1 import (
     BybitMessageTypeV1,
     BybitPublicChannelV1,
     FirstPartyCaptureContractV1,
-    first_party_bybit_capture_contract_v1,
+    resolve_t4_registered_first_party_capture_contract_v1,
 )
 from .first_party_t4_normalization_v1 import (
     ArrivalClockBoundEvidenceV1,
@@ -397,7 +397,13 @@ def derive_t4_quotes_v1(
     """
     if not seal.integrity_verified() or not seal.raw_replayed:
         raise T4QuotesError("quotes_require_a_raw_replayed_seal")
-    authorized = first_party_bybit_capture_contract_v1() if contract is None else contract
+    # The seal names its own source; quotes re-admit under that contract only.
+    authorized = (
+        resolve_t4_registered_first_party_capture_contract_v1(seal.source_id)
+        if contract is None else contract
+    )
+    if authorized is None or authorized.source_id != seal.source_id:
+        raise T4QuotesError("quotes_contract_is_not_the_seals_t4_registered_source")
     plan = plan_for_sealed_identity_v1(seal.identity, capture_root=capture_root, contract=authorized)
     normalizer = T4QuoteNormalizerV1(exchange_symbol=authorized.exchange_symbol, session_id=plan.partition.session_id)
     admitted = 0

@@ -459,9 +459,10 @@ def first_party_bybit_measurement_contracts_v1() -> tuple[FirstPartyCaptureContr
 # universe contract has its own ``source_id`` -- BTCUSDT included, which stays a
 # distinct source from the R0 v1 contract above (untouched byte for byte).
 #
-# Not registered with the evidence-tier authority: registration and T4 sealing
-# of universe sources are a separate, independently reviewed slice. Until then a
-# universe partition is proven capture evidence with no tier verdict.
+# Phase R1B.2 registers each universe source with the evidence-tier authority
+# (see :func:`t4_registered_first_party_capture_contracts_v1`). Registration
+# alone issues no verdict: the T4 path still needs a seal rebuilt from raw
+# capture and the timing facts it derived, exactly as for the production source.
 
 UNIVERSE_R1B_SEMANTIC_VERSION_V1: Final = (
     "trade-platform-bybit-v5-public-websocket-first-party-capture-universe-r1b-1.0.0"
@@ -477,6 +478,11 @@ UNIVERSE_R1B_TERMS_VERSION_V1: Final = (
 UNIVERSE_R1B_SYMBOLS_V1: Final = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
 
 
+#: The wording below is part of each universe contract's identity payload and is
+#: frozen as issued in R1B.1 (partitions are recorded under these source_ids). Its
+#: "not registered" clause describes that issuance; whether a source holds a
+#: timing contract is decided only by
+#: :func:`~trade_platform.evidence_tier_authority_v1.authorized_timing_contracts_v1`.
 def _universe_authorization_reference(symbol: str) -> str:
     return (
         "owner decision OR-2 (2026-10-08, option U2: BTCUSDT ETHUSDT SOLUSDT, no "
@@ -529,6 +535,40 @@ def first_party_bybit_universe_contract_v1(symbol: str) -> FirstPartyCaptureCont
 def first_party_bybit_universe_contracts_v1() -> tuple[FirstPartyCaptureContractV1, ...]:
     """Every R1B universe contract, in OR-2 decision order."""
     return tuple(first_party_bybit_universe_contract_v1(symbol) for symbol in UNIVERSE_R1B_SYMBOLS_V1)
+
+
+UNIVERSE_R1B_TIMING_AUTHORIZATION_REFERENCE_V1: Final = (
+    "Phase R1B.2 evidence-tier registration of the OR-2 capture universe: each "
+    "universe source records the same recorder arrival time, monotonic ordering "
+    "evidence, RTT-bounded clock samples and explicit clock-discontinuity gaps as "
+    "the production contract, so its timing authority is "
+    "PLATFORM_RECORDER_ARRIVAL_TIMESTAMP. Registration grants no verdict: a T4 "
+    "evaluation still requires proven real provenance over a seal rebuilt from raw "
+    "capture, with the timing facts that seal derived."
+)
+
+
+def t4_registered_first_party_capture_contracts_v1() -> tuple[FirstPartyCaptureContractV1, ...]:
+    """The capture contracts whose sealed segments may reach the T4 path.
+
+    The production v1 contract and the R1B universe contracts. The R1A
+    measurement contracts are deliberately absent: they exist to measure cost,
+    and their partitions never become evidence.
+    """
+    return (first_party_bybit_capture_contract_v1(), *first_party_bybit_universe_contracts_v1())
+
+
+def resolve_t4_registered_first_party_capture_contract_v1(
+    source_id: UUID | str | None,
+) -> FirstPartyCaptureContractV1 | None:
+    """The T4-registered contract with this ``source_id``, else ``None`` (never a default)."""
+    if source_id is None:
+        return None
+    wanted = str(source_id)
+    for contract in t4_registered_first_party_capture_contracts_v1():
+        if str(contract.source_id) == wanted:
+            return contract
+    return None
 
 
 class CapturePurposeV1(StrEnum):

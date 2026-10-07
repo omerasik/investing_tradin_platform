@@ -139,9 +139,14 @@ class TimingContractTests(unittest.TestCase):
                 authorization_reference="forged",
             )
 
-    def test_closed_set_holds_exactly_the_two_authorized_sources(self) -> None:
+    def test_closed_set_holds_exactly_the_authorized_sources(self) -> None:
         contracts = authorized_timing_contracts_v1()
-        self.assertEqual(2, len(contracts))
+        self.assertEqual(5, len(contracts))
+        for universe in contracts[2:]:
+            self.assertEqual(
+                TimingAuthorityV1.PLATFORM_RECORDER_ARRIVAL_TIMESTAMP.value, universe.timing_authority
+            )
+            self.assertEqual(EvidenceTierV1.T4_FIRST_PARTY_CAPTURE.value, universe.granted_tier)
         self.assertEqual(CONTRACT.source_id, contracts[0].source_id)
         self.assertEqual(TimingAuthorityV1.NONE.value, contracts[0].timing_authority)
         self.assertEqual(EvidenceTierV1.T1_RETROSPECTIVE.value, contracts[0].granted_tier)
@@ -604,9 +609,32 @@ class UnchangedIdentityTests(unittest.TestCase):
         with self.assertRaises(OpenToOpenPreregistrationV1Error):
             require_authorized_for_holdout_with_evidence_tier_v1(packet, verdict)
 
-    def test_timing_contracts_cover_only_the_two_intended_sources(self) -> None:
+    def test_every_shipped_recorder_arrival_source_is_bound_to_its_seal(self) -> None:
+        # The sealed-timing-facts rule applies to T4-registered capture sources;
+        # this pins that no shipped recorder-arrival contract falls outside them.
+        from trade_platform.first_party_capture_authority_v1 import (
+            t4_registered_first_party_capture_contracts_v1,
+        )
+
+        registered = {c.source_id for c in t4_registered_first_party_capture_contracts_v1()}
+        recorder = [
+            c.source_id for c in authorized_timing_contracts_v1()
+            if c.timing_authority == TimingAuthorityV1.PLATFORM_RECORDER_ARRIVAL_TIMESTAMP.value
+        ]
+        self.assertEqual(4, len(recorder))
+        self.assertTrue(set(recorder) <= registered)
+
+    def test_timing_contracts_cover_only_the_intended_sources(self) -> None:
+        from trade_platform.first_party_capture_authority_v1 import (
+            first_party_bybit_universe_contracts_v1,
+        )
+
         self.assertEqual(
-            (CONTRACT.source_id, first_party_bybit_source_id_v1()),
+            (
+                CONTRACT.source_id,
+                first_party_bybit_source_id_v1(),
+                *(contract.source_id for contract in first_party_bybit_universe_contracts_v1()),
+            ),
             tuple(contract.source_id for contract in authorized_timing_contracts_v1()),
         )
 

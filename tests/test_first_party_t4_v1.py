@@ -678,6 +678,115 @@ class DiscoveryAndSealTests(_TempRoots):
 # ---------------------------------------------------------------------------
 
 
+def _as_symbol(symbol: str) -> Any:
+    return lambda _, text: text.replace("BTCUSDT", symbol)
+
+
+class UniverseT4Tests(_TempRoots):
+    """Phase R1B.2: an OR-2 universe source reaches T4 only through its own sealed evidence."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        from trade_platform.first_party_capture_authority_v1 import (
+            first_party_bybit_universe_contract_v1,
+        )
+
+        self.eth = first_party_bybit_universe_contract_v1("ETHUSDT")
+        self.archive.session(
+            windows=[(BASE, BASE + 300 * SECOND)], samples=_standard_samples(320),
+            contract=self.eth, tamper=_as_symbol("ETHUSDT"),
+        )
+        self.sealed_at = datetime(2026, 9, 21, tzinfo=UTC)
+
+    def _seal(self, contract: Any) -> Any:
+        from trade_platform.first_party_t4_seal_v1 import (
+            discover_t4_segments_v1,
+            seal_t4_segment_v1,
+        )
+
+        (plan,) = discover_t4_segments_v1(self.capture, contract=contract).segments
+        return seal_t4_segment_v1(plan, store=self.store(), sealed_at=self.sealed_at, contract=contract)
+
+    def test_a_universe_seal_is_t4_professional_for_its_own_instrument(self) -> None:
+        from trade_platform.evidence_tier_authority_v1 import EvidenceTierV1
+        from trade_platform.first_party_t4_dataset_v1 import issue_t4_evidence_tier_v1
+        from trade_platform.first_party_t4_seal_v1 import discover_t4_segments_v1
+
+        # The production source sees none of it.
+        self.assertEqual((), discover_t4_segments_v1(self.capture).segments)
+        seal = self._seal(self.eth)
+        self.assertEqual(self.eth.source_id, seal.source_id)
+        self.assertEqual("CRYPTO:BYBIT:ETHUSDT:PERP", seal.identity["instrument"])
+        provenance, verdict = issue_t4_evidence_tier_v1(seal)
+        self.assertTrue(provenance.is_proven_real(), provenance.reasons)
+        self.assertEqual(("CRYPTO:BYBIT:ETHUSDT:PERP",), provenance.instrument_ids)
+        self.assertEqual(self.eth.source_id, provenance.source_id)
+        self.assertEqual(EvidenceTierV1.T4_FIRST_PARTY_CAPTURE.value, verdict.tier)
+        self.assertEqual((), verdict.reasons)
+        self.assertTrue(verdict.is_professional_evidence())
+
+    def test_universe_timing_facts_are_bound_to_the_seal_too(self) -> None:
+        from trade_platform.evidence_tier_authority_v1 import (
+            evaluate_evidence_tier_v1,
+            first_party_sealed_timing_facts_v1,
+        )
+        from trade_platform.real_market_data_provenance_v1 import (
+            evaluate_first_party_capture_provenance_v1,
+        )
+
+        provenance = evaluate_first_party_capture_provenance_v1(self._seal(self.eth))
+        honest = first_party_sealed_timing_facts_v1(provenance)
+        inflated = replace(honest, distinct_knowledge_time_count=honest.distinct_knowledge_time_count + 1)
+        verdict = evaluate_evidence_tier_v1(inflated, provenance)
+        self.assertIn("evidence_tier_timing_facts_disagree_with_the_sealed_capture", verdict.reasons)
+        self.assertFalse(verdict.is_professional_evidence())
+
+    def test_catalog_rebuild_and_quotes_use_the_seals_own_contract(self) -> None:
+        from trade_platform.first_party_t4_dataset_v1 import (
+            CataloguedT4DatasetV1,
+            FirstPartyT4DatasetError,
+            t4_seal_from_catalog_v1,
+        )
+        from trade_platform.first_party_t4_quotes_v1 import T4QuotesError, derive_t4_quotes_v1
+
+        seal = self._seal(self.eth)
+        catalogued = CataloguedT4DatasetV1(
+            dataset_version_id=seal.dataset_version_id, content_hash=seal.content_hash,
+            identity=seal.identity, frame_manifests=seal.frame_manifests, sealed_at=seal.sealed_at,
+        )
+        rebuilt = t4_seal_from_catalog_v1(catalogued, store=self.store(), capture_root=self.capture)
+        self.assertEqual(seal.content_hash, rebuilt.content_hash)
+        quotes = derive_t4_quotes_v1(rebuilt, capture_root=self.capture)
+        self.assertGreater(quotes.identity["counts"]["ticker_records"], 0)
+        with self.assertRaises(T4QuotesError):
+            derive_t4_quotes_v1(rebuilt, capture_root=self.capture, contract=CONTRACT)
+        forged = CataloguedT4DatasetV1(
+            dataset_version_id=seal.dataset_version_id, content_hash=seal.content_hash,
+            identity={**seal.identity, "source_id": str(uuid4())},
+            frame_manifests=seal.frame_manifests, sealed_at=seal.sealed_at,
+        )
+        with self.assertRaisesRegex(FirstPartyT4DatasetError, "not_t4_registered"):
+            t4_seal_from_catalog_v1(forged, store=self.store(), capture_root=self.capture)
+
+    def test_a_measurement_source_seal_is_never_real_provenance(self) -> None:
+        from trade_platform.first_party_capture_authority_v1 import (
+            first_party_bybit_measurement_contract_v1,
+        )
+        from trade_platform.real_market_data_provenance_v1 import (
+            evaluate_first_party_capture_provenance_v1,
+        )
+
+        measurement = first_party_bybit_measurement_contract_v1("SOLUSDT")
+        self.archive.session(
+            windows=[(BASE, BASE + 300 * SECOND)], samples=_standard_samples(320),
+            contract=measurement, tamper=_as_symbol("SOLUSDT"),
+        )
+        provenance = evaluate_first_party_capture_provenance_v1(self._seal(measurement))
+        self.assertFalse(provenance.is_proven_real())
+        self.assertIn("source_id_not_canonical", provenance.reasons)
+        self.assertIsNone(provenance.first_party_sealed_timing_facts)
+
+
 class T4AuthorityTests(_TempRoots):
     def setUp(self) -> None:
         super().setUp()

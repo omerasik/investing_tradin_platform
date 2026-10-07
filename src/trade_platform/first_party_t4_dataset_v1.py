@@ -52,6 +52,7 @@ from .feature_authority import (
     FeatureSubjectType,
 )
 from .first_party_capture_archive_v1 import nanos_to_datetime
+from .first_party_capture_authority_v1 import resolve_t4_registered_first_party_capture_contract_v1
 from .first_party_t4_seal_v1 import (
     FirstPartyT4SealError,
     FirstPartyT4SealV1,
@@ -414,13 +415,23 @@ def t4_seal_from_catalog_v1(
     store: ResearchFrameStoreV1,
     capture_root: Path,
 ) -> FirstPartyT4SealV1:
-    """Rebuild a catalogued dataset from raw capture (the only authority-grade read)."""
+    """Rebuild a catalogued dataset from raw capture (the only authority-grade read).
+
+    The capture contract is resolved from the identity's ``source_id`` within the
+    T4-registered set only; an unregistered source is refused, never defaulted.
+    """
+    contract = resolve_t4_registered_first_party_capture_contract_v1(
+        catalogued.identity.get("source_id")
+    )
+    if contract is None:
+        raise FirstPartyT4DatasetError("catalogued_source_is_not_t4_registered")
     seal = verify_t4_dataset_v1(
         catalogued.identity,
         frame_manifests=catalogued.frame_manifests,
         sealed_at=catalogued.sealed_at,
         store=store,
         capture_root=capture_root,
+        contract=contract,
     )
     if seal.dataset_version_id != catalogued.dataset_version_id or seal.content_hash != catalogued.content_hash:
         raise FirstPartyT4SealError("catalogued_identity_does_not_reproduce")
