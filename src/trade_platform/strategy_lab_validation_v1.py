@@ -306,7 +306,8 @@ class PostgresHoldoutRegistryV1:
             raise StrategyLabValidationError("opening_requires_an_actor")
         self.record_preregistration(packet)
         end = packet.holdout_end_exclusive
-        assert end is not None  # guaranteed by AUTHORIZED
+        if end is None:  # unreachable for an AUTHORIZED packet; refused, never assumed
+            raise StrategyLabValidationError("authorized_packet_without_a_holdout_end")
         with self._database.transaction() as connection, connection.cursor() as cursor:
             cursor.execute(
                 "INSERT INTO strategy_lab_holdout_openings (cycle_id, preregistration_hash, holdout_start, "
@@ -414,11 +415,11 @@ def validate_on_holdout_v1(
     for trial_id in packet.candidates:
         params = study.parameter_space.typed_point(trials[trial_id].parameters)
         targets = family.targets_decimal(holdout_bars, params)
-        by_lag = []
+        by_lag: list[dict[str, Any]] = []
         for lag in lags:
             lag_us = lag // timedelta(microseconds=1)
             held = held_positions_v1(holdout_bars, targets, lag_us)
-            per_scenario = []
+            per_scenario: list[dict[str, Any]] = []
             for name, cost in scenarios:
                 metrics = decimal_metrics_v1(holdout_bars, held, cost_bps_per_side=cost, cost_label=name)
                 checks = [criterion.holds(metrics) for criterion in packet.acceptance_criteria]
