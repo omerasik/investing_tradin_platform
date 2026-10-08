@@ -61,7 +61,10 @@ and cost policies, an exact explanation and the authority label. The decision
 instant is on the venue-knowledge clock: never earlier than the bar's complete
 market-knowledge time, nor than the host's reading plus the latest clock bound.
 Bars completed before the runner started only warm up its history: a replayed
-past decision is never back-dated as a live one. A signal is a proposal: its
+past decision is never back-dated as a live one. Each signal names the runner's
+preceding signal for its candidate (``previous_signal_id``, ``None`` after a
+start), so a consumer can tell an unbroken sequence from one with a restart in
+between. A signal is a proposal: its
 fill (R10) is the next strictly later bar open. Nothing here can label a signal
 validated.
 """
@@ -397,6 +400,7 @@ class LiveStrategyRunnerV1:
         self._started_nanos = (started - _EPOCH) // timedelta(microseconds=1) * 1000
         self._history: dict[str, list[LiveBarV1]] = {}
         self._last_target: dict[tuple[str, str, str], int] = {}
+        self._last_signal: dict[tuple[str, str, str], str] = {}
         self.held_back_by_holdout = 0
         self.warmup_bars = 0
 
@@ -429,14 +433,17 @@ class LiveStrategyRunnerV1:
                 now_micros = (self._clock() - _EPOCH) // timedelta(microseconds=1)
                 decided_micros = max(bar.bar.complete_market_knowledge_micros,
                                      now_micros + _micros_ceil(bar.clock_bound_nanos))
-                signals.append(_signal(candidate, bar, previous, current, family.explain_decimal(window, params),
-                                       _EPOCH + timedelta(microseconds=decided_micros), history, self._gate))
+                signal = _signal(candidate, bar, previous, current, family.explain_decimal(window, params),
+                                 _EPOCH + timedelta(microseconds=decided_micros), history, self._gate,
+                                 self._last_signal.get(key))
+                self._last_signal[key] = str(signal.signal_id)
+                signals.append(signal)
         return signals
 
 
 def _signal(candidate: WatchedCandidateV1, bar: LiveBarV1, previous: int, current: int,
             explanation: Mapping[str, str], decided_at: datetime, history: Sequence[LiveBarV1],
-            gate: LiveHoldoutGateV1) -> LiveSignalV1:
+            gate: LiveHoldoutGateV1, previous_signal_id: str | None) -> LiveSignalV1:
     study = candidate.study
     boundaries = sum(1 for before, after in pairwise(history)
                      if before.session_id != after.session_id)
@@ -461,6 +468,9 @@ def _signal(candidate: WatchedCandidateV1, bar: LiveBarV1, previous: int, curren
         "holdout": gate.payload(),
         "target_from": previous,
         "target_to": current,
+        # This runner's preceding signal for the candidate; None after a (re)start, whose
+        # warm-up emits nothing, so continuity across a restart is never assumed.
+        "previous_signal_id": previous_signal_id,
         "execution": "next strictly later bar open (paper, R10)",
         "numeric_policy_slot": study.numeric_policy_slot,
         "cost_policy_slot": study.cost_policy_slot,

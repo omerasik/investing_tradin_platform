@@ -52,6 +52,19 @@ r9_account_policy: >-
   account_policy_v1 + migration 0059: account contexts and owner-approved,
   content-addressed account policies; resolve_risk_policy fills nothing from
   RiskPolicy defaults. Every economic value is MISSING_OWNER_*_OR_11 until set.
+r10_paper_incubation: >-
+  paper_incubation_v1 + migration 0060: INCUBATING signals fill at the next
+  strictly later proven bar open (missing or ambiguous bar = recorded non-fill),
+  bound by FK to the stored signal's decision; unit exposure (OR-11), gross
+  unless a verified fee schedule (OR-6), funding not modelled, incubation length
+  UNRESOLVED (OR-7); restart-safe position chain. scripts/paper_incubation.py
+  run|report; strategy_lab.py rerun. Nothing runs until a holdout is opened.
+first_real_studies: >-
+  2026-10-08 SOLUSDT window cacd0ea5 (2025-08-20..2026-08-18, 524,159 bars, no
+  day gap): trend_ma_cross 480, mean_reversion_z 240, breakout_channel 84 trials,
+  all SUCCEEDED, frozen top-10, Decimal authority selection ESTABLISHED for all
+  three. SEARCH_NON_AUTHORITATIVE / gross / T2 CONDITIONAL. BTC and ETH years
+  still acquiring.
 or7_packet:                   # options for the owner; nothing here is decided
   holdout_end: >-
     A) 2026-09-24 (T2 holdout up to the first T4 day, ~35 days); B) the latest

@@ -6,9 +6,11 @@
 
 Which candidates to watch is an owner decision (OR-9). This entry point only
 watches what it is told to: the Decimal-authoritative selection of one
-ESTABLISHED rerun (RESEARCH_WATCH) or the candidates a holdout validation made
-INCUBATING. It reads the local capture archive only; no network call, no
-order, no account. Signals are proposals labelled NOT_VALIDATED_<authority>.
+ESTABLISHED rerun (RESEARCH_WATCH). INCUBATING candidates are watched only by
+``scripts/paper_incubation.py``, the single writer of their signals and fills,
+so two processes never record different decisions for one signal. It reads the
+local capture archive only; no network call, no order, no account. Signals are
+proposals labelled NOT_VALIDATED_RESEARCH_WATCH.
 """
 
 from __future__ import annotations
@@ -30,7 +32,6 @@ from trade_platform.live_signals_v1 import (
     LiveStrategyRunnerV1,
     PostgresLiveSignalStoreV1,
     watched_from_rerun_v1,
-    watched_from_states_v1,
 )
 from trade_platform.persistence import PostgresDatabase
 
@@ -44,7 +45,6 @@ def main() -> None:
     parser.add_argument("--data-root", type=Path, default=None)
     parser.add_argument("--symbol", default="BTCUSDT")
     parser.add_argument("--rerun", help="hash of an ESTABLISHED authority rerun (RESEARCH_WATCH)")
-    parser.add_argument("--incubating", action="store_true", help="watch the study's INCUBATING candidates")
     parser.add_argument("--capture-root", type=Path, default=None)
     parser.add_argument("--poll-seconds", type=float, default=5.0)
     args = parser.parse_args()
@@ -65,14 +65,11 @@ def main() -> None:
     study = build_study(args.family, args.dataset, args.data_root)
     registry = PostgresHoldoutRegistryV1(database)
     states = registry.states(study.study_id)
-    if args.incubating:
-        candidates = watched_from_states_v1(study, states, symbol=args.symbol)
-    else:
-        reruns = [r for r in PostgresAuthorityRerunStoreV1(database).for_study(study.study_id)
-                  if r.rerun_hash == args.rerun]
-        if not reruns:
-            raise SystemExit("rerun_not_found_for_this_study")
-        candidates = watched_from_rerun_v1(study, reruns[0], states=states, symbol=args.symbol)
+    reruns = [r for r in PostgresAuthorityRerunStoreV1(database).for_study(study.study_id)
+              if r.rerun_hash == args.rerun]
+    if not reruns:
+        raise SystemExit("rerun_not_found_for_this_study")
+    candidates = watched_from_rerun_v1(study, reruns[0], states=states, symbol=args.symbol)
     if not candidates:
         raise SystemExit("no_candidates_to_watch")
     gate = LiveHoldoutGateV1.for_cycle(CURRENT_CYCLE_V1, registry.opening(CURRENT_CYCLE_V1.cycle_id))
