@@ -94,12 +94,25 @@ def _q(value: Decimal | None) -> str | None:
     return "0" if text.strip("-0.") == "" else text
 
 
-def decimal_metrics_v1(bars: BarsV1, held: Sequence[int]) -> dict[str, Any]:
-    """The search metrics' definitions, recomputed exactly in Decimal (quantized to 1e-18)."""
+def decimal_metrics_v1(
+    bars: BarsV1, held: Sequence[int], *, cost_bps_per_side: Decimal | None = None, cost_label: str | None = None,
+) -> dict[str, Any]:
+    """The search metrics' definitions, recomputed exactly in Decimal (quantized to 1e-18).
+
+    ``cost_bps_per_side`` (R6) charges ``cost * |held_j - held_{j-1}|`` at the
+    fill of interval ``j``; it must come from an OR-6 cost policy with a verified
+    fee schedule and a named scenario (``cost_label``). Without it the metrics
+    are gross and labelled so.
+    """
+    if (cost_bps_per_side is None) != (cost_label is None):
+        raise AuthorityRerunError("a_cost_requires_its_scenario_label")
     n = bars.size
     with _authoritative():
         returns = [bars.open_d[j + 1] / bars.open_d[j] - 1 for j in range(n - 1)] + [Decimal(0)]
-        strategy = [held[j] * returns[j] for j in range(n)]
+        cost = Decimal(0) if cost_bps_per_side is None else cost_bps_per_side / 10_000
+        strategy = [
+            held[j] * returns[j] - cost * abs(held[j] - (held[j - 1] if j else 0)) for j in range(n)
+        ]
         turnover = Decimal(0)
         trades = 0
         previous = 0
@@ -139,14 +152,16 @@ def decimal_metrics_v1(bars: BarsV1, held: Sequence[int]) -> dict[str, Any]:
                 crossings += 1
         return {
             "numeric_tier": NUMERIC_TIER_AUTHORITATIVE,
-            "cost_mode": "GROSS_NON_PROMOTABLE",
+            "cost_mode": "GROSS_NON_PROMOTABLE" if cost_label is None else f"NET_OF:{cost_label}",
             "total_return": _q(equity - 1),
             "sharpe_daily_annualized": _q(sharpe),
             "max_drawdown": _q(drawdown),
             "trades": trades,
             "turnover": _q(turnover),
             "exposure": _q(sum((Decimal(abs(v)) for v in held), Decimal(0)) / n),
-            "break_even_bps_per_side": _q(gross_sum / turnover * 10_000) if turnover else None,
+            # Break-even is a gross notion; net of a cost it would be meaningless.
+            "break_even_bps_per_side": (_q(gross_sum / turnover * 10_000)
+                                        if turnover and cost_label is None else None),
             "positive_month_fraction": _q(Decimal(sum(1 for r in month_returns if r > 0)) / len(month_returns)),
             "worst_month_return": _q(min(month_returns)),
             "funding_window_crossings": crossings,

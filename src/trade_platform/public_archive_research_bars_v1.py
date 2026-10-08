@@ -352,28 +352,44 @@ class ResearchBarDatasetV1:
         return self.last_bar_close_at + max_lag + timedelta(microseconds=1)
 
 
-def _refuse_holdout(day: date) -> None:
-    # The current research cycle never acquires, derives or windows a day inside
-    # the untouched holdout; that span is opened once, by a preregistered packet.
-    if day >= UNTOUCHED_HOLDOUT_BOUNDARY_V1.date():
-        raise ResearchBarsError("research_bars_refuse_the_untouched_holdout")
+def _refuse_holdout(day: date, opening: Any = None) -> None:
+    """Refuse a day inside the untouched holdout unless an R6 opening admits it.
+
+    The span is opened once per cycle by an authorized preregistration
+    (:class:`~trade_platform.strategy_lab_validation_v1.HoldoutOpeningV1`, which
+    only the registry can issue); nothing else can unlock it.
+    """
+    if day < UNTOUCHED_HOLDOUT_BOUNDARY_V1.date():
+        return
+    if opening is not None:
+        from .strategy_lab_validation_v1 import HoldoutOpeningV1
+
+        if isinstance(opening, HoldoutOpeningV1) and opening.admits_day(day):
+            return
+    raise ResearchBarsError("research_bars_refuse_the_untouched_holdout")
 
 
-def _days(first: date, last: date) -> list[date]:
+def _days(first: date, last: date, opening: Any = None) -> list[date]:
     if last < first:
         raise ResearchBarsError("window_last_day_before_first_day")
-    _refuse_holdout(last)
-    return [first + timedelta(days=offset) for offset in range((last - first).days + 1)]
+    if first < UNTOUCHED_HOLDOUT_BOUNDARY_V1.date() <= last:
+        # A window never straddles the boundary: search data and holdout data stay apart.
+        raise ResearchBarsError("window_straddles_the_untouched_holdout_boundary")
+    days = [first + timedelta(days=offset) for offset in range((last - first).days + 1)]
+    for day in days:  # every day, not only the last: an opening admits only its own span
+        _refuse_holdout(day, opening)
+    return days
 
 
 def build_research_bar_dataset_v1(
     root: Path, symbol: str, first: date, last: date, *, store: ResearchFrameStoreV1,
+    holdout_opening: Any = None,
 ) -> ResearchBarDatasetV1:
     """Concatenate verified day frames into one window dataset; gaps declared, never filled."""
     contract = bybit_public_trade_archive_contract_v1()
     records: list[DayBarsV1] = []
     gaps: list[str] = []
-    for day in _days(first, last):
+    for day in _days(first, last, holdout_opening):
         record = load_day_bars_v1(root, symbol, day)
         if record is not None:
             records.append(record)
@@ -504,9 +520,10 @@ class DayStepV1:
 def acquire_and_derive_day_v1(
     root: Path, symbol: str, day: date, *, store: ResearchFrameStoreV1, evict: bool,
     fetch: FetchV1 = urllib_fetch_v1, now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    holdout_opening: Any = None,
 ) -> DayStepV1:
     """Acquire (resumable), derive, and optionally evict one day. Idempotent."""
-    _refuse_holdout(day)
+    _refuse_holdout(day, holdout_opening)
     if is_not_published_v1(root, symbol, day):
         return DayStepV1(symbol, day.isoformat(), NOT_PUBLISHED, 0, False)
     record = load_day_bars_v1(root, symbol, day)

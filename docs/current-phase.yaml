@@ -34,6 +34,36 @@ t2_research_bars:             # PR #187; acquisition runs in the background from
   acquisition: >-
     research-bars newest-first from 2026-08-19 for BTC/ETH/SOL (first year
     2025-08-20..2026-08-19), raw evicted after verified derivation (OR-1).
+r6_validation: >-
+  strategy_lab_validation_v1 + migration 0057: research cycles (current
+  cycle-2026-08-20 immutable; new cycles prospective only), preregistration
+  packets (DRAFT with one UNRESOLVED_* reason per OR-6/OR-7 gap), one-shot
+  holdout openings per cycle (registry-issued token; research bars refuse
+  holdout days without it), Decimal holdout validation under every OR-5 lag
+  and approved cost scenario, append-only candidate states ending INCUBATING
+  or REJECTED (PROFESSIONALLY_VALIDATED reserved). Holdout NOT opened.
+or7_packet:                   # options for the owner; nothing here is decided
+  holdout_end: >-
+    A) 2026-09-24 (T2 holdout up to the first T4 day, ~35 days); B) the latest
+    published archive day at opening (~45-50 days). Longer = more trades and
+    power. Recommendation A or B; the holdout is opened once per cycle.
+  acceptance_criteria: >-
+    Evaluated net of every approved cost scenario at the OR-5 baseline, stable
+    under the 5/30/60 s sweep. Options: (1) net total_return > 0 only;
+    (2) (1) + max_drawdown below a cap; (3) (1) + daily Sharpe above a floor
+    (noisy on ~1 month). Recommendation (2) with an owner-chosen cap.
+  minimum_trades: Options 30 / 50 / 100 per candidate on the holdout; more = less luck.
+  cost_basis: >-
+    Owner-verified Bybit USDT-perp taker/maker fee for the actual tier, plus a
+    named slippage stress grid (e.g. three levels in bps per side, owner-set);
+    no promotion without both (OR-6).
+  incubation_days: >-
+    Options 14 / 28 / 56 calendar days of forward T4 paper incubation. By
+    2026-10-31 at most ~10 days are possible: candidates stay INCUBATING.
+  promotion_semantics: >-
+    INCUBATING -> PROFESSIONALLY_VALIDATED only after the incubation criteria
+    pass on T4 forward evidence with live/replay parity; any failure ->
+    INCUBATION_FAILED_REJECTED. Nothing becomes execution authority.
 r4_6_sdk: >-
   strategy_lab_policies_v1 (OR-3/OR-5/OR-6 payloads), migration 0055 admitting
   their slots, strategy_sdk_v1 (convention t2-close-plus-lag-next-strictly-later-open-v1,
