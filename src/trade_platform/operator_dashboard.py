@@ -31,6 +31,20 @@ from .real_market_data_provenance_v1 import (
     PostgresRealMarketDataProvenanceAuthorityV1,
     RealMarketDataProvenanceV1,
 )
+from .research_terminal_read_model_v1 import (
+    AccountView,
+    IncubationView,
+    LiveSignalView,
+    RerunView,
+    TerminalOverview,
+    ValidationView,
+    read_accounts_v1,
+    read_incubation_v1,
+    read_live_signals_v1,
+    read_reruns_v1,
+    read_terminal_overview_v1,
+    read_validation_v1,
+)
 from .strategy_lab_read_model_v1 import (
     StrategyLabObjectNotFound,
     StrategyLabStudyDetailView,
@@ -1297,6 +1311,30 @@ class PostgresOperatorDashboardQueries:
             except StrategyLabObjectNotFound as error:
                 raise DashboardObjectNotFound("strategy_lab_study_not_found") from error
         return self._read(operation)
+
+    def terminal_overview(self) -> TerminalOverview:
+        """UI-2 command center: counts, cycle, owner gates and the authority legend."""
+        return self._read(read_terminal_overview_v1)
+
+    def terminal_reruns(self, *, limit: int = 50) -> list[RerunView]:
+        """UI-2: Decimal authority reruns, newest first (selection authority only; economics gross)."""
+        return self._read(lambda cursor: read_reruns_v1(cursor, limit=limit))
+
+    def terminal_validation(self, *, limit: int = 200) -> ValidationView:
+        """UI-2: the current cycle's holdout state and recorded candidate states."""
+        return self._read(lambda cursor: read_validation_v1(cursor, limit=limit))
+
+    def terminal_signals(self, *, limit: int = 100) -> list[LiveSignalView]:
+        """UI-2: recent live signals; every one NOT_VALIDATED."""
+        return self._read(lambda cursor: read_live_signals_v1(cursor, limit=limit))
+
+    def terminal_accounts(self) -> list[AccountView]:
+        """UI-2: account contexts and their latest policy status (OR-11)."""
+        return self._read(read_accounts_v1)
+
+    def terminal_incubation(self) -> IncubationView:
+        """UI-2: the R10 paper incubation report over every recorded fill."""
+        return self._read(read_incubation_v1)
 
     def chart_series(self) -> ChartSeriesRefPage:
         """Phase R5 UI-1b: catalogued chartable bar frames (see instrument_chart_v1)."""
