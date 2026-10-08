@@ -89,7 +89,7 @@ class CausalityAndTierTests(unittest.TestCase):
         closes = _walk(3000)
         base = BarsV1.from_rows(_rows(closes))
         cut = 2000
-        changed = closes[:cut] + [c * Decimal("1.37") for c in closes[cut:]]
+        changed = closes[:cut] + [c + Decimal("1234.5") for c in closes[cut:]]
         other = BarsV1.from_rows(_rows(changed))
         for family_name, family in FAMILIES_V1.items():
             for params in _params(family_name):
@@ -112,6 +112,39 @@ class CausalityAndTierTests(unittest.TestCase):
                         compared += 1
                         self.assertEqual(exact, [int(v) for v in fast])
         self.assertGreaterEqual(compared, 8)  # never vacuous
+
+    def test_long_drifting_series_never_diverge_between_tiers(self) -> None:
+        """PIT review regression: exact decisions, zero thresholds included, no flag needed."""
+        rng = random.Random(42)
+        price = Decimal("30000.0")
+        closes = []
+        for _ in range(120_000):
+            price += Decimal(rng.choice(range(-40, 45))) / 10  # upward drift
+            closes.append(price)
+        bars = BarsV1.from_rows(_rows(closes))
+        points = {
+            "mean_reversion_z": [
+                {"lookback_bars": 30, "entry_z": Decimal("2"), "exit_z": Decimal("0.5"), "direction": "long_short"},
+                {"lookback_bars": 30, "entry_z": Decimal("1.5"), "exit_z": Decimal("0"), "direction": "long_short"},
+                {"lookback_bars": 240, "entry_z": Decimal("2.5"), "exit_z": Decimal("0"), "direction": "long_only"},
+                {"lookback_bars": 1440, "entry_z": Decimal("3.5"), "exit_z": Decimal("1"), "direction": "long_short"},
+            ],
+            "trend_ma_cross": [
+                {"fast_bars": 15, "slow_bars": 60, "band": Decimal("0"), "direction": "long_short"},
+                {"fast_bars": 30, "slow_bars": 120, "band": Decimal("0.0005"), "direction": "long_short"},
+                {"fast_bars": 480, "slow_bars": 5760, "band": Decimal("0.005"), "direction": "long_only"},
+            ],
+            "breakout_channel": [
+                {"entry_bars": 60, "exit_bars": 15, "direction": "long_short"},
+                {"entry_bars": 2880, "exit_bars": 480, "direction": "long_short"},
+            ],
+        }
+        for family_name, params_list in points.items():
+            family = FAMILIES_V1[family_name]
+            for params in params_list:
+                with self.subTest(family=family_name, params=params):
+                    fast, _ = family.targets_f64(bars, params)
+                    self.assertEqual(family.targets_decimal(bars, params), [int(v) for v in fast])
 
     def test_an_exact_boundary_is_flagged_as_a_near_tie(self) -> None:
         # Constant prices make fast/slow - 1 exactly 0 == band 0 on every ready bar.
