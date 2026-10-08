@@ -27,7 +27,7 @@ from trade_platform.live_signals_v1 import (
 from trade_platform.strategy_sdk_v1 import FAMILIES_V1, BarsV1
 
 CONTRACT = first_party_bybit_capture_contract_v1()
-DAY0 = datetime(2026, 10, 9, tzinfo=UTC)
+DAY0 = datetime(2026, 10, 1, tzinfo=UTC)  # past: the shared test database asserts global invariants
 
 
 def _bar(minute: int, close: Decimal, previous: Decimal) -> T4MinuteBarV1:
@@ -50,7 +50,9 @@ def _live_bars(closes: list[Decimal], *, segment_break: int | None = None, bound
 def opened_gate(end: datetime = DAY0) -> LiveHoldoutGateV1:
     """The current cycle's gate as if its holdout had been opened with ``end`` (a registry-issued token)."""
     cycle = validation.CURRENT_CYCLE_V1
-    opening = validation._issue_opening(cycle.cycle_id, cycle.holdout_start, end, "p" * 64, "test")
+    # Its own preregistration hash: issued openings are process-global, so this fixture must
+    # never coincide with a key another test builds as a forgery.
+    opening = validation._issue_opening(cycle.cycle_id, cycle.holdout_start, end, "1ive" * 16, "live-test")
     return LiveHoldoutGateV1.for_cycle(cycle, opening)
 
 
