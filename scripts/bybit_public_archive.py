@@ -4,6 +4,8 @@
     python scripts/bybit_public_archive.py build --symbol BTCUSDT --from ... --to ... [--dsn ...]
     python scripts/bybit_public_archive.py crosscheck --symbol BTCUSDT --from ... --to ...
     python scripts/bybit_public_archive.py overlap --symbol BTCUSDT --from D --to D --dsn ... --t4-dataset <id>
+    python scripts/bybit_public_archive.py research-bars --symbol ETHUSDT --from 2025-08-20 --to 2026-08-19
+    python scripts/bybit_public_archive.py window --symbol ETHUSDT --from 2025-08-20 --to 2026-08-18
 
 Downloads only from https://public.bybit.com/trading/ and, for ``crosscheck``,
 the public REST kline endpoint (unauthenticated public market data), resumably,
@@ -84,9 +86,50 @@ def _overlap(args: argparse.Namespace, manifests: list[Any]) -> None:
     print(json.dumps({"content_hash": report.content_hash, **report.identity}, indent=1, default=str))
 
 
+def _research_bars(args: argparse.Namespace, days: list[date]) -> None:
+    """Newest day first: acquire (resumable), derive day bars, evict raw unless --keep-raw.
+
+    Every day is idempotent, so a killed run resumes where it stopped. A
+    transient fetch failure is retried a few times, then the run stops loudly:
+    a day is never skipped silently.
+    """
+    import time
+
+    from trade_platform.public_archive_research_bars_v1 import acquire_and_derive_day_v1
+
+    store = ResearchFrameStoreV1(args.data_root)
+    for day in sorted(days, reverse=True):
+        for attempt in range(4):
+            try:
+                step = acquire_and_derive_day_v1(args.root, args.symbol, day, store=store, evict=not args.keep_raw)
+                break
+            except (OSError, TimeoutError) as error:  # network: bounded retry, then stop
+                if attempt == 3:
+                    raise
+                print(json.dumps({"utc_day": day.isoformat(), "retry": attempt + 1, "error": str(error)}), flush=True)
+                time.sleep(30 * (attempt + 1))
+        print(json.dumps({"utc_day": step.utc_day, "state": step.state, "bars": step.bars,
+                          "evicted": step.evicted}), flush=True)
+
+
+def _window(args: argparse.Namespace) -> None:
+    from trade_platform.public_archive_research_bars_v1 import build_research_bar_dataset_v1
+
+    dataset = build_research_bar_dataset_v1(
+        args.root, args.symbol, date.fromisoformat(args.first), date.fromisoformat(args.last),
+        store=ResearchFrameStoreV1(args.data_root),
+    )
+    print(json.dumps({"dataset_version_id": str(dataset.dataset_version_id), "content_hash": dataset.content_hash,
+                      "bars": dataset.identity["bar_frame"]["row_count"], "files": len(dataset.identity["files"]),
+                      "not_published_days": dataset.identity["not_published_days"],
+                      "day_gaps": dataset.identity["day_gaps"],
+                      "last_bar_close_at": dataset.identity["last_bar_close_at"]}, indent=1))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("acquire", "build", "crosscheck", "overlap"))
+    parser.add_argument("command", choices=("acquire", "build", "crosscheck", "overlap", "research-bars", "window"))
+    parser.add_argument("--keep-raw", action="store_true", help="research-bars: do not evict raw files (OR-1)")
     parser.add_argument("--t4-dataset", help="overlap: sealed T4 dataset_version_id")
     parser.add_argument("--capture-root", type=Path, default=None, help="overlap: first-party capture root")
     parser.add_argument("--symbol", required=True)
@@ -98,6 +141,12 @@ def main() -> None:
     args = parser.parse_args()
     contract = bybit_public_trade_archive_contract_v1()
     days = _days(args.first, args.last)
+    if args.command == "research-bars":
+        _research_bars(args, days)
+        return
+    if args.command == "window":
+        _window(args)
+        return
     if args.command == "acquire":
         for day in days:
             manifest = acquire_archive_day_v1(args.root, args.symbol, day)
