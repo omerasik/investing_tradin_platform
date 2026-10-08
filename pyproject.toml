@@ -16,7 +16,7 @@ dev = ["alembic>=1.14,<2", "bandit>=1.8,<2", "cyclonedx-bom>=5.1,<6", "detect-se
 
 # Phase R2B columnar research data plane (Parquet + query engine). Research
 # tooling only: the runtime API/migration images never install it.
-analytics = ["duckdb>=1.3,<2", "pyarrow>=21,<26"]
+analytics = ["duckdb>=1.3,<2", "numpy>=2.2,<3", "pyarrow>=21,<26"]
 
 [build-system]
 requires = ["setuptools>=68"]

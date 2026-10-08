@@ -13,19 +13,32 @@ updated: 2026-10-08
 # -> R8 opportunity engine -> R9 accounts/risk -> R10 paper; R7 (T3 spine) is
 # the one parallel track.
 phase:
-  id: "OWNER-GATE-R4"
-  name: R1B universe capture (OR-2 decided); owner review of OR-1, OR-3, OR-5, OR-6 (blocks R4 evaluators)
-  status: waiting_for_owner
-  base_commit: 2905a37       # R4.0-R4.5 merged (#172-#179), ops lock #180, R1A fix #181
-  why_now: >-
-    The owner-independent R4 foundation (study identity, ledger, queue, workers,
-    purged time splits, manifests, frozen candidates, read API) is built with the
-    OR-3/OR-6 slots pinned unset. Strategy evaluators, the search engine, the
-    Decimal authority re-run and cost-dependent studies need OR-3 and OR-6; R1B
-    needs OR-2. Every OR packet below is evidence-complete for a decision.
+  id: "M-TERMINAL-V1"
+  name: Crypto Research & Paper-Incubation Terminal v1 (BTC/ETH/SOL), target 2026-10-31
+  status: in_progress
+  base_commit: 7bb9cf3       # T2 research bars + OR-1 retention (#187)
+  owner_decisions_2026_10_08: >-
+    OR-1 hybrid retention; OR-3 float64 search / Decimal authority; OR-5 T2 lag
+    2 s with mandatory 5/30/60 s sweep (CONDITIONAL); OR-6 fees/spread/slippage/
+    funding separated, no verified fee schedule yet -> gross, non-promotable.
+    Holdout 2026-08-20 immutable; T4 after 2026-09-24 forward-only this cycle.
+  order: >-
+    R4.6 SDK + search -> R4.7 Decimal rerun -> R6 preregistration/holdout registry
+    -> R8 live T4 signals -> R9 account policy boundary -> R10 paper incubation -> UI-2.
+  owner_gates_open: OR-7 (validation/holdout packet), OR-11 (accounts/risk), OR-9 (watchlist/alerts), fee schedule.
   not_in_scope: >-
-    Evaluators or cost models on guessed assumptions; R1B before OR-2; UI-2 pages
-    before a study can exist (no evaluator before OR-3/OR-6).
+    VALIDATED claims by 10-31; T4 as search data this cycle; invented fees,
+    slippage, capital or limits; L2 slippage model; basis/funding families.
+
+t2_research_bars:             # PR #187; acquisition runs in the background from a worktree
+  acquisition: >-
+    research-bars newest-first from 2026-08-19 for BTC/ETH/SOL (first year
+    2025-08-20..2026-08-19), raw evicted after verified derivation (OR-1).
+r4_6_sdk: >-
+  strategy_lab_policies_v1 (OR-3/OR-5/OR-6 payloads), migration 0055 admitting
+  their slots, strategy_sdk_v1 (convention t2-close-plus-lag-next-strictly-later-open-v1,
+  float64 search + Decimal tiers, near-tie flags), families trend_ma_cross,
+  mean_reversion_z, breakout_channel; scripts/strategy_lab.py search/status/freeze.
 
 r4_foundation:                # owner-independent; every study stays NON_AUTHORITATIVE
   r4_0: "PR #172 strategy_lab_study_v1: content-addressed study/trial ids, exact parameter spaces, OR-3/OR-6 slots unset-only, holdout bound"
@@ -34,9 +47,7 @@ r4_foundation:                # owner-independent; every study stays NON_AUTHORI
   r4_3: "PR #175 strategy_lab_splits_v1: decision/label-time purged walk-forward with embargo and censoring"
   r4_4: "PR #178 migration 0054 + strategy_lab_manifest_v1: study manifests, frozen candidate sets (rerun PENDING_OWNER_DECISION_OR_3)"
   r4_5: "PR #179 strategy_lab_read_model_v1: GET /operator-dashboard/strategy-lab/studies[/{id}], authority restated NON_AUTHORITATIVE"
-  blocked_by_owner: >-
-    Strategy SDK evaluators and vectorized search (OR-3), Decimal authority re-run
-    (OR-3), cost/funding/slippage in studies (OR-6), basis-MR port (OR-6).
+  unblocked_2026_10_08: OR-3/OR-5/OR-6 decided; see r4_6_sdk.
 
 r3b3_completed: >-
   PR #159 merged. Real run 2026-10-03 on archive day 2026-10-02 (sha256
