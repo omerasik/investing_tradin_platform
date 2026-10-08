@@ -41,6 +41,13 @@ const requested = [
   "/operator-dashboard/audit-events?limit=20",
   `/operator-dashboard/audit-events/${uuid}`,
   "/operator-dashboard/sre-overview",
+  "/operator-dashboard/strategy-lab/studies?limit=50",
+  "/operator-dashboard/research-terminal/overview",
+  "/operator-dashboard/research-terminal/reruns?limit=50",
+  "/operator-dashboard/research-terminal/validation?limit=200",
+  "/operator-dashboard/research-terminal/signals?limit=50",
+  "/operator-dashboard/research-terminal/accounts",
+  "/operator-dashboard/research-terminal/incubation",
 ];
 for (const target of requested) {
   assert.equal(allowedAuthorityTarget(target), true, `refused: ${target}`);
@@ -72,6 +79,10 @@ const refused = [
   "/research/backtests",
   "/paper-oms/orders/x",
   `/operator-dashboard/paper-orders/${uuid}?x=1`,
+  "/operator-dashboard/research-terminal/overview?limit=5",
+  "/operator-dashboard/research-terminal/signals?symbol=BTCUSDT",
+  "/operator-dashboard/research-terminal/holdout",
+  `/operator-dashboard/strategy-lab/studies/${uuid}`,
 ];
 for (const target of refused) {
   assert.equal(allowedAuthorityTarget(target), false, `allowed: ${target}`);

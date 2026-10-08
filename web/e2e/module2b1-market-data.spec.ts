@@ -115,6 +115,44 @@ test.describe("Module 2B-1 Professional Market & Data Workspaces", () => {
     await context.close();
   });
 
+  test("/terminal walks the research workflow, restates every claim, offers no action, and passes a11y", async ({
+    browser,
+  }) => {
+    const consoleErrors: string[] = [];
+    const context = await browser.newContext({ baseURL: dashboardUrl, extraHTTPHeaders: {} });
+    const page = await context.newPage();
+    page.on("console", (msg) => {
+      if (msg.type() === "error") consoleErrors.push(msg.text());
+    });
+
+    await page.goto("/login");
+    await page.getByLabel("Operator Access Credential").fill(viewToken);
+    await page.getByRole("button", { name: "Sign In" }).click();
+    await expect(page).toHaveURL(/\/dashboard/);
+
+    await page.goto("/terminal");
+    await expect(page.getByRole("heading", { name: "Research Terminal", level: 1 })).toBeVisible();
+    const steps = ["Command Center", "Market Scan", "Opportunities", "Strategy Lab", "Compare", "Validation",
+      "Risk Preview", "Paper", "Monitoring"];
+    const nav = page.getByRole("navigation", { name: "Research workflow steps" });
+    for (const [index, step] of steps.entries()) {
+      await expect(nav.getByRole("link", { name: `${index + 1}. ${step}` })).toBeVisible();
+      await expect(page.getByRole("article", { name: step, exact: true })).toBeVisible();
+    }
+    // Claims are restated on their steps; nothing on the page can validate, size or trade.
+    await expect(page.getByRole("article", { name: "Strategy Lab", exact: true })).toContainText("SEARCH_NON_AUTHORITATIVE");
+    await expect(page.getByRole("article", { name: "Validation", exact: true })).toContainText("NONE VALIDATED");
+    await expect(page.getByRole("article", { name: "Risk Preview", exact: true })).toContainText("OR-11");
+    await expect(page.getByRole("button", { name: /execute|trade|buy|sell|open holdout|promote/i })).toHaveCount(0);
+
+    const a11yResults = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
+      .analyze();
+    expect(a11yResults.violations).toEqual([]);
+    expect(consoleErrors).toEqual([]);
+    await context.close();
+  });
+
   test("/instruments workstation supports filtering, search, and deep interactive inspector", async ({
     browser,
   }) => {

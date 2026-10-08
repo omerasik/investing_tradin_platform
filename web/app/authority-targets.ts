@@ -19,6 +19,9 @@ const parameterlessTargets = new Set([
   "/operator-dashboard/evidence-catalog",
   "/operator-dashboard/capture-availability",
   "/operator-dashboard/chart-series",
+  "/operator-dashboard/research-terminal/overview",
+  "/operator-dashboard/research-terminal/accounts",
+  "/operator-dashboard/research-terminal/incubation",
 ]);
 
 const queryTargets: Record<string, { allowed: string[]; required?: string[] }> = {
@@ -60,6 +63,10 @@ const queryTargets: Record<string, { allowed: string[]; required?: string[] }> =
     allowed: ["instrument", "entity", "category", "start", "end", "correction_state", "limit", "offset"],
   },
   "/operator-dashboard/sre-overview": { allowed: ["service_version_id"] },
+  "/operator-dashboard/strategy-lab/studies": { allowed: ["limit", "offset"] },
+  "/operator-dashboard/research-terminal/reruns": { allowed: ["limit"] },
+  "/operator-dashboard/research-terminal/validation": { allowed: ["limit"] },
+  "/operator-dashboard/research-terminal/signals": { allowed: ["limit"] },
 };
 
 export function allowedAuthorityTarget(target: string): boolean {
