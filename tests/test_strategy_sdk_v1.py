@@ -146,6 +146,25 @@ class CausalityAndTierTests(unittest.TestCase):
                     fast, _ = family.targets_f64(bars, params)
                     self.assertEqual(family.targets_decimal(bars, params), [int(v) for v in fast])
 
+    def test_trend_refuses_rather_than_wraps_on_very_fine_price_grids(self) -> None:
+        # PIT review probe6: 9-decimal prices near 5200 made an unguarded int64 product wrap.
+        closes = [Decimal("5200.000000001") + Decimal(i % 7) / 1_000_000_000 for i in range(6000)]
+        bars = BarsV1.from_rows(_rows(closes))
+        family = FAMILIES_V1["trend_ma_cross"]
+        params = {"fast_bars": 480, "slow_bars": 5760, "band": Decimal("0.0005"), "direction": "long_short"}
+        with self.assertRaises(StrategySdkError):
+            family.targets_f64(bars, params)
+
+    def test_a_bound_restricted_window_keeps_its_exact_ticks(self) -> None:
+        bars = BarsV1.from_rows(_rows(_walk(500)))
+        cut = restrict_to_bound_v1(bars, START + timedelta(minutes=300), timedelta(seconds=2))
+        self.assertEqual(cut.size, cut.close_ticks.size)
+        self.assertEqual((bars.close_scale, bars.close_centre), (cut.close_scale, cut.close_centre))
+        params = {"lookback_bars": 30, "entry_z": Decimal("2"), "exit_z": Decimal("0.5"), "direction": "long_short"}
+        family = FAMILIES_V1["mean_reversion_z"]
+        fast, _ = family.targets_f64(cut, params)
+        self.assertEqual(family.targets_decimal(cut, params), [int(v) for v in fast])
+
     def test_an_exact_boundary_is_flagged_as_a_near_tie(self) -> None:
         # Constant prices make fast/slow - 1 exactly 0 == band 0 on every ready bar.
         bars = BarsV1.from_rows(_rows([Decimal("100")] * 300))
