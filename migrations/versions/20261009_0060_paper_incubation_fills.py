@@ -6,10 +6,13 @@ Create Date: 2026-10-09
 
 ``paper_incubation_fills`` -- one immutable, content-addressed paper fill (or
 recorded non-fill) per INCUBATING live signal. A fill price exists exactly when
-the status is ``FILLED``; the fill bar opens strictly after the decision. Unit
-exposure only (sizing waits for OR-11); never an order, never an account.
+the status is ``FILLED``; the fill bar opens strictly after the decision, and a
+composite foreign key binds the fill to its stored signal's content hash and
+decision instant. Unit exposure only (sizing waits for OR-11); never an order,
+never an account.
 
-Additive; downgrade drops the table.
+Additive (one new unique constraint on ``live_strategy_signals``, already
+implied by its primary key); downgrade drops both.
 """
 
 from alembic import op
@@ -23,11 +26,16 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # A fill is bound to its stored signal's content and decision instant, so it can
+    # never be computed from another copy of the decision.
+    op.execute("ALTER TABLE live_strategy_signals ADD CONSTRAINT live_strategy_signals_decision_key "
+               "UNIQUE (signal_id, content_hash, decided_at)")
     op.execute(
         """CREATE TABLE paper_incubation_fills (
         fill_id UUID PRIMARY KEY,
         content_hash CHAR(64) NOT NULL UNIQUE CHECK(content_hash ~ '^[0-9a-f]{64}$'),
-        signal_id UUID NOT NULL UNIQUE REFERENCES live_strategy_signals(signal_id),
+        signal_id UUID NOT NULL UNIQUE,
+        signal_content_hash CHAR(64) NOT NULL,
         study_id UUID NOT NULL REFERENCES strategy_lab_studies(study_id),
         trial_id UUID NOT NULL,
         symbol TEXT NOT NULL CHECK(symbol ~ '^[A-Z0-9]{2,20}$'),
@@ -41,6 +49,8 @@ def upgrade() -> None:
         cost_policy_hash CHAR(64) NOT NULL CHECK(cost_policy_hash ~ '^[0-9a-f]{64}$'),
         identity JSONB NOT NULL CHECK(jsonb_typeof(identity)='object'),
         recorded_at TIMESTAMPTZ NOT NULL,
+        FOREIGN KEY (signal_id, signal_content_hash, decided_at)
+            REFERENCES live_strategy_signals(signal_id, content_hash, decided_at),
         CHECK(target_from <> target_to),
         CHECK(fill_bar_open_at > decided_at),
         CHECK(fill_bar_open_at <= decided_at + interval '1 minute'),
@@ -54,3 +64,4 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("DROP TABLE IF EXISTS paper_incubation_fills")
+    op.execute("ALTER TABLE live_strategy_signals DROP CONSTRAINT IF EXISTS live_strategy_signals_decision_key")

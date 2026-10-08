@@ -7,7 +7,10 @@ import os
 import shutil
 import tempfile
 import unittest
+from datetime import timedelta
 from pathlib import Path
+
+import psycopg
 
 
 @unittest.skipUnless(os.environ.get("POSTGRES_TEST_DSN"), "POSTGRES_TEST_DSN not configured")
@@ -39,7 +42,7 @@ class PaperIncubationStorePostgresTests(unittest.TestCase):
             PaperIncubationError,
             PostgresPaperIncubationStoreV1,
         )
-        from trade_platform.persistence import PostgresDatabase
+        from trade_platform.persistence import PersistenceError, PostgresDatabase
         from trade_platform.strategy_lab_ledger_v1 import PostgresStrategyLabLedgerV1
         from trade_platform.strategy_lab_policies_v1 import gross_cost_policy_v1
 
@@ -58,7 +61,7 @@ class PaperIncubationStorePostgresTests(unittest.TestCase):
             self.assertEqual(len(signals), len(pending))
             engine = PaperIncubationEngineV1(gross_cost_policy_v1())
             engine.add(pending)
-            fills = engine.on_bars(bars)
+            fills = engine.on_bars(bars[:200])  # later signals stay unfilled for the FK check below
             self.assertTrue(fills)
             for fill in fills:
                 self.assertTrue(store.record(fill))
@@ -78,6 +81,16 @@ class PaperIncubationStorePostgresTests(unittest.TestCase):
             diverged = next(f for f in replay.on_bars(moved) if f.identity["signal_id"] == first.identity["signal_id"])
             with self.assertRaises(PaperIncubationError):
                 store.record(diverged)
+            # A fill computed from another copy of the decision (a different decided_at) cannot be stored.
+            unfilled = [item for item in store.pending_signals("BTCUSDT") if item.signal_id in ours]
+            self.assertTrue(unfilled)
+            other = dataclasses.replace(unfilled[0], decided_at=unfilled[0].decided_at - timedelta(minutes=10))
+            rogue = PaperIncubationEngineV1(gross_cost_policy_v1())
+            rogue.add([other])
+            (rogue_fill,) = rogue.on_bars(bars)
+            with self.assertRaises(PersistenceError) as refused:
+                store.record(rogue_fill)
+            self.assertIsInstance(refused.exception.__cause__, psycopg.errors.ForeignKeyViolation)
         finally:
             database.close()
 

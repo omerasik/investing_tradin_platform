@@ -36,7 +36,6 @@ from trade_platform.live_signals_v1 import (
 )
 from trade_platform.paper_incubation_v1 import (
     PaperIncubationEngineV1,
-    PendingSignalV1,
     PostgresPaperIncubationStoreV1,
     incubation_report_v1,
 )
@@ -94,7 +93,8 @@ def main() -> None:
             new = runner.on_bars([bar])
             for signal in new:
                 signals.record(signal)
-            engine.add(PendingSignalV1.from_signal(signal) for signal in new)
+            if new:  # fill from the stored signals: their decision instant is the recorded one
+                engine.add(fills.pending_signals(args.symbol))
         time.sleep(args.poll_seconds)
 
 
