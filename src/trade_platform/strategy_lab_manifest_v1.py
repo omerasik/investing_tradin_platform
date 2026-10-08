@@ -41,11 +41,12 @@ from .strategy_lab_ledger_v1 import (
     PostgresStrategyLabLedgerV1,
     TrialOutcomeV1,
 )
-from .strategy_lab_study_v1 import StudySpecV1, identity_hash_v1
+from .strategy_lab_study_v1 import REASON_SEARCH_TIER_ONLY, StudySpecV1, identity_hash_v1
 
 MANIFEST_SCHEMA_VERSION_V1: Final = "strategy-lab-study-manifest-v1"
 CANDIDATE_SET_SCHEMA_VERSION_V1: Final = "strategy-lab-candidate-set-v1"
 AUTHORITATIVE_RERUN_PENDING_OR_3: Final = "PENDING_OWNER_DECISION_OR_3"
+AUTHORITATIVE_RERUN_REQUIRED_OR_3: Final = "REQUIRED_DECIMAL_RERUN_OR_3"
 TIE_BREAK_V1: Final = "TRIAL_CONTENT_HASH_ASCENDING"
 
 _METRIC: Final = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -156,6 +157,13 @@ def _metric_value(raw: object) -> Decimal | None:
     return value if value.is_finite() else None
 
 
+def _rerun_marker(manifest: StudyManifestV1) -> str:
+    """OR-3-bound studies (R4.6) require the Decimal rerun; earlier ones stay pending."""
+    if REASON_SEARCH_TIER_ONLY in manifest.identity.get("authority_reasons", []):
+        return AUTHORITATIVE_RERUN_REQUIRED_OR_3
+    return AUTHORITATIVE_RERUN_PENDING_OR_3
+
+
 def freeze_candidates_v1(manifest: StudyManifestV1, rule: CandidateSelectionRuleV1) -> CandidateSetV1:
     """Freeze the rule's top ``k`` eligible results; refuses when fewer than ``k`` are eligible."""
     eligible: list[tuple[Decimal, dict[str, Any]]] = []
@@ -193,7 +201,7 @@ def freeze_candidates_v1(manifest: StudyManifestV1, rule: CandidateSelectionRule
         "cutoff_tie": cutoff_tie,
         "multiple_testing_trial_count": manifest.planned_trial_count,
         "numeric_tier": NUMERIC_TIER_SEARCH_NON_AUTHORITATIVE,
-        "authoritative_rerun": AUTHORITATIVE_RERUN_PENDING_OR_3,
+        "authoritative_rerun": _rerun_marker(manifest),
     }
     return CandidateSetV1(manifest.study_id, manifest.manifest_hash, identity, identity_hash_v1(identity))
 
@@ -229,7 +237,7 @@ class PostgresStrategyLabManifestStoreV1:
                 "RETURNING candidate_set_hash",
                 (candidates.candidate_set_hash, candidates.manifest_hash, candidates.study_id,
                  len(candidates.candidates), NUMERIC_TIER_SEARCH_NON_AUTHORITATIVE,
-                 AUTHORITATIVE_RERUN_PENDING_OR_3, json.dumps(dict(candidates.identity), sort_keys=True),
+                 candidates.identity["authoritative_rerun"], json.dumps(dict(candidates.identity), sort_keys=True),
                  datetime.now(UTC)),
             )
             return cursor.fetchone() is not None

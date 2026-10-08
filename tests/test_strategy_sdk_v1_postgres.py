@@ -84,8 +84,39 @@ class StrategySdkPostgresTests(unittest.TestCase):
                 manifest, CandidateSelectionRuleV1("trades", RankDirectionV1.HIGHER_IS_BETTER, 2))
             store.record_candidate_set(candidates)
             self.assertEqual(8, candidates.identity["multiple_testing_trial_count"])
+            self.assertEqual("REQUIRED_DECIMAL_RERUN_OR_3", candidates.identity["authoritative_rerun"])
+            self._rerun(study, manifest, candidates, data_root, database)
         finally:
             database.close()
+
+    def _rerun(self, study, manifest, candidates, data_root, database) -> None:  # type: ignore[no-untyped-def]
+        from trade_platform.strategy_lab_authority_rerun_v1 import (
+            RECONCILED,
+            PostgresAuthorityRerunStoreV1,
+            run_authority_rerun_v1,
+        )
+
+        rerun = run_authority_rerun_v1(study, manifest, candidates, data_root=data_root)
+        identity = rerun.identity
+        frozen = {item["trial_id"] for item in candidates.candidates}
+        baseline = [item for item in identity["results"] if item["lag_micros"] == 2_000_000]
+        self.assertTrue(frozen <= {item["trial_id"] for item in baseline})
+        # Every frozen candidate also carries the full OR-5 sweep.
+        for trial in frozen:
+            lags = sorted(item["lag_micros"] for item in identity["results"] if item["trial_id"] == trial)
+            self.assertEqual([2_000_000, 5_000_000, 30_000_000, 60_000_000], lags)
+        for item in baseline:
+            self.assertEqual("DECIMAL_AUTHORITATIVE", item["metrics"]["numeric_tier"])
+            self.assertIn(item["reconciliation"], {RECONCILED, "DIVERGED_DECIMAL_WINS"})
+            self.assertEqual(item["held_divergence_bars"] == 0, item["reconciliation"] == RECONCILED)
+        self.assertIn(rerun.selection_status, {"ESTABLISHED", "FAIL_CLOSED_AUTHORITY_NOT_ESTABLISHED"})
+        rerun_store = PostgresAuthorityRerunStoreV1(database)
+        rerun_store.record(rerun)
+        stored = rerun_store.for_candidate_set(candidates.candidate_set_hash)
+        self.assertIn(rerun.rerun_hash, {item.rerun_hash for item in stored})
+        # Deterministic: the same rerun has the same identity.
+        again = run_authority_rerun_v1(study, manifest, candidates, data_root=data_root)
+        self.assertEqual(rerun.rerun_hash, again.rerun_hash)
 
 
 if __name__ == "__main__":

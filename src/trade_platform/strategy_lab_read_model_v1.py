@@ -105,7 +105,7 @@ class StrategyLabCandidateSetView(BaseModel):
     cutoff_tie: bool
     multiple_testing_trial_count: int
     numeric_tier: Literal["SEARCH_NON_AUTHORITATIVE"]
-    authoritative_rerun: Literal["PENDING_OWNER_DECISION_OR_3"]
+    authoritative_rerun: Literal["PENDING_OWNER_DECISION_OR_3", "REQUIRED_DECIMAL_RERUN_OR_3"]
     recorded_at: datetime
 
 
