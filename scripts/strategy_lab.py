@@ -17,6 +17,7 @@ engineering counts and search metrics only.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import sys
 from datetime import timedelta
@@ -98,7 +99,7 @@ def main() -> None:
     try:
         if args.command == "search":
             reports = run_study_pool_v1(args.dsn, study, BarStrategyEvaluatorV1(args.data_root), workers=args.workers)
-            print(json.dumps([report.__dict__ for report in reports], default=str))
+            print(json.dumps([dataclasses.asdict(report) for report in reports], default=str))
         progress = ledger.progress(study.study_id)
         out = {"study_id": str(study.study_id), "label": study.label, "planned": study.planned_trial_count,
                "states": dict(progress.states), "finished": progress.finished,
