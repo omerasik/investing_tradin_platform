@@ -237,6 +237,13 @@ r1b_universe:                 # OR-2 = U2: BTCUSDT ETHUSDT SOLUSDT, tickers + pu
     on the first burn-in hour (22:48-23:00Z, scratch store, no DB): BTC/ETH/SOL
     each REAL_DATA + T4 professional, 0 missing knowledge times.
   burn_in: 72 h on the universe root beside R0 (started 2026-10-07T22:48Z), then re-measure runway.
+  burn_in_outage: >-
+    Host went down 2026-10-08; last pre-outage arrival 10:14:47Z (BTC/ETH/SOL),
+    first post-restart arrival 18:06:41Z: a 7.87 h hole recorded as a gap, never
+    bridged (R0 and T2 acquisition died at the same instant). Observed coverage
+    before it: 11.45 h. 72 h wall clock ends 2026-10-10T22:48Z with ~64.1 h
+    observed; 72 h observed would need running to ~2026-10-11T06:40Z. Whether a
+    burn-in with this outage is accepted, or restarted, is the owner's call (OR-1).
   open_point: >-
     R0 v1 keeps recording BTCUSDT beside the universe (+~0.30 GB/day gzip)
     until the owner retires it; not changed here.

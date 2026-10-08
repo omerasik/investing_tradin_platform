@@ -344,6 +344,11 @@ def acquire_archive_day_v1(
             raise BybitPublicArchiveError("archive_day_not_published")
         if response.status == 416 and total is not None and offset == total:
             break
+        if response.status == 416 and total is None and offset:
+            # A partial left by a killed run already reaches (or passes) the end; this
+            # session knows neither length nor ETag for it, so restart from byte 0.
+            part.unlink()
+            continue
         if response.status not in (200, 206):
             raise BybitPublicArchiveError(f"archive_http_status:{response.status}")
         content_range = response.headers.get("content-range")

@@ -112,6 +112,18 @@ class ArchiveTests(unittest.TestCase):
         acquire_archive_day_v1(self.temp, "BTCUSDT", DAY, fetch=fake, chunk_bytes=1 << 20)
         self.assertEqual(fake.calls[0]["Range"], f"bytes=50-{50 + (1 << 20) - 1}")
 
+    def test_a_complete_partial_left_by_a_killed_run_is_refetched_from_zero(self) -> None:
+        body = _gz(_csv(STANDARD))
+        contract = bybit_public_trade_archive_contract_v1()
+        part = self.temp / "v1" / f"source={contract.source_id}" / "symbol=BTCUSDT" / "BTCUSDT2026-09-20.csv.gz.part"
+        part.parent.mkdir(parents=True)
+        part.write_bytes(body)
+        fake = FakeArchive(body)
+        manifest = acquire_archive_day_v1(self.temp, "BTCUSDT", DAY, fetch=fake, chunk_bytes=1 << 20)
+        self.assertEqual([c["Range"].split("-")[0] for c in fake.calls], [f"bytes={len(body)}", "bytes=0"])
+        self.assertEqual(manifest.http_etag, fake.etag)
+        verify_archive_file_v1(self.temp, manifest)
+
     def test_a_file_that_changes_mid_download_is_refused(self) -> None:
         body = _gz(_csv(STANDARD))
         fake = FakeArchive(body)
