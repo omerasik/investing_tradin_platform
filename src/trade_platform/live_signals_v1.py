@@ -250,6 +250,30 @@ class WatchedCandidateV1:
         return self.study.parameter_space.typed_point(trial.parameters)
 
 
+def watched_from_rerun_v1(study: StudySpecV1, rerun: Any, *, symbol: str) -> list[WatchedCandidateV1]:
+    """RESEARCH_WATCH candidates: exactly the Decimal-authoritative selection of an ESTABLISHED rerun."""
+    from .strategy_lab_authority_rerun_v1 import SELECTION_ESTABLISHED
+
+    if rerun.identity["study_content_hash"] != study.content_hash:
+        raise LiveSignalsError("rerun_is_not_from_this_study")
+    selection = rerun.identity["authoritative_selection"]
+    if selection["status"] != SELECTION_ESTABLISHED:
+        raise LiveSignalsError("research_watch_requires_an_established_decimal_selection")
+    return [WatchedCandidateV1(study, str(item["trial_id"]), symbol, AUTHORITY_RESEARCH_WATCH, rerun.rerun_hash)
+            for item in selection["selected"]]
+
+
+def watched_from_states_v1(study: StudySpecV1, states: Sequence[Mapping[str, Any]], *,
+                           symbol: str) -> list[WatchedCandidateV1]:
+    """INCUBATING candidates: only those whose recorded lifecycle (R6) is INCUBATING."""
+    from .strategy_lab_validation_v1 import CandidateStateV1, candidate_lifecycle_v1
+
+    latest = candidate_lifecycle_v1(states)
+    evidence = {str(event["trial_id"]): str(event["evidence_hash"]) for event in states}
+    return [WatchedCandidateV1(study, trial, symbol, AUTHORITY_INCUBATING, evidence[trial])
+            for trial, state in sorted(latest.items()) if state == CandidateStateV1.INCUBATING.value]
+
+
 @dataclass(frozen=True, slots=True)
 class LiveSignalV1:
     identity: Mapping[str, Any]
@@ -374,4 +398,6 @@ __all__ = [
     "LiveStrategyRunnerV1",
     "PostgresLiveSignalStoreV1",
     "WatchedCandidateV1",
+    "watched_from_rerun_v1",
+    "watched_from_states_v1",
 ]

@@ -398,9 +398,17 @@ class PostgresAuthorityRerunStoreV1:
             return cursor.fetchone() is not None
 
     def for_candidate_set(self, candidate_set_hash: str) -> tuple[AuthorityRerunV1, ...]:
+        return self._load("candidate_set_hash", candidate_set_hash)
+
+    def for_study(self, study_id: UUID) -> tuple[AuthorityRerunV1, ...]:
+        return self._load("study_id", study_id)
+
+    def _load(self, column: str, value: object) -> tuple[AuthorityRerunV1, ...]:
+        if column not in {"candidate_set_hash", "study_id"}:
+            raise AuthorityRerunError("unknown_rerun_lookup")
         with self._database.transaction() as connection, connection.cursor() as cursor:
-            cursor.execute("SELECT rerun_hash, identity FROM strategy_lab_authority_reruns "
-                           "WHERE candidate_set_hash=%s ORDER BY recorded_at, rerun_hash", (candidate_set_hash,))
+            cursor.execute(f"SELECT rerun_hash, identity FROM strategy_lab_authority_reruns "  # nosec B608
+                           f"WHERE {column}=%s ORDER BY recorded_at, rerun_hash", (value,))
             rows = cursor.fetchall()
         out = []
         for rerun_hash, raw in rows:

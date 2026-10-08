@@ -119,6 +119,22 @@ class LiveRunnerTests(unittest.TestCase):
             runner.on_bars([bar])
         self.assertEqual(50, len(runner._history["BTCUSDT"]))
 
+    def test_authority_comes_only_from_recorded_evidence(self) -> None:
+        from tests.test_strategy_lab_validation_v1 import established_rerun
+        from trade_platform.live_signals_v1 import watched_from_rerun_v1, watched_from_states_v1
+
+        watched = watched_from_rerun_v1(self.study, established_rerun(self.study, [self.trial]), symbol="BTCUSDT")
+        self.assertEqual([("RESEARCH_WATCH", self.trial)], [(w.authority, w.trial_id) for w in watched])
+        failed = established_rerun(self.study, [self.trial], status="FAIL_CLOSED_AUTHORITY_NOT_ESTABLISHED")
+        with self.assertRaises(LiveSignalsError):
+            watched_from_rerun_v1(self.study, failed, symbol="BTCUSDT")
+        states = [{"trial_id": self.trial, "state": "INCUBATING", "evidence_hash": "v" * 64}]
+        self.assertEqual(["INCUBATING"], [w.authority for w in watched_from_states_v1(self.study, states,
+                                                                                      symbol="BTCUSDT")])
+        rejected = [{"trial_id": self.trial, "state": "HOLDOUT_FAILED_REJECTED", "evidence_hash": "v" * 64},
+                    {"trial_id": self.trial, "state": "INCUBATING", "evidence_hash": "w" * 64}]
+        self.assertEqual([], watched_from_states_v1(self.study, rejected, symbol="BTCUSDT"))
+
     def test_only_research_watch_or_incubating_and_only_this_sdk_version(self) -> None:
         with self.assertRaises(LiveSignalsError):
             WatchedCandidateV1(self.study, self.trial, "BTCUSDT", "VALIDATED", "e" * 64)
