@@ -152,9 +152,14 @@ def _json(raw: object) -> dict[str, Any]:
 
 
 def result_content_hash_v1(
-    *, trial_content_hash: str, outcome: TrialOutcomeV1, metrics: Mapping[str, Any]
+    *, trial_content_hash: str, outcome: TrialOutcomeV1, metrics: Mapping[str, Any],
+    cost_policy_slot: str = COST_POLICY_UNSET_V1,
 ) -> str:
-    """Content hash of one trial result; independent of attempt, worker and time."""
+    """Content hash of one trial result; independent of attempt, worker and time.
+
+    ``cost_policy_slot`` is the study's own slot (R4.6); for a study without
+    owner policies it is the unset marker, so those hashes are unchanged.
+    """
     try:
         return identity_hash_v1(
             {
@@ -162,7 +167,7 @@ def result_content_hash_v1(
                 "trial_content_hash": trial_content_hash,
                 "outcome": outcome.value,
                 "numeric_tier": NUMERIC_TIER_SEARCH_NON_AUTHORITATIVE,
-                "cost_policy_slot": COST_POLICY_UNSET_V1,
+                "cost_policy_slot": cost_policy_slot,
                 "metrics": dict(metrics),
             }
         )
@@ -323,18 +328,25 @@ class PostgresStrategyLabLedgerV1:
     def complete(self, claim: TrialClaimV1, *, outcome: TrialOutcomeV1, metrics: Mapping[str, Any]) -> TrialResultV1:
         if not isinstance(outcome, TrialOutcomeV1):
             raise StrategyLabLedgerError("trial_outcome_unknown")
-        result_hash = result_content_hash_v1(
-            trial_content_hash=claim.trial_content_hash, outcome=outcome, metrics=metrics
-        )
         now = self._now()
         with self._cursor() as cursor:
             self._hold_lease(cursor, claim, now)
+            cursor.execute("SELECT cost_policy_slot FROM strategy_lab_studies WHERE study_id=%s",
+                           (claim.study_id,))
+            row = cursor.fetchone()
+            if row is None:
+                raise StrategyLabLedgerError("study_not_registered")
+            cost_slot = str(row[0])
+            result_hash = result_content_hash_v1(
+                trial_content_hash=claim.trial_content_hash, outcome=outcome, metrics=metrics,
+                cost_policy_slot=cost_slot,
+            )
             cursor.execute(
                 "INSERT INTO strategy_lab_trial_results (trial_id, study_id, attempt, result_content_hash, "
                 "numeric_tier, cost_policy_slot, outcome, metrics, worker, produced_at) VALUES "
                 "(%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s)",
                 (claim.trial_id, claim.study_id, claim.attempt, result_hash,
-                 NUMERIC_TIER_SEARCH_NON_AUTHORITATIVE, COST_POLICY_UNSET_V1, outcome.value,
+                 NUMERIC_TIER_SEARCH_NON_AUTHORITATIVE, cost_slot, outcome.value,
                  json.dumps(dict(metrics), sort_keys=True), claim.worker, now),
             )
             cursor.execute(

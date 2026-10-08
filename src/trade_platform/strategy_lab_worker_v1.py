@@ -147,7 +147,7 @@ def _evaluate(study: StudySpecV1, evaluator: TrialEvaluatorV1, claim: TrialClaim
         return REASON_INVALID_METRICS
     try:
         result_content_hash_v1(trial_content_hash=claim.trial_content_hash, outcome=evaluation.outcome,
-                               metrics=evaluation.metrics)
+                               metrics=evaluation.metrics, cost_policy_slot=study.cost_policy_slot)
     except StrategyLabLedgerError:
         return REASON_INVALID_METRICS
     return evaluation

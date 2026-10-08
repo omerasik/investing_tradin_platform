@@ -86,6 +86,8 @@ COST_POLICY_UNSET_V1: Final = "UNSET_PENDING_OWNER_DECISION_OR_6"
 REASON_NUMERIC_POLICY_UNSET: Final = "NUMERIC_POLICY_UNSET_PENDING_OR_3"
 REASON_COST_POLICY_UNSET: Final = "COST_POLICY_UNSET_PENDING_OR_6"
 REASON_NON_PROFESSIONAL_TIER: Final = "BOUND_DATASET_TIER_NOT_PROFESSIONAL"
+REASON_SEARCH_TIER_ONLY: Final = "SEARCH_TIER_RESULTS_REQUIRE_A_DECIMAL_AUTHORITY_RERUN"
+REASON_COST_POLICY_GROSS: Final = "COST_POLICY_GROSS_NON_PROMOTABLE_NO_VERIFIED_FEE_SCHEDULE"
 
 #: Operational guards against accidental enormous declarations; not evidence rules.
 MAX_DOMAIN_VALUES_V1: Final = 100_000
@@ -229,6 +231,11 @@ class ParameterDomainV1:
         if (stop_inclusive - start) // step + 1 > MAX_DOMAIN_VALUES_V1:
             raise StrategyLabStudyError(f"parameter_domain_too_large:{name}")
         return cls(name, ParameterKindV1.INTEGER, tuple(str(v) for v in range(start, stop_inclusive + 1, step)))
+
+    @classmethod
+    def integer_values(cls, name: str, values: Sequence[int]) -> ParameterDomainV1:
+        """An explicit list of integers (e.g. meaningful lookbacks), in declared order."""
+        return cls(name, ParameterKindV1.INTEGER, tuple(_integer_text(v, name) for v in values))
 
     @classmethod
     def decimal_set(cls, name: str, values: Sequence[Decimal | str | int]) -> ParameterDomainV1:
@@ -474,16 +481,23 @@ class StudySpecV1:
     numeric_policy_slot: str = NUMERIC_POLICY_UNSET_V1
     cost_policy_slot: str = COST_POLICY_UNSET_V1
     label: str = field(default="", compare=False)
+    #: R4.6: the owner policies this study is bound by (OR-3 numeric, OR-5 T2
+    #: timing, OR-6 cost), as their exact payloads. ``None`` keeps the v1 unset
+    #: slots and leaves the identity byte-identical to an R4.0 study.
+    policies: Mapping[str, Any] | None = field(default=None, hash=False)
 
     def __post_init__(self) -> None:
         bound = _utc(self.evaluation_upper_bound_exclusive, "evaluation_upper_bound")
         object.__setattr__(self, "evaluation_upper_bound_exclusive", bound)
         if bound > UNTOUCHED_HOLDOUT_BOUNDARY_V1:
             raise StrategyLabStudyError("evaluation_bound_crosses_the_untouched_holdout")
-        if self.numeric_policy_slot != NUMERIC_POLICY_UNSET_V1:
-            raise StrategyLabStudyError("numeric_policy_not_admissible_in_v1_pending_or_3")
-        if self.cost_policy_slot != COST_POLICY_UNSET_V1:
-            raise StrategyLabStudyError("cost_policy_not_admissible_in_v1_pending_or_6")
+        if self.policies is None:
+            if self.numeric_policy_slot != NUMERIC_POLICY_UNSET_V1:
+                raise StrategyLabStudyError("numeric_policy_slot_requires_bound_owner_policies")
+            if self.cost_policy_slot != COST_POLICY_UNSET_V1:
+                raise StrategyLabStudyError("cost_policy_slot_requires_bound_owner_policies")
+        else:
+            self._bind_policies()
         if self.parameter_space.schema() != {k: v.value for k, v in self.strategy.parameter_schema.items()}:
             raise StrategyLabStudyError("parameter_space_does_not_match_the_strategy_schema")
         roles = [binding.role for binding in self.datasets]
@@ -508,8 +522,46 @@ class StudySpecV1:
         if not isinstance(self.label, str):
             raise StrategyLabStudyError("study_label_must_be_text")
 
+    def _bind_policies(self) -> None:
+        """Admit only the owner-approved OR-3 and OR-5 payloads and an OR-6 cost policy payload.
+
+        The slots are derived from the payloads; a caller cannot state a slot
+        that disagrees with them. A study binding T2 data must bind OR-5.
+        """
+        from .strategy_lab_policies_v1 import (
+            OR6_SCHEMA_VERSION_V1,
+            PolicyV1,
+            or3_numeric_policy_v1,
+            or5_t2_timing_policy_v1,
+        )
+
+        policies = self.policies or {}
+        if not isinstance(policies, Mapping) or set(policies) != {"numeric", "timing", "cost"}:
+            raise StrategyLabStudyError("policies_must_name_numeric_timing_and_cost")
+        canonical = {key: (None if value is None else dict(value)) for key, value in sorted(policies.items())}
+        canonical_identity_json_v1(canonical)  # refuses floats and unknown types
+        if canonical["numeric"] != or3_numeric_policy_v1().payload:
+            raise StrategyLabStudyError("numeric_policy_is_not_the_owner_approved_or_3")
+        uses_t2 = any(binding.evidence_tier is EvidenceTierV1.T2_EVENT_TIME for binding in self.datasets)
+        if canonical["timing"] is not None and canonical["timing"] != or5_t2_timing_policy_v1().payload:
+            raise StrategyLabStudyError("timing_policy_is_not_the_owner_approved_or_5")
+        if uses_t2 and canonical["timing"] is None:
+            raise StrategyLabStudyError("t2_dataset_requires_the_or_5_timing_policy")
+        cost = canonical["cost"]
+        if not isinstance(cost, dict) or cost.get("schema_version") != OR6_SCHEMA_VERSION_V1:
+            raise StrategyLabStudyError("cost_policy_must_be_an_or_6_payload")
+        numeric_slot = PolicyV1(canonical["numeric"]).slot
+        cost_slot = PolicyV1(cost).slot
+        for given, derived, name in ((self.numeric_policy_slot, numeric_slot, "numeric"),
+                                     (self.cost_policy_slot, cost_slot, "cost")):
+            if given not in {derived, NUMERIC_POLICY_UNSET_V1, COST_POLICY_UNSET_V1}:
+                raise StrategyLabStudyError(f"{name}_policy_slot_disagrees_with_its_payload")
+        object.__setattr__(self, "policies", canonical)
+        object.__setattr__(self, "numeric_policy_slot", numeric_slot)
+        object.__setattr__(self, "cost_policy_slot", cost_slot)
+
     def identity(self) -> dict[str, Any]:
-        return {
+        identity: dict[str, Any] = {
             "schema_version": STUDY_SCHEMA_VERSION_V1,
             "strategy": self.strategy.payload(),
             "parameter_space": self.parameter_space.payload(),
@@ -519,6 +571,18 @@ class StudySpecV1:
             "numeric_policy_slot": self.numeric_policy_slot,
             "cost_policy_slot": self.cost_policy_slot,
         }
+        if self.policies is not None:
+            identity["policies"] = dict(self.policies)
+        return identity
+
+    @property
+    def timing_lag(self) -> Any:
+        """The OR-5 baseline lag a T2-bound study evaluates at, or ``None``."""
+        if self.policies is None or self.policies.get("timing") is None:
+            return None
+        from datetime import timedelta
+
+        return timedelta(microseconds=int(self.policies["timing"]["baseline_dissemination_lag_micros"]))
 
     @property
     def content_hash(self) -> str:
@@ -536,7 +600,14 @@ class StudySpecV1:
         return self.search.max_trials
 
     def authority(self) -> StudyAuthorityV1:
-        reasons = [REASON_NUMERIC_POLICY_UNSET, REASON_COST_POLICY_UNSET]
+        if self.policies is None:
+            reasons = [REASON_NUMERIC_POLICY_UNSET, REASON_COST_POLICY_UNSET]
+        else:
+            # A study is a search: its results are float search-tier evidence
+            # whatever the policies say (OR-3); only a Decimal rerun is authoritative.
+            reasons = [REASON_SEARCH_TIER_ONLY]
+            if self.policies["cost"].get("mode") == "GROSS_NON_PROMOTABLE":
+                reasons.append(REASON_COST_POLICY_GROSS)
         if any(binding.evidence_tier not in PROFESSIONAL_EVIDENCE_TIERS_V1 for binding in self.datasets):
             reasons.append(REASON_NON_PROFESSIONAL_TIER)
         return StudyAuthorityV1(StudyAuthorityStatusV1.NON_AUTHORITATIVE, False, tuple(reasons))

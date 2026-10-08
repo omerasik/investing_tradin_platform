@@ -273,6 +273,66 @@ class StudyTests(unittest.TestCase):
         self.assertEqual(identity["numeric_policy_slot"], NUMERIC_POLICY_UNSET_V1)
         self.assertEqual(identity["cost_policy_slot"], COST_POLICY_UNSET_V1)
 
+    def _policies(self, **overrides: object) -> dict[str, object]:
+        from trade_platform.strategy_lab_policies_v1 import (
+            gross_cost_policy_v1,
+            or3_numeric_policy_v1,
+            or5_t2_timing_policy_v1,
+        )
+
+        values: dict[str, object] = {
+            "numeric": or3_numeric_policy_v1().payload,
+            "timing": or5_t2_timing_policy_v1().payload,
+            "cost": gross_cost_policy_v1().policy().payload,
+        }
+        values.update(overrides)
+        return values
+
+    def test_owner_policies_bind_by_payload_and_derive_their_slots(self) -> None:
+        from trade_platform.strategy_lab_policies_v1 import (
+            gross_cost_policy_v1,
+            or3_numeric_policy_v1,
+        )
+        from trade_platform.strategy_lab_study_v1 import (
+            REASON_COST_POLICY_GROSS,
+            REASON_SEARCH_TIER_ONLY,
+        )
+
+        t2 = _binding(evidence_tier=EvidenceTierV1.T2_EVENT_TIME)
+        strategy = _strategy(input_roles=(InputRoleV1("bars", frozenset({EvidenceTierV1.T2_EVENT_TIME})),))
+        study = _study(strategy=strategy, datasets=(t2,), policies=self._policies())
+        self.assertEqual(or3_numeric_policy_v1().slot, study.numeric_policy_slot)
+        self.assertEqual(gross_cost_policy_v1().policy().slot, study.cost_policy_slot)
+        self.assertEqual(timedelta(seconds=2), study.timing_lag)
+        self.assertIn("policies", study.identity())
+        self.assertNotEqual(_study().study_id, study.study_id)
+        self.assertEqual(
+            (REASON_SEARCH_TIER_ONLY, REASON_COST_POLICY_GROSS, REASON_NON_PROFESSIONAL_TIER),
+            study.authority().reasons,
+        )
+        self.assertFalse(study.authority().promotable)
+        # An R4.0 study is unchanged: no policies key, unset slots.
+        self.assertNotIn("policies", _study().identity())
+
+    def test_only_the_owner_approved_policies_are_admitted(self) -> None:
+        t2 = _binding(evidence_tier=EvidenceTierV1.T2_EVENT_TIME)
+        strategy = _strategy(input_roles=(InputRoleV1("bars", frozenset({EvidenceTierV1.T2_EVENT_TIME})),))
+        tampered_numeric = dict(self._policies()["numeric"])  # type: ignore[arg-type]
+        tampered_numeric["boundary_rule"] = "FLOAT_WINS"
+        tampered_timing = dict(self._policies()["timing"])  # type: ignore[arg-type]
+        tampered_timing["baseline_dissemination_lag_micros"] = 0
+        for policies in (
+            self._policies(numeric=tampered_numeric),
+            self._policies(timing=tampered_timing),
+            self._policies(timing=None),  # T2 data without OR-5
+            self._policies(cost={"schema_version": "my-costs"}),
+        ):
+            with self.subTest(policies=sorted(policies)), self.assertRaises(StrategyLabStudyError):
+                _study(strategy=strategy, datasets=(t2,), policies=policies)
+        with self.assertRaises(StrategyLabStudyError):
+            _study(strategy=strategy, datasets=(t2,), policies=self._policies(),
+                   numeric_policy_slot="or3-numeric-policy-v1:" + "0" * 64)
+
     def test_every_v1_study_is_non_authoritative_and_says_why(self) -> None:
         authority = _study().authority()
         self.assertIs(authority.status, StudyAuthorityStatusV1.NON_AUTHORITATIVE)

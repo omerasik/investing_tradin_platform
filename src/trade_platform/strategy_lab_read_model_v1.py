@@ -25,9 +25,11 @@ from .evidence_tier_authority_v1 import PROFESSIONAL_EVIDENCE_TIERS_V1
 from .strategy_lab_study_v1 import (
     COST_POLICY_UNSET_V1,
     NUMERIC_POLICY_UNSET_V1,
+    REASON_COST_POLICY_GROSS,
     REASON_COST_POLICY_UNSET,
     REASON_NON_PROFESSIONAL_TIER,
     REASON_NUMERIC_POLICY_UNSET,
+    REASON_SEARCH_TIER_ONLY,
 )
 
 
@@ -103,7 +105,7 @@ class StrategyLabCandidateSetView(BaseModel):
     cutoff_tie: bool
     multiple_testing_trial_count: int
     numeric_tier: Literal["SEARCH_NON_AUTHORITATIVE"]
-    authoritative_rerun: Literal["PENDING_OWNER_DECISION_OR_3"]
+    authoritative_rerun: Literal["PENDING_OWNER_DECISION_OR_3", "REQUIRED_DECIMAL_RERUN_OR_3"]
     recorded_at: datetime
 
 
@@ -124,6 +126,15 @@ def _json(raw: object) -> Any:
 
 
 def _authority(identity: dict[str, Any]) -> StrategyLabAuthorityView:
+    policies = identity.get("policies")
+    if isinstance(policies, dict):
+        # R4.6 policy-bound study: re-derive the reasons from the stored identity.
+        study_reasons = [REASON_SEARCH_TIER_ONLY]
+        if isinstance(policies.get("cost"), dict) and policies["cost"].get("mode") == "GROSS_NON_PROMOTABLE":
+            study_reasons.append(REASON_COST_POLICY_GROSS)
+        if any(binding.get("evidence_tier") not in _PROFESSIONAL for binding in identity.get("datasets", [])):
+            study_reasons.append(REASON_NON_PROFESSIONAL_TIER)
+        return StrategyLabAuthorityView(reasons=study_reasons)
     reasons: list[str] = []
     if identity.get("numeric_policy_slot") == NUMERIC_POLICY_UNSET_V1:
         reasons.append(REASON_NUMERIC_POLICY_UNSET)
