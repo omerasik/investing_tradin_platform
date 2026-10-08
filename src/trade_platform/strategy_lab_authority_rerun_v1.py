@@ -159,7 +159,9 @@ def decimal_metrics_v1(
             "trades": trades,
             "turnover": _q(turnover),
             "exposure": _q(sum((Decimal(abs(v)) for v in held), Decimal(0)) / n),
-            "break_even_bps_per_side": _q(gross_sum / turnover * 10_000) if turnover else None,
+            # Break-even is a gross notion; net of a cost it would be meaningless.
+            "break_even_bps_per_side": (_q(gross_sum / turnover * 10_000)
+                                        if turnover and cost_label is None else None),
             "positive_month_fraction": _q(Decimal(sum(1 for r in month_returns if r > 0)) / len(month_returns)),
             "worst_month_return": _q(min(month_returns)),
             "funding_window_crossings": crossings,
