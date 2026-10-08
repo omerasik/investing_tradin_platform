@@ -287,6 +287,12 @@ r1b_universe:                 # OR-2 = U2: BTCUSDT ETHUSDT SOLUSDT, tickers + pu
     before it: 11.45 h. 72 h wall clock ends 2026-10-10T22:48Z with ~64.1 h
     observed; 72 h observed would need running to ~2026-10-11T06:40Z. Whether a
     burn-in with this outage is accepted, or restarted, is the owner's call (OR-1).
+  burn_in_outage_2: >-
+    Same day, 19:17:08Z -> 20:46:10Z (1.48 h, all three symbols, R0 too): both
+    recorders stopped themselves at the 20 GiB free-disk floor after Windows grew
+    pagefile.sys to 33.3 GiB under memory pressure from concurrent research jobs
+    (15.3 GiB RAM host). Recorded as a gap, never bridged. Research jobs now run
+    sequentially at 3 workers and pause below 24 GiB free.
   open_point: >-
     R0 v1 keeps recording BTCUSDT beside the universe (+~0.30 GB/day gzip)
     until the owner retires it; not changed here.
