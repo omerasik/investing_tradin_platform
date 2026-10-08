@@ -42,6 +42,8 @@ from trade_platform.first_party_capture_authority_v1 import (
     first_party_bybit_universe_contract_v1,
     first_party_bybit_universe_contracts_v1,
     resolve_first_party_capture_contract_v1,
+    resolve_t4_registered_first_party_capture_contract_v1,
+    t4_registered_first_party_capture_contracts_v1,
 )
 from trade_platform.real_market_data_provenance_v1 import canonical_bybit_source_contract_v1
 
@@ -282,10 +284,22 @@ class UniverseContractTests(unittest.TestCase):
         for contract in first_party_bybit_measurement_contracts_v1():
             self.assertEqual(CapturePurposeV1.MEASUREMENT, capture_purpose_v1(contract))
 
-    def test_universe_contracts_are_not_registered_for_evidence_tiers(self) -> None:
-        registered = {contract.source_id for contract in authorized_timing_contracts_v1()}
+    def test_universe_contracts_are_registered_for_t4_and_measurement_is_not(self) -> None:
+        # R1B.2: each universe source holds a recorder-arrival timing contract.
+        registered = {contract.source_id: contract for contract in authorized_timing_contracts_v1()}
         for contract in first_party_bybit_universe_contracts_v1():
+            timing = registered[contract.source_id]
+            self.assertEqual("PLATFORM_RECORDER_ARRIVAL_TIMESTAMP", timing.timing_authority)
+            self.assertEqual("T4_FIRST_PARTY_CAPTURE", timing.granted_tier)
+            self.assertIsNone(timing.tier_ceiling_reason)
+        self.assertEqual(
+            {first_party_bybit_source_id_v1(), *PINNED_UNIVERSE_R1B_SOURCE_IDS.values()},
+            {c.source_id for c in t4_registered_first_party_capture_contracts_v1()},
+        )
+        for contract in first_party_bybit_measurement_contracts_v1():
             self.assertNotIn(contract.source_id, registered)
+            self.assertIsNone(resolve_t4_registered_first_party_capture_contract_v1(contract.source_id))
+        self.assertIsNone(resolve_t4_registered_first_party_capture_contract_v1(None))
 
 
 class UnchangedIdentityTests(unittest.TestCase):

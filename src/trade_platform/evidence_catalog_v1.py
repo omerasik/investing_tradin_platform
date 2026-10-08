@@ -58,7 +58,10 @@ from .first_party_capture_archive_v1 import (
     read_lifecycle_v1,
     session_source_id_v1,
 )
-from .first_party_capture_authority_v1 import capture_purpose_v1
+from .first_party_capture_authority_v1 import (
+    capture_purpose_v1,
+    resolve_t4_registered_first_party_capture_contract_v1,
+)
 
 EVIDENCE_CATALOG_VERSION_V1: Final = "evidence-catalog-v1"
 CAPTURE_AVAILABILITY_VERSION_V1: Final = "capture-availability-v1"
@@ -241,7 +244,8 @@ def _public_archive_contract() -> Any | None:
 def timing_sources_v1() -> list[TimingSourceView]:
     """Every source the code knows how to time, including the one with no authority yet.
 
-    The two registered timing contracts come from the closed set in
+    The registered timing contracts (REST, the production capture source and,
+    since R1B.2, the three OR-2 universe sources) come from the closed set in
     :func:`authorized_timing_contracts_v1`. The free trade archive is listed
     beside them because it is an authorized *acquisition* source whose timing
     contract is withheld until OR-5 declares a publication lag -- showing it as
@@ -251,10 +255,17 @@ def timing_sources_v1() -> list[TimingSourceView]:
         "NONE": "Bybit V5 public REST (historical klines)",
         "PLATFORM_RECORDER_ARRIVAL_TIMESTAMP": "First-party Bybit V5 public WebSocket capture",
     }
+    def label(contract: Any) -> str:
+        text = labels.get(contract.timing_authority, contract.timing_authority)
+        capture = resolve_t4_registered_first_party_capture_contract_v1(contract.source_id)
+        if capture is None:
+            return text
+        return f"{text} ({capture.exchange_symbol}, {capture_purpose_v1(capture).value.lower()})"
+
     views = [
         TimingSourceView(
             source_id=contract.source_id,
-            label=labels.get(contract.timing_authority, contract.timing_authority),
+            label=label(contract),
             timing_authority=contract.timing_authority,
             tier_ceiling=contract.granted_tier,
             timing_contract_hash=contract.content_hash(),

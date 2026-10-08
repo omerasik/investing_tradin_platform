@@ -49,9 +49,10 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from .evidence_catalog_v1 import NO_TIMING_AUTHORITY_V1
-from .evidence_tier_authority_v1 import (
-    authorized_timing_contracts_v1,
-    first_party_bybit_capture_timing_contract_v1,
+from .evidence_tier_authority_v1 import authorized_timing_contracts_v1
+from .first_party_capture_authority_v1 import (
+    capture_purpose_v1,
+    resolve_t4_registered_first_party_capture_contract_v1,
 )
 
 INSTRUMENT_CHART_VERSION_V1: Final = "instrument-chart-v1"
@@ -162,18 +163,28 @@ def list_chart_series_v1(cursor: _Cursor) -> ChartSeriesRefPage:
         ))
     cursor.execute(
         "SELECT dataset_version_id, utc_day, window_index, frame_manifests->>'T4_OHLCV_1M', "
-        "identity->>'exchange_symbol' "
+        "identity->>'exchange_symbol', source_id "
         "FROM first_party_t4_datasets ORDER BY utc_day DESC, start_arrival_nanos DESC"
     )
-    t4_ceiling = first_party_bybit_capture_timing_contract_v1().granted_tier
+    # The ceiling is the row's own source's timing contract; a source outside the
+    # closed set shows no timing authority rather than borrowing production's.
+    ceilings = {contract.source_id: contract.granted_tier for contract in authorized_timing_contracts_v1()}
     for row in cursor.fetchall():
         if row[3] is None:
             continue
+        capture = resolve_t4_registered_first_party_capture_contract_v1(row[5])
+        source = "unregistered source" if capture is None else (
+            f"{capture.exchange_symbol} {capture_purpose_v1(capture).value.lower()}"
+        )
         items.append(ChartSeriesRefView(
             manifest_hash=str(row[3]), frame_kind="T4_OHLCV_1M",
-            label=f"First-party capture {row[1]} window {row[2]} (1m bars)",
+            label=f"First-party capture ({source}) {row[1]} window {row[2]} (1m bars)",
             dataset_version_id=row[0], instrument=None if row[4] is None else str(row[4]),
-            row_count=0, tier_ceiling=t4_ceiling,
+            row_count=0,
+            tier_ceiling=(
+                NO_TIMING_AUTHORITY_V1 if capture is None
+                else ceilings.get(capture.source_id, NO_TIMING_AUTHORITY_V1)
+            ),
         ))
     return ChartSeriesRefPage(state="AVAILABLE" if items else "UNAVAILABLE", items=items)
 

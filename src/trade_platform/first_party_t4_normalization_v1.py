@@ -133,6 +133,8 @@ BASIS_FORMULA_V1: Final = "(mark_price - index_price) / index_price"
 #: Same quantum as the 3D.9S.2A capture basis: exact and far below price steps.
 BASIS_QUANTUM_V1: Final = Decimal("1E-18")
 #: Bybit BTCUSDT steps are 0.1 USDT and 0.001 BTC; 1e-8 keeps every sum exact.
+#: For any other symbol (R1B universe) a sum not exact at 1e-8 is refused, never
+#: rounded (see :func:`exact_sum_v1`), so a finer step can only fail closed.
 VOLUME_QUANTUM_V1: Final = Decimal("1E-8")
 TURNOVER_QUANTUM_V1: Final = Decimal("1E-8")
 

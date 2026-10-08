@@ -41,6 +41,7 @@ from trade_platform.first_party_capture_authority_v1 import (
     first_party_bybit_capture_contract_v1,
     first_party_bybit_measurement_contract_v1,
     first_party_bybit_universe_contract_v1,
+    first_party_bybit_universe_contracts_v1,
 )
 from trade_platform.security import InMemoryRateLimiter, OperatorAuthenticator
 
@@ -101,7 +102,13 @@ class TimingSourceTests(unittest.TestCase):
         rest = canonical_bybit_rest_timing_contract_v1()
         capture = first_party_bybit_capture_timing_contract_v1()
         archive = bybit_public_trade_archive_contract_v1()
-        self.assertEqual(3, len(sources))
+        # REST, production capture, three OR-2 universe sources (R1B.2), archive.
+        self.assertEqual(6, len(sources))
+        self.assertTrue(sources[capture.source_id].label.endswith("(BTCUSDT, production)"))
+        for universe in first_party_bybit_universe_contracts_v1():
+            view = sources[universe.source_id]
+            self.assertEqual("T4_FIRST_PARTY_CAPTURE", view.tier_ceiling)
+            self.assertTrue(view.label.endswith(f"({universe.exchange_symbol}, universe)"))
         self.assertEqual("T1_RETROSPECTIVE", sources[rest.source_id].tier_ceiling)
         self.assertEqual(rest.content_hash(), sources[rest.source_id].timing_contract_hash)
         self.assertEqual("T4_FIRST_PARTY_CAPTURE", sources[capture.source_id].tier_ceiling)
@@ -169,7 +176,7 @@ class EvidenceCatalogTests(unittest.TestCase):
     def test_an_empty_catalog_is_unavailable_not_healthy(self) -> None:
         view = read_evidence_catalog_v1(_ScriptedCursor([[], [(0,)], [], [(0,)], [], []]), now=NOW)
         self.assertEqual("UNAVAILABLE", view.state)
-        self.assertEqual(3, len(view.timing_sources))
+        self.assertEqual(6, len(view.timing_sources))
 
 
 class CaptureAvailabilityTests(unittest.TestCase):

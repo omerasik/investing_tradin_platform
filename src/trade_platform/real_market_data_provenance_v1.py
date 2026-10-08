@@ -66,8 +66,11 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import NAMESPACE_URL, UUID, uuid5
+
+if TYPE_CHECKING:
+    from .first_party_capture_authority_v1 import FirstPartyCaptureContractV1
 
 from .bybit_instrument_onboarding import (
     bybit_authorized_historical_source,
@@ -451,13 +454,16 @@ def evaluate_real_market_data_provenance_v1(
 FIRST_PARTY_CAPTURE_DATASET_NAME_V1 = "bybit-v5-public-websocket-first-party-capture"
 
 
-def first_party_capture_source_contract_v1() -> CanonicalSourceContractV1:
-    """The production first-party capture contract, in the shared source-contract shape.
+def first_party_capture_source_contract_v1(
+    contract: FirstPartyCaptureContractV1 | None = None,
+) -> CanonicalSourceContractV1:
+    """A T4-registered first-party capture contract, in the shared source-contract shape.
 
-    A projection of
-    :func:`~trade_platform.first_party_capture_authority_v1.first_party_bybit_capture_contract_v1`
-    (its deterministic ``source_id``, terms, authorization and captured
-    observation kinds). Deliberately *not* a member of
+    A projection of ``contract`` (default: the production contract
+    :func:`~trade_platform.first_party_capture_authority_v1.first_party_bybit_capture_contract_v1`;
+    since R1B.2 also an OR-2 universe contract) -- its deterministic
+    ``source_id``, terms, authorization and captured observation kinds.
+    Deliberately *not* a member of
     :func:`authorized_source_contracts_v1`: first-party datasets are catalogued
     as sealed columnar segments, not as PostgreSQL member rows, so the
     persisted-lineage path must keep refusing them (a first-party ``source_id``
@@ -466,7 +472,8 @@ def first_party_capture_source_contract_v1() -> CanonicalSourceContractV1:
     """
     from .first_party_capture_authority_v1 import first_party_bybit_capture_contract_v1
 
-    contract = first_party_bybit_capture_contract_v1()
+    if contract is None:
+        contract = first_party_bybit_capture_contract_v1()
     return CanonicalSourceContractV1(
         source_id=contract.source_id,
         provider=contract.capture_provider,
@@ -487,9 +494,10 @@ def evaluate_first_party_capture_provenance_v1(seal: Any) -> RealMarketDataProve
     rebuilt from raw capture (``raw_replayed``) -- a seal restored from its
     catalogue without replay proves only that stored frames match an identity,
     not that the identity is what the recorder captured, so it is refused.
-    The seal's source must be the production first-party contract, bound by
-    both ``source_id`` and contract content hash. There is no provider string
-    anywhere in this decision.
+    The seal's source must be a T4-registered first-party contract (production,
+    or since R1B.2 an OR-2 universe contract; never a capacity-measurement one),
+    resolved by ``source_id`` and then bound by contract content hash and
+    instrument. There is no provider string anywhere in this decision.
 
     The verdict binds the seal's evidence id and the timing facts the seal
     derived; ``dataset_created_at`` is deliberately ``None`` (a platform
@@ -498,21 +506,27 @@ def evaluate_first_party_capture_provenance_v1(seal: Any) -> RealMarketDataProve
     """
     # Imported here: the seal module needs the analytics extra (pyarrow), and
     # this authority is imported by runtime paths that do not install it.
-    from .first_party_capture_authority_v1 import first_party_bybit_capture_contract_v1
+    from .first_party_capture_authority_v1 import (
+        first_party_bybit_capture_contract_v1,
+        resolve_t4_registered_first_party_capture_contract_v1,
+    )
     from .first_party_t4_seal_v1 import FirstPartyT4SealV1
 
     if not isinstance(seal, FirstPartyT4SealV1):
         raise RealMarketDataProvenanceError("first_party_provenance_requires_a_first_party_seal")
-    contract = first_party_bybit_capture_contract_v1()
-    projection = first_party_capture_source_contract_v1()
+    resolved = resolve_t4_registered_first_party_capture_contract_v1(seal.source_id)
     reasons: list[str] = []
+    if resolved is None:
+        # Unregistered (or measurement) source: refused. The production contract
+        # only stands in so the remaining checks have something to compare with.
+        reasons.append("source_id_not_canonical")
+    contract = first_party_bybit_capture_contract_v1() if resolved is None else resolved
+    projection = first_party_capture_source_contract_v1(contract)
     intact = seal.integrity_verified()
     if not intact:
         reasons.append("first_party_seal_integrity_failed")
     if not seal.raw_replayed:
         reasons.append("first_party_seal_not_rebuilt_from_raw_capture")
-    if seal.source_id != contract.source_id:
-        reasons.append("source_id_not_canonical")
     identity = seal.identity
     if identity.get("contract_content_hash") != contract.content_hash():
         reasons.append("source_contract_mismatch:first_party_capture_contract")
@@ -549,7 +563,8 @@ def evaluate_first_party_capture_provenance_v1(seal: Any) -> RealMarketDataProve
         source_id=seal.source_id,
         source_contract_content_hash=projection.content_hash() if proven else None,
         member_count=member_count,
-        instrument_ids=(contract.instrument_scope,),
+        # Never the stand-in's instrument for an unresolved source.
+        instrument_ids=() if resolved is None else (contract.instrument_scope,),
         member_count_by_kind=by_kind,
         first_party_capture_seal_evidence_id=seal.evidence_id if proven else None,
         first_party_sealed_timing_facts=seal.timing_facts.as_tuple() if proven else None,

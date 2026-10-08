@@ -187,7 +187,15 @@ r1b_universe:                 # OR-2 = U2: BTCUSDT ETHUSDT SOLUSDT, tickers + pu
     for evidence tiers (T4 sealing of universe sources is a later, separately
     reviewed slice). 'capture_bybit_public.py universe': hourly segments on
     ~/.trade_platform/capture-universe-r1b with its own recorder lock.
-  burn_in: 72 h on the universe root beside R0, then re-measure runway.
+  r1b_2: >-
+    Universe sources registered for T4: one recorder-arrival timing contract
+    each; the sealed-timing-facts rule now covers every T4-registered capture
+    source (pinned by a test over the shipped closed set); provenance, catalog
+    rebuild and quotes resolve the contract from the seal's own source_id
+    (measurement never). first_party_t4.py --source <SYMBOL>. Real dry run
+    on the first burn-in hour (22:48-23:00Z, scratch store, no DB): BTC/ETH/SOL
+    each REAL_DATA + T4 professional, 0 missing knowledge times.
+  burn_in: 72 h on the universe root beside R0 (started 2026-10-07T22:48Z), then re-measure runway.
   open_point: >-
     R0 v1 keeps recording BTCUSDT beside the universe (+~0.30 GB/day gzip)
     until the owner retires it; not changed here.
