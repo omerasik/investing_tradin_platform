@@ -372,11 +372,13 @@ def _refuse_holdout(day: date, opening: Any = None) -> None:
 def _days(first: date, last: date, opening: Any = None) -> list[date]:
     if last < first:
         raise ResearchBarsError("window_last_day_before_first_day")
-    _refuse_holdout(last, opening)
     if first < UNTOUCHED_HOLDOUT_BOUNDARY_V1.date() <= last:
         # A window never straddles the boundary: search data and holdout data stay apart.
         raise ResearchBarsError("window_straddles_the_untouched_holdout_boundary")
-    return [first + timedelta(days=offset) for offset in range((last - first).days + 1)]
+    days = [first + timedelta(days=offset) for offset in range((last - first).days + 1)]
+    for day in days:  # every day, not only the last: an opening admits only its own span
+        _refuse_holdout(day, opening)
+    return days
 
 
 def build_research_bar_dataset_v1(

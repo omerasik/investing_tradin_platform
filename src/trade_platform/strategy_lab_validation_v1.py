@@ -3,45 +3,52 @@
 ``RESEARCH_ONLY``. Generalizes the 3D.9A open-to-open preregistration pattern
 (:mod:`trade_platform.open_to_open_preregistration_v1`: every owner-decided
 field absent by default, a DRAFT packet with one unresolved reason per gap, a
-single holdout gate) to any Strategy Lab SDK candidate. It does not reuse the
-legacy SQLite promotion gate's defaulted thresholds: every threshold here is
-an owner decision (OR-7) or absent.
+single holdout gate) to Strategy Lab SDK candidates. It does not reuse the
+legacy SQLite promotion gate's defaulted thresholds: every threshold here is an
+owner decision (OR-7) or absent.
 
-Research cycles
----------------
-:data:`CURRENT_CYCLE_V1` is the current research cycle; its untouched holdout
-starts at the immutable 2026-08-20 boundary. :func:`new_research_cycle_v1`
-declares a *future* cycle prospectively: its holdout start must lie strictly
-after the instant it is registered, so a boundary can never be moved or
-declared retroactively over data already seen.
+Research cycles (issued, persisted, prospective)
+------------------------------------------------
+:data:`CURRENT_CYCLE_V1` is the current cycle: its untouched holdout starts at
+the immutable 2026-08-20 boundary. A future cycle is issued only by
+:meth:`PostgresHoldoutRegistryV1.register_cycle`, which stores it with a
+database-assigned registration instant and refuses a holdout start that is not
+strictly later (a boundary can never be declared retroactively). Cycle ids are
+derived from the holdout start; holdout spans of different cycles may never
+overlap (database exclusion constraint), so the current holdout cannot be
+re-opened under another name.
 
 Preregistration (:class:`PreregistrationV1`)
 --------------------------------------------
-Binds a study, its frozen candidate set and a Decimal authority rerun whose
-selection is ``ESTABLISHED`` (OR-3), the candidates that rerun selected, the
-cycle and its holdout start, and the owner's OR-7 inputs: holdout end,
-acceptance criteria, minimum trades, the OR-6 cost policy with a verified fee
-schedule and the approved stress envelope, and incubation length. Every gap is
-an ``UNRESOLVED_*`` reason and the packet stays ``DRAFT``; only a complete
-packet with an explicit owner authorization is ``AUTHORIZED``.
+Binds the study, its Decimal authority rerun (selection ``ESTABLISHED``), the
+selected candidates, the cycle, the holdout symbol and span (whole UTC days),
+the OR-5 lag schedule, and the owner's OR-6/OR-7 inputs: acceptance criteria,
+minimum trades, incubation length, and an OR-6 cost policy that must rebuild
+exactly through :class:`~trade_platform.strategy_lab_policies_v1.CostPolicyV1`
+with a verified fee schedule and a non-empty stress envelope. The identity is
+deep-frozen at construction (canonical JSON); validation reads only that
+frozen identity. Every gap is an ``UNRESOLVED_*`` reason and the packet stays
+``DRAFT``.
 
 Holdout (:class:`PostgresHoldoutRegistryV1`)
 -------------------------------------------
-Opening is one-shot per cycle (a unique row): a second opening of the same
-cycle is refused, because a holdout seen once is no longer untouched. Opening
-requires an ``AUTHORIZED`` packet and returns a :class:`HoldoutOpeningV1`
-token that only the registry issues; holdout data access requires it.
+Opening is one-shot per cycle, atomic, requires an ``AUTHORIZED`` packet (also
+enforced by the database), and the holdout end may not lie after the opening
+instant. The registry issues the only :class:`HoldoutOpeningV1` token; holdout
+days can be acquired and windowed only with it, and every day of a window is
+checked.
 
 Holdout validation (:func:`validate_on_holdout_v1`)
 ---------------------------------------------------
-Every preregistered candidate is recomputed in Decimal over the holdout bars
-at the OR-5 baseline lag and every mandatory sweep lag, net of each approved
-cost scenario (fee + named slippage stress). A candidate passes only if every
-criterion holds at the baseline under *every* scenario, and the verdict and
-the sign of the net return are unchanged under every sweep lag (OR-5: a
-material change fails). Every result is kept. A pass makes the candidate
-``INCUBATING`` (forward evidence on T4 comes later and is calendar-bound),
-never ``VALIDATED``; T2 holdout evidence is CONDITIONAL.
+Exactly one validation per cycle (database-unique). It must use a research
+bar window of the preregistered symbol covering the whole opened span; its
+content hash is bound into the result. Every candidate is recomputed in
+Decimal at every preregistered OR-5 lag and net of every approved cost
+scenario. A candidate is rejected if a criterion fails anywhere in the cost
+envelope at the baseline lag, if the verdict or the net-return sign changes
+under the sweep, or if it holds positions across funding windows (funding is
+not modelled for T2; OR-6 fails closed). A pass makes it ``INCUBATING``; T2
+holdout evidence is CONDITIONAL and nothing here can reach a validated state.
 """
 
 from __future__ import annotations
@@ -49,20 +56,25 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Final
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from .persistence import PostgresDatabase
+from .public_archive_research_bars_v1 import ResearchBarDatasetV1
+from .research_data_plane_v1 import ResearchFrameStoreV1
 from .strategy_lab_authority_rerun_v1 import (
     SELECTION_ESTABLISHED,
     AuthorityRerunV1,
     decimal_metrics_v1,
 )
 from .strategy_lab_policies_v1 import (
-    OR6_SCHEMA_VERSION_V1,
+    CostPolicyV1,
+    FeeScheduleV1,
+    SlippageScenarioV1,
+    StrategyLabPolicyError,
     or5_lags_v1,
 )
 from .strategy_lab_study_v1 import UNTOUCHED_HOLDOUT_BOUNDARY_V1, StudySpecV1, identity_hash_v1
@@ -82,7 +94,13 @@ UNRESOLVED_COST_BASIS: Final = "MISSING_VERIFIED_FEE_SCHEDULE_AND_STRESS_ENVELOP
 UNRESOLVED_INCUBATION: Final = "MISSING_OWNER_INCUBATION_LENGTH_OR_7"
 UNRESOLVED_AUTHORIZATION: Final = "MISSING_OWNER_AUTHORIZATION"
 
+REASON_COST_ENVELOPE: Final = "HOLDOUT_CRITERIA_NOT_MET_UNDER_THE_APPROVED_COST_ENVELOPE"
+REASON_FUNDING: Final = "FUNDING_EXPOSURE_NOT_MODELLED_FAIL_CLOSED"
+
 _NAMESPACE: Final = uuid5(NAMESPACE_URL, "trade_platform.strategy_lab_validation_v1")
+_CYCLE_ISSUER: Final = object()
+_REGISTRY_ISSUER: Final = object()
+_DAY: Final = timedelta(days=1)
 
 
 class StrategyLabValidationError(ValueError):
@@ -90,14 +108,17 @@ class StrategyLabValidationError(ValueError):
 
 
 class CandidateStateV1(StrEnum):
-    SEARCH_NON_AUTHORITATIVE = "SEARCH_NON_AUTHORITATIVE"
-    DECIMAL_AUTHORITATIVE = "DECIMAL_AUTHORITATIVE"
-    PREREGISTERED = "PREREGISTERED"
     HOLDOUT_FAILED_REJECTED = "HOLDOUT_FAILED_REJECTED"
     INCUBATING = "INCUBATING"
-    INCUBATION_FAILED_REJECTED = "INCUBATION_FAILED_REJECTED"
-    #: Reserved for a later, calendar-bound phase; nothing here can reach it.
-    PROFESSIONALLY_VALIDATED = "PROFESSIONALLY_VALIDATED"
+
+
+def _midnight_utc(value: datetime, name: str) -> datetime:
+    if value.tzinfo is None:
+        raise StrategyLabValidationError(f"{name}_must_be_timezone_aware")
+    value = value.astimezone(UTC)
+    if (value.hour, value.minute, value.second, value.microsecond) != (0, 0, 0, 0):
+        raise StrategyLabValidationError(f"{name}_must_be_a_whole_utc_day")
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -107,35 +128,31 @@ class CandidateStateV1(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ResearchCycleV1:
-    cycle_id: str
+    """A research cycle; issued only for the current boundary or by the registry."""
+
     holdout_start: datetime
     registered_at: datetime | None
     note: str
+    _issuer: object = field(default=None, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self._issuer is not _CYCLE_ISSUER:
+            raise StrategyLabValidationError("research_cycle_is_issued_only_by_its_registry")
+        object.__setattr__(self, "holdout_start", _midnight_utc(self.holdout_start, "holdout_start"))
+
+    @property
+    def cycle_id(self) -> str:
+        return f"cycle-{self.holdout_start.date().isoformat()}"
 
     def payload(self) -> dict[str, Any]:
-        return {"cycle_id": self.cycle_id, "holdout_start": self.holdout_start.isoformat(),
-                "registered_at": None if self.registered_at is None else self.registered_at.isoformat(),
-                "note": self.note}
+        return {"cycle_id": self.cycle_id, "holdout_start": self.holdout_start.isoformat(), "note": self.note}
 
 
-#: The current cycle. Its boundary was preregistered by the 3D.9A engineering
-#: pilot and is immutable; it is not re-registered here.
+#: The current cycle. Its boundary was preregistered by the 3D.9A pilot and is immutable.
 CURRENT_CYCLE_V1: Final = ResearchCycleV1(
-    cycle_id="cycle-2026-08-20", holdout_start=UNTOUCHED_HOLDOUT_BOUNDARY_V1, registered_at=None,
-    note="untouched holdout preregistered by the 3D.9A pilot; immutable for this cycle",
+    UNTOUCHED_HOLDOUT_BOUNDARY_V1, None,
+    "untouched holdout preregistered by the 3D.9A pilot; immutable for this cycle", _CYCLE_ISSUER,
 )
-
-
-def new_research_cycle_v1(*, holdout_start: datetime, registered_at: datetime, note: str) -> ResearchCycleV1:
-    """A future cycle, declared prospectively: its holdout starts strictly after registration."""
-    if holdout_start.tzinfo is None or registered_at.tzinfo is None:
-        raise StrategyLabValidationError("cycle_instants_must_be_timezone_aware")
-    if holdout_start <= registered_at:
-        raise StrategyLabValidationError("a_holdout_boundary_must_be_declared_prospectively")
-    if holdout_start <= CURRENT_CYCLE_V1.holdout_start:
-        raise StrategyLabValidationError("a_new_cycle_must_start_after_the_current_holdout")
-    start = holdout_start.astimezone(UTC)
-    return ResearchCycleV1(f"cycle-{start.date().isoformat()}", start, registered_at.astimezone(UTC), note)
 
 
 # ---------------------------------------------------------------------------
@@ -154,9 +171,10 @@ class CriterionV1:
     def __post_init__(self) -> None:
         if self.comparator not in {">", ">=", "<", "<="}:
             raise StrategyLabValidationError("criterion_comparator_unknown")
-        if not self.metric or not isinstance(self.threshold, str):
+        if not isinstance(self.metric, str) or not self.metric.strip() or not isinstance(self.threshold, str):
             raise StrategyLabValidationError("criterion_needs_a_metric_and_a_text_threshold")
-        Decimal(self.threshold)
+        if not Decimal(self.threshold).is_finite():
+            raise StrategyLabValidationError("criterion_threshold_must_be_finite")
 
     def holds(self, metrics: Mapping[str, Any]) -> bool | None:
         raw = metrics.get(self.metric)
@@ -170,10 +188,37 @@ class CriterionV1:
         return {"metric": self.metric, "comparator": self.comparator, "threshold": self.threshold}
 
 
-@dataclass(frozen=True, slots=True)
+def _verified_cost_policy(raw: Mapping[str, Any] | None) -> tuple[CostPolicyV1 | None, str | None]:
+    """Rebuild an OR-6 payload through the policy classes; ``(policy, None)`` or ``(None, reason)``."""
+    if raw is None:
+        return None, UNRESOLVED_COST_BASIS
+    try:
+        fees = raw.get("venue_fees")
+        policy = CostPolicyV1(
+            fee_schedule=None if fees is None else FeeScheduleV1(**fees),
+            slippage_scenarios=tuple(SlippageScenarioV1(**item) for item in raw.get("slippage_scenarios", [])),
+            fill_liquidity=str(raw.get("fill_liquidity", "")),
+        )
+    except (StrategyLabPolicyError, TypeError, ValueError):
+        return None, UNRESOLVED_COST_BASIS
+    if policy.policy().payload != dict(raw) or not policy.promotable_cost_basis:
+        return None, UNRESOLVED_COST_BASIS
+    return policy, None
+
+
+def _positive_int(value: object, name: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise StrategyLabValidationError(f"{name}_must_be_a_positive_int")
+    return value
+
+
+@dataclass(frozen=True)
 class PreregistrationV1:
     study: StudySpecV1
     rerun: AuthorityRerunV1
+    symbol: str
     cycle: ResearchCycleV1 = CURRENT_CYCLE_V1
     holdout_end_exclusive: datetime | None = None
     acceptance_criteria: tuple[CriterionV1, ...] = ()
@@ -182,42 +227,39 @@ class PreregistrationV1:
     incubation_days: int | None = None
     authorized_by: str | None = None
     authorized_on: str | None = None
-    _identity: dict[str, Any] = field(init=False, repr=False, compare=False, default_factory=dict)
+    #: Canonical JSON of the identity, fixed at construction; the only thing validation reads.
+    _frozen: str = field(init=False, repr=False, compare=False, default="")
 
     def __post_init__(self) -> None:
+        if not isinstance(self.cycle, ResearchCycleV1):
+            raise StrategyLabValidationError("cycle_must_be_an_issued_research_cycle")
         if self.rerun.identity["study_content_hash"] != self.study.content_hash:
             raise StrategyLabValidationError("rerun_is_not_from_this_study")
-        if self.holdout_end_exclusive is not None and self.holdout_end_exclusive <= self.cycle.holdout_start:
-            raise StrategyLabValidationError("holdout_end_must_follow_the_holdout_start")
-        object.__setattr__(self, "_identity", self._build())
-
-    @property
-    def unresolved(self) -> tuple[str, ...]:
-        reasons = []
-        if self.rerun.selection_status != SELECTION_ESTABLISHED:
-            reasons.append(UNRESOLVED_AUTHORITY)
-        if self.holdout_end_exclusive is None:
-            reasons.append(UNRESOLVED_HOLDOUT_END)
-        if not self.acceptance_criteria:
-            reasons.append(UNRESOLVED_CRITERIA)
-        if self.minimum_trades is None:
-            reasons.append(UNRESOLVED_MINIMUM_TRADES)
-        cost = self.cost_policy or {}
-        if cost.get("schema_version") != OR6_SCHEMA_VERSION_V1 or not cost.get("venue_fees") or not cost.get(
-                "slippage_scenarios"):
-            reasons.append(UNRESOLVED_COST_BASIS)
-        if self.incubation_days is None:
-            reasons.append(UNRESOLVED_INCUBATION)
-        if not self.authorized_by or not self.authorized_on:
-            reasons.append(UNRESOLVED_AUTHORIZATION)
-        return tuple(reasons)
-
-    @property
-    def status(self) -> str:
-        return STATUS_AUTHORIZED if not self.unresolved else STATUS_DRAFT
+        if not isinstance(self.symbol, str) or not self.symbol.strip():
+            raise StrategyLabValidationError("holdout_symbol_required")
+        if self.holdout_end_exclusive is not None:
+            end = _midnight_utc(self.holdout_end_exclusive, "holdout_end")
+            if end <= self.cycle.holdout_start:
+                raise StrategyLabValidationError("holdout_end_must_follow_the_holdout_start")
+            object.__setattr__(self, "holdout_end_exclusive", end)
+        if not all(isinstance(item, CriterionV1) for item in self.acceptance_criteria):
+            raise StrategyLabValidationError("acceptance_criteria_must_be_criteria")
+        _positive_int(self.minimum_trades, "minimum_trades")
+        _positive_int(self.incubation_days, "incubation_days")
+        if self.authorized_by is not None and not self.authorized_by.strip():
+            raise StrategyLabValidationError("authorized_by_must_be_nonblank")
+        if self.authorized_on is not None:
+            date.fromisoformat(self.authorized_on)
+        # Deep-freeze: the identity is canonical JSON from here on; validation reads only it.
+        frozen = json.dumps(self._build(), sort_keys=True, separators=(",", ":"))
+        object.__setattr__(self, "_frozen", frozen)
 
     def _build(self) -> dict[str, Any]:
         selection = self.rerun.identity["authoritative_selection"]
+        timing = self.study.policies.get("timing") if self.study.policies else None
+        lags = [] if timing is None else [
+            int(timing["baseline_dissemination_lag_micros"]), *[int(v) for v in timing["mandatory_sweep_lags_micros"]]
+        ]
         return {
             "schema_version": PREREGISTRATION_SCHEMA_VERSION_V1,
             "cycle": self.cycle.payload(),
@@ -225,21 +267,55 @@ class PreregistrationV1:
             "study_content_hash": self.study.content_hash,
             "candidate_set_hash": self.rerun.identity["candidate_set_hash"],
             "rerun_hash": self.rerun.rerun_hash,
-            "candidates": [item["trial_id"] for item in selection.get("selected", [])],
+            "rerun_selection_status": self.rerun.selection_status,
+            "candidates": [str(item["trial_id"]) for item in selection.get("selected", [])],
+            "symbol": self.symbol,
+            "holdout_start": self.cycle.holdout_start.isoformat(),
             "holdout_end_exclusive": (None if self.holdout_end_exclusive is None
-                                      else self.holdout_end_exclusive.astimezone(UTC).isoformat()),
+                                      else self.holdout_end_exclusive.isoformat()),
+            "lags_micros": lags,
             "acceptance_criteria": [criterion.payload() for criterion in self.acceptance_criteria],
             "minimum_trades": self.minimum_trades,
-            "cost_policy": None if self.cost_policy is None else dict(self.cost_policy),
+            "cost_policy": None if self.cost_policy is None else json.loads(json.dumps(dict(self.cost_policy))),
             "incubation_days": self.incubation_days,
-            "timing_policy": self.study.policies.get("timing") if self.study.policies else None,
             "lag_sweep_rule": "MATERIAL_CHANGE_IN_VERDICT_OR_NET_RETURN_SIGN_FAILS",
-            "authorized_by": self.authorized_by,
+            "funding_rule": REASON_FUNDING,
+            "authorized_by": None if self.authorized_by is None else self.authorized_by.strip(),
             "authorized_on": self.authorized_on,
         }
 
+    @property
+    def frozen(self) -> dict[str, Any]:
+        return json.loads(self._frozen)
+
+    @property
+    def unresolved(self) -> tuple[str, ...]:
+        frozen = self.frozen
+        reasons = []
+        if frozen["rerun_selection_status"] != SELECTION_ESTABLISHED:
+            reasons.append(UNRESOLVED_AUTHORITY)
+        if frozen["holdout_end_exclusive"] is None:
+            reasons.append(UNRESOLVED_HOLDOUT_END)
+        if not frozen["acceptance_criteria"]:
+            reasons.append(UNRESOLVED_CRITERIA)
+        if frozen["minimum_trades"] is None:
+            reasons.append(UNRESOLVED_MINIMUM_TRADES)
+        if _verified_cost_policy(frozen["cost_policy"])[1] is not None:
+            reasons.append(UNRESOLVED_COST_BASIS)
+        if frozen["incubation_days"] is None:
+            reasons.append(UNRESOLVED_INCUBATION)
+        if not frozen["authorized_by"] or not frozen["authorized_on"]:
+            reasons.append(UNRESOLVED_AUTHORIZATION)
+        if not frozen["lags_micros"]:
+            reasons.append("MISSING_OR_5_TIMING_POLICY")
+        return tuple(reasons)
+
+    @property
+    def status(self) -> str:
+        return STATUS_AUTHORIZED if not self.unresolved else STATUS_DRAFT
+
     def identity(self) -> dict[str, Any]:
-        return {**self._identity, "status": self.status, "unresolved": list(self.unresolved)}
+        return {**self.frozen, "status": self.status, "unresolved": list(self.unresolved)}
 
     @property
     def content_hash(self) -> str:
@@ -249,17 +325,10 @@ class PreregistrationV1:
     def preregistration_id(self) -> UUID:
         return uuid5(_NAMESPACE, f"preregistration:{self.content_hash}")
 
-    @property
-    def candidates(self) -> list[str]:
-        return list(self._identity["candidates"])
-
 
 # ---------------------------------------------------------------------------
 # Holdout registry (one-shot)
 # ---------------------------------------------------------------------------
-
-
-_REGISTRY_ISSUER: Final = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,49 +346,80 @@ class HoldoutOpeningV1:
         if self._issuer is not _REGISTRY_ISSUER:
             raise StrategyLabValidationError("holdout_opening_is_issued_only_by_the_registry")
 
-    def admits_day(self, day: Any) -> bool:
-        return self.holdout_start.date() <= day < self.holdout_end_exclusive.date()
+    def admits_day(self, day: date) -> bool:
+        start = self.holdout_start.astimezone(UTC).date()
+        end = self.holdout_end_exclusive.astimezone(UTC).date()
+        return start <= day < end
 
 
 class PostgresHoldoutRegistryV1:
-    """Preregistrations and the one-shot holdout openings (migration 20261008_0057)."""
+    """Cycles, preregistrations, one-shot openings, validations, states (migration 20261008_0057)."""
 
     def __init__(self, database: PostgresDatabase) -> None:
         self._database = database
 
-    def record_preregistration(self, packet: PreregistrationV1) -> bool:
-        identity = packet.identity()
+    def register_cycle(self, *, holdout_start: datetime, note: str) -> ResearchCycleV1:
+        """A future cycle; the database stamps the registration and refuses a non-prospective start."""
+        start = _midnight_utc(holdout_start, "holdout_start")
+        if start <= UNTOUCHED_HOLDOUT_BOUNDARY_V1:
+            raise StrategyLabValidationError("a_new_cycle_must_start_after_the_current_holdout")
+        if not note.strip():
+            raise StrategyLabValidationError("cycle_note_required")
+        cycle_id = f"cycle-{start.date().isoformat()}"
         with self._database.transaction() as connection, connection.cursor() as cursor:
             cursor.execute(
-                "INSERT INTO strategy_lab_preregistrations (preregistration_hash, preregistration_id, study_id, "
-                "cycle_id, status, identity, recorded_at) VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s) "
-                "ON CONFLICT (preregistration_hash) DO NOTHING RETURNING preregistration_hash",
-                (packet.content_hash, packet.preregistration_id, packet.study.study_id, packet.cycle.cycle_id,
-                 packet.status, json.dumps(identity, sort_keys=True), datetime.now(UTC)),
-            )
-            return cursor.fetchone() is not None
+                "INSERT INTO strategy_lab_research_cycles (cycle_id, holdout_start, note) VALUES (%s,%s,%s) "
+                "RETURNING registered_at", (cycle_id, start, note.strip()))
+            row = cursor.fetchone()
+        if row is None:
+            raise StrategyLabValidationError("cycle_not_registered")
+        return ResearchCycleV1(start, row[0], note.strip(), _CYCLE_ISSUER)
+
+    def cycle(self, cycle_id: str) -> ResearchCycleV1:
+        with self._database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute("SELECT holdout_start, registered_at, note FROM strategy_lab_research_cycles "
+                           "WHERE cycle_id=%s", (cycle_id,))
+            row = cursor.fetchone()
+        if row is None:
+            raise StrategyLabValidationError("cycle_not_registered")
+        return ResearchCycleV1(row[0], row[1], str(row[2]), _CYCLE_ISSUER)
+
+    def record_preregistration(self, packet: PreregistrationV1) -> bool:
+        with self._database.transaction() as connection, connection.cursor() as cursor:
+            return self._insert_preregistration(cursor, packet)
+
+    @staticmethod
+    def _insert_preregistration(cursor: Any, packet: PreregistrationV1) -> bool:
+        cursor.execute(
+            "INSERT INTO strategy_lab_preregistrations (preregistration_hash, preregistration_id, study_id, "
+            "cycle_id, status, identity, recorded_at) VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s) "
+            "ON CONFLICT (preregistration_hash) DO NOTHING RETURNING preregistration_hash",
+            (packet.content_hash, packet.preregistration_id, packet.study.study_id, packet.cycle.cycle_id,
+             packet.status, json.dumps(packet.identity(), sort_keys=True), datetime.now(UTC)),
+        )
+        return cursor.fetchone() is not None
 
     def open_holdout(self, packet: PreregistrationV1, *, opened_by: str) -> HoldoutOpeningV1:
         if packet.status != STATUS_AUTHORIZED:
             raise StrategyLabValidationError("only_an_authorized_preregistration_opens_the_holdout")
         if not opened_by.strip():
             raise StrategyLabValidationError("opening_requires_an_actor")
-        self.record_preregistration(packet)
         end = packet.holdout_end_exclusive
         if end is None:  # unreachable for an AUTHORIZED packet; refused, never assumed
             raise StrategyLabValidationError("authorized_packet_without_a_holdout_end")
         with self._database.transaction() as connection, connection.cursor() as cursor:
+            self._insert_preregistration(cursor, packet)
             cursor.execute(
-                "INSERT INTO strategy_lab_holdout_openings (cycle_id, preregistration_hash, holdout_start, "
-                "holdout_end_exclusive, opened_by, opened_at) VALUES (%s,%s,%s,%s,%s,%s) "
+                "INSERT INTO strategy_lab_holdout_openings (cycle_id, holdout_start, holdout_end_exclusive, "
+                "preregistration_hash, preregistration_status, opened_by) VALUES (%s,%s,%s,%s,%s,%s) "
                 "ON CONFLICT (cycle_id) DO NOTHING RETURNING cycle_id",
-                (packet.cycle.cycle_id, packet.content_hash, packet.cycle.holdout_start, end, opened_by,
-                 datetime.now(UTC)),
+                (packet.cycle.cycle_id, packet.cycle.holdout_start, end, packet.content_hash, packet.status,
+                 opened_by.strip()),
             )
             if cursor.fetchone() is None:
                 raise StrategyLabValidationError("holdout_already_opened_for_this_cycle")
         return HoldoutOpeningV1(packet.cycle.cycle_id, packet.cycle.holdout_start, end, packet.content_hash,
-                                opened_by, _REGISTRY_ISSUER)
+                                opened_by.strip(), _REGISTRY_ISSUER)
 
     def opening(self, cycle_id: str) -> HoldoutOpeningV1 | None:
         with self._database.transaction() as connection, connection.cursor() as cursor:
@@ -330,36 +430,32 @@ class PostgresHoldoutRegistryV1:
             return None
         return HoldoutOpeningV1(cycle_id, row[1], row[2], str(row[0]).strip(), str(row[3]), _REGISTRY_ISSUER)
 
-    def record_validation(self, run: ValidationRunV1) -> bool:
-        """Persist a holdout validation and the candidate states it implies (append-only)."""
+    def record_validation(self, run: ValidationRunV1) -> None:
+        """One validation per cycle, and the states it implies, atomically. A second is refused."""
+        identity = run.identity
         with self._database.transaction() as connection, connection.cursor() as cursor:
             cursor.execute(
-                "INSERT INTO strategy_lab_holdout_validations (validation_hash, preregistration_hash, cycle_id, "
-                "identity, recorded_at) VALUES (%s,%s,%s,%s::jsonb,%s) ON CONFLICT (validation_hash) DO NOTHING "
-                "RETURNING validation_hash",
-                (run.content_hash, run.identity["preregistration_hash"], run.identity["cycle_id"],
-                 json.dumps(dict(run.identity), sort_keys=True), datetime.now(UTC)),
+                "INSERT INTO strategy_lab_holdout_validations (validation_hash, cycle_id, preregistration_hash, "
+                "dataset_content_hash, identity, recorded_at) VALUES (%s,%s,%s,%s,%s::jsonb,%s) "
+                "ON CONFLICT (cycle_id) DO NOTHING RETURNING validation_hash",
+                (run.content_hash, identity["cycle_id"], identity["preregistration_hash"],
+                 identity["holdout"]["dataset_content_hash"], json.dumps(dict(identity), sort_keys=True),
+                 datetime.now(UTC)),
             )
-            created = cursor.fetchone() is not None
-        self.record_states(run.state_events)
-        return created
-
-    def record_states(self, events: Sequence[Mapping[str, Any]]) -> None:
-        with self._database.transaction() as connection, connection.cursor() as cursor:
-            for event in events:
+            if cursor.fetchone() is None:
+                raise StrategyLabValidationError("holdout_already_validated_for_this_cycle")
+            for event in run.state_events:
                 cursor.execute(
-                    "INSERT INTO strategy_lab_candidate_states (event_hash, study_id, trial_id, state, "
-                    "evidence_hash, reasons, recorded_at) VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s) "
-                    "ON CONFLICT (event_hash) DO NOTHING",
-                    (identity_hash_v1(dict(event)), UUID(str(event["study_id"])), UUID(str(event["trial_id"])),
-                     event["state"], event["evidence_hash"], json.dumps(list(event["reasons"])),
-                     datetime.now(UTC)),
+                    "INSERT INTO strategy_lab_candidate_states (study_id, trial_id, state, evidence_hash, reasons, "
+                    "recorded_at) VALUES (%s,%s,%s,%s,%s::jsonb,%s)",
+                    (UUID(str(event["study_id"])), UUID(str(event["trial_id"])), event["state"], run.content_hash,
+                     json.dumps(list(event["reasons"])), datetime.now(UTC)),
                 )
 
     def states(self, study_id: UUID) -> list[dict[str, Any]]:
         with self._database.transaction() as connection, connection.cursor() as cursor:
             cursor.execute("SELECT trial_id, state, evidence_hash, reasons, recorded_at FROM "
-                           "strategy_lab_candidate_states WHERE study_id=%s ORDER BY recorded_at, event_hash",
+                           "strategy_lab_candidate_states WHERE study_id=%s ORDER BY recorded_at, trial_id",
                            (study_id,))
             rows = cursor.fetchall()
         return [{"trial_id": str(r[0]), "state": r[1], "evidence_hash": str(r[2]).strip(),
@@ -379,61 +475,68 @@ class ValidationRunV1:
 
     @property
     def state_events(self) -> list[dict[str, Any]]:
-        return [
-            {"study_id": self.identity["study_id"], "trial_id": item["trial_id"],
-             "state": item["state"], "evidence_hash": self.content_hash, "reasons": item["reasons"]}
-            for item in self.identity["candidates"]
-        ]
-
-
-def _scenarios(cost_policy: Mapping[str, Any]) -> list[tuple[str, Decimal]]:
-    fee = Decimal(str(cost_policy["venue_fees"]["taker_fee_bps"]))
-    return [(str(item["name"]), fee + Decimal(str(item["cost_bps_per_side"])))
-            for item in cost_policy["slippage_scenarios"]]
+        return [{"study_id": self.identity["study_id"], "trial_id": item["trial_id"], "state": item["state"],
+                 "reasons": item["reasons"]} for item in self.identity["candidates"]]
 
 
 def validate_on_holdout_v1(
-    packet: PreregistrationV1, opening: HoldoutOpeningV1, holdout_bars: BarsV1,
+    packet: PreregistrationV1, opening: HoldoutOpeningV1, holdout: ResearchBarDatasetV1, *,
+    store: ResearchFrameStoreV1,
 ) -> ValidationRunV1:
-    """Recompute every preregistered candidate on the holdout, in Decimal, under every lag and scenario."""
-    if not isinstance(opening, HoldoutOpeningV1) or opening.preregistration_hash != packet.content_hash:
-        raise StrategyLabValidationError("validation_requires_the_opening_of_this_packet")
+    """Recompute every preregistered candidate on the whole opened span, in Decimal, under every lag and scenario."""
+    frozen = packet.frozen
     if packet.status != STATUS_AUTHORIZED:
         raise StrategyLabValidationError("validation_requires_an_authorized_packet")
-    start_us = (opening.holdout_start - datetime(1970, 1, 1, tzinfo=UTC)) // timedelta(microseconds=1)
-    end_us = (opening.holdout_end_exclusive - datetime(1970, 1, 1, tzinfo=UTC)) // timedelta(microseconds=1)
-    if holdout_bars.size == 0 or int(holdout_bars.open_us[0]) < start_us or int(holdout_bars.close_us[-1]) > end_us:
-        raise StrategyLabValidationError("holdout_bars_outside_the_opened_span")
+    if not isinstance(opening, HoldoutOpeningV1) or (
+        opening.preregistration_hash, opening.cycle_id, opening.holdout_start.astimezone(UTC).isoformat(),
+        opening.holdout_end_exclusive.astimezone(UTC).isoformat(),
+    ) != (packet.content_hash, frozen["cycle"]["cycle_id"], frozen["holdout_start"], frozen["holdout_end_exclusive"]):
+        raise StrategyLabValidationError("validation_requires_the_opening_of_this_packet")
+    start = datetime.fromisoformat(frozen["holdout_start"])
+    end = datetime.fromisoformat(frozen["holdout_end_exclusive"])
+    if (holdout.symbol, holdout.identity["first_utc_day"], holdout.identity["last_utc_day"]) != (
+        frozen["symbol"], start.date().isoformat(), (end - _DAY).date().isoformat()
+    ):
+        raise StrategyLabValidationError("holdout_dataset_must_be_the_preregistered_symbol_over_the_whole_span")
+    bars = BarsV1.from_rows(list(store.iter_rows(store.load_manifest(holdout.bar_frame_manifest_hash))))
     study = packet.study
     family = FAMILIES_V1[study.strategy.family]
     if family.spec() != study.strategy:
         raise StrategyLabValidationError("study_strategy_is_not_this_sdk_family_version")
+    policy, reason = _verified_cost_policy(frozen["cost_policy"])
+    if policy is None:
+        raise StrategyLabValidationError(f"validation_requires_a_verified_cost_basis:{reason}")
+    scenarios = [(item.name, policy.total_cost_bps_per_side(item.name)) for item in policy.slippage_scenarios]
+    lags = [int(value) for value in frozen["lags_micros"]]
+    if lags != [lag // timedelta(microseconds=1) for lag in or5_lags_v1()]:
+        raise StrategyLabValidationError("packet_lags_are_not_the_owner_approved_or_5_schedule")
     trials = {str(trial.trial_id): trial for trial in study.trials()}
-    scenarios = _scenarios(packet.cost_policy or {})
-    lags = or5_lags_v1()
+    criteria = [CriterionV1(**item) for item in frozen["acceptance_criteria"]]
+    minimum_trades = int(frozen["minimum_trades"])
     results = []
-    for trial_id in packet.candidates:
+    for trial_id in frozen["candidates"]:
         params = study.parameter_space.typed_point(trials[trial_id].parameters)
-        targets = family.targets_decimal(holdout_bars, params)
+        targets = family.targets_decimal(bars, params)
         by_lag: list[dict[str, Any]] = []
-        for lag in lags:
-            lag_us = lag // timedelta(microseconds=1)
-            held = held_positions_v1(holdout_bars, targets, lag_us)
+        for lag_us in lags:
+            held = held_positions_v1(bars, targets, lag_us)
             per_scenario: list[dict[str, Any]] = []
             for name, cost in scenarios:
-                metrics = decimal_metrics_v1(holdout_bars, held, cost_bps_per_side=cost, cost_label=name)
-                checks = [criterion.holds(metrics) for criterion in packet.acceptance_criteria]
-                enough = int(metrics["trades"]) >= int(packet.minimum_trades or 0)
-                passed = enough and all(check is True for check in checks)
-                per_scenario.append({"scenario": name, "cost_bps_per_side": format(cost, "f"),
-                                     "metrics": metrics, "criteria": checks, "minimum_trades_met": enough,
-                                     "passed": passed})
+                metrics = decimal_metrics_v1(bars, held, cost_bps_per_side=cost, cost_label=name)
+                checks = [criterion.holds(metrics) for criterion in criteria]
+                enough = int(metrics["trades"]) >= minimum_trades
+                per_scenario.append({"scenario": name, "cost_bps_per_side": format(cost, "f"), "metrics": metrics,
+                                     "criteria": checks, "minimum_trades_met": enough,
+                                     "passed": enough and all(check is True for check in checks)})
             by_lag.append({"lag_micros": lag_us, "scenarios": per_scenario,
                            "passed": all(item["passed"] for item in per_scenario)})
         baseline = by_lag[0]
         reasons = []
         if not baseline["passed"]:
-            reasons.append("HOLDOUT_CRITERIA_NOT_MET_UNDER_THE_APPROVED_COST_ENVELOPE")
+            reasons.append(REASON_COST_ENVELOPE)
+        for entry in by_lag:
+            if any(int(s["metrics"]["funding_window_crossings"]) > 0 for s in entry["scenarios"]):
+                reasons.append(REASON_FUNDING)
         for entry in by_lag[1:]:
             if entry["passed"] != baseline["passed"]:
                 reasons.append(f"VERDICT_CHANGES_UNDER_OR5_LAG_{entry['lag_micros']}")
@@ -447,8 +550,11 @@ def validate_on_holdout_v1(
         "preregistration_hash": packet.content_hash,
         "study_id": str(study.study_id),
         "cycle_id": opening.cycle_id,
-        "holdout": {"start": opening.holdout_start.isoformat(), "end_exclusive": opening.holdout_end_exclusive.isoformat(),
-                    "bars": holdout_bars.size, "warmup": "INSIDE_THE_HOLDOUT_NO_CARRY_IN"},
+        "holdout": {"start": frozen["holdout_start"], "end_exclusive": frozen["holdout_end_exclusive"],
+                    "symbol": holdout.symbol, "dataset_version_id": str(holdout.dataset_version_id),
+                    "dataset_content_hash": holdout.content_hash, "bars": bars.size,
+                    "not_published_days": list(holdout.identity["not_published_days"]),
+                    "warmup": "INSIDE_THE_HOLDOUT_NO_CARRY_IN"},
         "candidates": results,
         "claim_ceiling": "CONDITIONAL_T2_HOLDOUT_INCUBATION_REQUIRED",
     }
@@ -463,15 +569,20 @@ def _sign(raw: object) -> int:
 
 
 def candidate_lifecycle_v1(events: Sequence[Mapping[str, Any]]) -> dict[str, str]:
-    """The latest recorded state per candidate (append-only events, recorded order)."""
+    """Per candidate, the recorded states in order; a rejection is terminal and is never overwritten."""
     latest: dict[str, str] = {}
     for event in events:
-        latest[str(event["trial_id"])] = str(event["state"])
+        trial = str(event["trial_id"])
+        if latest.get(trial) == CandidateStateV1.HOLDOUT_FAILED_REJECTED.value:
+            continue
+        latest[trial] = str(event["state"])
     return latest
 
 
 __all__ = [
     "CURRENT_CYCLE_V1",
+    "REASON_COST_ENVELOPE",
+    "REASON_FUNDING",
     "STATUS_AUTHORIZED",
     "STATUS_DRAFT",
     "CandidateStateV1",
@@ -483,6 +594,5 @@ __all__ = [
     "StrategyLabValidationError",
     "ValidationRunV1",
     "candidate_lifecycle_v1",
-    "new_research_cycle_v1",
     "validate_on_holdout_v1",
 ]
