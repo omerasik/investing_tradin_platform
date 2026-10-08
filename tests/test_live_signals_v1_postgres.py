@@ -6,7 +6,6 @@ import os
 import shutil
 import tempfile
 import unittest
-from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -31,7 +30,7 @@ class LiveSignalStorePostgresTests(unittest.TestCase):
         shutil.rmtree(self.temp, ignore_errors=True)
 
     def test_signals_round_trip_and_are_idempotent(self) -> None:
-        from tests.test_live_signals_v1 import _live_bars
+        from tests.test_live_signals_v1 import DAY0, _live_bars, opened_gate
         from tests.test_strategy_lab_e2e_fixture import build_window_and_study
         from tests.test_strategy_sdk_v1 import _walk
         from trade_platform.live_signals_v1 import (
@@ -48,7 +47,7 @@ class LiveSignalStorePostgresTests(unittest.TestCase):
                      {"lookback_bars": 30, "entry_z": Decimal("1.5"), "exit_z": Decimal("0.5"),
                       "direction": "long_short"})
         candidate = WatchedCandidateV1(study, trial, "BTCUSDT", "RESEARCH_WATCH", "e" * 64)
-        runner = LiveStrategyRunnerV1([candidate], clock=lambda: datetime(2030, 1, 1, tzinfo=UTC))
+        runner = LiveStrategyRunnerV1([candidate], holdout_gate=opened_gate(), clock=lambda: DAY0)
         signals = []
         for bar in _live_bars(_walk(400, seed=21)):
             signals.extend(runner.on_bars([bar]))

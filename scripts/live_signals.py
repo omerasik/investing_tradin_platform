@@ -26,6 +26,7 @@ from trade_platform.first_party_capture_archive_v1 import default_archive_root
 from trade_platform.first_party_capture_authority_v1 import first_party_bybit_universe_contract_v1
 from trade_platform.live_signals_v1 import (
     LiveBarFeedV1,
+    LiveHoldoutGateV1,
     LiveStrategyRunnerV1,
     PostgresLiveSignalStoreV1,
     watched_from_rerun_v1,
@@ -56,25 +57,33 @@ def main() -> None:
     from strategy_lab import build_study  # the same study the search registered
 
     from trade_platform.strategy_lab_authority_rerun_v1 import PostgresAuthorityRerunStoreV1
-    from trade_platform.strategy_lab_validation_v1 import PostgresHoldoutRegistryV1
+    from trade_platform.strategy_lab_validation_v1 import (
+        CURRENT_CYCLE_V1,
+        PostgresHoldoutRegistryV1,
+    )
 
     study = build_study(args.family, args.dataset, args.data_root)
+    registry = PostgresHoldoutRegistryV1(database)
+    states = registry.states(study.study_id)
     if args.incubating:
-        candidates = watched_from_states_v1(study, PostgresHoldoutRegistryV1(database).states(study.study_id),
-                                            symbol=args.symbol)
+        candidates = watched_from_states_v1(study, states, symbol=args.symbol)
     else:
         reruns = [r for r in PostgresAuthorityRerunStoreV1(database).for_study(study.study_id)
                   if r.rerun_hash == args.rerun]
         if not reruns:
             raise SystemExit("rerun_not_found_for_this_study")
-        candidates = watched_from_rerun_v1(study, reruns[0], symbol=args.symbol)
+        candidates = watched_from_rerun_v1(study, reruns[0], states=states, symbol=args.symbol)
     if not candidates:
         raise SystemExit("no_candidates_to_watch")
+    gate = LiveHoldoutGateV1.for_cycle(CURRENT_CYCLE_V1, registry.opening(CURRENT_CYCLE_V1.cycle_id))
     root = args.capture_root or default_archive_root().parent / "capture-universe-r1b"
     feed = LiveBarFeedV1(root, first_party_bybit_universe_contract_v1(args.symbol))
-    runner = LiveStrategyRunnerV1(candidates)
+    runner = LiveStrategyRunnerV1(candidates, holdout_gate=gate)
     print(json.dumps({"watching": [c.trial_id for c in candidates], "authority": candidates[0].authority,
-                      "capture_root": str(root)}), flush=True)
+                      "holdout": gate.payload(), "capture_root": str(root)}), flush=True)
+    if gate.holdout_end_exclusive is None:
+        print(json.dumps({"note": "holdout not opened (OR-7): no forward bar of this cycle is evaluated"}),
+              flush=True)
     while True:
         for signal in runner.on_bars(feed.poll()):
             store.record(signal)

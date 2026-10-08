@@ -128,8 +128,13 @@ class FixtureArchive:
         tamper: Any = None,
         end_proofs: list[str] | None = None,
         started: int | None = None,
+        interruption_events: bool = False,
     ) -> UUID:
-        """One partition: records every 0.5 s host time inside each window."""
+        """One partition: records every 0.5 s host time inside each window.
+
+        ``interruption_events`` also writes the lifecycle event the recorder emits
+        when a window ends in ``CONNECTION_LOST`` (live consumers read it).
+        """
         session_id = uuid4() if session_id is None else session_id
         writer = CapturePartitionWriterV1(
             root=self.root, contract=contract, session_id=session_id, day=day,
@@ -176,6 +181,11 @@ class FixtureArchive:
             if end_proofs is not None:
                 end_proof = end_proofs[index]
             writer.declare_coverage(CaptureCoverageIntervalV1(start, last, end_proof, count))
+            if interruption_events and end_proof == END_PROOF_CONNECTION_LOST:
+                writer.append_lifecycle(CaptureLifecycleEventV1(
+                    kind=CaptureLifecycleKindV1.CONNECTION_LOST.value, arrival_utc_nanos=last + 1,
+                    arrival_monotonic_nanos=last + 1 - BASE + SECOND, detail="fixture",
+                ))
             if index < len(windows) - 1:
                 kind = "CLOCK_DISCONTINUITY" if end_proof == "CLOCK_DISCONTINUITY" else "CONNECTION_LOSS"
                 writer.declare_gap(CaptureGapV1(last + 1, windows[index + 1][0], kind))
