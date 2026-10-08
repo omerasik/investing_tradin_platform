@@ -29,10 +29,9 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from .paper_incubation_v1 import incubation_report_v1
+from .paper_incubation_report_v1 import incubation_report_v1
 from .strategy_lab_policies_v1 import gross_cost_policy_v1
-from .strategy_lab_study_v1 import identity_hash_v1
-from .strategy_lab_validation_v1 import CURRENT_CYCLE_V1
+from .strategy_lab_study_v1 import UNTOUCHED_HOLDOUT_BOUNDARY_V1, identity_hash_v1
 
 
 class _Cursor(Protocol):
@@ -189,18 +188,24 @@ def read_reruns_v1(cursor: _Cursor, *, limit: int) -> list[RerunView]:
     return out
 
 
+def current_cycle_id_v1() -> str:
+    """The current cycle's id, as ``ResearchCycleV1.cycle_id`` derives it (kept import-light for the API)."""
+    return f"cycle-{UNTOUCHED_HOLDOUT_BOUNDARY_V1.date().isoformat()}"
+
+
 def read_cycle_v1(cursor: _Cursor) -> CycleView:
     """The current research cycle (its holdout boundary is immutable)."""
-    cycle = CURRENT_CYCLE_V1
+    start = UNTOUCHED_HOLDOUT_BOUNDARY_V1
+    cycle_id = current_cycle_id_v1()
     cursor.execute("SELECT holdout_end_exclusive, opened_at FROM strategy_lab_holdout_openings WHERE cycle_id=%s",
-                   (cycle.cycle_id,))
+                   (cycle_id,))
     opening = cursor.fetchone()
     cursor.execute("SELECT status, count(*) FROM strategy_lab_preregistrations WHERE cycle_id=%s GROUP BY status",
-                   (cycle.cycle_id,))
+                   (cycle_id,))
     preregistrations = {str(status): int(count) for status, count in cursor.fetchall()}
-    cursor.execute("SELECT count(*) FROM strategy_lab_holdout_validations WHERE cycle_id=%s", (cycle.cycle_id,))
+    cursor.execute("SELECT count(*) FROM strategy_lab_holdout_validations WHERE cycle_id=%s", (cycle_id,))
     validated = int((cursor.fetchone() or (0,))[0]) > 0
-    return CycleView(cycle_id=cycle.cycle_id, holdout_start=cycle.holdout_start,
+    return CycleView(cycle_id=cycle_id, holdout_start=start,
                      holdout_state="OPENED" if opening else "UNOPENED",
                      holdout_end_exclusive=opening[0] if opening else None,
                      opened_at=opening[1] if opening else None, preregistrations=preregistrations,

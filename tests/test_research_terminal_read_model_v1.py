@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import unittest
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import Mock
 from uuid import uuid4
 
@@ -86,6 +90,23 @@ class ResearchTerminalApiTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ValidationView(cycle=CYCLE, candidates=[], validated_claim="VALIDATED")  # type: ignore[arg-type]
         self.assertNotIn("VALIDATED", [key for key in AUTHORITY_LEGEND_V1 if not key.startswith("NOT_")])
+
+    def test_the_cycle_id_is_r6s(self) -> None:
+        from trade_platform.research_terminal_read_model_v1 import current_cycle_id_v1
+        from trade_platform.strategy_lab_validation_v1 import CURRENT_CYCLE_V1
+
+        self.assertEqual(CURRENT_CYCLE_V1.cycle_id, current_cycle_id_v1())
+
+
+class RuntimeImageImportTests(unittest.TestCase):
+    def test_the_api_imports_without_numerical_libraries(self) -> None:
+        # The runtime image installs requirements-runtime.txt only: no numpy, polars or duckdb.
+        code = ("import sys\n"
+                "for name in ('numpy', 'polars', 'duckdb', 'pyarrow'): sys.modules[name] = None\n"
+                "import trade_platform.api, trade_platform.research_terminal_read_model_v1\n")
+        result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120, check=False,
+                                env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")})
+        self.assertEqual(0, result.returncode, result.stderr[-2000:])
 
 
 if __name__ == "__main__":
