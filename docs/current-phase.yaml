@@ -59,6 +59,13 @@ r10_paper_incubation: >-
   unless a verified fee schedule (OR-6), funding not modelled, incubation length
   UNRESOLVED (OR-7); restart-safe position chain. scripts/paper_incubation.py
   run|report; strategy_lab.py rerun. Nothing runs until a holdout is opened.
+ui2_research_terminal: >-
+  research_terminal_read_model_v1 + GET /operator-dashboard/research-terminal/
+  {overview,reruns,validation,signals,accounts,incubation}; web /terminal walks
+  Command Center -> Market Scan -> Opportunities -> Strategy Lab -> Compare ->
+  Validation -> Risk Preview -> Paper -> Monitoring, restating every claim
+  (SEARCH_NON_AUTHORITATIVE / CONDITIONAL / INCUBATING / REJECTED / UNCONFIGURED)
+  and listing open owner gates. Read-only: no search, holdout, sizing or order.
 first_real_studies: >-
   2026-10-08 SOLUSDT window cacd0ea5 (2025-08-20..2026-08-18, 524,159 bars, no
   day gap): trend_ma_cross 480, mean_reversion_z 240, breakout_channel 84 trials,
