@@ -203,16 +203,26 @@ class BarsV1:
         return int(self.open_us.shape[0])
 
     @classmethod
-    def from_rows(cls, rows: Sequence[Sequence[Any]]) -> BarsV1:
-        """From ``T2_ARCHIVE_OHLCV_1M`` rows (bar_open_at, bar_close_at, _, open, high, low, close, ...)."""
+    def from_rows(cls, rows: Sequence[Sequence[Any]], *, segment_keys: Sequence[Any] | None = None) -> BarsV1:
+        """From ``T2_ARCHIVE_OHLCV_1M``-shaped rows (bar_open_at, bar_close_at, _, open, high, low, close, ...).
+
+        A new segment starts after a missing UTC day and, when ``segment_keys``
+        is given (R8: a live T4 capture session and normalizer generation per
+        bar), wherever the key changes -- so no window ever spans a capture gap.
+        """
         if not rows:
             raise StrategySdkError("no_bars")
+        if segment_keys is not None and len(segment_keys) != len(rows):
+            raise StrategySdkError("segment_keys_must_match_rows")
         open_us: np.ndarray = np.fromiter((_micros(row[0]) for row in rows), dtype=np.int64, count=len(rows))
         close_us: np.ndarray = np.fromiter((_micros(row[1]) for row in rows), dtype=np.int64, count=len(rows))
         if np.any(np.diff(open_us) <= 0):
             raise StrategySdkError("bars_not_strictly_increasing")
         days: np.ndarray = open_us // _MICROS_PER_DAY
         breaks = np.concatenate(([False], np.diff(days) > 1))
+        if segment_keys is not None:
+            key_change = np.array([False] + [segment_keys[i] != segment_keys[i - 1] for i in range(1, len(rows))])
+            breaks = breaks | key_change
         segment: np.ndarray = np.cumsum(breaks).astype(np.int64)
         starts: np.ndarray = np.zeros(len(rows), dtype=np.int64)
         boundary = np.flatnonzero(np.concatenate(([True], segment[1:] != segment[:-1])))
@@ -339,6 +349,10 @@ class StrategyFamilyV1:
     def targets_decimal(self, bars: BarsV1, params: Mapping[str, Any]) -> list[int]:
         raise NotImplementedError
 
+    def explain_decimal(self, bars: BarsV1, params: Mapping[str, Any]) -> dict[str, str]:
+        """The decision quantities at the last bar, exactly, for a human-readable signal reason."""
+        return {}
+
     def spec(self) -> StrategySpecV1:
         # The whole SDK module is on every evaluation path (bars, execution,
         # helpers, metrics), so all of it is identity: any code change is a new
@@ -442,6 +456,18 @@ class TrendMovingAverageCrossV1(StrategyFamilyV1):
                 out[i] = state
         return out
 
+    def explain_decimal(self, bars: BarsV1, params: Mapping[str, Any]) -> dict[str, str]:
+        fast, slow = int(params["fast_bars"]), int(params["slow_bars"])
+        if bars.size < slow:
+            return {"rule": "fast/slow mean cross", "state": "warming_up"}
+        with _decimal_context():
+            fast_mean = sum(bars.close_d[-fast:], Decimal(0)) / fast
+            slow_mean = sum(bars.close_d[-slow:], Decimal(0)) / slow
+            ratio = fast_mean / slow_mean - 1
+        return {"rule": f"long if fast({fast})/slow({slow}) - 1 > band, short if < -band",
+                "fast_mean": _q12(fast_mean), "slow_mean": _q12(slow_mean),
+                "ratio_minus_one": _q12(ratio), "band": str(params["band"])}
+
 
 class MeanReversionZScoreV1(StrategyFamilyV1):
     """Fade stretched moves: long below ``-entry_z`` sigmas, short above ``+entry_z``; flat inside ``exit_z``."""
@@ -526,6 +552,19 @@ class MeanReversionZScoreV1(StrategyFamilyV1):
                 out[i] = state
         return out
 
+    def explain_decimal(self, bars: BarsV1, params: Mapping[str, Any]) -> dict[str, str]:
+        window = int(params["lookback_bars"])
+        if bars.size < window:
+            return {"rule": "z-score fade", "state": "warming_up"}
+        with _decimal_context():
+            closes = bars.close_d[-window:]
+            mean = sum(closes, Decimal(0)) / window
+            variance = sum(((c - mean) ** 2 for c in closes), Decimal(0)) / window
+            z = (closes[-1] - mean) / variance.sqrt() if variance > 0 else None
+        return {"rule": f"long at z <= -{params['entry_z']}, short at z >= {params['entry_z']}, "
+                        f"flat at |z| <= {params['exit_z']} (lookback {window})",
+                "close": str(closes[-1]), "mean": _q12(mean), "z": "undefined" if z is None else _q12(z)}
+
 
 class ChannelBreakoutV1(StrategyFamilyV1):
     """Enter on a close beyond the prior ``entry_bars`` channel; exit on the shorter ``exit_bars`` channel."""
@@ -542,6 +581,9 @@ class ChannelBreakoutV1(StrategyFamilyV1):
 
     def inadmissible(self, params: Mapping[str, Any]) -> str | None:
         return "exit_channel_not_shorter" if params["exit_bars"] >= params["entry_bars"] else None
+
+    def explain_decimal(self, bars: BarsV1, params: Mapping[str, Any]) -> dict[str, str]:
+        return _breakout_explain(bars, params)
 
     def targets_f64(self, bars: BarsV1, params: Mapping[str, Any]) -> tuple[np.ndarray, int]:
         n_entry, n_exit = int(params["entry_bars"]), int(params["exit_bars"])
@@ -638,6 +680,19 @@ class _PriorExtreme:
 
     def value(self) -> Decimal:
         return self._values[self._queue[0]]
+
+
+def _q12(value: Decimal) -> str:
+    return format(value.quantize(Decimal("1E-12")), "f")
+
+
+def _breakout_explain(bars: BarsV1, params: Mapping[str, Any]) -> dict[str, str]:
+    n_entry, n_exit = int(params["entry_bars"]), int(params["exit_bars"])
+    if bars.size <= n_entry:
+        return {"rule": "channel breakout", "state": "warming_up"}
+    return {"rule": f"long above prior {n_entry}-bar high, short below its low; exit on the {n_exit}-bar channel",
+            "close": str(bars.close_d[-1]), "prior_high": str(max(bars.high_d[-n_entry - 1:-1])),
+            "prior_low": str(min(bars.low_d[-n_entry - 1:-1]))}
 
 
 def _breakout_step(state: int, long_entry: bool, short_entry: bool, long_exit: bool, short_exit: bool) -> int:
