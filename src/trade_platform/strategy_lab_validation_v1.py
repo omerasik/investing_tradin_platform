@@ -100,7 +100,14 @@ REASON_FUNDING: Final = "FUNDING_EXPOSURE_NOT_MODELLED_FAIL_CLOSED"
 _NAMESPACE: Final = uuid5(NAMESPACE_URL, "trade_platform.strategy_lab_validation_v1")
 _CYCLE_ISSUER: Final = object()
 _REGISTRY_ISSUER: Final = object()
+_VALIDATION_ISSUER: Final = object()
 _DAY: Final = timedelta(days=1)
+
+#: Identities of every opening / validation this process's registry or
+#: validator actually issued. A copy made with ``dataclasses.replace`` carries
+#: the issuer object but not an issued identity, so it is refused.
+_ISSUED_OPENINGS: set[tuple[str, str, str, str]] = set()
+_ISSUED_VALIDATIONS: set[str] = set()
 
 
 class StrategyLabValidationError(ValueError):
@@ -148,10 +155,22 @@ class ResearchCycleV1:
         return {"cycle_id": self.cycle_id, "holdout_start": self.holdout_start.isoformat(), "note": self.note}
 
 
+_ISSUED_CYCLES: set[tuple[str, str]] = set()
+
+
+def _issue_cycle(start: datetime, registered_at: datetime | None, note: str) -> ResearchCycleV1:
+    cycle = ResearchCycleV1(start, registered_at, note, _CYCLE_ISSUER)
+    _ISSUED_CYCLES.add((cycle.cycle_id, cycle.holdout_start.isoformat()))
+    return cycle
+
+
+def cycle_is_issued_v1(cycle: ResearchCycleV1) -> bool:
+    return (cycle.cycle_id, cycle.holdout_start.isoformat()) in _ISSUED_CYCLES
+
+
 #: The current cycle. Its boundary was preregistered by the 3D.9A pilot and is immutable.
-CURRENT_CYCLE_V1: Final = ResearchCycleV1(
-    UNTOUCHED_HOLDOUT_BOUNDARY_V1, None,
-    "untouched holdout preregistered by the 3D.9A pilot; immutable for this cycle", _CYCLE_ISSUER,
+CURRENT_CYCLE_V1: Final = _issue_cycle(
+    UNTOUCHED_HOLDOUT_BOUNDARY_V1, None, "untouched holdout preregistered by the 3D.9A pilot; immutable for this cycle",
 )
 
 
@@ -231,7 +250,7 @@ class PreregistrationV1:
     _frozen: str = field(init=False, repr=False, compare=False, default="")
 
     def __post_init__(self) -> None:
-        if not isinstance(self.cycle, ResearchCycleV1):
+        if not isinstance(self.cycle, ResearchCycleV1) or not cycle_is_issued_v1(self.cycle):
             raise StrategyLabValidationError("cycle_must_be_an_issued_research_cycle")
         if self.rerun.identity["study_content_hash"] != self.study.content_hash:
             raise StrategyLabValidationError("rerun_is_not_from_this_study")
@@ -346,10 +365,28 @@ class HoldoutOpeningV1:
         if self._issuer is not _REGISTRY_ISSUER:
             raise StrategyLabValidationError("holdout_opening_is_issued_only_by_the_registry")
 
+    @property
+    def key(self) -> tuple[str, str, str, str]:
+        return (self.cycle_id, self.holdout_start.astimezone(UTC).isoformat(),
+                self.holdout_end_exclusive.astimezone(UTC).isoformat(), self.preregistration_hash)
+
+    @property
+    def issued(self) -> bool:
+        return self.key in _ISSUED_OPENINGS
+
     def admits_day(self, day: date) -> bool:
+        if not self.issued:
+            return False
         start = self.holdout_start.astimezone(UTC).date()
         end = self.holdout_end_exclusive.astimezone(UTC).date()
         return start <= day < end
+
+
+def _issue_opening(cycle_id: str, start: datetime, end: datetime, preregistration_hash: str,
+                   opened_by: str) -> HoldoutOpeningV1:
+    opening = HoldoutOpeningV1(cycle_id, start, end, preregistration_hash, opened_by, _REGISTRY_ISSUER)
+    _ISSUED_OPENINGS.add(opening.key)
+    return opening
 
 
 class PostgresHoldoutRegistryV1:
@@ -363,6 +400,9 @@ class PostgresHoldoutRegistryV1:
         start = _midnight_utc(holdout_start, "holdout_start")
         if start <= UNTOUCHED_HOLDOUT_BOUNDARY_V1:
             raise StrategyLabValidationError("a_new_cycle_must_start_after_the_current_holdout")
+        if start <= datetime.now(UTC):
+            # The database stamps registration and refuses this too; named here first.
+            raise StrategyLabValidationError("a_holdout_boundary_must_be_declared_prospectively")
         if not note.strip():
             raise StrategyLabValidationError("cycle_note_required")
         cycle_id = f"cycle-{start.date().isoformat()}"
@@ -373,7 +413,7 @@ class PostgresHoldoutRegistryV1:
             row = cursor.fetchone()
         if row is None:
             raise StrategyLabValidationError("cycle_not_registered")
-        return ResearchCycleV1(start, row[0], note.strip(), _CYCLE_ISSUER)
+        return _issue_cycle(start, row[0], note.strip())
 
     def cycle(self, cycle_id: str) -> ResearchCycleV1:
         with self._database.transaction() as connection, connection.cursor() as cursor:
@@ -382,7 +422,7 @@ class PostgresHoldoutRegistryV1:
             row = cursor.fetchone()
         if row is None:
             raise StrategyLabValidationError("cycle_not_registered")
-        return ResearchCycleV1(row[0], row[1], str(row[2]), _CYCLE_ISSUER)
+        return _issue_cycle(row[0], row[1], str(row[2]))
 
     def record_preregistration(self, packet: PreregistrationV1) -> bool:
         with self._database.transaction() as connection, connection.cursor() as cursor:
@@ -418,8 +458,8 @@ class PostgresHoldoutRegistryV1:
             )
             if cursor.fetchone() is None:
                 raise StrategyLabValidationError("holdout_already_opened_for_this_cycle")
-        return HoldoutOpeningV1(packet.cycle.cycle_id, packet.cycle.holdout_start, end, packet.content_hash,
-                                opened_by.strip(), _REGISTRY_ISSUER)
+        return _issue_opening(packet.cycle.cycle_id, packet.cycle.holdout_start, end, packet.content_hash,
+                              opened_by.strip())
 
     def opening(self, cycle_id: str) -> HoldoutOpeningV1 | None:
         with self._database.transaction() as connection, connection.cursor() as cursor:
@@ -428,12 +468,26 @@ class PostgresHoldoutRegistryV1:
             row = cursor.fetchone()
         if row is None:
             return None
-        return HoldoutOpeningV1(cycle_id, row[1], row[2], str(row[0]).strip(), str(row[3]), _REGISTRY_ISSUER)
+        return _issue_opening(cycle_id, row[1], row[2], str(row[0]).strip(), str(row[3]))
 
     def record_validation(self, run: ValidationRunV1) -> None:
-        """One validation per cycle, and the states it implies, atomically. A second is refused."""
+        """One validation per cycle, and the states it implies, atomically. A second is refused.
+
+        Only a run this process's validator issued, whose hash re-derives from its
+        identity and whose candidates are exactly the stored packet's, is recorded.
+        """
         identity = run.identity
+        if run.content_hash not in _ISSUED_VALIDATIONS or identity_hash_v1(dict(identity)) != run.content_hash:
+            raise StrategyLabValidationError("only_an_issued_intact_validation_is_recorded")
         with self._database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute("SELECT identity FROM strategy_lab_preregistrations WHERE preregistration_hash=%s "
+                           "AND status='AUTHORIZED'", (identity["preregistration_hash"],))
+            row = cursor.fetchone()
+            if row is None:
+                raise StrategyLabValidationError("validation_preregistration_not_recorded_as_authorized")
+            stored = row[0] if isinstance(row[0], dict) else json.loads(row[0])
+            if [item["trial_id"] for item in identity["candidates"]] != list(stored["candidates"]):
+                raise StrategyLabValidationError("validation_candidates_are_not_the_preregistered_ones")
             cursor.execute(
                 "INSERT INTO strategy_lab_holdout_validations (validation_hash, cycle_id, preregistration_hash, "
                 "dataset_content_hash, identity, recorded_at) VALUES (%s,%s,%s,%s,%s::jsonb,%s) "
@@ -487,18 +541,36 @@ def validate_on_holdout_v1(
     frozen = packet.frozen
     if packet.status != STATUS_AUTHORIZED:
         raise StrategyLabValidationError("validation_requires_an_authorized_packet")
-    if not isinstance(opening, HoldoutOpeningV1) or (
+    if (packet.study.content_hash, packet.rerun.rerun_hash) != (frozen["study_content_hash"], frozen["rerun_hash"]):
+        raise StrategyLabValidationError("packet_study_or_rerun_differs_from_its_frozen_identity")
+    if not isinstance(opening, HoldoutOpeningV1) or not opening.issued or (
         opening.preregistration_hash, opening.cycle_id, opening.holdout_start.astimezone(UTC).isoformat(),
         opening.holdout_end_exclusive.astimezone(UTC).isoformat(),
     ) != (packet.content_hash, frozen["cycle"]["cycle_id"], frozen["holdout_start"], frozen["holdout_end_exclusive"]):
         raise StrategyLabValidationError("validation_requires_the_opening_of_this_packet")
     start = datetime.fromisoformat(frozen["holdout_start"])
     end = datetime.fromisoformat(frozen["holdout_end_exclusive"])
-    if (holdout.symbol, holdout.identity["first_utc_day"], holdout.identity["last_utc_day"]) != (
+    # The caller's object is a pointer only: re-load and re-prove the dataset (identity hash,
+    # stored frame bytes, logical hash and row count) before a single bar is evaluated.
+    from .public_archive_research_bars_v1 import load_research_bar_dataset_v1
+
+    verified = load_research_bar_dataset_v1(store, holdout.dataset_version_id)
+    if verified.content_hash != holdout.content_hash:
+        raise StrategyLabValidationError("holdout_dataset_does_not_reproduce")
+    if (verified.symbol, verified.identity["first_utc_day"], verified.identity["last_utc_day"]) != (
         frozen["symbol"], start.date().isoformat(), (end - _DAY).date().isoformat()
     ):
         raise StrategyLabValidationError("holdout_dataset_must_be_the_preregistered_symbol_over_the_whole_span")
-    bars = BarsV1.from_rows(list(store.iter_rows(store.load_manifest(holdout.bar_frame_manifest_hash))))
+    manifest = store.load_manifest(verified.bar_frame_manifest_hash)
+    if manifest.row_count != int(verified.identity["bar_frame"]["row_count"]):
+        raise StrategyLabValidationError("holdout_dataset_row_count_mismatch")
+    bars = BarsV1.from_rows(list(store.iter_rows(manifest)))
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
+    if int(bars.open_us[0]) < (start - epoch) // timedelta(microseconds=1) or int(bars.close_us[-1]) > (
+        end - epoch
+    ) // timedelta(microseconds=1):
+        raise StrategyLabValidationError("holdout_bars_outside_the_opened_span")
+    holdout = verified
     study = packet.study
     family = FAMILIES_V1[study.strategy.family]
     if family.spec() != study.strategy:
@@ -558,7 +630,9 @@ def validate_on_holdout_v1(
         "candidates": results,
         "claim_ceiling": "CONDITIONAL_T2_HOLDOUT_INCUBATION_REQUIRED",
     }
-    return ValidationRunV1(identity, identity_hash_v1(identity))
+    run = ValidationRunV1(identity, identity_hash_v1(identity))
+    _ISSUED_VALIDATIONS.add(run.content_hash)
+    return run
 
 
 def _sign(raw: object) -> int:

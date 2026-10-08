@@ -47,7 +47,7 @@ TEST_CYCLE_START = datetime(2026, 6, 1, tzinfo=UTC)  # the fixture archive days;
 
 
 def test_cycle(start: datetime = TEST_CYCLE_START) -> ResearchCycleV1:
-    return ResearchCycleV1(start, datetime(2026, 5, 1, tzinfo=UTC), "test cycle", validation._CYCLE_ISSUER)
+    return validation._issue_cycle(start, datetime(2026, 5, 1, tzinfo=UTC), "test cycle")
 
 
 def fixture_cost_policy(**fee_overrides: Any) -> dict[str, Any]:
@@ -79,8 +79,8 @@ def authorized_packet(study: Any, trials: list[str], cycle: ResearchCycleV1, **o
 
 def opening_for(packet: PreregistrationV1) -> HoldoutOpeningV1:
     assert packet.holdout_end_exclusive is not None
-    return HoldoutOpeningV1(packet.cycle.cycle_id, packet.cycle.holdout_start, packet.holdout_end_exclusive,
-                            packet.content_hash, "test", validation._REGISTRY_ISSUER)
+    return validation._issue_opening(packet.cycle.cycle_id, packet.cycle.holdout_start,
+                                     packet.holdout_end_exclusive, packet.content_hash, "test")
 
 
 class _Study(unittest.TestCase):
@@ -159,17 +159,24 @@ class HoldoutGateTests(unittest.TestCase):
         with self.assertRaises(StrategyLabValidationError):
             HoldoutOpeningV1("cycle-2026-08-20", datetime(2026, 8, 20, tzinfo=UTC),
                              datetime(2026, 9, 1, tzinfo=UTC), "p" * 64, "forger")
-        opening = HoldoutOpeningV1("cycle-2026-08-20", datetime(2026, 8, 20, tzinfo=UTC),
-                                   datetime(2026, 9, 1, tzinfo=UTC), "p" * 64, "test", validation._REGISTRY_ISSUER)
+        unissued = HoldoutOpeningV1("cycle-2026-08-20", datetime(2026, 8, 20, tzinfo=UTC),
+                                    datetime(2026, 9, 1, tzinfo=UTC), "q" * 64, "test", validation._REGISTRY_ISSUER)
+        with self.assertRaises(ResearchBarsError):
+            _refuse_holdout(date(2026, 8, 25), unissued)  # the issuer object alone is not an issued opening
+        opening = validation._issue_opening("cycle-2026-08-20", datetime(2026, 8, 20, tzinfo=UTC),
+                                            datetime(2026, 9, 1, tzinfo=UTC), "p" * 64, "test")
         _refuse_holdout(date(2026, 8, 25), opening)
+        forged = dataclasses.replace(opening, holdout_end_exclusive=datetime(2026, 10, 1, tzinfo=UTC))
+        with self.assertRaises(ResearchBarsError):
+            _refuse_holdout(date(2026, 9, 25), forged)  # a replace() copy is not an issued opening
         with self.assertRaises(ResearchBarsError):
             _refuse_holdout(date(2026, 9, 1), opening)
         with self.assertRaises(ResearchBarsError):
             _refuse_holdout(date(2026, 8, 25), object())
 
     def test_every_window_day_is_checked_not_only_the_last(self) -> None:
-        later = HoldoutOpeningV1("cycle-2026-10-20", datetime(2026, 10, 20, tzinfo=UTC),
-                                 datetime(2026, 10, 25, tzinfo=UTC), "p" * 64, "test", validation._REGISTRY_ISSUER)
+        later = validation._issue_opening("cycle-2026-10-20", datetime(2026, 10, 20, tzinfo=UTC),
+                                          datetime(2026, 10, 25, tzinfo=UTC), "p" * 64, "test")
         with self.assertRaises(ResearchBarsError):
             _days(date(2026, 8, 20), date(2026, 10, 21), later)
         self.assertEqual(2, len(_days(date(2026, 10, 20), date(2026, 10, 21), later)))
@@ -215,6 +222,22 @@ class HoldoutValidationTests(_Study):
         stretched = dataclasses.replace(opening_for(packet), holdout_end_exclusive=datetime(2030, 1, 1, tzinfo=UTC))
         with self.assertRaises(StrategyLabValidationError):
             validate_on_holdout_v1(packet, stretched, self._holdout(packet), store=store)
+
+    def test_a_swapped_or_relabelled_holdout_dataset_is_refused(self) -> None:
+        packet = authorized_packet(self.study, self.trials, test_cycle())
+        genuine = self._holdout(packet)
+        relabelled = dataclasses.replace(genuine, content_hash="0" * 64)
+        with self.assertRaises(StrategyLabValidationError):
+            validate_on_holdout_v1(packet, opening_for(packet), relabelled, store=ResearchFrameStoreV1(self.data_root))
+        swapped = dataclasses.replace(genuine, bar_frame_manifest_hash="f" * 64)
+        run = validate_on_holdout_v1(packet, opening_for(packet), swapped, store=ResearchFrameStoreV1(self.data_root))
+        # The caller's frame pointer is ignored: bars come from the re-proven dataset.
+        self.assertEqual(genuine.content_hash, run.identity["holdout"]["dataset_content_hash"])
+
+    def test_a_forged_cycle_cannot_enter_a_packet(self) -> None:
+        forged = dataclasses.replace(CURRENT_CYCLE_V1, holdout_start=datetime(2026, 8, 21, tzinfo=UTC))
+        with self.assertRaises(StrategyLabValidationError):
+            authorized_packet(self.study, self.trials, forged)
 
     def test_funding_window_exposure_fails_closed(self) -> None:
         packet = authorized_packet(self.study, self.trials, test_cycle())
