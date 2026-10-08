@@ -3,13 +3,15 @@
     python scripts/strategy_lab.py search --dsn ... --family trend_ma_cross --dataset <window id> --workers 12
     python scripts/strategy_lab.py status --dsn ... --family trend_ma_cross --dataset <window id>
     python scripts/strategy_lab.py freeze --dsn ... --family ... --dataset ... --metric sharpe_daily_annualized --top-k 10
+    python scripts/strategy_lab.py rerun --dsn ... --family ... --dataset ... --metric ... --top-k 10 --workers 4
 
 A study is declared by (family, its default parameter space, the bound window,
 the OR-3/OR-5/OR-6 owner policies, the 2026-08-20 evaluation bound), so the
 same command always yields the same study id: re-running is a resume and a
 finished study is a no-op. Every result is SEARCH_NON_AUTHORITATIVE and gross
 (no verified fee schedule): the Decimal authority rerun is the only door to an
-authoritative number. Reports engineering counts and search metrics only.
+authoritative number; ``rerun`` freezes (idempotently) and records it. Reports
+engineering counts and search metrics only.
 """
 
 from __future__ import annotations
@@ -27,6 +29,10 @@ from trade_platform.evidence_tier_authority_v1 import EvidenceTierV1
 from trade_platform.persistence import PostgresDatabase
 from trade_platform.public_archive_research_bars_v1 import load_research_bar_dataset_v1
 from trade_platform.research_data_plane_v1 import ResearchFrameStoreV1
+from trade_platform.strategy_lab_authority_rerun_v1 import (
+    PostgresAuthorityRerunStoreV1,
+    run_authority_rerun_v1,
+)
 from trade_platform.strategy_lab_ledger_v1 import PostgresStrategyLabLedgerV1
 from trade_platform.strategy_lab_manifest_v1 import (
     CandidateSelectionRuleV1,
@@ -76,7 +82,7 @@ def build_study(family: str, dataset_id: UUID, data_root: Path | None) -> StudyS
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("search", "status", "freeze"))
+    parser.add_argument("command", choices=("search", "status", "freeze", "rerun"))
     parser.add_argument("--dsn", required=True)
     parser.add_argument("--family", required=True, choices=sorted(FAMILIES_V1))
     parser.add_argument("--dataset", required=True, type=UUID)
@@ -97,18 +103,27 @@ def main() -> None:
         out = {"study_id": str(study.study_id), "label": study.label, "planned": study.planned_trial_count,
                "states": dict(progress.states), "finished": progress.finished,
                "authority": list(study.authority().reasons), "lag": str(study.timing_lag or timedelta(0))}
-        if progress.finished and args.command in {"search", "freeze"}:
+        if progress.finished and args.command in {"search", "freeze", "rerun"}:
             manifest = build_study_manifest_v1(ledger, study)
             store = PostgresStrategyLabManifestStoreV1(database)
             store.record_manifest(manifest)
             out["manifest_hash"] = manifest.manifest_hash
-            if args.command == "freeze":
+            if args.command in {"freeze", "rerun"}:
                 rule = CandidateSelectionRuleV1(args.metric, RankDirectionV1(args.direction), args.top_k)
                 candidates = freeze_candidates_v1(manifest, rule)
                 store.record_candidate_set(candidates)
                 out["candidate_set_hash"] = candidates.candidate_set_hash
                 out["candidates"] = candidates.candidates
                 out["cutoff_tie"] = candidates.identity["cutoff_tie"]
+            if args.command == "rerun":
+                rerun = run_authority_rerun_v1(study, manifest, candidates, data_root=args.data_root,
+                                               workers=args.workers)
+                PostgresAuthorityRerunStoreV1(database).record(rerun)
+                out["rerun_hash"] = rerun.rerun_hash
+                out["selection_status"] = rerun.selection_status
+                out["authoritative_selection"] = rerun.identity["authoritative_selection"]
+        elif args.command == "rerun":
+            out["rerun"] = "STUDY_NOT_FINISHED"
         print(json.dumps(out, indent=1, default=str))
     finally:
         database.close()
