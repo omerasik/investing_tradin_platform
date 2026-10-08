@@ -81,6 +81,14 @@ from .portfolio_risk import (
 )
 from .postgres_paper_oms import PostgresPaperOms
 from .research import CostModel, ResearchValidationError, SQLiteExperimentStore, WalkForwardProtocol
+from .research_terminal_read_model_v1 import (
+    AccountView,
+    IncubationView,
+    LiveSignalView,
+    RerunView,
+    TerminalOverview,
+    ValidationView,
+)
 from .return_history import ReturnIngestionCadence, SQLitePortfolioReturnStore
 from .risk import SQLiteRiskDecisionStore
 from .security import (
@@ -509,6 +517,51 @@ def build_app(
     ) -> object:
         """R4.5: study identity, manifests and frozen candidate sets (search tier, rerun pending OR-3)."""
         return read_dashboard(lambda: queries.strategy_lab_study(study_id))
+
+    @app.get("/operator-dashboard/research-terminal/overview", response_model=TerminalOverview)
+    def dashboard_terminal_overview(
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """UI-2 command center: counts, cycle state, open owner gates and the authority legend."""
+        return read_dashboard(queries.terminal_overview)
+
+    @app.get("/operator-dashboard/research-terminal/reruns", response_model=list[RerunView])
+    def dashboard_terminal_reruns(
+        limit: int = Query(default=50, ge=1, le=200),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """UI-2: Decimal authority reruns (selection authority only; economics gross and conditional)."""
+        return read_dashboard(lambda: queries.terminal_reruns(limit=limit))
+
+    @app.get("/operator-dashboard/research-terminal/validation", response_model=ValidationView)
+    def dashboard_terminal_validation(
+        limit: int = Query(default=200, ge=1, le=500),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """UI-2: holdout state of the current cycle and the recorded candidate states."""
+        return read_dashboard(lambda: queries.terminal_validation(limit=limit))
+
+    @app.get("/operator-dashboard/research-terminal/signals", response_model=list[LiveSignalView])
+    def dashboard_terminal_signals(
+        limit: int = Query(default=100, ge=1, le=500),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """UI-2: recent live signals; every one a NOT_VALIDATED proposal."""
+        return read_dashboard(lambda: queries.terminal_signals(limit=limit))
+
+    @app.get("/operator-dashboard/research-terminal/accounts", response_model=list[AccountView])
+    def dashboard_terminal_accounts(
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """UI-2: account contexts and their latest policy status (OR-11)."""
+        return read_dashboard(queries.terminal_accounts)
+
+    @app.get("/operator-dashboard/research-terminal/incubation", response_model=IncubationView)
+    def dashboard_terminal_incubation(
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """UI-2: the paper incubation report (unit exposure, gross, never cost-complete)."""
+        return read_dashboard(queries.terminal_incubation)
 
     @app.get("/operator-dashboard/capture-availability", response_model=CaptureAvailabilityView)
     def dashboard_capture_availability(_: None = Depends(protected_operator)) -> object:

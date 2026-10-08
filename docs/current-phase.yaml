@@ -59,6 +59,13 @@ r10_paper_incubation: >-
   unless a verified fee schedule (OR-6), funding not modelled, incubation length
   UNRESOLVED (OR-7); restart-safe position chain. scripts/paper_incubation.py
   run|report; strategy_lab.py rerun. Nothing runs until a holdout is opened.
+ui2_research_terminal: >-
+  research_terminal_read_model_v1 + GET /operator-dashboard/research-terminal/
+  {overview,reruns,validation,signals,accounts,incubation}; web /terminal walks
+  Command Center -> Market Scan -> Opportunities -> Strategy Lab -> Compare ->
+  Validation -> Risk Preview -> Paper -> Monitoring, restating every claim
+  (SEARCH_NON_AUTHORITATIVE / CONDITIONAL / INCUBATING / REJECTED / UNCONFIGURED)
+  and listing open owner gates. Read-only: no search, holdout, sizing or order.
 first_real_studies: >-
   2026-10-08 SOLUSDT window cacd0ea5 (2025-08-20..2026-08-18, 524,159 bars, no
   day gap): trend_ma_cross 480, mean_reversion_z 240, breakout_channel 84 trials,
@@ -87,6 +94,19 @@ or7_packet:                   # options for the owner; nothing here is decided
     INCUBATING -> PROFESSIONALLY_VALIDATED only after the incubation criteria
     pass on T4 forward evidence with live/replay parity; any failure ->
     INCUBATION_FAILED_REJECTED. Nothing becomes execution authority.
+or11_packet:                  # the owner decides every value; nothing is proposed here
+  per_account: >-
+    paper_starting_capital, paper_order_notional, maximum_leverage,
+    daily_loss_limit, maximum_drawdown_limit (all > 0), allowed_symbols
+    (non-empty; the OR-2 universe is BTCUSDT ETHUSDT SOLUSDT).
+  risk_limits: >-
+    minimum_data_quality, maximum_spread_fraction, maximum_event_risk,
+    maximum_expected_slippage_fraction (each in [0,1]); maximum_order_notional,
+    maximum_position_notional, maximum_daily_order_notional, maximum_per_trade_loss
+    (> 0); max_market_age_seconds (int > 0); maximum_stop_distance_fraction
+    (0,1]; stop_gap_buffer_fraction [0,1).
+  prop_only: prop_firm, prop_daily_loss_limit, prop_max_trailing_drawdown, prop_profit_target.
+  approval: approved_by + approved_on; until then the policy is UNCONFIGURED and R10 stays unit-exposure.
 r4_6_sdk: >-
   strategy_lab_policies_v1 (OR-3/OR-5/OR-6 payloads), migration 0055 admitting
   their slots, strategy_sdk_v1 (convention t2-close-plus-lag-next-strictly-later-open-v1,

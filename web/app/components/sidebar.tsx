@@ -16,7 +16,11 @@ type NavGroup = {
 const NAVIGATION_GROUPS: NavGroup[] = [
   {
     title: "Overview",
-    items: [{ href: "/dashboard", label: "Dashboard" }],
+    items: [
+      { href: "/dashboard", label: "Dashboard" },
+      // UI-2: the research-to-paper workflow on one page, every claim restated.
+      { href: "/terminal", label: "Research Terminal" },
+    ],
   },
   {
     // What evidence exists and what it can prove -- the first question of every study.

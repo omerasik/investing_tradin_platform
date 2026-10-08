@@ -1680,3 +1680,13 @@ footer {
 .chart-series-list { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; padding: 0; list-style: none; }
 .chart-series-list a { display: inline-block; padding: 4px 10px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); color: var(--text-secondary); text-decoration: none; }
 .chart-series-list a[aria-current="page"] { border-color: var(--border-focus); color: var(--text-primary); }
+
+/* UI-2 research terminal: the workflow step bar. */
+.workflow-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}

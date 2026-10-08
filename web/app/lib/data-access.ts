@@ -509,6 +509,162 @@ export async function getCaptureAvailability(ctx: WorkspaceContext): Promise<Evi
   );
 }
 
+// ---------------------------------------------------------------------------
+// UI-2 research terminal (R4 -> R10). Every view carries its own claim; the
+// terminal shows it verbatim and never upgrades it.
+// ---------------------------------------------------------------------------
+
+export type TerminalCycle = {
+  cycle_id: string;
+  holdout_start: string;
+  holdout_state: "UNOPENED" | "OPENED";
+  holdout_end_exclusive: string | null;
+  opened_at: string | null;
+  preregistrations: Record<string, number>;
+  validated: boolean;
+};
+
+export type TerminalOverview = {
+  generated_at: string;
+  studies: number;
+  finished_studies: number;
+  reruns: Record<string, number>;
+  cycle: TerminalCycle;
+  candidate_states: Record<string, number>;
+  signals: Record<string, number>;
+  latest_signal_at: string | null;
+  incubation_fills: Record<string, number>;
+  accounts: Record<string, number>;
+  owner_gates: { gate: string; topic: string; status: "OPEN" | "SATISFIED"; evidence: string }[];
+  authority_legend: Record<string, string>;
+};
+
+export type TerminalRerun = {
+  rerun_hash: string;
+  study_id: string;
+  study_label: string;
+  strategy_family: string;
+  candidate_set_hash: string;
+  selection_status: string;
+  claim: "DECIMAL_SELECTION_ESTABLISHED" | "FAIL_CLOSED_AUTHORITY_NOT_ESTABLISHED";
+  economics: "GROSS_CONDITIONAL_NON_PROMOTABLE";
+  rerun_count: number;
+  metric: string;
+  selected: { rank: number; trial_id: string; metric_value: string }[];
+  recorded_at: string;
+};
+
+export type TerminalValidation = {
+  cycle: TerminalCycle;
+  candidates: {
+    study_id: string;
+    study_label: string;
+    trial_id: string;
+    state: string;
+    label: "INCUBATING" | "REJECTED";
+    reasons: string[];
+    recorded_at: string;
+  }[];
+  validated_claim: "NONE_VALIDATED";
+};
+
+export type TerminalSignal = {
+  signal_id: string;
+  symbol: string;
+  authority: string;
+  claim: string;
+  target_from: number;
+  target_to: number;
+  bar_open_at: string;
+  decided_at: string;
+  study_id: string;
+  trial_id: string;
+  explanation: Record<string, string>;
+};
+
+export type TerminalAccount = {
+  account_id: string;
+  kind: string;
+  display_name: string;
+  base_currency: string;
+  policy_status: "NO_POLICY" | "UNCONFIGURED" | "ACTIVE";
+  policy_version_id: string | null;
+  unresolved: string[];
+  recorded_at: string | null;
+};
+
+export type TerminalIncubationCandidate = {
+  study_id: string;
+  trial_id: string;
+  symbol: string;
+  fills: number;
+  fills_by_status: Record<string, number>;
+  chain_breaks: number;
+  fills_skipped_unknown_position: number;
+  chain_inconsistencies: number;
+  open_position: number | null;
+  round_trips: { direction: number; holding_minutes: number; gross_return: string }[];
+  gross_return_sum: string;
+  closed_sides: number;
+  break_even_cost_bps_per_side?: string;
+  net: string | Record<string, string>;
+  elapsed_days: string;
+  required_days: number | string;
+  state: string;
+};
+
+export type TerminalIncubation = {
+  state: "AVAILABLE" | "NO_FILLS";
+  report: { sizing: string; cost_mode: string; funding: string; cost_complete: boolean; claim: string;
+    candidates: TerminalIncubationCandidate[] };
+};
+
+export type StrategyLabStudySummary = {
+  study_id: string;
+  strategy_family: string;
+  strategy_version: string;
+  label: string;
+  planned_trial_count: number;
+  registered_at: string;
+  queue_states: Record<string, number>;
+  result_count: number;
+  authority: { authority_status: "NON_AUTHORITATIVE"; promotable: false; reasons: string[] };
+};
+
+export type StrategyLabStudyPage = { state: "AVAILABLE" | "UNAVAILABLE"; items: StrategyLabStudySummary[] };
+
+function terminal<T>(ctx: WorkspaceContext, target: string, unavailable: string): Promise<EvidenceResult<T>> {
+  return readEvidence<T>(authorityUrl(ctx.origin, target), ctx.protectedApi, unavailable);
+}
+
+export function getTerminalOverview(ctx: WorkspaceContext): Promise<EvidenceResult<TerminalOverview>> {
+  return terminal(ctx, authorityUrl(ctx.origin, "/operator-dashboard/research-terminal/overview"), "Research terminal overview is unavailable.");
+}
+
+export function getTerminalReruns(ctx: WorkspaceContext): Promise<EvidenceResult<TerminalRerun[]>> {
+  return terminal(ctx, authorityUrl(ctx.origin, "/operator-dashboard/research-terminal/reruns?limit=50"), "Authority reruns are unavailable.");
+}
+
+export function getTerminalValidation(ctx: WorkspaceContext): Promise<EvidenceResult<TerminalValidation>> {
+  return terminal(ctx, authorityUrl(ctx.origin, "/operator-dashboard/research-terminal/validation?limit=200"), "Validation state is unavailable.");
+}
+
+export function getTerminalSignals(ctx: WorkspaceContext): Promise<EvidenceResult<TerminalSignal[]>> {
+  return terminal(ctx, authorityUrl(ctx.origin, "/operator-dashboard/research-terminal/signals?limit=50"), "Live signals are unavailable.");
+}
+
+export function getTerminalAccounts(ctx: WorkspaceContext): Promise<EvidenceResult<TerminalAccount[]>> {
+  return terminal(ctx, authorityUrl(ctx.origin, "/operator-dashboard/research-terminal/accounts"), "Account policies are unavailable.");
+}
+
+export function getTerminalIncubation(ctx: WorkspaceContext): Promise<EvidenceResult<TerminalIncubation>> {
+  return terminal(ctx, authorityUrl(ctx.origin, "/operator-dashboard/research-terminal/incubation"), "Paper incubation is unavailable.");
+}
+
+export function getStrategyLabStudies(ctx: WorkspaceContext): Promise<EvidenceResult<StrategyLabStudyPage>> {
+  return terminal(ctx, authorityUrl(ctx.origin, "/operator-dashboard/strategy-lab/studies?limit=50"), "Strategy Lab studies are unavailable.");
+}
+
 export async function getChartSeriesCatalog(ctx: WorkspaceContext): Promise<EvidenceResult<ChartSeriesRefPage>> {
   return readEvidence<ChartSeriesRefPage>(
     authorityUrl(ctx.origin, "/operator-dashboard/chart-series"),
