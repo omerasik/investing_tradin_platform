@@ -55,6 +55,17 @@ def upgrade() -> None:
         "'untouched holdout preregistered by the 3D.9A pilot; immutable for this cycle')"
     )
     op.execute(immutable_trigger_sql("strategy_lab_research_cycles"))
+    # The registration and opening instants are the database's own clock: a
+    # supplied value is overwritten, so no cycle can be backdated into an alias of
+    # a past (e.g. the current) holdout span, and no opening can predate its span.
+    op.execute(
+        """CREATE FUNCTION strategy_lab_stamp_registered_at() RETURNS trigger AS $$
+        BEGIN NEW.registered_at := now(); RETURN NEW; END; $$ LANGUAGE plpgsql"""
+    )
+    op.execute(
+        "CREATE TRIGGER strategy_lab_research_cycles_stamp BEFORE INSERT ON strategy_lab_research_cycles "
+        "FOR EACH ROW EXECUTE FUNCTION strategy_lab_stamp_registered_at()"
+    )
     op.execute(
         """CREATE TABLE strategy_lab_preregistrations (
         preregistration_hash CHAR(64) PRIMARY KEY CHECK(preregistration_hash ~ '^[0-9a-f]{64}$'),
@@ -86,6 +97,14 @@ def upgrade() -> None:
     )
     op.execute(immutable_trigger_sql("strategy_lab_holdout_openings"))
     op.execute(
+        """CREATE FUNCTION strategy_lab_stamp_opened_at() RETURNS trigger AS $$
+        BEGIN NEW.opened_at := now(); RETURN NEW; END; $$ LANGUAGE plpgsql"""
+    )
+    op.execute(
+        "CREATE TRIGGER strategy_lab_holdout_openings_stamp BEFORE INSERT ON strategy_lab_holdout_openings "
+        "FOR EACH ROW EXECUTE FUNCTION strategy_lab_stamp_opened_at()"
+    )
+    op.execute(
         """CREATE TABLE strategy_lab_holdout_validations (
         validation_hash CHAR(64) PRIMARY KEY CHECK(validation_hash ~ '^[0-9a-f]{64}$'),
         cycle_id TEXT NOT NULL UNIQUE,
@@ -116,3 +135,5 @@ def downgrade() -> None:
     op.execute("DROP TABLE IF EXISTS strategy_lab_holdout_openings")
     op.execute("DROP TABLE IF EXISTS strategy_lab_preregistrations")
     op.execute("DROP TABLE IF EXISTS strategy_lab_research_cycles")
+    op.execute("DROP FUNCTION IF EXISTS strategy_lab_stamp_opened_at()")
+    op.execute("DROP FUNCTION IF EXISTS strategy_lab_stamp_registered_at()")

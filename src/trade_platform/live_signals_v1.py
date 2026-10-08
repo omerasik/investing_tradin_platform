@@ -13,32 +13,57 @@ Live bars (:class:`LiveBarFeedV1`)
 Records are read incrementally from each session's partitions: only complete,
 hash-verified lines; sequences strictly increasing per session. They feed the
 same R3A normalizer the sealed path uses, so the bar rule (a minute is complete
-only when a later trade proves it, trade order checked on every trade) is
-identical by construction. Live arrivals cannot be bracketed by a *later* clock
-sample yet, so each record carries a provisional bound from the latest sample
-already received (``LIVE_PROVISIONAL``); bar prices do not depend on the bound,
-and the sealed replay later supplies the bracketed knowledge times.
+only when a later trade proves it, trade order checked on every trade; the
+first minute a fresh normalizer sees is never proven) is the sealed rule. Live
+arrivals cannot be bracketed by a *later* clock sample yet, so each record
+carries a provisional bound from the latest sample already received in its
+session (any day partition; ``LIVE_PROVISIONAL``); bar prices do not depend on
+the bound, and the sealed replay later supplies the bracketed knowledge times.
 
-Continuity: consecutive bars stay in one strategy segment unless the arrival
-gap between consecutive records exceeds :data:`MAX_LIVE_CONTINUITY_GAP_NANOS`
-or the normalizer refused a record. That is an engineering tolerance for the
-recorder's hourly segment boundaries (a few seconds), not an economic
-parameter: a host sleep or an outage breaks the segment, minutes lost inside a
-short boundary gap are simply absent (never filled), and no rolling window
-spans a broken segment.
+Continuity, as in the sealed path's coverage windows: the session's normalizer
+is discarded -- its open minute is dropped, never emitted -- and a new strategy
+segment starts whenever
+
+* a recorded interruption (``CONNECTION_LOST``, ``RECONNECT_STARTED``,
+  ``CLOCK_DISCONTINUITY``, ``MESSAGE_REJECTED``, ``RECORDER_FAILED``) lies
+  between two of the session's records;
+* the arrival gap between consecutive records exceeds
+  :data:`MAX_LIVE_CONTINUITY_GAP_NANOS` (a host sleep, an outage);
+* a record has no clock sample before it, or the normalizer refuses one.
+
+So no emitted bar misses a trade and no minute is closed across a hole. Records
+are read before the lifecycle, so an interruption that precedes a read record
+is always seen. One engineering tolerance remains, and it is not an economic
+parameter: a *new recorder session* (the hourly segment rotation) that starts
+within the tolerance continues the strategy segment. Its first minute is
+unproven and the previous session's open minute is dropped, so the boundary
+minutes are absent from the window (never filled); every signal records how
+many such session boundaries its window spans.
 
 Signals (:class:`LiveStrategyRunnerV1`)
 ---------------------------------------
 Each watched candidate is a frozen Strategy Lab trial whose authority is
-explicit: ``RESEARCH_WATCH`` (Decimal-authoritative frozen candidate, not
-validated) or ``INCUBATING`` (passed a preregistered holdout; not validated).
-On every completed bar the candidate's Decimal targets are recomputed over the
-current segment; a change of target emits a :class:`LiveSignalV1` carrying the
-candidate and evidence identity, the decision instant (the host instant the
-decision was computed, never earlier than the closing record's arrival), the
-numeric and cost policies, an exact explanation and the authority label. A
-signal is a proposal: its fill (R10) is the next strictly later bar open.
-Nothing here can label a signal validated.
+explicit: ``RESEARCH_WATCH`` (Decimal-authoritative frozen candidate with no
+recorded R6 state, not validated) or ``INCUBATING`` (passed a preregistered
+holdout; not validated). A candidate R6 rejected is never watched.
+
+The holdout is protected by :class:`LiveHoldoutGateV1` (required): no candidate
+is evaluated on a bar that opens at or after its research cycle's holdout start
+unless that holdout was opened and the bar opens at or after its end. While the
+holdout end is undecided (OR-7) every forward bar of the current cycle could
+fall inside it, so nothing is evaluated on it -- live data never previews the
+holdout, and incubation evidence is strictly after it.
+
+On every admitted completed bar the candidate's Decimal targets are recomputed
+over the current segment; a change of target emits a :class:`LiveSignalV1`
+carrying the candidate and evidence identity, the decision instant, the numeric
+and cost policies, an exact explanation and the authority label. The decision
+instant is on the venue-knowledge clock: never earlier than the bar's complete
+market-knowledge time, nor than the host's reading plus the latest clock bound.
+Bars completed before the runner started only warm up its history: a replayed
+past decision is never back-dated as a live one. A signal is a proposal: its
+fill (R10) is the next strictly later bar open. Nothing here can label a signal
+validated.
 """
 
 from __future__ import annotations
@@ -48,6 +73,7 @@ import json
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from pathlib import Path
 from typing import Any, Final
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -85,6 +111,7 @@ AUTHORITY_INCUBATING: Final = "INCUBATING"
 _AUTHORITIES: Final = (AUTHORITY_RESEARCH_WATCH, AUTHORITY_INCUBATING)
 
 _NAMESPACE: Final = uuid5(NAMESPACE_URL, "trade_platform.live_signals_v1")
+_GATE_ISSUER: Final = object()
 _EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
 
 
@@ -97,6 +124,14 @@ class LiveSignalsError(ValueError):
 # ---------------------------------------------------------------------------
 
 
+#: Lifecycle events after which a session's records are no longer one continuous observation.
+_INTERRUPTIONS: Final = frozenset({
+    CaptureLifecycleKindV1.CONNECTION_LOST.value, CaptureLifecycleKindV1.RECONNECT_STARTED.value,
+    CaptureLifecycleKindV1.CLOCK_DISCONTINUITY.value, CaptureLifecycleKindV1.MESSAGE_REJECTED.value,
+    CaptureLifecycleKindV1.RECORDER_FAILED.value,
+})
+
+
 @dataclass(frozen=True, slots=True)
 class LiveBarV1:
     symbol: str
@@ -104,6 +139,8 @@ class LiveBarV1:
     session_id: UUID
     bar: T4MinuteBarV1
     completed_by_arrival_nanos: int
+    #: ``venue_minus_host_upper_nanos`` of the sample bounding the completing record.
+    clock_bound_nanos: int
 
     def row(self) -> tuple[Any, ...]:
         """The bar in the research-bar row shape the SDK reads."""
@@ -117,9 +154,12 @@ class _Session:
     session_id: UUID
     normalizer: T4SegmentNormalizerV1
     last_sequence: int = -1
+    last_arrival: int | None = None
     emitted: int = 0
     offsets: dict[str, int] = field(default_factory=dict)
     consumed_compacted: set[str] = field(default_factory=set)
+    samples: dict[str, ClockOffsetSampleEvidenceV1] = field(default_factory=dict)
+    interruptions: set[int] = field(default_factory=set)
 
 
 class LiveBarFeedV1:
@@ -133,6 +173,7 @@ class LiveBarFeedV1:
         self._last_arrival: int | None = None
         self.refusals: list[str] = []
         self.skipped_without_clock_sample = 0
+        self.continuity_breaks = 0
 
     def _partitions(self) -> list[tuple[tuple[int, str, str], Path]]:
         """This source's partitions in chronological order (earliest lifecycle event, then day)."""
@@ -148,12 +189,22 @@ class LiveBarFeedV1:
         return sorted(out)
 
     @staticmethod
-    def _samples(directory: Path, resolution: int) -> list[ClockOffsetSampleEvidenceV1]:
-        samples = []
+    def _read_lifecycle(state: _Session, directory: Path, resolution: int) -> None:
+        """Accumulate the session's clock samples and interruptions (every day partition of it)."""
         for event in read_lifecycle_v1(directory):
             if event.kind == CaptureLifecycleKindV1.CLOCK_OFFSET_SAMPLE.value:
-                samples.append(parse_clock_offset_sample_v1(event, session_resolution_nanos=resolution))
-        return sorted(samples, key=lambda sample: sample.host_receive_utc_nanos)
+                sample = parse_clock_offset_sample_v1(event, session_resolution_nanos=resolution)
+                state.samples[sample.sample_hash] = sample
+            elif event.kind in _INTERRUPTIONS:
+                state.interruptions.add(event.arrival_utc_nanos)
+
+    def _restart(self, state: _Session) -> None:
+        """Discard the session's normalizer (its open minute is dropped) and start a new segment."""
+        state.normalizer = T4SegmentNormalizerV1(exchange_symbol=self._contract.exchange_symbol,
+                                                 session_id=state.session_id)
+        state.emitted = 0
+        self._segment += 1
+        self.continuity_breaks += 1
 
     def _new_lines(self, state: _Session, directory: Path) -> Iterator[str]:
         key = str(directory)
@@ -185,23 +236,30 @@ class LiveBarFeedV1:
                 state = _Session(session_id, T4SegmentNormalizerV1(
                     exchange_symbol=self._contract.exchange_symbol, session_id=session_id))
                 self._sessions[session_id] = state
-            samples = self._samples(directory, resolution)
-            for line in self._new_lines(state, directory):
+            # Records first, then the lifecycle: an interruption written before a record we
+            # read is then always known when that record is processed.
+            lines = list(self._new_lines(state, directory))
+            self._read_lifecycle(state, directory, resolution)
+            samples = sorted(state.samples.values(), key=lambda sample: sample.host_receive_utc_nanos)
+            for line in lines:
                 if not line.strip():
                     continue
                 record = FirstPartyCaptureRecordV1.from_json_line(line)
                 if record.sequence <= state.last_sequence:
                     continue
                 state.last_sequence = record.sequence
-                prior = [s for s in samples if s.host_receive_utc_nanos <= record.arrival_utc_nanos]
+                arrival = record.arrival_utc_nanos
+                interrupted = state.last_arrival is not None and any(
+                    state.last_arrival < instant <= arrival for instant in state.interruptions)
+                gapped = self._last_arrival is not None and arrival - self._last_arrival > MAX_LIVE_CONTINUITY_GAP_NANOS
+                self._last_arrival = state.last_arrival = arrival
+                prior = [s for s in samples if s.host_receive_utc_nanos <= arrival]
                 if not prior:
                     self.skipped_without_clock_sample += 1
+                    self._restart(state)  # a skipped record is a hole: nothing closes across it
                     continue
-                if self._last_arrival is not None and (
-                    record.arrival_utc_nanos - self._last_arrival > MAX_LIVE_CONTINUITY_GAP_NANOS
-                ):
-                    self._segment += 1
-                self._last_arrival = record.arrival_utc_nanos
+                if interrupted or gapped:
+                    self._restart(state)
                 bound = ArrivalClockBoundEvidenceV1(prior[-1].venue_minus_host_upper_nanos,
                                                     prior[-1].sample_hash, LIVE_PROVISIONAL)
                 try:
@@ -209,15 +267,12 @@ class LiveBarFeedV1:
                 except T4NormalizationError as error:
                     # Refused evidence breaks the segment; the next record starts afresh.
                     self.refusals.append(f"{session_id}:{record.sequence}:{error}")
-                    state.normalizer = T4SegmentNormalizerV1(
-                        exchange_symbol=self._contract.exchange_symbol, session_id=session_id)
-                    state.emitted = 0
-                    self._segment += 1
+                    self._restart(state)
                     continue
                 bars = state.normalizer.output.bars
                 for bar in bars[state.emitted:]:
                     out.append(LiveBarV1(self._contract.exchange_symbol, self._segment, session_id, bar,
-                                         record.arrival_utc_nanos))
+                                         arrival, prior[-1].venue_minus_host_upper_nanos))
                 state.emitted = len(bars)
         return out
 
@@ -250,8 +305,14 @@ class WatchedCandidateV1:
         return self.study.parameter_space.typed_point(trial.parameters)
 
 
-def watched_from_rerun_v1(study: StudySpecV1, rerun: Any, *, symbol: str) -> list[WatchedCandidateV1]:
-    """RESEARCH_WATCH candidates: exactly the Decimal-authoritative selection of an ESTABLISHED rerun."""
+def watched_from_rerun_v1(study: StudySpecV1, rerun: Any, *, states: Sequence[Mapping[str, Any]],
+                          symbol: str) -> list[WatchedCandidateV1]:
+    """RESEARCH_WATCH candidates: the Decimal-authoritative selection of an ESTABLISHED rerun.
+
+    ``states`` are the study's recorded R6 candidate states. A selected trial
+    with any recorded state is not a RESEARCH_WATCH candidate: a rejected one
+    is never watched, an incubating one is watched only as INCUBATING.
+    """
     from .strategy_lab_authority_rerun_v1 import SELECTION_ESTABLISHED
 
     if rerun.identity["study_content_hash"] != study.content_hash:
@@ -259,8 +320,9 @@ def watched_from_rerun_v1(study: StudySpecV1, rerun: Any, *, symbol: str) -> lis
     selection = rerun.identity["authoritative_selection"]
     if selection["status"] != SELECTION_ESTABLISHED:
         raise LiveSignalsError("research_watch_requires_an_established_decimal_selection")
+    stated = {str(event["trial_id"]) for event in states}
     return [WatchedCandidateV1(study, str(item["trial_id"]), symbol, AUTHORITY_RESEARCH_WATCH, rerun.rerun_hash)
-            for item in selection["selected"]]
+            for item in selection["selected"] if str(item["trial_id"]) not in stated]
 
 
 def watched_from_states_v1(study: StudySpecV1, states: Sequence[Mapping[str, Any]], *,
@@ -275,25 +337,68 @@ def watched_from_states_v1(study: StudySpecV1, states: Sequence[Mapping[str, Any
 
 
 @dataclass(frozen=True, slots=True)
+class LiveHoldoutGateV1:
+    """Which live bars a candidate may be evaluated on, given its research cycle's holdout."""
+
+    cycle_id: str
+    holdout_start: datetime
+    holdout_end_exclusive: datetime | None
+    _issuer: object = field(default=None, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self._issuer is not _GATE_ISSUER:
+            raise LiveSignalsError("holdout_gate_is_built_only_from_an_issued_cycle")
+
+    @classmethod
+    def for_cycle(cls, cycle: Any, opening: Any | None) -> LiveHoldoutGateV1:
+        """From a registry-issued cycle and its registry-issued opening (``None`` while unopened)."""
+        from .strategy_lab_validation_v1 import cycle_is_issued_v1
+
+        if not cycle_is_issued_v1(cycle):
+            raise LiveSignalsError("holdout_gate_requires_an_issued_cycle")
+        if opening is None:
+            return cls(cycle.cycle_id, cycle.holdout_start, None, _GATE_ISSUER)
+        if not opening.issued or opening.cycle_id != cycle.cycle_id:
+            raise LiveSignalsError("holdout_gate_requires_this_cycles_issued_opening")
+        return cls(cycle.cycle_id, cycle.holdout_start, opening.holdout_end_exclusive, _GATE_ISSUER)
+
+    def admits(self, bar_open_micros: int) -> bool:
+        opened = _EPOCH + timedelta(microseconds=bar_open_micros)
+        if opened < self.holdout_start:
+            return True
+        return self.holdout_end_exclusive is not None and opened >= self.holdout_end_exclusive
+
+    def payload(self) -> dict[str, Any]:
+        end = self.holdout_end_exclusive
+        return {"cycle_id": self.cycle_id, "holdout_start": self.holdout_start.astimezone(UTC).isoformat(),
+                "holdout_end_exclusive": None if end is None else end.astimezone(UTC).isoformat()}
+
+
+@dataclass(frozen=True, slots=True)
 class LiveSignalV1:
     identity: Mapping[str, Any]
     signal_id: UUID
     decided_at: datetime
 
 
-def _rows_and_keys(bars: Sequence[LiveBarV1]) -> tuple[list[tuple[Any, ...]], list[int]]:
-    return [bar.row() for bar in bars], [bar.segment for bar in bars]
+def _micros_ceil(nanos: int) -> int:
+    return -(-nanos // 1000)
 
 
 class LiveStrategyRunnerV1:
-    """Evaluates watched candidates on every completed bar; emits a signal on a target change."""
+    """Evaluates watched candidates on every admitted completed bar; emits a signal on a target change."""
 
-    def __init__(self, candidates: Sequence[WatchedCandidateV1], *,
+    def __init__(self, candidates: Sequence[WatchedCandidateV1], *, holdout_gate: LiveHoldoutGateV1,
                  clock: Callable[[], datetime] = lambda: datetime.now(UTC)) -> None:
         self._candidates = list(candidates)
+        self._gate = holdout_gate
         self._clock = clock
+        started = clock()
+        self._started_nanos = (started - _EPOCH) // timedelta(microseconds=1) * 1000
         self._history: dict[str, list[LiveBarV1]] = {}
-        self._last_target: dict[tuple[str, str], int] = {}
+        self._last_target: dict[tuple[str, str, str], int] = {}
+        self.held_back_by_holdout = 0
+        self.warmup_bars = 0
 
     def on_bars(self, bars: Sequence[LiveBarV1]) -> list[LiveSignalV1]:
         signals: list[LiveSignalV1] = []
@@ -302,29 +407,39 @@ class LiveStrategyRunnerV1:
             if history and history[-1].segment != bar.segment:
                 history.clear()  # a broken segment never feeds a rolling window
             history.append(bar)
-            rows, keys = _rows_and_keys(history)
-            window = BarsV1.from_rows(rows, segment_keys=keys)
+            if not self._gate.admits(bar.bar.bar_open_micros):
+                self.held_back_by_holdout += 1
+                continue
+            warmup = bar.completed_by_arrival_nanos < self._started_nanos
+            self.warmup_bars += int(warmup)
+            window = BarsV1.from_rows([item.row() for item in history],
+                                      segment_keys=[item.segment for item in history])
             for candidate in self._candidates:
                 if candidate.symbol != bar.symbol:
                     continue
                 family = FAMILIES_V1[candidate.study.strategy.family]
                 params = candidate.parameters
                 targets = family.targets_decimal(window, params)
-                key = (candidate.study.strategy.family, candidate.trial_id)
+                key = (bar.symbol, str(candidate.study.study_id), candidate.trial_id)
                 previous = self._last_target.get(key, targets[-2] if len(targets) > 1 else 0)
                 current = targets[-1]
                 self._last_target[key] = current
-                if current == previous:
+                if current == previous or warmup:
                     continue
-                decided_at = max(self._clock(), _EPOCH + timedelta(microseconds=bar.completed_by_arrival_nanos // 1000))
+                now_micros = (self._clock() - _EPOCH) // timedelta(microseconds=1)
+                decided_micros = max(bar.bar.complete_market_knowledge_micros,
+                                     now_micros + _micros_ceil(bar.clock_bound_nanos))
                 signals.append(_signal(candidate, bar, previous, current, family.explain_decimal(window, params),
-                                       decided_at, window))
+                                       _EPOCH + timedelta(microseconds=decided_micros), history, self._gate))
         return signals
 
 
 def _signal(candidate: WatchedCandidateV1, bar: LiveBarV1, previous: int, current: int,
-            explanation: Mapping[str, str], decided_at: datetime, window: BarsV1) -> LiveSignalV1:
+            explanation: Mapping[str, str], decided_at: datetime, history: Sequence[LiveBarV1],
+            gate: LiveHoldoutGateV1) -> LiveSignalV1:
     study = candidate.study
+    boundaries = sum(1 for before, after in pairwise(history)
+                     if before.session_id != after.session_id)
     identity = {
         "schema_version": LIVE_SIGNAL_SCHEMA_VERSION_V1,
         "candidate": {"study_id": str(study.study_id), "study_content_hash": study.content_hash,
@@ -336,10 +451,14 @@ def _signal(candidate: WatchedCandidateV1, bar: LiveBarV1, previous: int, curren
         "claim": "NOT_VALIDATED_" + candidate.authority,
         "symbol": candidate.symbol,
         "evidence": {"tier": "T4_FIRST_PARTY_CAPTURE_FORWARD_UNSEALED", "session_id": str(bar.session_id),
-                     "segment": bar.segment, "bar_open_micros": bar.bar.bar_open_micros,
+                     "bar_open_micros": bar.bar.bar_open_micros,
+                     "complete_market_knowledge_micros": bar.bar.complete_market_knowledge_micros,
                      "closing_record_hash": bar.bar.closing_record_hash,
-                     "trade_manifest_hash": bar.bar.trade_manifest_hash, "window_bars": window.size,
+                     "trade_manifest_hash": bar.bar.trade_manifest_hash,
+                     "window_first_bar_open_micros": history[0].bar.bar_open_micros,
+                     "window_bars": len(history), "window_session_boundaries": boundaries,
                      "clock_bound": LIVE_PROVISIONAL},
+        "holdout": gate.payload(),
         "target_from": previous,
         "target_to": current,
         "execution": "next strictly later bar open (paper, R10)",
@@ -393,6 +512,7 @@ __all__ = [
     "MAX_LIVE_CONTINUITY_GAP_NANOS",
     "LiveBarFeedV1",
     "LiveBarV1",
+    "LiveHoldoutGateV1",
     "LiveSignalV1",
     "LiveSignalsError",
     "LiveStrategyRunnerV1",
