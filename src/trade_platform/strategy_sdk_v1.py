@@ -480,21 +480,62 @@ class ChannelBreakoutV1(StrategyFamilyV1):
         allow_short = params["direction"] == "long_short"
         out = [0] * bars.size
         state = 0
+        windows = {
+            "upper": _PriorExtreme(bars.high_d, n_entry, maximum=True),
+            "lower": _PriorExtreme(bars.low_d, n_entry, maximum=False),
+            "exit_low": _PriorExtreme(bars.low_d, n_exit, maximum=False),
+            "exit_high": _PriorExtreme(bars.high_d, n_exit, maximum=True),
+        }
         for i in range(bars.size):
             start = int(bars.segment_start[i])
             if i == start:
                 state = 0
+                for window in windows.values():
+                    window.reset(start)
+            # Each window covers exactly bars [i-N, i-1] of this segment.
+            for window in windows.values():
+                window.advance_to(i)
             if i - start < n_entry:
                 continue
             close = bars.close_d[i]
-            upper = max(bars.high_d[i - n_entry:i])
-            lower = min(bars.low_d[i - n_entry:i])
-            exit_low = min(bars.low_d[i - n_exit:i])
-            exit_high = max(bars.high_d[i - n_exit:i])
-            state = _breakout_step(state, close > upper, allow_short and close < lower,
-                                   close < exit_low, close > exit_high)
+            state = _breakout_step(state, close > windows["upper"].value(),
+                                   allow_short and close < windows["lower"].value(),
+                                   close < windows["exit_low"].value(), close > windows["exit_high"].value())
             out[i] = state
         return out
+
+
+class _PriorExtreme:
+    """Exact running max/min over the prior ``window`` values (monotonic deque, O(n))."""
+
+    def __init__(self, values: Sequence[Decimal], window: int, *, maximum: bool) -> None:
+        self._values = values
+        self._window = window
+        self._maximum = maximum
+        self._queue: deque[int] = deque()
+        self._next = 0
+
+    def reset(self, start: int) -> None:
+        """A new segment begins at ``start``: nothing before it may enter the window."""
+        self._queue.clear()
+        self._next = start
+
+    def advance_to(self, i: int) -> None:
+        """Make the window ``[i - window, i - 1]`` (the bar ``i`` itself is never included)."""
+        self._next = max(self._next, i - self._window)
+        while self._next < i:
+            value = self._values[self._next]
+            while self._queue and (
+                self._values[self._queue[-1]] <= value if self._maximum else self._values[self._queue[-1]] >= value
+            ):
+                self._queue.pop()
+            self._queue.append(self._next)
+            self._next += 1
+        while self._queue and self._queue[0] < i - self._window:
+            self._queue.popleft()
+
+    def value(self) -> Decimal:
+        return self._values[self._queue[0]]
 
 
 def _breakout_step(state: int, long_entry: bool, short_entry: bool, long_exit: bool, short_exit: bool) -> int:

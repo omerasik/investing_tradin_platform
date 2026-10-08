@@ -32,7 +32,7 @@ depends_on = None
 
 _OR3_UNSET = "'UNSET_PENDING_OWNER_DECISION_OR_3'"
 _OR6_UNSET = "'UNSET_PENDING_OWNER_DECISION_OR_6'"
-_OR3_APPROVED = "'or3-numeric-policy-v1:a54772a82a9ebfd12e016643b4d6c2c81b17815e3d50211eb9b0adf72c1226a5'"
+_OR3_APPROVED = "'or3-numeric-policy-v1:c0965577b98611f001231aa764918acdc622b3f487b98c28188ef2f956bc30e9'"
 _OR6_PATTERN = "'^or6-cost-policy-v1:[0-9a-f]{64}$'"
 
 

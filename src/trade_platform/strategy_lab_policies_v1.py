@@ -61,6 +61,11 @@ AUTHORITATIVE_DECIMAL_PRECISION_V1: Final = 50
 #: numeric-rounding tolerance chosen by the OR-3 evidence packet (2026-10-06:
 #: it caught every float/Decimal signal divergence), not an economic threshold.
 NEAR_TIE_RELATIVE_TOLERANCE_V1: Final = "1E-9"
+#: Relative band around the float selection cutoff inside which a candidate's
+#: rank may be an artefact of float rounding in the *metric*; every candidate in
+#: it is recomputed in Decimal. A numeric tolerance (float64 metric error over a
+#: year of 1-minute bars is far below it), not an economic threshold.
+SELECTION_CUTOFF_ERROR_BAND_RELATIVE_V1: Final = "1E-6"
 
 OR3_RERUN_SCOPE_V1: Final = (
     "EVERY_FROZEN_CANDIDATE",
@@ -118,6 +123,8 @@ def or3_numeric_policy_v1() -> PolicyV1:
         "authoritative_rerun_scope": list(OR3_RERUN_SCOPE_V1),
         "rerun_recomputes": "COMPLETE_SIGNAL_AND_ECONOMIC_PATH",
         "near_tie_relative_tolerance": NEAR_TIE_RELATIVE_TOLERANCE_V1,
+        "selection_cutoff_error_band_relative": SELECTION_CUTOFF_ERROR_BAND_RELATIVE_V1,
+        "near_tie_rerun_scope": "EVERY_FLAGGED_CANDIDATE_OF_THE_STUDY",
         "boundary_rule": "DECIMAL_WINS",
         "unestablished_authority_rule": "FAIL_CLOSED",
         "library_float_behaviour_in_identity": False,
@@ -273,6 +280,7 @@ __all__ = [
     "OR3_RERUN_SCOPE_V1",
     "OR5_BASELINE_LAG_V1",
     "OR5_SWEEP_LAGS_V1",
+    "SELECTION_CUTOFF_ERROR_BAND_RELATIVE_V1",
     "CostPolicyV1",
     "FeeScheduleV1",
     "PolicyV1",
