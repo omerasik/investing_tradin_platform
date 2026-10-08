@@ -192,7 +192,8 @@ class BarsV1:
     close_d: tuple[Decimal, ...]
     segment_start: np.ndarray = field(repr=False, default_factory=lambda: np.zeros(0, dtype=np.int64))
     #: Closes as exact integer ticks (``close * close_scale``), centred on the
-    #: first close, so rolling sums in the search tier are exact int64 arithmetic.
+    #: window's mid-range (the centre cancels in every decision; it only decides
+    #: whether the window is admissible), so rolling sums are exact int64 arithmetic.
     close_ticks: np.ndarray = field(repr=False, default_factory=lambda: np.zeros(0, dtype=np.int64))
     close_scale: int = 1
     close_centre: int = 0
@@ -387,12 +388,17 @@ class TrendMovingAverageCrossV1(StrategyFamilyV1):
         p, q = _ratio(Decimal(params["band"]))
         short = -1.0 if params["direction"] == "long_short" else 0.0
         ready = bars.bars_in_segment() >= slow
+        # Bound every int64 product with Python integers *before* forming it, so
+        # no intermediate can wrap unnoticed (PIT review).
+        max_tick = int(np.max(np.abs(bars.close_ticks))) if bars.size else 0
+        cross_bound = q * 2 * fast * slow * max_tick
+        scale_bound = max(p, 1) * fast * slow * (max_tick + abs(bars.close_centre))
+        if cross_bound >= 2 ** 62 or scale_bound >= 2 ** 62:
+            raise StrategySdkError("trend_cross_products_exceed_the_exact_arithmetic_bound")
         sum_fast = _window_sums(bars.close_ticks, fast)
         sum_slow = _window_sums(bars.close_ticks, slow)
         cross = slow * sum_fast - fast * sum_slow  # = s*raw_f - f*raw_s (the centre cancels)
         scale: np.ndarray = fast * (sum_slow + slow * bars.close_centre)  # = f * raw slow sum > 0
-        if q * float(np.max(np.abs(cross))) >= 2.0 ** 62 or p * float(np.max(np.abs(scale))) >= 2.0 ** 62:
-            raise StrategySdkError("trend_cross_products_exceed_the_exact_arithmetic_bound")
         left: np.ndarray = q * cross
         right: np.ndarray = p * scale
         events = np.full(bars.size, np.nan)
@@ -758,6 +764,7 @@ def restrict_to_bound_v1(bars: BarsV1, bound_exclusive: datetime, lag: timedelta
         open_f=bars.open_f[sl], high_f=bars.high_f[sl], low_f=bars.low_f[sl], close_f=bars.close_f[sl],
         open_d=bars.open_d[:keep], high_d=bars.high_d[:keep], low_d=bars.low_d[:keep],
         close_d=bars.close_d[:keep], segment_start=bars.segment_start[sl],
+        close_ticks=bars.close_ticks[sl], close_scale=bars.close_scale, close_centre=bars.close_centre,
     )
 
 
