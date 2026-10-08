@@ -9,6 +9,8 @@ from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
+from tests.risk_policy_fixtures import fixture_risk_payload
+
 
 @unittest.skipUnless(os.environ.get("POSTGRES_TEST_DSN"), "POSTGRES_TEST_DSN not configured")
 class PostgresIntegrationTests(unittest.TestCase):
@@ -135,7 +137,7 @@ class PostgresIntegrationTests(unittest.TestCase):
         document = PolicyDocument(
             "risk",
             version,
-            {"maximum_order_notional": "1000"},
+            fixture_risk_payload(maximum_order_notional="1000"),
             "risk-reviewer",
             self.now,
         )
@@ -467,13 +469,13 @@ class PostgresIntegrationTests(unittest.TestCase):
             PolicyDocument(
                 "risk",
                 risk_version,
-                {
-                    "maximum_order_notional": "10000",
-                    "maximum_daily_order_notional": "10000",
-                    "maximum_per_trade_loss": "100",
-                    "maximum_stop_distance_fraction": "0.05",
-                    "stop_gap_buffer_fraction": "0.02",
-                },
+                fixture_risk_payload(
+                    maximum_order_notional="10000",
+                    maximum_daily_order_notional="10000",
+                    maximum_per_trade_loss="100",
+                    maximum_stop_distance_fraction="0.05",
+                    stop_gap_buffer_fraction="0.02",
+                ),
                 "risk-reviewer",
                 self.now,
             )

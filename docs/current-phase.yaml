@@ -42,6 +42,16 @@ r6_validation: >-
   holdout days without it), Decimal holdout validation under every OR-5 lag
   and approved cost scenario, append-only candidate states ending INCUBATING
   or REJECTED (PROFESSIONALLY_VALIDATED reserved). Holdout NOT opened.
+r8_live_signals: >-
+  live_signals_v1 + migration 0058 (PR #190): live T4 bars through the R3A
+  normalizer (a capture gap or recorded interruption discards the open minute
+  and breaks the segment), frozen candidates in Decimal, explainable signals on
+  the venue-knowledge clock. LiveHoldoutGateV1: while the current holdout is
+  unopened (OR-7) no forward bar is evaluated. Watching is OR-9.
+r9_account_policy: >-
+  account_policy_v1 + migration 0059: account contexts and owner-approved,
+  content-addressed account policies; resolve_risk_policy fills nothing from
+  RiskPolicy defaults. Every economic value is MISSING_OWNER_*_OR_11 until set.
 or7_packet:                   # options for the owner; nothing here is decided
   holdout_end: >-
     A) 2026-09-24 (T2 holdout up to the first T4 day, ~35 days); B) the latest
@@ -237,6 +247,13 @@ r1b_universe:                 # OR-2 = U2: BTCUSDT ETHUSDT SOLUSDT, tickers + pu
     on the first burn-in hour (22:48-23:00Z, scratch store, no DB): BTC/ETH/SOL
     each REAL_DATA + T4 professional, 0 missing knowledge times.
   burn_in: 72 h on the universe root beside R0 (started 2026-10-07T22:48Z), then re-measure runway.
+  burn_in_outage: >-
+    Host went down 2026-10-08; last pre-outage arrival 10:14:47Z (BTC/ETH/SOL),
+    first post-restart arrival 18:06:41Z: a 7.87 h hole recorded as a gap, never
+    bridged (R0 and T2 acquisition died at the same instant). Observed coverage
+    before it: 11.45 h. 72 h wall clock ends 2026-10-10T22:48Z with ~64.1 h
+    observed; 72 h observed would need running to ~2026-10-11T06:40Z. Whether a
+    burn-in with this outage is accepted, or restarted, is the owner's call (OR-1).
   open_point: >-
     R0 v1 keeps recording BTCUSDT beside the universe (+~0.30 GB/day gzip)
     until the owner retires it; not changed here.

@@ -4,12 +4,13 @@ from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from tests.risk_policy_fixtures import fixture_risk_payload
 from trade_platform.policy_registry import PolicyDocument, PolicyRegistryError, SQLitePolicyRegistry
 
 
 class PolicyRegistryTests(unittest.TestCase):
     def test_documents_are_immutable_content_addressed_and_persistent(self) -> None:
-        document = PolicyDocument("risk", "2026-01", {"maximum_order_notional": "1000"}, "risk-committee", datetime(2026, 1, 1, tzinfo=timezone.utc))
+        document = PolicyDocument("risk", "2026-01", fixture_risk_payload(maximum_order_notional="1000"), "risk-committee", datetime(2026, 1, 1, tzinfo=timezone.utc))
         with TemporaryDirectory() as directory:
             path = Path(directory) / "policies.sqlite"
             registry = SQLitePolicyRegistry(path); registry.append(document)
@@ -54,27 +55,16 @@ class PolicyRegistryTests(unittest.TestCase):
     def test_per_trade_risk_controls_are_atomic_and_typed(self) -> None:
         registry = SQLitePolicyRegistry()
         approved_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        registry.append(PolicyDocument("risk", "complete", {
-            "maximum_per_trade_loss": "100", "maximum_stop_distance_fraction": "0.05",
-            "stop_gap_buffer_fraction": "0.02",
-        }, "risk-committee", approved_at))
+        registry.append(PolicyDocument("risk", "complete", fixture_risk_payload(maximum_per_trade_loss="100", maximum_stop_distance_fraction="0.05", stop_gap_buffer_fraction="0.02"), "risk-committee", approved_at))
         policy = registry.resolve_risk_policy("complete")
         self.assertTrue(policy.per_trade_controls_configured)
-        registry.append(PolicyDocument("risk", "incomplete", {
-            "maximum_per_trade_loss": "100",
-        }, "risk-committee", approved_at))
+        registry.append(PolicyDocument("risk", "incomplete", fixture_risk_payload(maximum_per_trade_loss="100"), "risk-committee", approved_at))
         with self.assertRaisesRegex(PolicyRegistryError, "invalid_risk_policy_payload"):
             registry.resolve_risk_policy("incomplete")
-        registry.append(PolicyDocument("risk", "invalid", {
-            "maximum_per_trade_loss": "100", "maximum_stop_distance_fraction": "1.1",
-            "stop_gap_buffer_fraction": "0.02",
-        }, "risk-committee", approved_at))
+        registry.append(PolicyDocument("risk", "invalid", fixture_risk_payload(maximum_per_trade_loss="100", maximum_stop_distance_fraction="1.1", stop_gap_buffer_fraction="0.02"), "risk-committee", approved_at))
         with self.assertRaisesRegex(PolicyRegistryError, "invalid_risk_policy_payload"):
             registry.resolve_risk_policy("invalid")
-        registry.append(PolicyDocument("risk", "invalid-gap", {
-            "maximum_per_trade_loss": "100", "maximum_stop_distance_fraction": "0.05",
-            "stop_gap_buffer_fraction": "1",
-        }, "risk-committee", approved_at))
+        registry.append(PolicyDocument("risk", "invalid-gap", fixture_risk_payload(maximum_per_trade_loss="100", maximum_stop_distance_fraction="0.05", stop_gap_buffer_fraction="1"), "risk-committee", approved_at))
         with self.assertRaisesRegex(PolicyRegistryError, "invalid_risk_policy_payload"):
             registry.resolve_risk_policy("invalid-gap")
         registry.close()

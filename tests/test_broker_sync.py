@@ -5,6 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
 
+from tests.risk_policy_fixtures import fixture_risk_payload
 from tests.test_paper_execution import intent
 from trade_platform.broker_adapter import (
     BrokerConfiguration,
@@ -42,7 +43,7 @@ class BrokerSyncTests(unittest.TestCase):
     def assessment_context(oms, adapter, events, *, alerts=None):
         registry = SQLitePolicyRegistry()
         approved_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        registry.append(PolicyDocument("risk", "risk:default", {"maximum_order_notional": "10000"}, "risk-committee", approved_at))
+        registry.append(PolicyDocument("risk", "risk:default", fixture_risk_payload(maximum_order_notional="10000"), "risk-committee", approved_at))
         registry.append(PolicyDocument("portfolio", "portfolio:default", {"maximum_gross_notional": "10000", "maximum_single_weight": "1", "maximum_scenario_loss": "10000"}, "risk-committee", approved_at))
         assessments = SQLitePreTradeAssessmentStore(integrity_key=BrokerSyncTests.integrity_key)
         return PaperBrokerSyncService(oms, adapter, events, alerts, assessment_store=assessments, policy_registry=registry), assessments, registry
