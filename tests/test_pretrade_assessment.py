@@ -7,6 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
 
+from tests.risk_policy_fixtures import fixture_risk_payload
 from trade_platform.broker_adapter import (
     BrokerAccountSnapshot,
     BrokerConfiguration,
@@ -68,10 +69,7 @@ class PreTradeAssessmentTests(unittest.TestCase):
         self.signals = SQLiteSignalStore()
         self.policy_registry = SQLitePolicyRegistry()
         approved_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        self.policy_registry.append(PolicyDocument("risk", "risk:default", {
-            "maximum_order_notional": "10000", "maximum_per_trade_loss": "100",
-            "maximum_stop_distance_fraction": "0.05", "stop_gap_buffer_fraction": "0.02",
-        }, "risk-committee", approved_at))
+        self.policy_registry.append(PolicyDocument("risk", "risk:default", fixture_risk_payload(maximum_order_notional="10000", maximum_per_trade_loss="100", maximum_stop_distance_fraction="0.05", stop_gap_buffer_fraction="0.02"), "risk-committee", approved_at))
         self.policy_registry.append(PolicyDocument("portfolio", "portfolio:default", {"maximum_gross_notional": "10000", "maximum_single_weight": "1", "maximum_scenario_loss": "10000"}, "risk-committee", approved_at))
         self.execution_evidence = SQLiteExecutionEvidenceStore()
         self.execution_evidence.append_halt(HaltObservation(uuid4(), "TEST:SPY", False, "venue", "halt-1", self.now, self.now))
@@ -125,10 +123,7 @@ class PreTradeAssessmentTests(unittest.TestCase):
 
     def test_gap_adjusted_loss_rejects_before_paper_submission_and_is_durable(self) -> None:
         proposal = self._proposal(); self.signals.append(proposal); self.signals.append_validation(SignalEngine().validate(proposal, {stage: True for stage in ValidationStage}))
-        self.policy_registry.append(PolicyDocument("risk", "risk:gap-block", {
-            "maximum_order_notional": "10000", "maximum_per_trade_loss": "30",
-            "maximum_stop_distance_fraction": "0.05", "stop_gap_buffer_fraction": "0.02",
-        }, "risk-committee", datetime(2026, 1, 1, tzinfo=timezone.utc)))
+        self.policy_registry.append(PolicyDocument("risk", "risk:gap-block", fixture_risk_payload(maximum_order_notional="10000", maximum_per_trade_loss="30", maximum_stop_distance_fraction="0.05", stop_gap_buffer_fraction="0.02"), "risk-committee", datetime(2026, 1, 1, tzinfo=timezone.utc)))
         intent = OrderIntent(uuid4(), proposal.signal_id, "TEST:SPY", "paper", OrderSide.BUY, Decimal("10"), Decimal("100"))
         store = SQLitePreTradeAssessmentStore(integrity_key=self.integrity_key)
         result = self._assess(intent, store, risk_policy_version="risk:gap-block")
@@ -149,10 +144,7 @@ class PreTradeAssessmentTests(unittest.TestCase):
     def test_assessment_persists_explicit_policy_versions(self) -> None:
         proposal = self._proposal(); self.signals.append(proposal); self.signals.append_validation(SignalEngine().validate(proposal, {stage: True for stage in ValidationStage}))
         store = SQLitePreTradeAssessmentStore()
-        self.policy_registry.append(PolicyDocument("risk", "risk:2026-01", {
-            "maximum_order_notional": "10000", "maximum_per_trade_loss": "100",
-            "maximum_stop_distance_fraction": "0.05", "stop_gap_buffer_fraction": "0.02",
-        }, "risk-committee", datetime(2026, 1, 1, tzinfo=timezone.utc)))
+        self.policy_registry.append(PolicyDocument("risk", "risk:2026-01", fixture_risk_payload(maximum_order_notional="10000", maximum_per_trade_loss="100", maximum_stop_distance_fraction="0.05", stop_gap_buffer_fraction="0.02"), "risk-committee", datetime(2026, 1, 1, tzinfo=timezone.utc)))
         self.policy_registry.append(PolicyDocument("portfolio", "portfolio:2026-01", {"maximum_gross_notional": "10000", "maximum_single_weight": "1", "maximum_scenario_loss": "10000"}, "risk-committee", datetime(2026, 1, 1, tzinfo=timezone.utc)))
         assessment = self._assess(OrderIntent(uuid4(), proposal.signal_id, "TEST:SPY", "paper", OrderSide.BUY, Decimal("10"), Decimal("100")), store, risk_policy_version="risk:2026-01", portfolio_policy_version="portfolio:2026-01")
         restored = store.get_for_intent(assessment.risk_decision.intent_id)
@@ -174,7 +166,7 @@ class PreTradeAssessmentTests(unittest.TestCase):
         proposal = self._proposal(); self.signals.append(proposal); self.signals.append_validation(SignalEngine().validate(proposal, {stage: True for stage in ValidationStage}))
         registry = SQLitePolicyRegistry()
         approved_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        registry.append(PolicyDocument("risk", "risk:2026-01", {"maximum_order_notional": "2000"}, "risk-committee", approved_at))
+        registry.append(PolicyDocument("risk", "risk:2026-01", fixture_risk_payload(maximum_order_notional="2000"), "risk-committee", approved_at))
         registry.append(PolicyDocument("portfolio", "portfolio:2026-01", {"maximum_gross_notional": "2000", "maximum_single_weight": "1", "maximum_scenario_loss": "2000"}, "risk-committee", approved_at))
         result = self._assess(OrderIntent(uuid4(), proposal.signal_id, "TEST:SPY", "paper", OrderSide.BUY, Decimal("10"), Decimal("100")), risk_policy_version="risk:2026-01", portfolio_policy_version="portfolio:2026-01", policy_registry=registry)
         self.assertTrue(result.approved, result.evidence_block_reason)
@@ -183,7 +175,7 @@ class PreTradeAssessmentTests(unittest.TestCase):
     def test_unknown_registry_portfolio_policy_fails_closed(self) -> None:
         proposal = self._proposal(); self.signals.append(proposal); self.signals.append_validation(SignalEngine().validate(proposal, {stage: True for stage in ValidationStage}))
         registry = SQLitePolicyRegistry()
-        registry.append(PolicyDocument("risk", "risk:2026-01", {"maximum_order_notional": "2000"}, "risk-committee", datetime(2026, 1, 1, tzinfo=timezone.utc)))
+        registry.append(PolicyDocument("risk", "risk:2026-01", fixture_risk_payload(maximum_order_notional="2000"), "risk-committee", datetime(2026, 1, 1, tzinfo=timezone.utc)))
         result = self._assess(OrderIntent(uuid4(), proposal.signal_id, "TEST:SPY", "paper", OrderSide.BUY, Decimal("10"), Decimal("100")), risk_policy_version="risk:2026-01", portfolio_policy_version="portfolio:missing", policy_registry=registry)
         self.assertIn("portfolio_policy_evidence_unavailable", result.evidence_block_reason)
         registry.close()

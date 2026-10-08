@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 from uuid import uuid4
 
+from tests.risk_policy_fixtures import fixture_risk_payload
 from trade_platform.broker_adapter import (
     BrokerAccountSnapshot,
     BrokerConfiguration,
@@ -44,10 +45,7 @@ class PaperRuntimeTests(unittest.TestCase):
     def seed_policies(path: Path):
         registry = SQLitePolicyRegistry(path)
         approved_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        registry.append(PolicyDocument("risk", "risk:paper-v1", {
-            "maximum_order_notional": "10000", "maximum_per_trade_loss": "100",
-            "maximum_stop_distance_fraction": "0.05", "stop_gap_buffer_fraction": "0.02",
-        }, "risk-committee", approved_at))
+        registry.append(PolicyDocument("risk", "risk:paper-v1", fixture_risk_payload(maximum_order_notional="10000", maximum_per_trade_loss="100", maximum_stop_distance_fraction="0.05", stop_gap_buffer_fraction="0.02"), "risk-committee", approved_at))
         registry.append(PolicyDocument("portfolio", "portfolio:paper-v1", {"maximum_gross_notional": "10000", "maximum_single_weight": "1", "maximum_scenario_loss": "10000", "maximum_var_loss": "1", "minimum_historical_observations": 1, "return_history_window_observations": 1, "maximum_return_history_age_seconds": 86400, "stress_scenarios": {"risk_off": {"ETF": "-0.1"}}}, "risk-committee", approved_at))
         registry.close()
         models = SQLiteModelRegistry(path)
@@ -95,7 +93,7 @@ class PaperRuntimeTests(unittest.TestCase):
             path = Path(directory) / "paper.sqlite"
             model_id = self.seed_policies(path)
             registry = SQLitePolicyRegistry(path)
-            registry.append(PolicyDocument("risk", "risk:legacy", {"maximum_order_notional": "10000"}, "risk-committee", datetime(2026, 1, 1, tzinfo=timezone.utc)))
+            registry.append(PolicyDocument("risk", "risk:legacy", fixture_risk_payload(maximum_order_notional="10000"), "risk-committee", datetime(2026, 1, 1, tzinfo=timezone.utc)))
             registry.close()
             config = PlatformConfig(assessment_integrity_key_reference="env:TRADE_PLATFORM_ASSESSMENT_KEY")
             with patch.dict(os.environ, {"TRADE_PLATFORM_ASSESSMENT_KEY": "test-key"}, clear=True), self.assertRaisesRegex(PaperRuntimeError, "per_trade_risk_policy_required"):
