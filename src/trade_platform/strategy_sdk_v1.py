@@ -26,16 +26,31 @@ Execution convention ``t2-close-plus-lag-next-strictly-later-open-v1``
   boundary: the position is closed at the open of the segment's last bar.
 * Interval returns are open-to-open. Search economics are gross (OR-6 with no
   verified fee schedule); the break-even cost per side is reported instead of
-  invented costs.
+  invented costs. It is *additive*: the sum of simple interval returns divided
+  by turnover, i.e. the per-side cost at which the summed gross edge is zero.
+* The forced flat at the open of a segment's last bar uses the knowledge that
+  the next UTC day is declared missing. No price information is used and the
+  fill price is a real open, but that exit instant is a data-availability
+  convention, not a causal strategy decision.
+* A study window must end by 2026-08-18: the last bar of 2026-08-19 closes at
+  the holdout boundary, so its knowledge bound plus the 60 s sweep lag would
+  cross it and the study is refused (fail closed).
 
 Two numeric tiers (owner decision OR-3)
 ---------------------------------------
-:meth:`StrategyFamilyV1.targets_f64` is the float64 SEARCH tier (vectorized
-with numpy). :meth:`StrategyFamilyV1.targets_decimal` is the authoritative tier,
-a straightforward ``Decimal`` implementation of the same rule over the same
-bars. Every decision comparison also reports a near-tie count: comparisons
-whose two sides agree within the OR-3 relative tolerance, where float rounding
-could have flipped the decision. A flagged candidate joins the rerun set.
+:meth:`StrategyFamilyV1.targets_f64` is the vectorized SEARCH tier and
+:meth:`StrategyFamilyV1.targets_decimal` the authoritative tier. Every decision
+comparison is written without division or square root (cross-multiplied, or
+compared on squares) and evaluated *exactly* in both tiers: integer price ticks
+with exact int64 window sums in the search tier (a float is used only where the
+two sides are far apart, with an exact integer recheck otherwise), exact
+``Decimal`` in the authority tier. Both tiers therefore make identical
+decisions; a dataset or window outside the int64 exactness bounds fails closed.
+Float arithmetic remains in the search *metrics* only, so search rankings stay
+``SEARCH_NON_AUTHORITATIVE``. The near-tie count reports exact boundary
+equalities (and float-near comparisons for the channel family, whose float
+prices are an order-preserving image of the exact ones); a flagged candidate
+still joins the OR-3 rerun set.
 """
 
 from __future__ import annotations
@@ -43,6 +58,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import math
+import sys
 from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -89,6 +105,76 @@ def _micros(value: datetime) -> int:
     return (value - _EPOCH) // timedelta(microseconds=1)
 
 
+#: Exactness bounds of the integer search arithmetic. With |centred tick| < 2^20
+#: and windows <= 2^13 bars, every rolling sum (< 2^33), sum of squares
+#: (< 2^53), ``w*Q - S^2`` (< 2^62 for windows <= 2^11) and the trend cross
+#: products (< 2^56) are exact in int64. A dataset or window outside the bounds
+#: fails closed instead of losing exactness.
+_MAX_TICK_DEVIATION: Final = 1 << 20
+_MAX_EXACT_WINDOW: Final = 1 << 13
+_MAX_EXACT_VARIANCE_WINDOW: Final = 1 << 11
+
+
+def _exact_ticks(prices: Sequence[Decimal]) -> tuple[int, int, np.ndarray]:
+    """``(scale, centre, ticks)``: prices as exact integer ticks centred on their mid-range."""
+    # Frame decimals carry the column scale (trailing zeros); the grid is the
+    # normalized precision of the actual prices.
+    places = max(0, max(-int(p.normalize().as_tuple().exponent) for p in prices))  # type: ignore[operator]
+    if places > 9:
+        raise StrategySdkError("price_precision_too_fine_for_exact_ticks")
+    scale = 10 ** places
+    raw = [int(p * scale) for p in prices]
+    if any(Decimal(r) != p * scale for r, p in zip(raw, prices, strict=True)):
+        raise StrategySdkError("price_not_on_its_decimal_grid")
+    centre = (max(raw) + min(raw)) // 2
+    centred = np.array([r - centre for r in raw], dtype=np.int64)
+    if centred.size and int(np.max(np.abs(centred))) >= _MAX_TICK_DEVIATION:
+        raise StrategySdkError("price_range_too_wide_for_exact_int64_arithmetic")
+    return scale, centre, centred
+
+
+def _window_sums(values: np.ndarray, window: int) -> np.ndarray:
+    """Exact trailing sums over ``values[i-window+1..i]`` (int64; 0 where incomplete).
+
+    The running sum may wrap in int64, but every *window* sum is far inside the
+    int64 range, so the modular difference is the exact window sum.
+    """
+    if window > _MAX_EXACT_WINDOW:
+        raise StrategySdkError("window_exceeds_the_exact_arithmetic_bound")
+    out = np.zeros(values.shape, dtype=np.int64)
+    if values.size < window:
+        return out
+    with np.errstate(over="ignore"):
+        csum = np.concatenate((np.zeros(1, dtype=np.int64), np.cumsum(values, dtype=np.int64)))
+        out[window - 1:] = csum[window:] - csum[:-window]
+    return out
+
+
+def _exact_scaled_square_compare(a: np.ndarray, n: np.ndarray, p: int, q: int, mask: np.ndarray,
+                                 op: str) -> tuple[np.ndarray, int]:
+    """``q^2 * a^2 (op) p^2 * n`` exactly, for int64 ``a`` and ``n``; returns (result, exact ties).
+
+    Float decides wherever the two sides are separated by far more than float
+    rounding; every other element is decided with Python integers.
+    """
+    lhs = float(q * q) * np.square(a.astype(float))
+    rhs = float(p * p) * n.astype(float)
+    result = {"<=": lhs <= rhs, ">=": lhs >= rhs}[op]
+    close = mask & (np.abs(lhs - rhs) <= 1e-9 * np.maximum(np.maximum(np.abs(lhs), np.abs(rhs)), 1.0))
+    ties = 0
+    for index in np.flatnonzero(close):
+        left = q * q * int(a[index]) ** 2
+        right = p * p * int(n[index])
+        ties += left == right
+        result[index] = left <= right if op == "<=" else left >= right
+    return result, ties
+
+
+def _ratio(value: Decimal) -> tuple[int, int]:
+    numerator, denominator = value.as_integer_ratio()
+    return int(numerator), int(denominator)
+
+
 @dataclass(frozen=True)
 class BarsV1:
     """One bar window in both tiers. Rows are in ``bar_open_at`` order."""
@@ -105,6 +191,11 @@ class BarsV1:
     low_d: tuple[Decimal, ...]
     close_d: tuple[Decimal, ...]
     segment_start: np.ndarray = field(repr=False, default_factory=lambda: np.zeros(0, dtype=np.int64))
+    #: Closes as exact integer ticks (``close * close_scale``), centred on the
+    #: first close, so rolling sums in the search tier are exact int64 arithmetic.
+    close_ticks: np.ndarray = field(repr=False, default_factory=lambda: np.zeros(0, dtype=np.int64))
+    close_scale: int = 1
+    close_centre: int = 0
 
     @property
     def size(self) -> int:
@@ -127,12 +218,13 @@ class BarsV1:
         starts[boundary] = boundary
         starts = np.maximum.accumulate(starts)
         decimals = [tuple(Decimal(row[k]) for row in rows) for k in (3, 4, 5, 6)]
+        scale, centre, ticks = _exact_ticks(decimals[3])
         return cls(
             open_us=open_us, close_us=close_us, segment=segment,
             open_f=np.array([float(v) for v in decimals[0]]), high_f=np.array([float(v) for v in decimals[1]]),
             low_f=np.array([float(v) for v in decimals[2]]), close_f=np.array([float(v) for v in decimals[3]]),
             open_d=decimals[0], high_d=decimals[1], low_d=decimals[2], close_d=decimals[3],
-            segment_start=starts,
+            segment_start=starts, close_ticks=ticks, close_scale=scale, close_centre=centre,
         )
 
     def bars_in_segment(self) -> np.ndarray:
@@ -203,30 +295,6 @@ def _hold_events(events: np.ndarray, bars: BarsV1, ready: np.ndarray) -> np.ndar
     return np.nan_to_num(out).astype(np.int64)
 
 
-def _rolling_mean_f64(values: np.ndarray, window: int) -> np.ndarray:
-    """Trailing mean over ``values[i-window+1..i]`` (NaN where the window is incomplete overall)."""
-    out = np.full(values.shape, np.nan)
-    if values.size < window:
-        return out
-    shift = values[0]
-    csum = np.concatenate(([0.0], np.cumsum(values - shift)))
-    out[window - 1:] = (csum[window:] - csum[:-window]) / window + shift
-    return out
-
-
-def _rolling_std_f64(values: np.ndarray, window: int, mean: np.ndarray) -> np.ndarray:
-    out = np.full(values.shape, np.nan)
-    if values.size < window:
-        return out
-    shift = values[0]
-    centred = values - shift
-    csum2 = np.concatenate(([0.0], np.cumsum(centred * centred)))
-    second = (csum2[window:] - csum2[:-window]) / window
-    m = mean[window - 1:] - shift
-    out[window - 1:] = np.sqrt(np.maximum(second - m * m, 0.0))
-    return out
-
-
 def _rolling_extreme_prior_f64(values: np.ndarray, window: int, *, maximum: bool) -> np.ndarray:
     """Extreme over the *prior* ``window`` bars ``values[i-window..i-1]`` (sparse table)."""
     op = np.maximum if maximum else np.minimum
@@ -271,7 +339,10 @@ class StrategyFamilyV1:
         raise NotImplementedError
 
     def spec(self) -> StrategySpecV1:
-        source = inspect.getsource(type(self)) + inspect.getsource(held_positions_v1)
+        # The whole SDK module is on every evaluation path (bars, execution,
+        # helpers, metrics), so all of it is identity: any code change is a new
+        # study, never a silent resume that mixes results from two codes.
+        source = f"{self.family}:{self.version}:" + inspect.getsource(sys.modules[__name__])
         return StrategySpecV1(
             family=self.family, version=self.version,
             implementation_sha256=hashlib.sha256(source.encode()).hexdigest(),
@@ -306,21 +377,33 @@ class TrendMovingAverageCrossV1(StrategyFamilyV1):
     def inadmissible(self, params: Mapping[str, Any]) -> str | None:
         return "fast_not_shorter_than_slow" if params["fast_bars"] >= params["slow_bars"] else None
 
+    # Decision rule, in both tiers, without division:
+    #   fast/slow - 1 > band  <=>  q*(s*S_f - f*S_s) > p*f*S_s     (band = p/q, S_s > 0)
+    # with S the exact window sums of closes; the search tier evaluates it in
+    # exact int64 ticks, the authority tier in exact Decimal, so both decide alike.
+
     def targets_f64(self, bars: BarsV1, params: Mapping[str, Any]) -> tuple[np.ndarray, int]:
         fast, slow = int(params["fast_bars"]), int(params["slow_bars"])
-        band = float(params["band"])
+        p, q = _ratio(Decimal(params["band"]))
         short = -1.0 if params["direction"] == "long_short" else 0.0
         ready = bars.bars_in_segment() >= slow
-        ratio = _rolling_mean_f64(bars.close_f, fast) / _rolling_mean_f64(bars.close_f, slow) - 1.0
+        sum_fast = _window_sums(bars.close_ticks, fast)
+        sum_slow = _window_sums(bars.close_ticks, slow)
+        cross = slow * sum_fast - fast * sum_slow  # = s*raw_f - f*raw_s (the centre cancels)
+        scale: np.ndarray = fast * (sum_slow + slow * bars.close_centre)  # = f * raw slow sum > 0
+        if q * float(np.max(np.abs(cross))) >= 2.0 ** 62 or p * float(np.max(np.abs(scale))) >= 2.0 ** 62:
+            raise StrategySdkError("trend_cross_products_exceed_the_exact_arithmetic_bound")
+        left: np.ndarray = q * cross
+        right: np.ndarray = p * scale
         events = np.full(bars.size, np.nan)
-        events[ratio > band] = 1.0
-        events[ratio < -band] = short
-        ties = _near_tie(ratio, band, ready) + _near_tie(ratio, -band, ready)
+        events[ready & (left > right)] = 1.0
+        events[ready & (left < -right)] = short
+        ties = int(np.count_nonzero(ready & ((left == right) | (left == -right))))
         return _hold_events(events, bars, ready), ties
 
     def targets_decimal(self, bars: BarsV1, params: Mapping[str, Any]) -> list[int]:
         fast, slow = int(params["fast_bars"]), int(params["slow_bars"])
-        band = Decimal(params["band"])
+        p, q = _ratio(Decimal(params["band"]))
         short = -1 if params["direction"] == "long_short" else 0
         out = [0] * bars.size
         with _decimal_context():
@@ -344,10 +427,11 @@ class TrendMovingAverageCrossV1(StrategyFamilyV1):
                     slow_sum -= slow_q.popleft()
                 if len(slow_q) < slow:
                     continue
-                ratio = (fast_sum / fast) / (slow_sum / slow) - 1
-                if ratio > band:
+                left = q * (slow * fast_sum - fast * slow_sum)
+                right = p * fast * slow_sum
+                if left > right:
                     state = 1
-                elif ratio < -band:
+                elif left < -right:
                     state = short
                 out[i] = state
         return out
@@ -370,27 +454,39 @@ class MeanReversionZScoreV1(StrategyFamilyV1):
     def inadmissible(self, params: Mapping[str, Any]) -> str | None:
         return "exit_not_inside_entry" if params["exit_z"] >= params["entry_z"] else None
 
+    # Decision rule, in both tiers, without division or square root. With
+    # A = w*x_i - S and N = w*Q - S^2 (S, Q the window sum and sum of squares;
+    # z = A / sqrt(N), N > 0 is the variance gate) and thresholds e = p/q:
+    #   z <= -e  <=>  A < 0 and q^2*A^2 >= p^2*N      z >= e  <=>  A > 0 and q^2*A^2 >= p^2*N
+    #   |z| <= x <=>  q^2*A^2 <= p^2*N   (x = 0: A == 0)
+    # A and N are exact integers (search tier, ticks) or exact Decimals (authority).
+
     def targets_f64(self, bars: BarsV1, params: Mapping[str, Any]) -> tuple[np.ndarray, int]:
         window = int(params["lookback_bars"])
-        entry, exit_ = float(params["entry_z"]), float(params["exit_z"])
+        if window > _MAX_EXACT_VARIANCE_WINDOW:
+            raise StrategySdkError("variance_window_exceeds_the_exact_arithmetic_bound")
+        ep, eq = _ratio(Decimal(params["entry_z"]))
+        xp, xq = _ratio(Decimal(params["exit_z"]))
         short = -1.0 if params["direction"] == "long_short" else 0.0
         ready = bars.bars_in_segment() >= window
-        mean = _rolling_mean_f64(bars.close_f, window)
-        std = _rolling_std_f64(bars.close_f, window, mean)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            z = np.where(std > 0, (bars.close_f - mean) / std, np.nan)
-        live = ready & ~np.isnan(z)
+        ticks = bars.close_ticks
+        total = _window_sums(ticks, window)
+        squares = _window_sums(ticks * ticks, window)
+        a = window * ticks - total
+        n = window * squares - total * total
+        live = ready & (n > 0)
+        beyond_entry, entry_ties = _exact_scaled_square_compare(a, n, ep, eq, live, ">=")
+        inside_exit, exit_ties = _exact_scaled_square_compare(a, n, xp, xq, live, "<=")
         events = np.full(bars.size, np.nan)
-        events[live & (np.abs(z) <= exit_)] = 0.0
-        events[live & (z <= -entry)] = 1.0
-        events[live & (z >= entry)] = short
-        ties = (_near_tie(z, -entry, live) + _near_tie(z, entry, live)
-                + _near_tie(np.abs(z), exit_, live))
-        return _hold_events(events, bars, ready), ties
+        events[live & inside_exit] = 0.0
+        events[live & beyond_entry & (a < 0)] = 1.0
+        events[live & beyond_entry & (a > 0)] = short
+        return _hold_events(events, bars, ready), entry_ties + exit_ties
 
     def targets_decimal(self, bars: BarsV1, params: Mapping[str, Any]) -> list[int]:
         window = int(params["lookback_bars"])
-        entry, exit_ = Decimal(params["entry_z"]), Decimal(params["exit_z"])
+        ep, eq = _ratio(Decimal(params["entry_z"]))
+        xp, xq = _ratio(Decimal(params["exit_z"]))
         short = -1 if params["direction"] == "long_short" else 0
         out = [0] * bars.size
         with _decimal_context():
@@ -411,15 +507,15 @@ class MeanReversionZScoreV1(StrategyFamilyV1):
                     squares -= old * old
                 if len(q) < window:
                     continue
-                mean = total / window
-                variance = squares / window - mean * mean
-                if variance > 0:
-                    z = (close - mean) / variance.sqrt()
-                    if z <= -entry:
+                a = window * close - total
+                n = window * squares - total * total
+                if n > 0:
+                    a2 = a * a
+                    if a < 0 and eq * eq * a2 >= ep * ep * n:
                         state = 1
-                    elif z >= entry:
+                    elif a > 0 and eq * eq * a2 >= ep * ep * n:
                         state = short
-                    elif abs(z) <= exit_:
+                    elif xq * xq * a2 <= xp * xp * n:
                         state = 0
                 out[i] = state
         return out
