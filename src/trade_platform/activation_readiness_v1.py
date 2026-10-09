@@ -381,6 +381,8 @@ def _paper_incubation(cursor: _Cursor, cycle: Mapping[str, Any]) -> ReadinessAns
             values = identity.get("values", {})
             account_reasons = [f"{OR11}:NUMERIC_LIMIT_WITHOUT_PAPER_V1_EVIDENCE:{name}"
                                for name in EVIDENCE_CONTROLS_V1 if values.get(name) not in (None, "NOT_APPLICABLE")]
+            if identity.get("account", {}).get("kind") != "PERSONAL_PAPER":
+                account_reasons.append("PROP_ACCOUNT_RULES_NOT_ENFORCED_BY_PAPER_LEDGER_V1")
             status = "BLOCKED" if account_reasons else "READY"
         subjects.append(ReadinessSubject(
             subject=f"account {account[0]}", status=status,

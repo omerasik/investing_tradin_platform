@@ -85,10 +85,11 @@ class ResearchTerminalReadModelPostgresTests(unittest.TestCase):
             self.assertEqual("UNCONFIGURED", mine.policy_status)
             self.assertTrue(all(reason.endswith("_OR_11") for reason in mine.unresolved))
 
+            # The report is the current cycle's: these fixture fills' INCUBATING evidence is no recorded
+            # validation of cycle-2026-08-20, so they are never part of it (cycle isolation).
             incubation = queries.terminal_incubation()
-            self.assertEqual("AVAILABLE", incubation.state)
-            self.assertEqual(("INCUBATING", False), (incubation.report["state"], incubation.report["cost_complete"]))
-            self.assertIn(str(study.study_id), {item["study_id"] for item in incubation.report["candidates"]})
+            self.assertFalse(incubation.report["cost_complete"])
+            self.assertNotIn(str(study.study_id), {item["study_id"] for item in incubation.report["candidates"]})
 
             validation = queries.terminal_validation()
             self.assertEqual("NONE_VALIDATED", validation.validated_claim)

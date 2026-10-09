@@ -92,6 +92,32 @@ NOT_APPLICABLE_FIELDS_V1: Final = frozenset({
     "maximum_per_trade_loss", "maximum_stop_distance_fraction", "stop_gap_buffer_fraction",
 })
 PER_TRADE_FIELDS_V1: Final = ("maximum_per_trade_loss", "maximum_stop_distance_fraction", "stop_gap_buffer_fraction")
+#: The unit of every field, so an owner value is never read in a unit it was not meant in.
+#: Money amounts are in the account's ``base_currency``; fractions are of the stated base.
+FIELD_UNITS_V1: Final[dict[str, str]] = {
+    "paper_starting_capital": "money (base currency)",
+    "paper_order_notional": "money per unit of strategy target (base currency)",
+    "maximum_leverage": "multiple of current equity (gross open notional / equity)",
+    "daily_loss_limit": "money lost since the UTC day's first evaluation (base currency)",
+    "maximum_drawdown_limit": "money below the equity peak (base currency)",
+    "allowed_symbols": "list of exchange symbols",
+    "maximum_order_notional": "money per order (base currency)",
+    "maximum_position_notional": "money of net open position per symbol (base currency)",
+    "maximum_daily_order_notional": "money of all order legs per UTC day (base currency)",
+    "maximum_per_trade_loss": "money (base currency)",
+    "max_market_age_seconds": "seconds",
+    "minimum_data_quality": "score in [0,1]",
+    "maximum_spread_fraction": "fraction of price in [0,1]",
+    "maximum_event_risk": "score in [0,1]",
+    "maximum_expected_slippage_fraction": "fraction of price in [0,1]",
+    "maximum_stop_distance_fraction": "fraction of entry price in (0,1]",
+    "stop_gap_buffer_fraction": "fraction of stop price in [0,1)",
+    "prop_firm": "text",
+    "prop_daily_loss_limit": "money (base currency)",
+    "prop_max_trailing_drawdown": "money (base currency)",
+    "prop_profit_target": "money (base currency)",
+    "prop_min_trading_days": "days",
+}
 PROP_FIELDS_V1: Final[dict[str, tuple[str, str]]] = {
     "prop_firm": ("text", "nonempty"),
     "prop_daily_loss_limit": ("decimal", "positive"),
@@ -295,6 +321,7 @@ class PostgresAccountPolicyStoreV1:
 
 __all__ = [
     "ACCOUNT_FIELDS_V1",
+    "FIELD_UNITS_V1",
     "NOT_APPLICABLE_FIELDS_V1",
     "NOT_APPLICABLE_V1",
     "PER_TRADE_FIELDS_V1",

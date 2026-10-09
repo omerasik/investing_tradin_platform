@@ -25,6 +25,7 @@ from trade_platform.strategy_lab_policies_v1 import (
     SlippageScenarioV1,
     gross_cost_policy_v1,
 )
+from trade_platform.strategy_lab_study_v1 import identity_hash_v1
 
 T0 = int(datetime(2026, 11, 2, tzinfo=UTC).timestamp()) * 1_000_000
 AS_OF = datetime(2026, 12, 1, tzinfo=UTC)
@@ -55,8 +56,11 @@ def fill(sig: str, minute: int, frm: int, to: int, price: str = "100", *, status
 
 
 def signals(*fills: dict[str, Any], age_s: int = 1) -> dict[str, Any]:
-    return {f["signal_id"]: {"evidence": {"complete_market_knowledge_micros": f["decided_at_micros"] - age_s * 1_000_000}}
-            for f in fills}
+    out = {}
+    for f in fills:
+        out[f["signal_id"]] = {"evidence": {"complete_market_knowledge_micros": f["decided_at_micros"] - age_s * 1_000_000}}
+        f["signal_content_hash"] = identity_hash_v1(out[f["signal_id"]])  # the fill binds its signal
+    return out
 
 
 def ledger(fills: list[dict[str, Any]], *, p: AccountPolicyV1 | None = None, cost: CostPolicyV1 | None = None,
@@ -82,6 +86,67 @@ class NotApplicableTests(unittest.TestCase):
         missing = {k: v for k, v in VALUES.items() if k != "maximum_spread_fraction"}
         self.assertIn("MISSING_OWNER_MAXIMUM_SPREAD_FRACTION_OR_11",
                       AccountPolicyV1(PAPER, missing, "o", "2026-10-09").unresolved)  # absent is never NA
+
+
+S = 1_000_000
+
+
+def live(sig: str, decided: int, frm: int, to: int, price: str = "100", *, status: str = "FILLED",
+         trial: str = "t1") -> dict[str, Any]:
+    """Live timing: a decision ~50 ms after its bar closes, the next open known 800 ms after it opens."""
+    bar = (decided // (60 * S) + 1) * 60 * S
+    return {"signal_id": sig, "study_id": "s1", "trial_id": trial, "symbol": "BTCUSDT", "target_from": frm,
+            "target_to": to, "decided_at_micros": decided, "fill_bar_open_micros": bar, "status": status,
+            "fill_price": price if status == "FILLED" else None,
+            "evidence": {"open_market_knowledge_micros": bar + 800_000}}
+
+
+class PendingSameKeyTests(unittest.TestCase):
+    """A decision made before the previous order of its key is known (the normal live timing)."""
+
+    def test_a_fill_never_overwrites_a_later_decision(self) -> None:
+        out = ledger([live("s1", T0 + 30 * S, 0, 1), live("s2", T0 + 60 * S + 50_000, 1, 0, "101"),
+                      live("s3", T0 + 120 * S + 50_000, 0, 1, "102")])
+        self.assertEqual(["APPROVED_FILLED"] * 3, [o["decision"] for o in out["orders"]])
+        self.assertEqual([1], [p["units"] for p in out["open_positions"]])
+
+    def test_a_not_filled_opening_never_overwrites_a_later_decision(self) -> None:
+        out = ledger([live("s1", T0 + 30 * S, 0, 1, status="FILL_BAR_NOT_OBSERVED"),
+                      live("s2", T0 + 60 * S + 50_000, 1, -1), live("s3", T0 + 120 * S + 50_000, -1, 0)])
+        self.assertEqual(["NOT_FILLED", "APPROVED_FILLED", "APPROVED_FILLED"], [o["decision"] for o in out["orders"]])
+        self.assertEqual([], out["open_positions"])
+
+    def test_a_rejected_flip_closes_a_still_pending_opening(self) -> None:
+        out = ledger([live("s1", T0 + 30 * S, 0, 1), live("s2", T0 + 60 * S + 50_000, 1, -1, "101")],
+                     p=policy(maximum_daily_order_notional="1500"))
+        self.assertEqual(["APPROVED_FILLED", "OPENING_REJECTED_CLOSE_FILLED"], [o["decision"] for o in out["orders"]])
+        self.assertIn("DAILY_ORDER_NOTIONAL_LIMIT", out["orders"][1]["reasons"])
+        self.assertEqual([], out["open_positions"])
+
+    def test_two_orders_on_one_fill_bar_execute_in_decision_order(self) -> None:
+        for first, second in (("z", "a"), ("a", "z")):
+            out = ledger([live(first, T0 + 10 * S, 0, 1), live(second, T0 + 20 * S, 1, 0)])
+            self.assertEqual([], out["open_positions"], (first, second))
+            self.assertEqual("APPROVED_FILLED", {o["signal_id"]: o for o in out["orders"]}[second]["decision"])
+
+    def test_the_daily_notional_counts_the_close_of_a_pending_opening(self) -> None:
+        out = ledger([live("s1", T0 + 30 * S, 0, 1), live("s2", T0 + 60 * S + 50_000, 1, -1)],
+                     p=policy(maximum_daily_order_notional="2500"))
+        self.assertIn("DAILY_ORDER_NOTIONAL_LIMIT", out["orders"][1]["reasons"])  # 1000 + 1000 + 1000 > 2500
+        self.assertEqual([], out["open_positions"])
+
+    def test_the_drawdown_peak_follows_marks_between_orders(self) -> None:
+        out = ledger([live("a", T0 + 30 * S, 0, 1, "100", trial="t1"),
+                      live("x", T0 + 300 * S, 1, 0, "130", trial="t2"), live("y", T0 + 420 * S, 1, 0, "100", trial="t2"),
+                      live("c", T0 + 600 * S, 0, 1, "100", trial="t3")])  # peak 10300, now 10000: 300 > 150
+        self.assertIn("DRAWDOWN_LIMIT_REACHED", {o["signal_id"]: o for o in out["orders"]}["c"]["reasons"])
+
+    def test_a_signal_with_two_fills_is_refused(self) -> None:
+        first, second = live("a", T0 + 30 * S, 0, 1), live("a", T0 + 90 * S, 1, 0)
+        sig = signals(first)
+        second["signal_content_hash"] = first["signal_content_hash"]
+        with self.assertRaisesRegex(PaperAccountError, "more_than_one_fill"):
+            build_paper_account_ledger_v1(policy(), [first, second], sig, gross_cost_policy_v1(), as_of=AS_OF)
 
 
 class LedgerTests(unittest.TestCase):
@@ -151,6 +216,101 @@ class LedgerTests(unittest.TestCase):
     def test_an_inactive_policy_is_refused(self) -> None:
         with self.assertRaisesRegex(PaperAccountError, "active_policy"):
             build_paper_account_ledger_v1(AccountPolicyV1(PAPER, {}), [], {}, gross_cost_policy_v1(), as_of=AS_OF)
+
+    def test_no_decision_sees_a_fill_price_before_it_is_known(self) -> None:
+        # A (trial t1) is long 10 @100 and decides flat; its fill at 50 is known only after the next bar
+        # opens. B (trial t2) decides to open 1 s after A's decision: it must not see A's -500.
+        a_open = fill("a", 0, 0, 1, "100", trial="t1")
+        a_close = fill("b", 10, 1, 0, "50", trial="t1")
+        b_open = fill("c", 10, 0, 1, "60", trial="t2")
+        b_open["decided_at_micros"] = a_close["decided_at_micros"] + 1_000_000
+        out = ledger([a_open, a_close, b_open], p=policy(daily_loss_limit="100", maximum_drawdown_limit="10000"))
+        by_signal = {o["signal_id"]: o for o in out["orders"]}
+        self.assertEqual("APPROVED_FILLED", by_signal["c"]["decision"], by_signal["c"])
+        # After A's fill is known, a later opening is blocked by the daily loss.
+        later = fill("d", 20, 0, -1, "55", trial="t3")
+        out = ledger([a_open, a_close, b_open, later], p=policy(daily_loss_limit="100", maximum_drawdown_limit="10000"))
+        self.assertIn("DAILY_LOSS_LIMIT_REACHED", {o["signal_id"]: o for o in out["orders"]}["d"]["reasons"])
+
+    def test_an_execution_after_as_of_stays_pending(self) -> None:
+        opening = fill("a", 0, 0, 1)
+        out = build_paper_account_ledger_v1(policy(), [opening], signals(opening), gross_cost_policy_v1(),
+                                            as_of=datetime.fromtimestamp((opening["decided_at_micros"] + 1) / 1e6, UTC))
+        self.assertEqual(["PENDING_EXECUTION"], [o["decision"] for o in out["orders"]])
+
+    def test_a_signal_that_does_not_match_its_fill_is_refused(self) -> None:
+        opening = fill("a", 0, 0, 1)
+        sig = signals(opening)
+        sig["a"]["evidence"]["complete_market_knowledge_micros"] += 1
+        with self.assertRaisesRegex(PaperAccountError, "does_not_match_its_fill"):
+            build_paper_account_ledger_v1(policy(), [opening], sig, gross_cost_policy_v1(), as_of=AS_OF)
+
+    def test_prop_accounts_are_refused_until_their_rules_are_enforced(self) -> None:
+        prop = AccountContextV1("fixture-prop", AccountKindV1.PROP_PAPER, "Prop", "USDT")
+        values = {k: v for k, v in VALUES.items() if k not in NA} | {
+            "minimum_data_quality": "0.9", "maximum_spread_fraction": "0.01", "maximum_event_risk": "0.5",
+            "maximum_expected_slippage_fraction": "0.01", "maximum_per_trade_loss": "50",
+            "maximum_stop_distance_fraction": "0.05", "stop_gap_buffer_fraction": "0.1", "prop_firm": "fixture",
+            "prop_daily_loss_limit": "100", "prop_max_trailing_drawdown": "200", "prop_profit_target": "300",
+            "prop_min_trading_days": 5}
+        with self.assertRaisesRegex(PaperAccountError, "prop_account_rules"):
+            build_paper_account_ledger_v1(AccountPolicyV1(prop, values, "o", "2026-10-09"), [], {},
+                                          gross_cost_policy_v1(), as_of=AS_OF)
+
+    def test_a_quantity_that_rounds_to_zero_opens_nothing(self) -> None:
+        out = ledger([fill("a", 0, 0, 1, "1e30"), fill("b", 5, 1, 0, "1e30")])
+        self.assertEqual("OPENING_REFUSED_ZERO_QUANTITY_AFTER_ROUNDING", out["orders"][0]["decision"])
+        self.assertIn("ZERO_QUANTITY_AFTER_ROUNDING", out["orders"][0]["reasons"])
+        self.assertEqual([], out["open_positions"])
+        self.assertEqual("NO_ORDER_ALREADY_AT_TARGET", out["orders"][1]["decision"])
+
+    def test_a_fill_price_without_its_knowledge_time_is_refused(self) -> None:
+        opening = fill("a", 0, 0, 1)
+        opening["evidence"] = None
+        with self.assertRaisesRegex(PaperAccountError, "without_its_market_knowledge_time"):
+            ledger([opening])
+        # A non-fill with no bar at all is known only once its minute has ended.
+        unobserved = fill("b", 0, 0, 1, status="FILL_BAR_NOT_OBSERVED")
+        unobserved["evidence"] = None
+        cutoff = datetime.fromtimestamp((unobserved["fill_bar_open_micros"] + 59_000_000) / 1e6, UTC)
+        out = build_paper_account_ledger_v1(policy(), [unobserved], signals(unobserved), gross_cost_policy_v1(),
+                                            as_of=cutoff)
+        self.assertEqual(["PENDING_EXECUTION"], [o["decision"] for o in out["orders"]])
+        self.assertEqual(["NOT_FILLED"], [o["decision"] for o in ledger([unobserved])["orders"]])
+
+    def test_money_never_mixes_currencies(self) -> None:
+        euro = AccountContextV1("fixture-eur", AccountKindV1.PERSONAL_PAPER, "Fixture", "EUR")
+        out = ledger([fill("a", 0, 0, 1)], p=AccountPolicyV1(euro, VALUES, "fixture-owner", "2026-10-09"))
+        self.assertIn("SYMBOL_NOT_QUOTED_IN_ACCOUNT_CURRENCY", out["orders"][0]["reasons"])
+        self.assertEqual("USDT", ledger([fill("a", 0, 0, 1)])["money_unit"])
+
+    def test_a_stored_cost_policy_missing_a_field_is_refused_not_defaulted(self) -> None:
+        from trade_platform.paper_account_v1 import cost_policy_from_payload_v1
+
+        payload = dict(gross_cost_policy_v1().policy().payload)
+        self.assertEqual(payload, cost_policy_from_payload_v1(payload).policy().payload)
+        del payload["fill_liquidity"]
+        with self.assertRaisesRegex(PaperAccountError, "does_not_rebuild"):
+            cost_policy_from_payload_v1(payload)
+
+    def test_an_opened_packet_without_its_cost_policy_never_falls_back_to_gross(self) -> None:
+        from trade_platform.paper_account_v1 import cycle_cost_policy_v1
+
+        class Cursor:
+            def __init__(self, rows: list[Any]) -> None:
+                self.rows = rows
+
+            def execute(self, *_: Any) -> None:
+                return None
+
+            def fetchall(self) -> list[Any]:
+                return self.rows
+
+        self.assertIsNone(cycle_cost_policy_v1(Cursor([]), "cycle-x").fee_schedule)  # no opening: gross
+        with self.assertRaisesRegex(PaperAccountError, "without_its_cost_policy"):
+            cycle_cost_policy_v1(Cursor([({"cost_policy": None},)]), "cycle-x")
+        with self.assertRaisesRegex(PaperAccountError, "does_not_rebuild"):
+            cycle_cost_policy_v1(Cursor([({"cost_policy": {"venue_fees": {"bogus": 1}}},)]), "cycle-x")
 
 
 if __name__ == "__main__":
