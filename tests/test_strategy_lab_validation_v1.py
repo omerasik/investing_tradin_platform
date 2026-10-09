@@ -9,6 +9,7 @@ public path does that); the registry tests run against PostgreSQL.
 from __future__ import annotations
 
 import dataclasses
+import json
 import shutil
 import tempfile
 import unittest
@@ -17,8 +18,10 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from tests.test_bybit_funding_history_v1 import FundingPages, eight_hourly, fixture_funding_history
 from tests.test_strategy_lab_e2e_fixture import FIRST_DAY, SyntheticDays, build_window_and_study
 from trade_platform import strategy_lab_validation_v1 as validation
+from trade_platform.bybit_funding_history_v1 import acquire_funding_history_v1
 from trade_platform.public_archive_research_bars_v1 import (
     ResearchBarsError,
     _days,
@@ -194,10 +197,13 @@ class HoldoutValidationTests(_Study):
         return build_research_bar_dataset_v1(archive, symbol, FIRST_DAY, FIRST_DAY + timedelta(days=days - 1),
                                              store=store)
 
+    def _funding(self, *, days: int = 2, symbol: str = "BTCUSDT", rate: str = "0.0001") -> Any:
+        return fixture_funding_history(ResearchFrameStoreV1(self.data_root).root, symbol, FIRST_DAY, days, rate=rate)
+
     def test_every_candidate_is_judged_under_every_lag_and_scenario(self) -> None:
         packet = authorized_packet(self.study, self.trials, test_cycle())
         run = validate_on_holdout_v1(packet, opening_for(packet), self._holdout(packet),
-                                     store=ResearchFrameStoreV1(self.data_root))
+                                     store=ResearchFrameStoreV1(self.data_root), funding=self._funding())
         self.assertEqual(len(self.trials), len(run.identity["candidates"]))
         for item in run.identity["candidates"]:
             self.assertEqual([2_000_000, 5_000_000, 30_000_000, 60_000_000],
@@ -214,23 +220,28 @@ class HoldoutValidationTests(_Study):
     def test_a_partial_or_foreign_holdout_dataset_is_refused(self) -> None:
         packet = authorized_packet(self.study, self.trials, test_cycle())
         store = ResearchFrameStoreV1(self.data_root)
+        funding = self._funding()
         with self.assertRaises(StrategyLabValidationError):
-            validate_on_holdout_v1(packet, opening_for(packet), self._holdout(packet, days=1), store=store)
+            validate_on_holdout_v1(packet, opening_for(packet), self._holdout(packet, days=1), store=store,
+                                   funding=funding)
         other = authorized_packet(self.study, self.trials, test_cycle(), minimum_trades=5)
         with self.assertRaises(StrategyLabValidationError):
-            validate_on_holdout_v1(packet, opening_for(other), self._holdout(packet), store=store)
+            validate_on_holdout_v1(packet, opening_for(other), self._holdout(packet), store=store, funding=funding)
         stretched = dataclasses.replace(opening_for(packet), holdout_end_exclusive=datetime(2030, 1, 1, tzinfo=UTC))
         with self.assertRaises(StrategyLabValidationError):
-            validate_on_holdout_v1(packet, stretched, self._holdout(packet), store=store)
+            validate_on_holdout_v1(packet, stretched, self._holdout(packet), store=store, funding=funding)
 
     def test_a_swapped_or_relabelled_holdout_dataset_is_refused(self) -> None:
         packet = authorized_packet(self.study, self.trials, test_cycle())
         genuine = self._holdout(packet)
+        funding = self._funding()
         relabelled = dataclasses.replace(genuine, content_hash="0" * 64)
         with self.assertRaises(StrategyLabValidationError):
-            validate_on_holdout_v1(packet, opening_for(packet), relabelled, store=ResearchFrameStoreV1(self.data_root))
+            validate_on_holdout_v1(packet, opening_for(packet), relabelled, store=ResearchFrameStoreV1(self.data_root),
+                                   funding=funding)
         swapped = dataclasses.replace(genuine, bar_frame_manifest_hash="f" * 64)
-        run = validate_on_holdout_v1(packet, opening_for(packet), swapped, store=ResearchFrameStoreV1(self.data_root))
+        run = validate_on_holdout_v1(packet, opening_for(packet), swapped, store=ResearchFrameStoreV1(self.data_root),
+                                     funding=funding)
         # The caller's frame pointer is ignored: bars come from the re-proven dataset.
         self.assertEqual(genuine.content_hash, run.identity["holdout"]["dataset_content_hash"])
 
@@ -239,16 +250,48 @@ class HoldoutValidationTests(_Study):
         with self.assertRaises(StrategyLabValidationError):
             authorized_packet(self.study, self.trials, forged)
 
-    def test_funding_window_exposure_fails_closed(self) -> None:
+    def test_published_funding_is_charged_and_bound(self) -> None:
         packet = authorized_packet(self.study, self.trials, test_cycle())
+        funding = self._funding()
         run = validate_on_holdout_v1(packet, opening_for(packet), self._holdout(packet),
-                                     store=ResearchFrameStoreV1(self.data_root))
+                                     store=ResearchFrameStoreV1(self.data_root), funding=funding)
+        self.assertEqual(validation.FUNDING_RULE_V1, packet.frozen["funding_rule"])
+        self.assertEqual(funding.content_hash, run.identity["funding"]["content_hash"])
+        self.assertEqual("T2_EVENT_TIME", run.identity["funding"]["evidence_tier"])
+        self.assertEqual("CONDITIONAL_T2_HOLDOUT_INCUBATION_REQUIRED", run.identity["claim_ceiling"])
         for item in run.identity["candidates"]:
-            exposed = any(int(s["metrics"]["funding_window_crossings"]) > 0
-                          for lag in item["lags"] for s in lag["scenarios"])
-            if exposed:
-                self.assertIn("FUNDING_EXPOSURE_NOT_MODELLED_FAIL_CLOSED", item["reasons"])
-                self.assertEqual("HOLDOUT_FAILED_REJECTED", item["state"])
+            self.assertNotIn(validation.REASON_FUNDING, item["reasons"])
+            for lag in item["lags"]:
+                for scenario in lag["scenarios"]:
+                    self.assertTrue(scenario["metrics"]["funding_mode"].endswith(funding.content_hash))
+                    self.assertEqual(6, scenario["metrics"]["funding_events_in_span"])  # 00/08/16 UTC on both days
+
+    def test_a_missing_funding_observation_refuses_the_whole_validation(self) -> None:
+        packet = authorized_packet(self.study, self.trials, test_cycle())
+        store = ResearchFrameStoreV1(self.data_root)
+        rates = eight_hourly(FIRST_DAY, 2)
+        del rates[sorted(rates)[2]]  # day 1 16:00 never published
+        gapped = acquire_funding_history_v1(store.root, "BTCUSDT", FIRST_DAY, FIRST_DAY + timedelta(days=1),
+                                            fetch=FundingPages(rates), now=lambda: datetime(2026, 10, 9, tzinfo=UTC))
+        with self.assertRaisesRegex(StrategyLabValidationError, "funding_history_not_complete"):
+            validate_on_holdout_v1(packet, opening_for(packet), self._holdout(packet), store=store, funding=gapped)
+
+    def test_foreign_partial_or_relabelled_funding_refuses_the_whole_validation(self) -> None:
+        packet = authorized_packet(self.study, self.trials, test_cycle())
+        store = ResearchFrameStoreV1(self.data_root)
+        holdout = self._holdout(packet)
+        for funding in (self._funding(days=1), self._funding(symbol="ETHUSDT"),
+                        dataclasses.replace(self._funding(), content_hash="0" * 64)):
+            with self.subTest(funding=funding.identity["last_utc_day"]), self.assertRaises(StrategyLabValidationError):
+                validate_on_holdout_v1(packet, opening_for(packet), holdout, store=store, funding=funding)
+
+    def test_a_packet_under_the_pre_funding_rule_is_not_validated(self) -> None:
+        packet = authorized_packet(self.study, self.trials, test_cycle())
+        legacy = {**packet.frozen, "funding_rule": validation.REASON_FUNDING}
+        object.__setattr__(packet, "_frozen", json.dumps(legacy, sort_keys=True, separators=(",", ":")))
+        with self.assertRaises(StrategyLabValidationError):
+            validate_on_holdout_v1(packet, opening_for(packet), self._holdout(packet),
+                                   store=ResearchFrameStoreV1(self.data_root), funding=self._funding())
 
     def test_decimal_cost_is_charged_per_side_on_position_changes(self) -> None:
         bars = BarsV1.from_rows([(datetime(2026, 6, 1, tzinfo=UTC) + timedelta(minutes=i),

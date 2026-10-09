@@ -44,6 +44,7 @@ from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 from typing import Any, Final
 from uuid import UUID
 
+from .bybit_funding_history_v1 import FUNDING_CHARGE_RULE_V1, FundingHistoryV1, funding_steps_v1
 from .persistence import PostgresDatabase
 from .strategy_lab_manifest_v1 import CandidateSetV1, StudyManifestV1
 from .strategy_lab_policies_v1 import (
@@ -96,13 +97,17 @@ def _q(value: Decimal | None) -> str | None:
 
 def decimal_metrics_v1(
     bars: BarsV1, held: Sequence[int], *, cost_bps_per_side: Decimal | None = None, cost_label: str | None = None,
+    funding: FundingHistoryV1 | None = None,
 ) -> dict[str, Any]:
     """The search metrics' definitions, recomputed exactly in Decimal (quantized to 1e-18).
 
     ``cost_bps_per_side`` (R6) charges ``cost * |held_j - held_{j-1}|`` at the
     fill of interval ``j``; it must come from an OR-6 cost policy with a verified
     fee schedule and a named scenario (``cost_label``). Without it the metrics
-    are gross and labelled so.
+    are gross and labelled so. ``funding`` (OR-6 F3) adds the venue-published
+    settled funding under :data:`~trade_platform.bybit_funding_history_v1.FUNDING_CHARGE_RULE_V1`;
+    the caller proves the history covers the span. Without it nothing is charged
+    and the funding keys are absent, so gross reruns keep their identity.
     """
     if (cost_bps_per_side is None) != (cost_label is None):
         raise AuthorityRerunError("a_cost_requires_its_scenario_label")
@@ -110,8 +115,11 @@ def decimal_metrics_v1(
     with _authoritative():
         returns = [bars.open_d[j + 1] / bars.open_d[j] - 1 for j in range(n - 1)] + [Decimal(0)]
         cost = Decimal(0) if cost_bps_per_side is None else cost_bps_per_side / 10_000
+        charged = None if funding is None else funding_steps_v1(bars, held, funding, cost_fraction=cost)
         strategy = [
-            held[j] * returns[j] - cost * abs(held[j] - (held[j - 1] if j else 0)) for j in range(n)
+            held[j] * returns[j] - cost * abs(held[j] - (held[j - 1] if j else 0))
+            + (charged.steps[j] if charged is not None else 0)
+            for j in range(n)
         ]
         turnover = Decimal(0)
         trades = 0
@@ -150,7 +158,7 @@ def decimal_metrics_v1(
         for j in range(n - 1):
             if held[j] != 0 and int(bars.open_us[j + 1]) // _FUNDING_GRID_MICROS > int(bars.open_us[j]) // _FUNDING_GRID_MICROS:
                 crossings += 1
-        return {
+        metrics: dict[str, Any] = {
             "numeric_tier": NUMERIC_TIER_AUTHORITATIVE,
             "cost_mode": "GROSS_NON_PROMOTABLE" if cost_label is None else f"NET_OF:{cost_label}",
             "total_return": _q(equity - 1),
@@ -167,6 +175,17 @@ def decimal_metrics_v1(
             "funding_window_crossings": crossings,
             "bars_evaluated": n,
         }
+        if charged is not None and funding is not None:
+            metrics.update({
+                "funding_mode": f"CHARGED:{FUNDING_CHARGE_RULE_V1}:{funding.content_hash}",
+                "funding_events_in_span": charged.events_in_span,
+                "funding_events_charged": charged.charged,
+                "funding_events_flat": charged.flat,
+                "funding_events_ambiguous_worse_charged": charged.ambiguous_worse_charged,
+                "funding_not_costable": list(charged.not_costable),
+                "funding_sum_of_step_fractions": _q(sum(charged.steps, Decimal(0))),
+            })
+        return metrics
 
 
 # ---------------------------------------------------------------------------

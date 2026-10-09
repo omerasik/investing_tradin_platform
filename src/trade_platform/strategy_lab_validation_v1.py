@@ -45,10 +45,19 @@ bar window of the preregistered symbol covering the whole opened span; its
 content hash is bound into the result. Every candidate is recomputed in
 Decimal at every preregistered OR-5 lag and net of every approved cost
 scenario. A candidate is rejected if a criterion fails anywhere in the cost
-envelope at the baseline lag, if the verdict or the net-return sign changes
-under the sweep, or if it holds positions across funding windows (funding is
-not modelled for T2; OR-6 fails closed). A pass makes it ``INCUBATING``; T2
-holdout evidence is CONDITIONAL and nothing here can reach a validated state.
+envelope at the baseline lag, or if the verdict or the net-return sign changes
+under the sweep. A pass makes it ``INCUBATING``; T2 holdout evidence is
+CONDITIONAL and nothing here can reach a validated state.
+
+Funding (OR-6 F3, :data:`FUNDING_RULE_V1`): every scenario is also net of the
+Bybit-published settled funding over the opened span
+(:mod:`trade_platform.bybit_funding_history_v1`). The history is acquired with
+the same opening, re-proven from its stored raw pages, must be the packet's
+symbol over exactly the opened days and ``COMPLETE``; otherwise validation is
+refused before any candidate is judged. A candidate holding a position at a
+funding instant whose bar is missing is not costable and is rejected
+(:data:`REASON_FUNDING_NOT_COSTABLE`). Funding is an outcome, not an input: the
+claim ceiling stays ``CONDITIONAL_T2``.
 """
 
 from __future__ import annotations
@@ -62,6 +71,13 @@ from enum import StrEnum
 from typing import Any, Final
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from .bybit_funding_history_v1 import (
+    FUNDING_CHARGE_RULE_V1,
+    FundingHistoryError,
+    FundingHistoryV1,
+    load_funding_history_v1,
+    require_covering_complete_v1,
+)
 from .persistence import PostgresDatabase
 from .public_archive_research_bars_v1 import ResearchBarDatasetV1
 from .research_data_plane_v1 import ResearchFrameStoreV1
@@ -95,7 +111,11 @@ UNRESOLVED_INCUBATION: Final = "MISSING_OWNER_INCUBATION_LENGTH_OR_7"
 UNRESOLVED_AUTHORIZATION: Final = "MISSING_OWNER_AUTHORIZATION"
 
 REASON_COST_ENVELOPE: Final = "HOLDOUT_CRITERIA_NOT_MET_UNDER_THE_APPROVED_COST_ENVELOPE"
+#: The pre-F3 rule: any funding-window exposure rejected. Kept for packets recorded under it, which
+#: validation now refuses (their frozen identity names a rule this validator no longer applies).
 REASON_FUNDING: Final = "FUNDING_EXPOSURE_NOT_MODELLED_FAIL_CLOSED"
+FUNDING_RULE_V1: Final = f"CHARGED_FROM_BYBIT_PUBLISHED_SETTLED_FUNDING:{FUNDING_CHARGE_RULE_V1}"
+REASON_FUNDING_NOT_COSTABLE: Final = "FUNDING_NOT_COSTABLE_FAIL_CLOSED"
 
 _NAMESPACE: Final = uuid5(NAMESPACE_URL, "trade_platform.strategy_lab_validation_v1")
 _CYCLE_ISSUER: Final = object()
@@ -298,7 +318,7 @@ class PreregistrationV1:
             "cost_policy": None if self.cost_policy is None else json.loads(json.dumps(dict(self.cost_policy))),
             "incubation_days": self.incubation_days,
             "lag_sweep_rule": "MATERIAL_CHANGE_IN_VERDICT_OR_NET_RETURN_SIGN_FAILS",
-            "funding_rule": REASON_FUNDING,
+            "funding_rule": FUNDING_RULE_V1,
             "authorized_by": None if self.authorized_by is None else self.authorized_by.strip(),
             "authorized_on": self.authorized_on,
         }
@@ -535,12 +555,18 @@ class ValidationRunV1:
 
 def validate_on_holdout_v1(
     packet: PreregistrationV1, opening: HoldoutOpeningV1, holdout: ResearchBarDatasetV1, *,
-    store: ResearchFrameStoreV1,
+    store: ResearchFrameStoreV1, funding: FundingHistoryV1,
 ) -> ValidationRunV1:
-    """Recompute every preregistered candidate on the whole opened span, in Decimal, under every lag and scenario."""
+    """Recompute every preregistered candidate on the whole opened span, in Decimal, under every lag and scenario.
+
+    ``funding`` is the symbol's published settled funding over exactly the opened
+    days, catalogued under ``store.root``; it is re-proven here, never trusted.
+    """
     frozen = packet.frozen
     if packet.status != STATUS_AUTHORIZED:
         raise StrategyLabValidationError("validation_requires_an_authorized_packet")
+    if frozen["funding_rule"] != FUNDING_RULE_V1:
+        raise StrategyLabValidationError("packet_funding_rule_is_not_applied_by_this_validator")
     if (packet.study.content_hash, packet.rerun.rerun_hash) != (frozen["study_content_hash"], frozen["rerun_hash"]):
         raise StrategyLabValidationError("packet_study_or_rerun_differs_from_its_frozen_identity")
     if not isinstance(opening, HoldoutOpeningV1) or not opening.issued or (
@@ -571,6 +597,15 @@ def validate_on_holdout_v1(
     ) // timedelta(microseconds=1):
         raise StrategyLabValidationError("holdout_bars_outside_the_opened_span")
     holdout = verified
+    try:
+        funding = load_funding_history_v1(store.root, funding.dataset_version_id)
+        require_covering_complete_v1(funding, bars, frozen["symbol"])
+    except FundingHistoryError as error:
+        raise StrategyLabValidationError(f"validation_requires_complete_published_funding:{error}") from error
+    if (funding.identity["first_utc_day"], funding.identity["last_utc_day"]) != (
+        start.date().isoformat(), (end - _DAY).date().isoformat()
+    ):
+        raise StrategyLabValidationError("funding_history_must_be_exactly_the_opened_span")
     study = packet.study
     family = FAMILIES_V1[study.strategy.family]
     if family.spec() != study.strategy:
@@ -594,7 +629,7 @@ def validate_on_holdout_v1(
             held = held_positions_v1(bars, targets, lag_us)
             per_scenario: list[dict[str, Any]] = []
             for name, cost in scenarios:
-                metrics = decimal_metrics_v1(bars, held, cost_bps_per_side=cost, cost_label=name)
+                metrics = decimal_metrics_v1(bars, held, cost_bps_per_side=cost, cost_label=name, funding=funding)
                 checks = [criterion.holds(metrics) for criterion in criteria]
                 enough = int(metrics["trades"]) >= minimum_trades
                 per_scenario.append({"scenario": name, "cost_bps_per_side": format(cost, "f"), "metrics": metrics,
@@ -607,8 +642,8 @@ def validate_on_holdout_v1(
         if not baseline["passed"]:
             reasons.append(REASON_COST_ENVELOPE)
         for entry in by_lag:
-            if any(int(s["metrics"]["funding_window_crossings"]) > 0 for s in entry["scenarios"]):
-                reasons.append(REASON_FUNDING)
+            if any(s["metrics"]["funding_not_costable"] for s in entry["scenarios"]):
+                reasons.append(REASON_FUNDING_NOT_COSTABLE)
         for entry in by_lag[1:]:
             if entry["passed"] != baseline["passed"]:
                 reasons.append(f"VERDICT_CHANGES_UNDER_OR5_LAG_{entry['lag_micros']}")
@@ -628,6 +663,10 @@ def validate_on_holdout_v1(
                     "not_published_days": list(holdout.identity["not_published_days"]),
                     "rejected_days": list(holdout.identity.get("rejected_days", [])),
                     "warmup": "INSIDE_THE_HOLDOUT_NO_CARRY_IN"},
+        "funding": {"rule": FUNDING_RULE_V1, "dataset_version_id": str(funding.dataset_version_id),
+                    "content_hash": funding.content_hash, "provenance_hash": funding.provenance_hash,
+                    "interval_ms": funding.identity["completeness"]["interval_ms"],
+                    "events": len(funding.identity["events"]), "evidence_tier": funding.identity["evidence_tier"]},
         "candidates": results,
         "claim_ceiling": "CONDITIONAL_T2_HOLDOUT_INCUBATION_REQUIRED",
     }
@@ -656,8 +695,10 @@ def candidate_lifecycle_v1(events: Sequence[Mapping[str, Any]]) -> dict[str, str
 
 __all__ = [
     "CURRENT_CYCLE_V1",
+    "FUNDING_RULE_V1",
     "REASON_COST_ENVELOPE",
     "REASON_FUNDING",
+    "REASON_FUNDING_NOT_COSTABLE",
     "STATUS_AUTHORIZED",
     "STATUS_DRAFT",
     "CandidateStateV1",
