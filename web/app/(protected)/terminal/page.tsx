@@ -5,6 +5,7 @@ import {
   getTerminalAccounts,
   getTerminalActivation,
   getTerminalCommands,
+  getTerminalPaperAccount,
   getTerminalIncubation,
   getTerminalOverview,
   getTerminalReruns,
@@ -191,6 +192,8 @@ export default async function ResearchTerminalPage() {
     ]);
   const activation = activationResult.state === "AVAILABLE" ? activationResult.value : undefined;
   const commands = commandsResult.state === "AVAILABLE" ? commandsResult.value : undefined;
+  const activeAccounts = (accountsResult.state === "AVAILABLE" ? accountsResult.value : []).filter((a) => a.policy_status === "ACTIVE");
+  const ledgers = await Promise.all(activeAccounts.map((account) => getTerminalPaperAccount(ctx, account.account_id)));
   const overview = overviewResult.state === "AVAILABLE" ? overviewResult.value : undefined;
   const capture = captureResult.state === "AVAILABLE" ? captureResult.value : undefined;
   const signals = signalsResult.state === "AVAILABLE" ? signalsResult.value : undefined;
@@ -389,6 +392,25 @@ export default async function ResearchTerminalPage() {
           </DataTable>
         ) : <p className="empty-notice">{incubation ? "No paper fill recorded: incubation starts only for candidates that passed an opened holdout." : stateText(incubationResult)}</p>}
         {incubation ? <p>Sizing {incubation.report.sizing}; costs {incubation.report.cost_mode}; funding {incubation.report.funding}; cost-complete: {incubation.report.cost_complete ? "yes" : "no"}.</p> : null}
+        <DataTable caption="Paper accounts under their ACTIVE policy (simulation, never execution authority)" ariaLabel="Paper account ledgers">
+          <thead><tr><th scope="col">Account</th><th scope="col">State</th><th scope="col">Orders</th><th scope="col">Rejected because</th><th scope="col">Equity by cost scenario</th><th scope="col">Not applicable (owner)</th></tr></thead>
+          <tbody>
+            {activeAccounts.length ? activeAccounts.map((account, index) => {
+              const result = ledgers[index];
+              const value = result.state === "AVAILABLE" ? result.value : undefined;
+              return (
+                <tr key={account.account_id}>
+                  <td>{account.display_name}</td>
+                  <td><Claim label={value?.state ?? result.state} /></td>
+                  <td>{value?.summary ? counts(value.summary.decisions) : (value?.reasons ?? [stateText(result)]).join(", ")}</td>
+                  <td>{value?.summary ? counts(value.summary.rejections_by_reason) : "—"}</td>
+                  <td className="tabular-num">{value?.summary ? Object.entries(value.summary.equity_by_scenario).map(([name, equity]) => `${name} ${equity}`).join(" · ") : "—"}</td>
+                  <td>{value?.ledger?.not_applicable_controls.length ? value.ledger.not_applicable_controls.join(", ") : "—"}</td>
+                </tr>
+              );
+            }) : <tr><td colSpan={6}>No ACTIVE account policy yet (OR-11): money P&amp;L and risk checks start when the owner completes one.</td></tr>}
+          </tbody>
+        </DataTable>
       </Step>
 
       <Step id="monitoring" title="Monitoring">

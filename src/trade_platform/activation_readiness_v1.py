@@ -368,23 +368,38 @@ def _paper_incubation(cursor: _Cursor, cycle: Mapping[str, Any]) -> ReadinessAns
             reasons.append("NO_CANDIDATE_PASSED_THIS_CYCLES_HOLDOUT")
     active = [a for a in accounts if a[2] == "ACTIVE"]
     subjects = []
+    from .paper_account_v1 import EVIDENCE_CONTROLS_V1
+
     for account in accounts:
-        unresolved = [] if account[3] is None else list(_json(account[3]).get("unresolved", []))
+        identity = {} if account[3] is None else _json(account[3])
+        unresolved = list(identity.get("unresolved", []))
         status: SubjectStatus = "READY" if account[2] == "ACTIVE" else "BLOCKED"
+        account_reasons = [] if status == "READY" else (
+            [f"{OR11}:{r}" for r in unresolved] or [f"{OR11}:NO_POLICY_VERSION"])
+        if status == "READY":
+            # A numeric limit paper v1 cannot evidence would fail every opening closed: say so up front.
+            values = identity.get("values", {})
+            account_reasons = [f"{OR11}:NUMERIC_LIMIT_WITHOUT_PAPER_V1_EVIDENCE:{name}"
+                               for name in EVIDENCE_CONTROLS_V1 if values.get(name) not in (None, "NOT_APPLICABLE")]
+            if identity.get("account", {}).get("kind") != "PERSONAL_PAPER":
+                account_reasons.append("PROP_ACCOUNT_RULES_NOT_ENFORCED_BY_PAPER_LEDGER_V1")
+            status = "BLOCKED" if account_reasons else "READY"
         subjects.append(ReadinessSubject(
             subject=f"account {account[0]}", status=status,
-            reasons=[] if status == "READY" else ([f"{OR11}:{r}" for r in unresolved] or [f"{OR11}:NO_POLICY_VERSION"]),
+            reasons=account_reasons,
             identities={"account_id": str(account[0]),
                         **({} if account[1] is None else {"policy_version_id": str(account[1])})}))
+    usable = [s for s in subjects if s.status == "READY"]
     if not accounts:
         reasons.append(f"{OR11}:NO_PAPER_ACCOUNT_REGISTERED")
-    elif not active:
+    elif not usable:
         reasons.extend(r for s in subjects for r in s.reasons)
-    ready = bool(incubating) and bool(active)
+    ready = bool(incubating) and bool(usable)
     return _answer("paper_incubation", "Can paper incubation run?", subjects, reasons,
                    identities={"incubating_candidates": len(incubating),
                                "active_account_policies": [str(a[1]) for a in active]},
-                   evidence={"fills": fills, "sizing": "unit exposure until an ACTIVE account policy is bound",
+                   evidence={"fills": fills,
+                             "sizing": "unit fills (R10); money P&L per ACTIVE policy via the paper account ledger",
                              "claim": "INCUBATING, not validated; never execution authority"},
                    ready=ready,
                    next_action="Start paper incubation of the INCUBATING candidates." if ready

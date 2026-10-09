@@ -30,7 +30,6 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from .paper_incubation_report_v1 import incubation_report_v1
-from .strategy_lab_policies_v1 import gross_cost_policy_v1
 from .strategy_lab_study_v1 import UNTOUCHED_HOLDOUT_BOUNDARY_V1, identity_hash_v1
 
 
@@ -257,15 +256,18 @@ def read_accounts_v1(cursor: _Cursor) -> list[AccountView]:
 
 
 def read_incubation_v1(cursor: _Cursor, *, now: datetime | None = None) -> IncubationView:
-    """The R10 report over every recorded fill, under the gross OR-6 policy (no verified fee schedule)."""
-    cursor.execute("SELECT content_hash, identity FROM paper_incubation_fills ORDER BY decided_at, signal_id")
+    """The R10 report over the current cycle's recorded fills, under its OR-6 policy (gross until opened)."""
+    from .paper_account_v1 import cycle_cost_policy_v1, cycle_fill_rows_v1
+
+    cycle_id = current_cycle_id_v1()
     fills = []
-    for content_hash, raw in cursor.fetchall():
+    for content_hash, raw in cycle_fill_rows_v1(cursor, cycle_id)[0]:
         identity = _json(raw)
         if identity_hash_v1(identity) != str(content_hash).strip():
             raise ValueError("stored_fill_identity_does_not_rederive")
         fills.append(identity)
-    report = incubation_report_v1(fills, gross_cost_policy_v1(), as_of=now or datetime.now(UTC))
+    cost = cycle_cost_policy_v1(cursor, cycle_id)
+    report = incubation_report_v1(fills, cost, as_of=now or datetime.now(UTC))
     return IncubationView(state="AVAILABLE" if fills else "NO_FILLS", report=report)
 
 

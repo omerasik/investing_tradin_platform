@@ -595,6 +595,14 @@ def build_app(
             raise HTTPException(status_code=503, detail="Research window catalogue unavailable.") from error
         return read_dashboard(lambda: queries.terminal_activation(windows=windows))
 
+    @app.get("/operator-dashboard/research-terminal/paper-account")
+    def dashboard_terminal_paper_account(
+        account_id: str = Query(min_length=3, max_length=64, pattern=r"^[a-z][a-z0-9_-]{2,63}$"),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """R10.2 paper account ledger (a simulation under the ACTIVE policy; never execution authority)."""
+        return read_dashboard(lambda: queries.terminal_paper_account(account_id))
+
     @app.get("/operator-dashboard/research-terminal/commands", response_model=list[CommandView])
     def dashboard_terminal_commands(
         limit: int = Query(default=50, ge=1, le=200),

@@ -666,6 +666,20 @@ export function getTerminalCommands(ctx: WorkspaceContext): Promise<EvidenceResu
   return terminal(ctx, authorityUrl(ctx.origin, "/operator-dashboard/research-terminal/commands?limit=30"), "Terminal commands are unavailable.");
 }
 
+export type PaperAccountLedger = {
+  state: "AVAILABLE" | "BLOCKED";
+  account_id: string;
+  reasons?: string[];
+  summary?: { decisions: Record<string, number>; rejections_by_reason: Record<string, number>;
+    equity_by_scenario: Record<string, string>; open_positions: number };
+  ledger?: { policy_version_id: string; cost_mode: string; risk_scenario: string; not_applicable_controls: string[];
+    starting_capital: string; claim: string; content_hash: string };
+};
+
+export function getTerminalPaperAccount(ctx: WorkspaceContext, accountId: string): Promise<EvidenceResult<PaperAccountLedger>> {
+  return terminal(ctx, authorityUrl(ctx.origin, `/operator-dashboard/research-terminal/paper-account?account_id=${encodeURIComponent(accountId)}`), "Paper account ledger is unavailable.");
+}
+
 export type StrategyLabStudySummary = {
   study_id: string;
   strategy_family: string;
