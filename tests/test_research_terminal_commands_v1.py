@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 from uuid import uuid4
 
 from trade_platform.research_terminal_commands_v1 import (
@@ -87,6 +92,41 @@ class GateTests(unittest.TestCase):
         self.assertEqual(["BLOCKED_OWNER_DECISION_OR_7:MISSING_OWNER_HOLDOUT_END_OR_7"],
                          gate_reasons_v1("HOLDOUT_OPEN", here, blocked))
         self.assertEqual(["PREREGISTRATION_NOT_AUTHORIZED"], gate_reasons_v1("HOLDOUT_OPEN", here, readiness()))
+
+
+class WorkerBoundTests(unittest.TestCase):
+    @staticmethod
+    def worker_module():  # type: ignore[no-untyped-def]
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        import research_terminal_worker
+
+        return research_terminal_worker
+
+    def test_every_worker_kind_is_time_bounded_or_a_tracked_runner(self) -> None:
+        worker = self.worker_module()
+        stops = {"RESEARCH_WATCH_STOP", "PAPER_INCUBATION_STOP"}
+        self.assertEqual(worker.WORKER_KINDS, set(worker.COMMAND_TIMEOUT_SECONDS) | worker.RUNNER_KINDS | stops)
+        self.assertTrue(all(0 < s <= 12 * 3600 for s in worker.COMMAND_TIMEOUT_SECONDS.values()))
+
+    def test_the_dsn_comes_from_the_environment_and_the_disk_guard_cannot_be_lowered(self) -> None:
+        worker = self.worker_module()
+        with mock.patch.dict(os.environ, {"TRADE_PLATFORM_RESEARCH_DSN": ""}), mock.patch.object(sys, "argv", ["w", "--once"]), \
+                self.assertRaisesRegex(SystemExit, "TRADE_PLATFORM_RESEARCH_DSN"):
+            worker.main()
+        with mock.patch.dict(os.environ, {"TRADE_PLATFORM_RESEARCH_DSN": "postgresql://x"}), \
+                mock.patch.object(sys, "argv", ["w", "--disk-guard-gib", "20"]), \
+                self.assertRaisesRegex(SystemExit, "24 GiB"):
+            worker.main()
+        with mock.patch.object(sys, "argv", ["w", "--dsn", "postgresql://x"]), self.assertRaises(SystemExit):
+            worker.main()  # argparse refuses a DSN on the command line
+
+    def test_a_timed_out_child_is_killed_with_its_tree(self) -> None:
+        worker = self.worker_module()
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
+                                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+                                 start_new_session=os.name != "nt")
+        worker._kill_tree(child)
+        self.assertIsNotNone(child.poll())
 
 
 if __name__ == "__main__":
