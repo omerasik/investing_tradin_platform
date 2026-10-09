@@ -293,6 +293,20 @@ r1b_universe:                 # OR-2 = U2: BTCUSDT ETHUSDT SOLUSDT, tickers + pu
     pagefile.sys to 33.3 GiB under memory pressure from concurrent research jobs
     (15.3 GiB RAM host). Recorded as a gap, never bridged. Research jobs now run
     sequentially at 3 workers and pause below 24 GiB free.
+  burn_in_evidence: >-
+    Recomputed 2026-10-09T16:40Z from manifests (capture_bybit_public.py
+    availability on the universe root), not wall clock: PROVEN COVERED 8.38 h
+    per symbol (BTC = ETH = SOL) in 14 manifested segments, 11 with a clean end
+    proof (OPERATOR_BOUNDED_STOP / UTC_DAY_ROLLOVER), over a 31.2 h span
+    (2026-10-07T22:48Z .. 2026-10-09T06:00Z); longest clean run 2.75 h. The
+    11.45 h figure above was wall clock: it hid a host sleep. Gaps > 3 min, all
+    explicit, never bridged: 10-08 01:33:26 -> 09:12:36Z (7.65 h, CONNECTION_LOST
+    = host sleep, newly found); 10-08 10:00:01 -> 18:06:41Z (8.11 h, outage, the
+    10:00-10:14 partition has no manifest); 10-08 19:17:08 -> 20:46:10Z (1.48 h,
+    disk floor); 10-08 23:10:44 -> 10-09 04:44:02Z (5.55 h, CONNECTION_LOST = host
+    sleep, newly found); 10-09 06:00:00 -> 16:15:05Z (~10.25 h, host reboot at
+    15:54Z; last arrival 06:06:55Z in an unmanifested partition). Recorders
+    restarted 2026-10-09T16:14Z.
   open_point: >-
     R0 v1 keeps recording BTCUSDT beside the universe (+~0.30 GB/day gzip)
     until the owner retires it; not changed here.
