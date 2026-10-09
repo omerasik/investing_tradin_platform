@@ -9,6 +9,7 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from .activation_readiness_v1 import ActivationReadiness, read_window_catalogue_v1
 from .agent_research import AgentResearchError, AgentResearchOutput, SQLiteAgentResearchStore
 from .audit import AuditEvent, AuditStore, SQLiteAuditStore
 from .config import PlatformConfig
@@ -562,6 +563,17 @@ def build_app(
     ) -> object:
         """UI-2: the paper incubation report (unit exposure, gross, never cost-complete)."""
         return read_dashboard(queries.terminal_incubation)
+
+    @app.get("/operator-dashboard/research-terminal/activation", response_model=ActivationReadiness)
+    def dashboard_terminal_activation(
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """Activation readiness: READY/BLOCKED for each next action, with exact owner gates and identities."""
+        try:
+            windows = read_window_catalogue_v1(app.state.research_data_root)
+        except (OSError, ValueError, KeyError) as error:
+            raise HTTPException(status_code=503, detail="Research window catalogue unavailable.") from error
+        return read_dashboard(lambda: queries.terminal_activation(windows=windows))
 
     @app.get("/operator-dashboard/capture-availability", response_model=CaptureAvailabilityView)
     def dashboard_capture_availability(_: None = Depends(protected_operator)) -> object:

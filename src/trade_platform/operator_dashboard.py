@@ -15,6 +15,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from .activation_readiness_v1 import ActivationReadiness, read_activation_readiness_v1
 from .evidence_catalog_v1 import EvidenceCatalogView, read_evidence_catalog_v1
 from .instrument_chart_v1 import (
     ChartSeriesNotFound,
@@ -1335,6 +1336,10 @@ class PostgresOperatorDashboardQueries:
     def terminal_incubation(self) -> IncubationView:
         """UI-2: the R10 paper incubation report over every recorded fill."""
         return self._read(read_incubation_v1)
+
+    def terminal_activation(self, *, windows: list[dict[str, Any]] | None = None) -> ActivationReadiness:
+        """What stops each next research/paper action, with exact owner gates (activation readiness)."""
+        return self._read(lambda cursor: read_activation_readiness_v1(cursor, windows=windows))
 
     def chart_series(self) -> ChartSeriesRefPage:
         """Phase R5 UI-1b: catalogued chartable bar frames (see instrument_chart_v1)."""

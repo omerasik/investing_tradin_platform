@@ -72,7 +72,9 @@ class ResearchTerminalReadModelPostgresTests(unittest.TestCase):
             overview = queries.terminal_overview()
             self.assertEqual("cycle-2026-08-20", overview.cycle.cycle_id)
             self.assertGreaterEqual(overview.signals.get("INCUBATING", 0), len(signals))
-            self.assertIn("OR-9", {gate.gate for gate in overview.owner_gates if gate.status == "OPEN"})
+            # Another test in a shared database may have recorded an ACTIVE watch list.
+            or9 = next(gate for gate in overview.owner_gates if gate.gate == "OR-9")
+            self.assertEqual(or9.status == "OPEN", or9.evidence == "no ACTIVE watch list recorded")
             self.assertIn("UNCONFIGURED", overview.accounts)
 
             recent = {view.signal_id: view for view in queries.terminal_signals(limit=500)}

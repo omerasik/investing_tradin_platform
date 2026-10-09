@@ -619,6 +619,38 @@ export type TerminalIncubation = {
     candidates: TerminalIncubationCandidate[] };
 };
 
+export type ReadinessSubject = {
+  subject: string;
+  status: "READY" | "BLOCKED" | "DONE";
+  reasons: string[];
+  identities: Record<string, string>;
+};
+
+export type ReadinessAnswer = {
+  key: "research_run" | "candidate_freeze" | "decimal_rerun" | "holdout_open" | "research_watch" | "paper_incubation";
+  question: string;
+  status: "READY" | "BLOCKED";
+  reasons: string[];
+  owner_gates: string[];
+  identities: Record<string, unknown>;
+  evidence: Record<string, unknown>;
+  next_action: string;
+  subjects: ReadinessSubject[];
+};
+
+export type ActivationReadiness = {
+  generated_at: string;
+  cycle_id: string;
+  holdout_state: "UNOPENED" | "OPENED";
+  answers: ReadinessAnswer[];
+  owner_gates_open: string[];
+  state_hash: string;
+};
+
+export function getTerminalActivation(ctx: WorkspaceContext): Promise<EvidenceResult<ActivationReadiness>> {
+  return terminal(ctx, authorityUrl(ctx.origin, "/operator-dashboard/research-terminal/activation"), "Activation readiness is unavailable.");
+}
+
 export type StrategyLabStudySummary = {
   study_id: string;
   strategy_family: string;

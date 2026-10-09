@@ -292,6 +292,9 @@ def read_terminal_overview_v1(cursor: _Cursor, *, now: datetime | None = None) -
     accounts: dict[str, int] = {}
     for account in read_accounts_v1(cursor):
         accounts[account.policy_status] = accounts.get(account.policy_status, 0) + 1
+    from .research_watchlist_v1 import read_latest_active_watchlist_v1
+
+    watchlist = read_latest_active_watchlist_v1(cursor)
     gates = [
         OwnerGateView(gate="OR-7", topic=OWNER_GATES_V1[0]["topic"],
                       status="SATISFIED" if cycle.holdout_state == "OPENED" else "OPEN",
@@ -299,8 +302,10 @@ def read_terminal_overview_v1(cursor: _Cursor, *, now: datetime | None = None) -
         OwnerGateView(gate="OR-11", topic=OWNER_GATES_V1[1]["topic"],
                       status="SATISFIED" if accounts.get("ACTIVE") else "OPEN",
                       evidence=f"{accounts.get('ACTIVE', 0)} active account policies"),
-        OwnerGateView(gate="OR-9", topic=OWNER_GATES_V1[2]["topic"], status="OPEN",
-                      evidence="no watch list is recorded by this system"),
+        OwnerGateView(gate="OR-9", topic=OWNER_GATES_V1[2]["topic"],
+                      status="SATISFIED" if watchlist is not None else "OPEN",
+                      evidence="no ACTIVE watch list recorded" if watchlist is None else
+                      f"watch list {watchlist.watchlist_id} ({len(watchlist.entries)} candidates)"),
         OwnerGateView(gate="OR-6 fee schedule", topic=OWNER_GATES_V1[3]["topic"], status="OPEN",
                       evidence="every study and report runs under the gross cost policy"),
     ]

@@ -143,6 +143,11 @@ test.describe("Module 2B-1 Professional Market & Data Workspaces", () => {
     await expect(page.getByRole("article", { name: "Strategy Lab", exact: true })).toContainText("SEARCH_NON_AUTHORITATIVE");
     await expect(page.getByRole("article", { name: "Validation", exact: true })).toContainText("NONE VALIDATED");
     await expect(page.getByRole("article", { name: "Risk Preview", exact: true })).toContainText("OR-11");
+    // Activation readiness: every next action answered READY/BLOCKED with its owner gate.
+    const readiness = page.getByRole("region", { name: "Activation readiness" });
+    await expect(readiness).toContainText("Can the holdout open?");
+    await expect(readiness).toContainText("Can paper incubation run?");
+    await expect(readiness).toContainText("(OR-7)");
     await expect(page.getByRole("button", { name: /execute|trade|buy|sell|open holdout|promote/i })).toHaveCount(0);
 
     const a11yResults = await new AxeBuilder({ page })

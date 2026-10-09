@@ -22,6 +22,7 @@ const parameterlessTargets = new Set([
   "/operator-dashboard/research-terminal/overview",
   "/operator-dashboard/research-terminal/accounts",
   "/operator-dashboard/research-terminal/incubation",
+  "/operator-dashboard/research-terminal/activation",
 ]);
 
 const queryTargets: Record<string, { allowed: string[]; required?: string[] }> = {

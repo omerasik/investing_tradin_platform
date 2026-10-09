@@ -3,6 +3,7 @@ import {
   getCaptureAvailability,
   getStrategyLabStudies,
   getTerminalAccounts,
+  getTerminalActivation,
   getTerminalIncubation,
   getTerminalOverview,
   getTerminalReruns,
@@ -11,6 +12,7 @@ import {
   getWorkspaceContext,
   stateText,
   utc,
+  type ActivationReadiness,
   type TerminalCycle,
 } from "../../lib/data-access";
 import { WorkspaceToolbar } from "../../components/workspace-toolbar";
@@ -61,6 +63,56 @@ function Step({ id, title, claim, children }: { id: string; title: string; claim
   );
 }
 
+/** Operator-friendly names for the owner gates; the exact code stays visible next to them. */
+const GATE_LABELS: Record<string, string> = {
+  "OR-6": "Fees & slippage envelope",
+  "OR-7": "Holdout & acceptance rules",
+  "OR-9": "Watch list",
+  "OR-11": "Paper account & risk limits",
+};
+
+function ActivationPanel({ readiness }: { readiness: ActivationReadiness }) {
+  return (
+    <>
+      <DataTable caption={`What stops the next action — ${readiness.cycle_id}, holdout ${readiness.holdout_state}`} ariaLabel="Activation readiness">
+        <thead><tr><th scope="col">Question</th><th scope="col">Answer</th><th scope="col">Waiting on owner</th><th scope="col">Next action</th></tr></thead>
+        <tbody>
+          {readiness.answers.map((answer) => (
+            <tr key={answer.key} data-readiness={answer.key}>
+              <td>{answer.question}</td>
+              <td><Claim label={answer.status} /></td>
+              <td>{answer.owner_gates.length ? answer.owner_gates.map((gate) => `${GATE_LABELS[gate] ?? gate} (${gate})`).join(" · ") : "—"}</td>
+              <td>{answer.next_action}</td>
+            </tr>
+          ))}
+        </tbody>
+      </DataTable>
+      {readiness.answers.map((answer) => (
+        <details key={answer.key} className="margin-bottom-24">
+          <summary>{answer.question} — exact reasons and bound identities</summary>
+          {answer.reasons.length ? <ul>{answer.reasons.map((reason) => <li key={reason}><code>{reason}</code></li>)}</ul> : <p>No blocking reason.</p>}
+          <p>Bound: <code>{JSON.stringify(answer.identities)}</code></p>
+          <p>Evidence: <code>{JSON.stringify(answer.evidence)}</code></p>
+          {answer.subjects.length ? (
+            <DataTable caption="Per subject" ariaLabel={`${answer.key} subjects`}>
+              <thead><tr><th scope="col">Subject</th><th scope="col">State</th><th scope="col">Reasons</th></tr></thead>
+              <tbody>
+                {answer.subjects.map((subject) => (
+                  <tr key={`${answer.key}-${subject.subject}-${JSON.stringify(subject.identities)}`}>
+                    <td title={JSON.stringify(subject.identities)}>{subject.subject}</td><td><Claim label={subject.status} /></td>
+                    <td>{subject.reasons.length ? subject.reasons.join(", ") : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </DataTable>
+          ) : null}
+        </details>
+      ))}
+      <p>Readiness state <code>{readiness.state_hash.slice(0, 12)}</code> (same authorities, same hash).</p>
+    </>
+  );
+}
+
 function CycleSummary({ cycle }: { cycle: TerminalCycle }) {
   return (
     <p>
@@ -74,11 +126,14 @@ function CycleSummary({ cycle }: { cycle: TerminalCycle }) {
 
 export default async function ResearchTerminalPage() {
   const ctx = await getWorkspaceContext();
-  const [overviewResult, captureResult, signalsResult, studiesResult, rerunsResult, validationResult, accountsResult, incubationResult] =
+  const [overviewResult, captureResult, signalsResult, studiesResult, rerunsResult, validationResult, accountsResult, incubationResult,
+    activationResult] =
     await Promise.all([
       getTerminalOverview(ctx), getCaptureAvailability(ctx), getTerminalSignals(ctx), getStrategyLabStudies(ctx),
       getTerminalReruns(ctx), getTerminalValidation(ctx), getTerminalAccounts(ctx), getTerminalIncubation(ctx),
+      getTerminalActivation(ctx),
     ]);
+  const activation = activationResult.state === "AVAILABLE" ? activationResult.value : undefined;
   const overview = overviewResult.state === "AVAILABLE" ? overviewResult.value : undefined;
   const capture = captureResult.state === "AVAILABLE" ? captureResult.value : undefined;
   const signals = signalsResult.state === "AVAILABLE" ? signalsResult.value : undefined;
@@ -106,6 +161,7 @@ export default async function ResearchTerminalPage() {
       </nav>
 
       <Step id="command-center" title="Command Center">
+        {activation ? <ActivationPanel readiness={activation} /> : <p className="empty-notice">{stateText(activationResult)}</p>}
         {overview ? (
           <>
             <div className="metrics-strip">
