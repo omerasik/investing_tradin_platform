@@ -48,6 +48,7 @@ const requested = [
   "/operator-dashboard/research-terminal/signals?limit=50",
   "/operator-dashboard/research-terminal/accounts",
   "/operator-dashboard/research-terminal/incubation",
+  "/operator-dashboard/research-terminal/activation",
 ];
 for (const target of requested) {
   assert.equal(allowedAuthorityTarget(target), true, `refused: ${target}`);

@@ -619,6 +619,38 @@ export type TerminalIncubation = {
     candidates: TerminalIncubationCandidate[] };
 };
 
+export type ReadinessSubject = {
+  subject: string;
+  status: "READY" | "BLOCKED" | "DONE";
+  reasons: string[];
+  identities: Record<string, string>;
+};
+
+export type ReadinessAnswer = {
+  key: "research_run" | "candidate_freeze" | "decimal_rerun" | "holdout_open" | "research_watch" | "paper_incubation";
+  question: string;
+  status: "READY" | "BLOCKED";
+  reasons: string[];
+  owner_gates: string[];
+  identities: Record<string, unknown>;
+  evidence: Record<string, unknown>;
+  next_action: string;
+  subjects: ReadinessSubject[];
+};
+
+export type ActivationReadiness = {
+  generated_at: string;
+  cycle_id: string;
+  holdout_state: "UNOPENED" | "OPENED";
+  answers: ReadinessAnswer[];
+  owner_gates_open: string[];
+  state_hash: string;
+};
+
+export function getTerminalActivation(ctx: WorkspaceContext): Promise<EvidenceResult<ActivationReadiness>> {
+  return terminal(ctx, authorityUrl(ctx.origin, "/operator-dashboard/research-terminal/activation"), "Activation readiness is unavailable.");
+}
+
 export type StrategyLabStudySummary = {
   study_id: string;
   strategy_family: string;
@@ -633,8 +665,9 @@ export type StrategyLabStudySummary = {
 
 export type StrategyLabStudyPage = { state: "AVAILABLE" | "UNAVAILABLE"; items: StrategyLabStudySummary[] };
 
-function terminal<T>(ctx: WorkspaceContext, target: string, unavailable: string): Promise<EvidenceResult<T>> {
-  return readEvidence<T>(authorityUrl(ctx.origin, target), ctx.protectedApi, unavailable);
+/** ``url`` is already an ``authorityUrl(...)``; wrapping it again made the proxy refuse every terminal read. */
+function terminal<T>(ctx: WorkspaceContext, url: string, unavailable: string): Promise<EvidenceResult<T>> {
+  return readEvidence<T>(url, ctx.protectedApi, unavailable);
 }
 
 export function getTerminalOverview(ctx: WorkspaceContext): Promise<EvidenceResult<TerminalOverview>> {
