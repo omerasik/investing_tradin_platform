@@ -50,6 +50,7 @@ const requested = [
   "/operator-dashboard/research-terminal/incubation",
   "/operator-dashboard/research-terminal/activation",
   "/operator-dashboard/research-terminal/commands?limit=30",
+  "/operator-dashboard/research-terminal/paper-account?account_id=owner-paper",
 ];
 for (const target of requested) {
   assert.equal(allowedAuthorityTarget(target), true, `refused: ${target}`);

@@ -69,6 +69,7 @@ const queryTargets: Record<string, { allowed: string[]; required?: string[] }> =
   "/operator-dashboard/research-terminal/validation": { allowed: ["limit"] },
   "/operator-dashboard/research-terminal/signals": { allowed: ["limit"] },
   "/operator-dashboard/research-terminal/commands": { allowed: ["limit"] },
+  "/operator-dashboard/research-terminal/paper-account": { allowed: ["account_id"], required: ["account_id"] },
 };
 
 export function allowedAuthorityTarget(target: string): boolean {

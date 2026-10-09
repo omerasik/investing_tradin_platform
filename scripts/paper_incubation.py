@@ -9,7 +9,9 @@
 next strictly later proven bar open. Restartable: unfilled signals are reloaded
 and resolved from the replayed capture. ``report`` prints the policy-neutral
 incubation report: unit exposure (OR-11 open), gross unless a verified fee
-schedule exists (OR-6), required length UNRESOLVED until OR-7. Local capture and
+schedule exists (OR-6: the opened cycle's preregistered cost policy, gross until
+then), required length UNRESOLVED until OR-7. Money P&L under an account policy
+is the paper account ledger (paper_account_v1, terminal). Local capture and
 database only: no network call, no order, no account, no capital.
 """
 
@@ -41,7 +43,6 @@ from trade_platform.paper_incubation_v1 import (
     incubation_report_v1,
 )
 from trade_platform.persistence import PostgresDatabase
-from trade_platform.strategy_lab_policies_v1 import gross_cost_policy_v1
 
 
 def main() -> None:
@@ -60,8 +61,12 @@ def main() -> None:
         raise SystemExit("--dsn or TRADE_PLATFORM_RESEARCH_DSN is required")
     database = PostgresDatabase(args.dsn)
     fills = PostgresPaperIncubationStoreV1(database)
-    # OR-6: no verified fee schedule exists yet, so incubation economics are gross.
-    cost_policy = gross_cost_policy_v1()
+    # OR-6: the opened cycle's preregistered (verified) cost policy; gross while no holdout is opened.
+    from trade_platform.paper_account_v1 import cycle_cost_policy_v1
+    from trade_platform.research_terminal_read_model_v1 import current_cycle_id_v1
+
+    with database.transaction() as connection, connection.cursor() as cursor:
+        cost_policy = cycle_cost_policy_v1(cursor, current_cycle_id_v1())
     if args.command == "report":
         report = incubation_report_v1(fills.fills(symbol=args.symbol), cost_policy, as_of=datetime.now(UTC))
         print(json.dumps(report, indent=1))

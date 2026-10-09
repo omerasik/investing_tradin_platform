@@ -1343,6 +1343,25 @@ class PostgresOperatorDashboardQueries:
         """What stops each next research/paper action, with exact owner gates (activation readiness)."""
         return self._read(lambda cursor: read_activation_readiness_v1(cursor, windows=windows, cycle_id=cycle_id))
 
+    def terminal_paper_account(self, account_id: str) -> dict[str, Any]:
+        """R10.2: one account's paper ledger under its ACTIVE policy, or the exact blocker."""
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        from .paper_account_v1 import PaperAccountError, read_paper_account_v1, summarize_ledger_v1
+        from .research_terminal_read_model_v1 import current_cycle_id_v1
+
+        def read(cursor: Any) -> dict[str, Any]:
+            try:
+                ledger = read_paper_account_v1(cursor, account_id, cycle_id=current_cycle_id_v1(),
+                                               as_of=_datetime.now(UTC))
+            except PaperAccountError as error:
+                return {"state": "BLOCKED", "account_id": account_id, "reasons": [str(error)]}
+            return {"state": "AVAILABLE", "account_id": account_id, "summary": summarize_ledger_v1(ledger),
+                    "ledger": ledger}
+
+        return self._read(read)
+
     def terminal_commands(self, *, limit: int = 50) -> list[CommandView]:
         """Recent terminal commands with their latest outcome event."""
         return self._read(lambda cursor: read_commands_v1(cursor, limit=limit))

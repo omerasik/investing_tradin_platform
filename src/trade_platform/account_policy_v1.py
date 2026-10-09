@@ -15,6 +15,19 @@ version is ``ACTIVE``, and only an active version yields a
 policy, never from the dataclass defaults. The existing
 :class:`~trade_platform.risk.RiskEngine` and pre-trade assessment then enforce
 it unchanged.
+
+Explicitly not applicable (paper only)
+--------------------------------------
+A ``PERSONAL_PAPER`` policy may set a control in :data:`NOT_APPLICABLE_FIELDS_V1`
+to the literal ``"NOT_APPLICABLE"``: the owner's explicit statement that paper
+incubation v1 has no evidence source for it (level-1 spread, expected slippage,
+event risk, a data-quality score, protective stops -- the strategy families
+emit no stop). It is an owner value, never a default: an absent field is still
+``MISSING_OWNER_*``. The three per-trade stop controls are all set or all not
+applicable. Such a policy can be ACTIVE for the paper account ledger
+(:mod:`trade_platform.paper_account_v1`), which records each such check as not
+applicable; it can never feed the execution ``RiskEngine`` --
+:meth:`AccountPolicyV1.risk_policy` refuses it, so no execution path is weakened.
 """
 
 from __future__ import annotations
@@ -72,6 +85,13 @@ ACCOUNT_FIELDS_V1: Final[dict[str, tuple[str, str]]] = {
     "maximum_drawdown_limit": ("decimal", "positive"),
     "allowed_symbols": ("symbols", "nonempty"),
 }
+NOT_APPLICABLE_V1: Final = "NOT_APPLICABLE"
+#: Controls a PERSONAL_PAPER owner may declare not applicable (no paper-v1 evidence source).
+NOT_APPLICABLE_FIELDS_V1: Final = frozenset({
+    "minimum_data_quality", "maximum_spread_fraction", "maximum_event_risk", "maximum_expected_slippage_fraction",
+    "maximum_per_trade_loss", "maximum_stop_distance_fraction", "stop_gap_buffer_fraction",
+})
+PER_TRADE_FIELDS_V1: Final = ("maximum_per_trade_loss", "maximum_stop_distance_fraction", "stop_gap_buffer_fraction")
 PROP_FIELDS_V1: Final[dict[str, tuple[str, str]]] = {
     "prop_firm": ("text", "nonempty"),
     "prop_daily_loss_limit": ("decimal", "positive"),
@@ -148,7 +168,17 @@ class AccountPolicyV1:
         unknown = set(self.values) - set(required)
         if unknown:
             raise AccountPolicyError(f"unknown_policy_fields:{','.join(sorted(unknown))}")
-        parsed = {name: _parse(name, *required[name], raw) for name, raw in sorted(self.values.items())}
+        parsed = {}
+        for name, raw in sorted(self.values.items()):
+            if raw == NOT_APPLICABLE_V1:
+                if name not in NOT_APPLICABLE_FIELDS_V1 or self.account.kind is not AccountKindV1.PERSONAL_PAPER:
+                    raise AccountPolicyError(f"{name}_cannot_be_not_applicable")
+                parsed[name] = NOT_APPLICABLE_V1
+            else:
+                parsed[name] = _parse(name, *required[name], raw)
+        per_trade = [parsed.get(name) == NOT_APPLICABLE_V1 for name in PER_TRADE_FIELDS_V1 if name in parsed]
+        if any(per_trade) and not all(per_trade):
+            raise AccountPolicyError("per_trade_controls_must_be_all_set_or_all_not_applicable")
         if self.approved_on is not None:
             date.fromisoformat(self.approved_on)
         object.__setattr__(self, "values", parsed)
@@ -187,6 +217,9 @@ class AccountPolicyV1:
         """The RiskEngine policy, every field explicit from this version. Refused unless ACTIVE."""
         if self.status != STATUS_ACTIVE:
             raise AccountPolicyError("account_policy_not_active:" + ",".join(self.unresolved))
+        if self.not_applicable:
+            raise AccountPolicyError("not_applicable_controls_never_feed_the_execution_risk_engine:"
+                                     + ",".join(self.not_applicable))
         v = self.values
         return RiskPolicy(
             minimum_data_quality=Decimal(v["minimum_data_quality"]),
@@ -204,9 +237,14 @@ class AccountPolicyV1:
 
     def risk_policy_document_payload(self) -> dict[str, Any]:
         """The same values in the policy-registry document shape (strict resolution reads every one)."""
-        if self.status != STATUS_ACTIVE:
-            raise AccountPolicyError("account_policy_not_active")
+        if self.status != STATUS_ACTIVE or self.not_applicable:
+            raise AccountPolicyError("account_policy_not_active_or_not_applicable_controls")
         return {name: self.values[name] for name in RISK_FIELDS_V1}
+
+    @property
+    def not_applicable(self) -> tuple[str, ...]:
+        """Controls the owner declared not applicable for paper (sorted)."""
+        return tuple(sorted(name for name, value in self.values.items() if value == NOT_APPLICABLE_V1))
 
 
 class PostgresAccountPolicyStoreV1:
@@ -257,6 +295,9 @@ class PostgresAccountPolicyStoreV1:
 
 __all__ = [
     "ACCOUNT_FIELDS_V1",
+    "NOT_APPLICABLE_FIELDS_V1",
+    "NOT_APPLICABLE_V1",
+    "PER_TRADE_FIELDS_V1",
     "PROP_FIELDS_V1",
     "RISK_FIELDS_V1",
     "STATUS_ACTIVE",
