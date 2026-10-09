@@ -285,6 +285,24 @@ class HoldoutValidationTests(_Study):
             with self.subTest(funding=funding.identity["last_utc_day"]), self.assertRaises(StrategyLabValidationError):
                 validate_on_holdout_v1(packet, opening_for(packet), holdout, store=store, funding=funding)
 
+    def test_a_held_position_at_an_instant_without_a_bar_is_rejected_not_costed(self) -> None:
+        # Settlements published 30 s past each 8-hour mark: uniform and COMPLETE, but no bar opens
+        # at them, so any candidate holding a position there has no reference price.
+        packet = authorized_packet(self.study, self.trials, test_cycle())
+        store = ResearchFrameStoreV1(self.data_root)
+        offset = {at + 30_000: rate for at, rate in eight_hourly(FIRST_DAY, 2).items()}
+        funding = acquire_funding_history_v1(store.root, "BTCUSDT", FIRST_DAY, FIRST_DAY + timedelta(days=1),
+                                             fetch=FundingPages(offset), now=lambda: datetime(2026, 10, 9, tzinfo=UTC))
+        run = validate_on_holdout_v1(packet, opening_for(packet), self._holdout(packet), store=store, funding=funding)
+        exposed = [item for item in run.identity["candidates"]
+                   if any(s["metrics"]["funding_not_costable"] for lag in item["lags"] for s in lag["scenarios"])]
+        self.assertTrue(exposed, "the fixture candidates hold positions across 8-hour marks")
+        for item in exposed:
+            self.assertIn(validation.REASON_FUNDING_NOT_COSTABLE, item["reasons"])
+            self.assertEqual(1, item["reasons"].count(validation.REASON_FUNDING_NOT_COSTABLE))
+            self.assertEqual("HOLDOUT_FAILED_REJECTED", item["state"])
+        self.assertEqual("NOT_CHARGED", run.identity["funding"]["calculated_semantics"]["flat_at_the_instant"])
+
     def test_a_packet_under_the_pre_funding_rule_is_not_validated(self) -> None:
         packet = authorized_packet(self.study, self.trials, test_cycle())
         legacy = {**packet.frozen, "funding_rule": validation.REASON_FUNDING}

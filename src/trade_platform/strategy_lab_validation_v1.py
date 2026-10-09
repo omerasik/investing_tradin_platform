@@ -72,6 +72,7 @@ from typing import Any, Final
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from .bybit_funding_history_v1 import (
+    CALCULATED_SEMANTICS_V1,
     FUNDING_CHARGE_RULE_V1,
     FundingHistoryError,
     FundingHistoryV1,
@@ -598,7 +599,7 @@ def validate_on_holdout_v1(
         raise StrategyLabValidationError("holdout_bars_outside_the_opened_span")
     holdout = verified
     try:
-        funding = load_funding_history_v1(store.root, funding.dataset_version_id)
+        funding = load_funding_history_v1(store.root, funding.dataset_version_id, holdout_opening=opening)
         require_covering_complete_v1(funding, bars, frozen["symbol"])
     except FundingHistoryError as error:
         raise StrategyLabValidationError(f"validation_requires_complete_published_funding:{error}") from error
@@ -663,7 +664,8 @@ def validate_on_holdout_v1(
                     "not_published_days": list(holdout.identity["not_published_days"]),
                     "rejected_days": list(holdout.identity.get("rejected_days", [])),
                     "warmup": "INSIDE_THE_HOLDOUT_NO_CARRY_IN"},
-        "funding": {"rule": FUNDING_RULE_V1, "dataset_version_id": str(funding.dataset_version_id),
+        "funding": {"rule": FUNDING_RULE_V1, "calculated_semantics": dict(CALCULATED_SEMANTICS_V1),
+                    "dataset_version_id": str(funding.dataset_version_id),
                     "content_hash": funding.content_hash, "provenance_hash": funding.provenance_hash,
                     "interval_ms": funding.identity["completeness"]["interval_ms"],
                     "events": len(funding.identity["events"]), "evidence_tier": funding.identity["evidence_tier"]},

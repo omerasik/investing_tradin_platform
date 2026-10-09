@@ -112,6 +112,12 @@ class StrictParseTests(unittest.TestCase):
             "rate_text": self._page([{**good, "fundingRate": "abc"}]),
             "rate_nan": self._page([{**good, "fundingRate": "NaN"}]),
             "stamp": self._page([{**good, "fundingRateTimestamp": "1e3"}]),
+            "stamp_non_ascii": self._page([{**good, "fundingRateTimestamp": "١٠٠٠"}]),
+            "stamp_superscript": self._page([{**good, "fundingRateTimestamp": "²"}]),
+            "rate_exponent": self._page([{**good, "fundingRate": "1E-4"}]),
+            "rate_padded": self._page([{**good, "fundingRate": " 0.0001"}]),
+            "rate_underscore": self._page([{**good, "fundingRate": "0.000_1"}]),
+            "rate_plus": self._page([{**good, "fundingRate": "+0.0001"}]),
             "outside": self._page([{**good, "fundingRateTimestamp": "5000"}]),
             "repeat": self._page([good, good]),
             "truncated": self._page([{**good, "fundingRateTimestamp": str(i)} for i in range(200)]),
@@ -159,6 +165,17 @@ class AcquisitionTests(_Root):
         with self.assertRaises(FundingHistoryError):
             load_funding_history_v1(self.root, dataset.dataset_version_id)
 
+    def test_the_declared_window_must_be_exactly_its_stored_pages(self) -> None:
+        dataset = acquire_funding_history_v1(self.root, "BTCUSDT", DAY, DAY + timedelta(days=1),
+                                             fetch=FundingPages(eight_hourly(DAY, 2)),
+                                             now=lambda: datetime(2026, 10, 9, tzinfo=UTC))
+        (path,) = (self.root / "datasets").rglob("*.json")
+        stored = json.loads(path.read_text(encoding="utf-8"))
+        stored["identity"]["last_utc_day"] = DAY.isoformat()  # claims one day, still lists two pages
+        path.write_text(json.dumps(stored), encoding="utf-8")
+        with self.assertRaises(FundingHistoryError):
+            load_funding_history_v1(self.root, dataset.dataset_version_id)
+
     def test_holdout_days_need_an_issued_opening_and_open_days_are_refused(self) -> None:
         holdout_day = date(2026, 8, 25)
         with self.assertRaises(ResearchBarsError):
@@ -169,6 +186,10 @@ class AcquisitionTests(_Root):
                                             datetime(2026, 9, 1, tzinfo=UTC), "p" * 64, "test")
         admitted = fixture_funding_history(self.root, "BTCUSDT", holdout_day, 1, opening=opening)
         self.assertEqual(COMPLETE, admitted.status)
+        with self.assertRaises(ResearchBarsError):  # catalogued holdout funding is gated on read too
+            load_funding_history_v1(self.root, admitted.dataset_version_id)
+        self.assertEqual(admitted, load_funding_history_v1(self.root, admitted.dataset_version_id,
+                                                           holdout_opening=opening))
         with self.assertRaises(FundingHistoryError):  # the day has not closed: its last settlement may be pending
             acquire_funding_history_v1(self.root, "BTCUSDT", DAY, DAY, fetch=FundingPages(eight_hourly(DAY, 1)),
                                        now=lambda: datetime(2026, 6, 1, 20, tzinfo=UTC))
@@ -249,8 +270,10 @@ class ChargeRuleTests(_Root):
     def test_a_change_filled_at_the_instant_charges_the_worse_outcome_once(self) -> None:
         exit_at = self.steps([0, 1, 0, 0, 0])  # long before, flat after: paying is worse
         self.assertEqual((1, Decimal("-0.000102")), (exit_at.ambiguous_worse_charged, exit_at.steps[1]))
-        enter_at = self.steps([0, 0, 1, 1, 0])  # flat before, long after: paying is worse
-        self.assertEqual((Decimal(0), Decimal("-0.0001")), (enter_at.steps[1], enter_at.steps[2]))
+        enter_at = self.steps([0, 0, 1, 1, 0])  # flat before, long after: paying is worse, booked at T on k-1
+        self.assertEqual((Decimal("-0.0001"), Decimal(0)), (enter_at.steps[1], enter_at.steps[2]))
+        grown = self.steps([0, 1, 2, 2, 0], cost="0.001")  # post-fill value compounds from T: x interval growth
+        self.assertEqual(-2 * Decimal("0.0001") * (1 + Decimal("0.02") - Decimal("0.001")), grown.steps[1])
         receive = self.steps([0, 1, 0, 0, 0], rate="-0.0001")  # long would receive: the worse outcome is flat
         self.assertTrue(all(step == 0 for step in receive.steps))
         flip = self.steps([0, 1, -1, -1, 0], cost="0.0005")  # long pays 1.02x vs short receives

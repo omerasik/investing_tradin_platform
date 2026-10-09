@@ -45,7 +45,11 @@ pages and must re-derive both. The window is ``COMPLETE`` only if every spacing
 between consecutive records is one and the same interval and both window edges
 are tighter than it; anything else (an interval change, a missing record, an
 empty window) is ``IRREGULAR_REFUSED`` with the offending spacings listed --
-recorded, never interpolated or bridged.
+recorded, never interpolated or bridged. Bybit publishes no interval history,
+so a genuine interval change inside a holdout span cannot be told from a
+missing record and refuses that validation until the owner supplies schedule
+evidence. A stored page is authoritative: a page the venue later corrects is
+re-acquired only by moving the stored page aside (it is never rewritten).
 
 Charge rule (:func:`funding_steps_v1`, calculated, :data:`CALCULATED_SEMANTICS_V1`)
 ---------------------------------------------------------------------------------
@@ -59,7 +63,9 @@ The Strategy Lab Decimal model holds ``held_j`` units of equity over
 * flat before and after: provably flat, nothing is charged;
 * a position change filled at that very open: whether the fill precedes the
   settlement is not knowable from bars, so the *worse* of the two outcomes is
-  charged (never both, never the better one).
+  charged (never both, never the better one), as a cash flow at ``T`` booked
+  on interval ``k-1`` (the post-fill outcome is ``after * rate`` times that
+  interval's growth, so it compounds from ``T`` exactly).
 
 A funding instant strictly inside an interval (its bar is missing) is charged
 nothing if that interval is flat; otherwise the candidate is not costable
@@ -71,11 +77,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from bisect import bisect_left
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from itertools import pairwise
 from pathlib import Path
 from typing import Any, Final
@@ -123,6 +130,7 @@ _NAMESPACE: Final = uuid5(NAMESPACE_URL, "trade_platform.bybit_funding_history_v
 _EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
 _DAY_MS: Final = 86_400_000
 _FIELDS: Final = frozenset({"symbol", "fundingRate", "fundingRateTimestamp"})
+_RATE_TEXT: Final = re.compile(r"-?[0-9]+(\.[0-9]+)?", re.ASCII)
 
 #: ``(url, headers) -> response``. Injected so every rule is testable offline.
 FundingFetchV1 = Callable[[str, Mapping[str, str]], HttpResponseV1]
@@ -207,21 +215,15 @@ def parse_funding_page_v1(body: bytes, *, symbol: str, start_ms: int, end_ms: in
         if row["symbol"] != symbol:
             raise FundingHistoryError("funding_row_is_not_the_requested_symbol")
         stamp, rate = row["fundingRateTimestamp"], row["fundingRate"]
-        if not isinstance(stamp, str) or not stamp.isdigit():
+        if not isinstance(stamp, str) or not (stamp.isascii() and stamp.isdigit()):
             raise FundingHistoryError("funding_timestamp_malformed")
         settled = int(stamp)
         if not start_ms <= settled <= end_ms:
             raise FundingHistoryError("funding_timestamp_outside_the_requested_window")
         if settled in events:
             raise FundingHistoryError("funding_timestamp_repeated")
-        if not isinstance(rate, str):
-            raise FundingHistoryError("funding_rate_not_text")
-        try:
-            value = Decimal(rate)
-        except InvalidOperation as error:
-            raise FundingHistoryError("funding_rate_malformed") from error
-        if not value.is_finite():
-            raise FundingHistoryError("funding_rate_not_finite")
+        if not isinstance(rate, str) or not _RATE_TEXT.fullmatch(rate):
+            raise FundingHistoryError("funding_rate_malformed")  # plain ASCII decimal only, kept verbatim
         events[settled] = FundingEventV1(settled, rate)
     return [events[key] for key in sorted(events)]
 
@@ -282,7 +284,16 @@ def _completeness(events: Sequence[FundingEventV1], start_ms: int, end_ms: int) 
             "interval_ms": interval if not irregular else None, "irregularities": irregular}
 
 
+def _window_urls(symbol: str, first: date, last: date) -> list[str]:
+    """Exactly one canonical page per UTC day of ``[first, last]``, in order."""
+    return [funding_history_url_v1(symbol, _day_start_ms(first) + i * _DAY_MS,
+                                   _day_start_ms(first) + (i + 1) * _DAY_MS - 1)
+            for i in range((last - first).days + 1)]
+
+
 def _build(symbol: str, first: date, last: date, pages: Sequence[tuple[str, bytes]]) -> FundingHistoryV1:
+    if [url for url, _ in pages] != _window_urls(symbol, first, last):
+        raise FundingHistoryError("funding_pages_are_not_exactly_the_window_days")
     events: list[FundingEventV1] = []
     for url, body in pages:
         day_ms = int(url.split("startTime=")[1].split("&")[0])
@@ -355,11 +366,15 @@ def acquire_funding_history_v1(
                                       "provenance": dataset.provenance, "provenance_hash": dataset.provenance_hash},
                                      sort_keys=True, indent=1), encoding="utf-8")
         os.replace(staged, target)
-    return load_funding_history_v1(root, dataset.dataset_version_id)
+    return load_funding_history_v1(root, dataset.dataset_version_id, holdout_opening=holdout_opening)
 
 
-def load_funding_history_v1(root: Path, dataset_version_id: UUID) -> FundingHistoryV1:
-    """A catalogued window, re-proven: every raw page by SHA-256, re-parsed, both hashes re-derived."""
+def load_funding_history_v1(root: Path, dataset_version_id: UUID, *, holdout_opening: Any = None) -> FundingHistoryV1:
+    """A catalogued window, re-proven: every raw page by SHA-256, re-parsed, both hashes re-derived.
+
+    Holdout days are gated on read as on acquisition: a catalogued holdout window
+    loads only with a registry-issued opening that admits each of its days.
+    """
     path = _dataset_path(root, dataset_version_id)
     if not path.exists():
         raise FundingHistoryError("funding_history_dataset_not_found")
@@ -367,6 +382,7 @@ def load_funding_history_v1(root: Path, dataset_version_id: UUID) -> FundingHist
     identity = stored["identity"]
     symbol = str(identity["symbol"])
     first, last = date.fromisoformat(identity["first_utc_day"]), date.fromisoformat(identity["last_utc_day"])
+    _days(first, last, holdout_opening)
     pages: list[tuple[str, bytes]] = []
     for item in stored["provenance"]["pages"]:
         day_ms = int(str(item["url"]).split("startTime=")[1].split("&")[0])
@@ -451,11 +467,8 @@ def funding_steps_v1(
                     growth += held[k - 1] * (bars.open_d[k] / bars.open_d[k - 1] - 1) - cost_fraction * abs(
                         held[k - 1] - previous)
                 pay_after = after * rate * growth if after else Decimal(0)
-                if pay_before >= pay_after:
-                    if before:
-                        steps[k - 1] -= pay_before
-                elif after:
-                    steps[k] -= after * rate
+                # Either outcome is a cash flow at T, booked on interval k-1 so it compounds from T exactly.
+                steps[k - 1 if k else 0] -= max(pay_before, pay_after)
         else:
             j = k - 1  # span_start <= at and at is not a bar open, so j >= 0
             if held[j] == 0:
