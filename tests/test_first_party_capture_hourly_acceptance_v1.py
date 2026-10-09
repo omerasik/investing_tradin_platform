@@ -207,5 +207,59 @@ class JointAcceptanceTests(unittest.TestCase):
 
 
 
+class VerifiedWindowsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from trade_platform.first_party_capture_authority_v1 import (
+            first_party_bybit_universe_contracts_v1,
+        )
+
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name) / "archive"
+        self.btc, self.eth, _ = first_party_bybit_universe_contracts_v1()
+
+    def test_only_fully_replayed_partitions_of_the_source_contribute(self) -> None:
+        from tests.test_first_party_capture_archive_v1 import _complete_partition
+        from trade_platform.first_party_capture_hourly_acceptance_v1 import verified_windows_v1
+
+        _complete_partition(self.root, contract=self.btc, count=3)
+        _complete_partition(self.root, contract=self.eth, count=2, first=10)
+        verified = verified_windows_v1(self.root, self.btc)
+        self.assertEqual(verified.verified_partitions, 1)
+        self.assertEqual(verified.failed, ())
+        self.assertEqual(len(verified.windows), 1)
+        self.assertEqual(verified.windows[0].interval.record_count, 3)
+
+    def test_a_partition_that_fails_replay_proves_nothing_and_is_named(self) -> None:
+        from tests.test_first_party_capture_archive_v1 import (
+            _complete_partition,
+            _rewrite_manifest,
+        )
+        from trade_platform.first_party_capture_archive_v1 import derive_archive_availability_v1
+        from trade_platform.first_party_capture_hourly_acceptance_v1 import verified_windows_v1
+
+        directory = _complete_partition(self.root, contract=self.btc, count=3)
+
+        def overclaim(manifest: dict) -> None:
+            manifest["record_count"] += 1
+            manifest["coverage"][0]["record_count"] += 1
+
+        _rewrite_manifest(directory, overclaim)
+        # Hash-consistent forged claims pass the manifest-level read ...
+        self.assertEqual(
+            len(derive_archive_availability_v1(self.root, contract=self.btc).windows), 1
+        )
+        # ... but not a full replay, so the partition proves nothing here.
+        verified = verified_windows_v1(self.root, self.btc)
+        self.assertEqual(verified.windows, ())
+        self.assertEqual(verified.verified_partitions, 0)
+        self.assertEqual(len(verified.failed), 1)
+        self.assertEqual(verified.failed[0][0], directory)
+        self.assertIn("count", verified.failed[0][1])
+
+
 if __name__ == "__main__":
     unittest.main()

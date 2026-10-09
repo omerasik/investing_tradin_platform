@@ -29,8 +29,10 @@ Rules, all fail-closed:
   any required symbol are judged; the open hour (its partition has no manifest
   yet) is never judged either way.
 
-Metadata-level, like availability itself: a dataset built on these hours must
-still verify each partition it uses. Passing this check is evidence for OR-1;
+By default this is metadata-level, like availability itself.
+:func:`verified_windows_v1` instead admits only partitions that fully replay
+(``universe-acceptance --verify``); a dataset built on these hours must still
+verify each partition it uses. Passing this check is evidence for OR-1;
 accepting the burn-in stays the owner's decision.
 """
 
@@ -39,13 +41,21 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import Final
 from uuid import UUID
 
 from trade_platform.first_party_capture_archive_v1 import (
     END_PROOF_UTC_DAY_ROLLOVER,
+    PARTITION_STATUS_COMPLETE,
+    FirstPartyCaptureArchiveError,
     ProvenWindowV1,
+    find_partitions_v1,
+    read_partition_status_v1,
+    session_source_id_v1,
+    verify_partition_v1,
 )
+from trade_platform.first_party_capture_authority_v1 import FirstPartyCaptureContractV1
 
 HOUR_NANOS: Final = 3_600 * 1_000_000_000
 
@@ -153,6 +163,49 @@ class HourlyAcceptanceV1:
             if segment.complete and segment.head_unproven_nanos is not None
         ]
         return max(heads) if heads else None
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedWindowsV1:
+    """One source's windows from partitions that fully replayed, and those that did not."""
+
+    windows: tuple[ProvenWindowV1, ...]
+    verified_partitions: int
+    failed: tuple[tuple[Path, str], ...]
+
+
+def verified_windows_v1(root: Path, contract: FirstPartyCaptureContractV1) -> VerifiedWindowsV1:
+    """Proven windows of ``contract`` whose partitions re-prove every record.
+
+    Stronger than manifest-level availability: each COMPLETE partition is
+    replayed in full (:func:`verify_partition_v1` -- file hashes, record
+    hashes re-derived under the contract, ordering, coverage placement and
+    counts). A partition that fails contributes no window at all and is named
+    with its reason, so its hours can only become incomplete. Streams one
+    record at a time; cost is CPU and disk reads, not memory.
+    """
+    wanted = str(contract.source_id)
+    windows: list[ProvenWindowV1] = []
+    failed: list[tuple[Path, str]] = []
+    verified = 0
+    for directory in find_partitions_v1(root):
+        if session_source_id_v1(directory) != wanted:
+            continue
+        status = read_partition_status_v1(directory, contract=contract)
+        if status.status != PARTITION_STATUS_COMPLETE or status.session_id is None:
+            continue  # proves nothing either way; availability lists it as excluded
+        try:
+            verification = verify_partition_v1(directory, contract=contract)
+        except FirstPartyCaptureArchiveError as error:
+            failed.append((directory, str(error)))
+            continue
+        verified += 1
+        windows.extend(
+            ProvenWindowV1(session_id=verification.session_id, interval=interval)
+            for interval in verification.coverage
+        )
+    windows.sort(key=lambda window: window.interval.start_utc_nanos)
+    return VerifiedWindowsV1(windows=tuple(windows), verified_partitions=verified, failed=tuple(failed))
 
 
 def chain_proven_runs_v1(windows: Sequence[ProvenWindowV1]) -> tuple[ProvenRunV1, ...]:
@@ -327,7 +380,9 @@ __all__ = [
     "HourlySegmentV1",
     "ProvenRunV1",
     "SymbolHoursV1",
+    "VerifiedWindowsV1",
     "chain_proven_runs_v1",
     "classify_hour_v1",
     "derive_hourly_acceptance_v1",
+    "verified_windows_v1",
 ]

@@ -85,7 +85,10 @@ from trade_platform.first_party_capture_authority_v1 import (
     first_party_bybit_measurement_contracts_v1,
     first_party_bybit_universe_contracts_v1,
 )
-from trade_platform.first_party_capture_hourly_acceptance_v1 import derive_hourly_acceptance_v1
+from trade_platform.first_party_capture_hourly_acceptance_v1 import (
+    derive_hourly_acceptance_v1,
+    verified_windows_v1,
+)
 from trade_platform.first_party_capture_measurement_v1 import (
     CapacityMeasurementV1,
     build_capacity_report_v1,
@@ -458,19 +461,32 @@ def _universe_acceptance(args: argparse.Namespace) -> int:
     """Joint manifest-proven hourly acceptance of the R1B universe (exit 0 met, 1 not)."""
     root = _universe_root(args)
     contracts = first_party_bybit_universe_contracts_v1()
+    windows_by_symbol = []
+    failed_verification = 0
+    for contract in contracts:
+        if args.verify:
+            verified = verified_windows_v1(root, contract)
+            print(f"verified       {contract.exchange_symbol}: {verified.verified_partitions} "
+                  f"partition(s) fully replayed, {len(verified.failed)} failed")
+            for directory, reason in verified.failed:
+                print(f"VERIFY FAILED  {directory} {reason}")
+            failed_verification += len(verified.failed)
+            windows = verified.windows
+        else:
+            windows = derive_archive_availability_v1(root, contract=contract).windows
+        windows_by_symbol.append((contract.exchange_symbol, windows))
     acceptance = derive_hourly_acceptance_v1(
-        [
-            (
-                contract.exchange_symbol,
-                derive_archive_availability_v1(root, contract=contract).windows,
-            )
-            for contract in contracts
-        ],
+        windows_by_symbol,
         max_head_unproven_nanos=round(args.max_head_unproven_seconds * 1_000_000_000),
         required_consecutive_hours=args.required_hours,
     )
     print(f"universe root  {root}")
-    print("evidence       COMPLETE-partition manifests only; wall-clock time is never evidence")
+    evidence = (
+        "fully replayed COMPLETE partitions" if args.verify else "COMPLETE-partition manifests only"
+    )
+    print(f"evidence       {evidence}; wall-clock time is never evidence")
+    if failed_verification:
+        print(f"WARNING        {failed_verification} partition(s) failed verification and prove nothing")
     print(f"head bound     {args.max_head_unproven_seconds:g} s unproven hand-off per hour (operator)")
     if acceptance.first_hour_start_utc_nanos is None:
         print("no proven coverage for any universe symbol")
@@ -612,6 +628,11 @@ def main(argv: list[str] | None = None) -> int:
         "--required-hours", type=int, default=24, help="consecutive hours required (Option B: 24)"
     )
     acceptance.add_argument("--verbose", action="store_true", help="print every symbol's hour verdicts")
+    acceptance.add_argument(
+        "--verify",
+        action="store_true",
+        help="admit only partitions that fully replay (record hashes, order, counts); slower",
+    )
     acceptance.set_defaults(handler=_universe_acceptance)
 
     compact = sub.add_parser("compact", help="losslessly compress finalized partitions")
