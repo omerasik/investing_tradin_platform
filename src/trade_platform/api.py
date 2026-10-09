@@ -82,6 +82,16 @@ from .portfolio_risk import (
 )
 from .postgres_paper_oms import PostgresPaperOms
 from .research import CostModel, ResearchValidationError, SQLiteExperimentStore, WalkForwardProtocol
+from .research_terminal_commands_v1 import (
+    INLINE_KINDS,
+    OWNER_KINDS,
+    CommandView,
+    PostgresTerminalCommandLedgerV1,
+    TerminalCommandError,
+    execute_inline_v1,
+    parse_inputs_v1,
+    readiness_cycle_v1,
+)
 from .research_terminal_read_model_v1 import (
     AccountView,
     IncubationView,
@@ -152,6 +162,14 @@ class FundamentalMaterializationRequest(BaseModel):
     instrument_id: str = Field(min_length=1, max_length=120)
     as_of: datetime
     fact_names: list[str] = Field(min_length=1, max_length=100)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+
+class TerminalCommandRequest(BaseModel):
+    """A research terminal command: a closed-set kind, explicit inputs, an idempotency key."""
+
+    kind: str = Field(min_length=1, max_length=40)
+    inputs: dict[str, object]
     idempotency_key: str = Field(min_length=1, max_length=200)
 
 
@@ -319,6 +337,7 @@ def build_app(
     authorization_decision_sink: AuthorizationDecisionSink | None = None,
     capture_archive_root: Path | None = None,
     research_data_root: Path | None = None,
+    terminal_commands: PostgresTerminalCommandLedgerV1 | None = None,
 ) -> FastAPI:
     platform_config = config or PlatformConfig()
     store = audit_store or SQLiteAuditStore()
@@ -358,6 +377,7 @@ def build_app(
     app.state.operator_dashboard_queries = operator_dashboard_queries
     app.state.capture_archive_root = capture_archive_root
     app.state.research_data_root = research_data_root
+    app.state.terminal_commands = terminal_commands
 
     @app.get("/health/live")
     def liveness() -> dict[str, str]:
@@ -574,6 +594,56 @@ def build_app(
         except (OSError, ValueError, KeyError) as error:
             raise HTTPException(status_code=503, detail="Research window catalogue unavailable.") from error
         return read_dashboard(lambda: queries.terminal_activation(windows=windows))
+
+    @app.get("/operator-dashboard/research-terminal/commands", response_model=list[CommandView])
+    def dashboard_terminal_commands(
+        limit: int = Query(default=50, ge=1, le=200),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """Recent terminal commands and their latest outcome (REQUESTED / BLOCKED / ... / SUCCEEDED)."""
+        return read_dashboard(lambda: queries.terminal_commands(limit=limit))
+
+    def submit_terminal_command(request: TerminalCommandRequest, subject: str, *, owner: bool) -> CommandView:
+        ledger = app.state.terminal_commands
+        queries = app.state.operator_dashboard_queries
+        if ledger is None or queries is None:
+            raise HTTPException(status_code=503, detail="Terminal command authority unavailable.")
+        if (request.kind in OWNER_KINDS) != owner:
+            raise HTTPException(status_code=403, detail="This command kind needs the other command endpoint.")
+        try:
+            inputs = parse_inputs_v1(request.kind, request.inputs)
+            readiness = queries.terminal_activation(windows=read_window_catalogue_v1(app.state.research_data_root),
+                                                    cycle_id=readiness_cycle_v1(request.kind, inputs))
+            view = ledger.request(request.kind, inputs, idempotency_key=request.idempotency_key,
+                                  requested_by=subject, readiness=readiness)
+            if view.state == "REQUESTED" and request.kind in INLINE_KINDS:
+                try:
+                    result = execute_inline_v1(ledger.database, view)
+                except (TerminalCommandError, ValueError) as error:
+                    ledger.record(view.command_id, "FAILED", {"error": type(error).__name__, "detail": str(error)},
+                                  actor="api")
+                else:
+                    ledger.record(view.command_id, "SUCCEEDED", result, actor="api")
+                view = ledger.get(view.command_id)
+        except TerminalCommandError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except DashboardQueryError as error:
+            raise HTTPException(status_code=503, detail="Activation readiness unavailable.") from error
+        if view.state == "BLOCKED":
+            raise HTTPException(status_code=409, detail={"command_id": str(view.command_id), **view.detail})
+        return view
+
+    @app.post("/operator-dashboard/research-terminal/commands", response_model=CommandView, status_code=202)
+    def create_terminal_command(request: TerminalCommandRequest, subject: str = Depends(research_operator)) -> object:
+        """Queue a research command (search, freeze, Decimal rerun, holdout validation, runners). Gate-checked."""
+        return submit_terminal_command(request, subject, owner=False)
+
+    @app.post("/operator-dashboard/research-terminal/owner-commands", response_model=CommandView, status_code=202)
+    def create_terminal_owner_command(
+        request: TerminalCommandRequest, subject: str = Depends(risk_reviewer_operator),
+    ) -> object:
+        """Record an owner decision (watch list, account, account policy, preregistration, holdout opening)."""
+        return submit_terminal_command(request, subject, owner=True)
 
     @app.get("/operator-dashboard/capture-availability", response_model=CaptureAvailabilityView)
     def dashboard_capture_availability(_: None = Depends(protected_operator)) -> object:

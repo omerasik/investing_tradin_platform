@@ -32,6 +32,7 @@ from .real_market_data_provenance_v1 import (
     PostgresRealMarketDataProvenanceAuthorityV1,
     RealMarketDataProvenanceV1,
 )
+from .research_terminal_commands_v1 import CommandView, read_commands_v1
 from .research_terminal_read_model_v1 import (
     AccountView,
     IncubationView,
@@ -1337,9 +1338,14 @@ class PostgresOperatorDashboardQueries:
         """UI-2: the R10 paper incubation report over every recorded fill."""
         return self._read(read_incubation_v1)
 
-    def terminal_activation(self, *, windows: list[dict[str, Any]] | None = None) -> ActivationReadiness:
+    def terminal_activation(self, *, windows: list[dict[str, Any]] | None = None,
+                            cycle_id: str | None = None) -> ActivationReadiness:
         """What stops each next research/paper action, with exact owner gates (activation readiness)."""
-        return self._read(lambda cursor: read_activation_readiness_v1(cursor, windows=windows))
+        return self._read(lambda cursor: read_activation_readiness_v1(cursor, windows=windows, cycle_id=cycle_id))
+
+    def terminal_commands(self, *, limit: int = 50) -> list[CommandView]:
+        """Recent terminal commands with their latest outcome event."""
+        return self._read(lambda cursor: read_commands_v1(cursor, limit=limit))
 
     def chart_series(self) -> ChartSeriesRefPage:
         """Phase R5 UI-1b: catalogued chartable bar frames (see instrument_chart_v1)."""

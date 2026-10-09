@@ -81,6 +81,45 @@ def build_study(family: str, dataset_id: UUID, data_root: Path | None) -> StudyS
     )
 
 
+def run_strategy_lab_command(
+    command: str, *, study: StudySpecV1, dsn: str, database: PostgresDatabase, data_root: Path | None,
+    workers: int, metric: str | None = None, direction: str | None = None, top_k: int | None = None,
+) -> dict[str, object]:
+    """search / status / freeze / rerun of one study; shared by this CLI and the terminal command worker."""
+    ledger = PostgresStrategyLabLedgerV1(database)
+    if command == "search":
+        reports = run_study_pool_v1(dsn, study, BarStrategyEvaluatorV1(data_root), workers=workers)
+        print(json.dumps([dataclasses.asdict(report) for report in reports], default=str), flush=True)
+    progress = ledger.progress(study.study_id)
+    out: dict[str, object] = {
+        "study_id": str(study.study_id), "label": study.label, "planned": study.planned_trial_count,
+        "states": dict(progress.states), "finished": progress.finished,
+        "authority": list(study.authority().reasons), "lag": str(study.timing_lag or timedelta(0))}
+    if progress.finished and command in {"search", "freeze", "rerun"}:
+        manifest = build_study_manifest_v1(ledger, study)
+        store = PostgresStrategyLabManifestStoreV1(database)
+        store.record_manifest(manifest)
+        out["manifest_hash"] = manifest.manifest_hash
+        if command in {"freeze", "rerun"}:
+            if metric is None or direction is None or top_k is None:
+                raise ValueError("freeze_requires_an_explicit_metric_direction_and_top_k")
+            rule = CandidateSelectionRuleV1(metric, RankDirectionV1(direction), top_k)
+            candidates = freeze_candidates_v1(manifest, rule)
+            store.record_candidate_set(candidates)
+            out["candidate_set_hash"] = candidates.candidate_set_hash
+            out["candidates"] = candidates.candidates
+            out["cutoff_tie"] = candidates.identity["cutoff_tie"]
+        if command == "rerun":
+            rerun = run_authority_rerun_v1(study, manifest, candidates, data_root=data_root, workers=workers)
+            PostgresAuthorityRerunStoreV1(database).record(rerun)
+            out["rerun_hash"] = rerun.rerun_hash
+            out["selection_status"] = rerun.selection_status
+            out["authoritative_selection"] = rerun.identity["authoritative_selection"]
+    elif command in {"freeze", "rerun"}:
+        out[command] = "STUDY_NOT_FINISHED"
+    return out
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("search", "status", "freeze", "rerun"))
@@ -95,36 +134,10 @@ def main() -> None:
     args = parser.parse_args()
     study = build_study(args.family, args.dataset, args.data_root)
     database = PostgresDatabase(args.dsn)
-    ledger = PostgresStrategyLabLedgerV1(database)
     try:
-        if args.command == "search":
-            reports = run_study_pool_v1(args.dsn, study, BarStrategyEvaluatorV1(args.data_root), workers=args.workers)
-            print(json.dumps([dataclasses.asdict(report) for report in reports], default=str))
-        progress = ledger.progress(study.study_id)
-        out = {"study_id": str(study.study_id), "label": study.label, "planned": study.planned_trial_count,
-               "states": dict(progress.states), "finished": progress.finished,
-               "authority": list(study.authority().reasons), "lag": str(study.timing_lag or timedelta(0))}
-        if progress.finished and args.command in {"search", "freeze", "rerun"}:
-            manifest = build_study_manifest_v1(ledger, study)
-            store = PostgresStrategyLabManifestStoreV1(database)
-            store.record_manifest(manifest)
-            out["manifest_hash"] = manifest.manifest_hash
-            if args.command in {"freeze", "rerun"}:
-                rule = CandidateSelectionRuleV1(args.metric, RankDirectionV1(args.direction), args.top_k)
-                candidates = freeze_candidates_v1(manifest, rule)
-                store.record_candidate_set(candidates)
-                out["candidate_set_hash"] = candidates.candidate_set_hash
-                out["candidates"] = candidates.candidates
-                out["cutoff_tie"] = candidates.identity["cutoff_tie"]
-            if args.command == "rerun":
-                rerun = run_authority_rerun_v1(study, manifest, candidates, data_root=args.data_root,
-                                               workers=args.workers)
-                PostgresAuthorityRerunStoreV1(database).record(rerun)
-                out["rerun_hash"] = rerun.rerun_hash
-                out["selection_status"] = rerun.selection_status
-                out["authoritative_selection"] = rerun.identity["authoritative_selection"]
-        elif args.command == "rerun":
-            out["rerun"] = "STUDY_NOT_FINISHED"
+        out = run_strategy_lab_command(args.command, study=study, dsn=args.dsn, database=database,
+                                       data_root=args.data_root, workers=args.workers, metric=args.metric,
+                                       direction=args.direction, top_k=args.top_k)
         print(json.dumps(out, indent=1, default=str))
     finally:
         database.close()

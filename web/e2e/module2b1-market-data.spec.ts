@@ -115,7 +115,7 @@ test.describe("Module 2B-1 Professional Market & Data Workspaces", () => {
     await context.close();
   });
 
-  test("/terminal walks the research workflow, restates every claim, offers no action, and passes a11y", async ({
+  test("/terminal walks the research workflow, restates every claim, offers only gated commands, and passes a11y", async ({
     browser,
   }) => {
     const consoleErrors: string[] = [];
@@ -148,6 +148,12 @@ test.describe("Module 2B-1 Professional Market & Data Workspaces", () => {
     await expect(readiness).toContainText("Can the holdout open?");
     await expect(readiness).toContainText("Can paper incubation run?");
     await expect(readiness).toContainText("(OR-7)");
+    // Commands are gated by the same readiness: paper incubation cannot be queued while OR-7/OR-11 are open.
+    const console_ = page.getByRole("form", { name: "Terminal command console" });
+    await expect(console_).toBeVisible();
+    await console_.getByLabel("Command kind").selectOption("PAPER_INCUBATION_START");
+    await expect(console_.getByRole("button", { name: "Queue command (blocked)" })).toBeDisabled();
+    await expect(console_).toContainText("BLOCKED_OWNER_DECISION_OR_7");
     await expect(page.getByRole("button", { name: /execute|trade|buy|sell|open holdout|promote/i })).toHaveCount(0);
 
     const a11yResults = await new AxeBuilder({ page })

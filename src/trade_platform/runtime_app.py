@@ -46,6 +46,7 @@ from .operator_dashboard import PostgresOperatorDashboardQueries
 from .persistence import PersistenceError, PersistenceTarget, PostgresDatabase
 from .postgres_audit import PostgresAuditStore
 from .postgres_paper_oms import PostgresPaperOms
+from .research_terminal_commands_v1 import PostgresTerminalCommandLedgerV1
 from .secrets_manager import FileSecretProvider, SecretUnavailableError
 from .security import AuthorizationDecisionSink, InMemoryRateLimiter, OperatorAuthenticator
 
@@ -298,6 +299,7 @@ def compose_protected_postgres_app(
             alert_store=authorities.alert_store,
             paper_oms=authorities.paper_oms,
             operator_dashboard_queries=authorities.operator_dashboard_queries,
+            terminal_commands=PostgresTerminalCommandLedgerV1(authorities.database),
             # Not wired for the protected runtime -- explicitly left unavailable
             # (returns 503, never silently SQLite). See
             # docs/MODULE_3C_POSTGRES_RUNTIME_WIRING.md for why:
