@@ -336,7 +336,7 @@ class VenueTradingRuleTests(unittest.TestCase):
 
     def test_naive_timestamps_are_rejected(self) -> None:
         with self.assertRaises(Exception) as raised:
-            self.build(effective_from=datetime(2024, 1, 2))  # noqa: DTZ001
+            self.build(effective_from=datetime(2024, 1, 2))
         self.assertIn("must_be_timezone_aware", str(raised.exception))
 
 

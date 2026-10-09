@@ -199,7 +199,7 @@ class ContractSpecificationValidationTests(unittest.TestCase):
 
     def test_naive_registration_timestamp_is_rejected(self) -> None:
         with self.assertRaises(FuturesAuthorityError) as raised:
-            gold_contract(6, registered_at=datetime(2024, 1, 2))  # noqa: DTZ001
+            gold_contract(6, registered_at=datetime(2024, 1, 2))
         self.assertIn("must_be_timezone_aware", str(raised.exception))
 
 

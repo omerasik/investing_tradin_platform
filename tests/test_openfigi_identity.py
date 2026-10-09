@@ -225,7 +225,7 @@ class ValidateAndBuildTests(unittest.TestCase):
             validate_and_build_identifier_mappings(
                 aapl_instrument(),
                 (aapl_candidate(),),
-                captured_at=datetime(2026, 9, 7, 12, 0),  # noqa: DTZ001 -- intentionally naive
+                captured_at=datetime(2026, 9, 7, 12, 0),
                 request_hash="req-hash",
                 response_hash="resp-hash",
             )

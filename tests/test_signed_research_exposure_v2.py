@@ -96,7 +96,7 @@ class SignedResearchSignalObservationV2Tests(unittest.TestCase):
             observation(exposure=Decimal("0"), cap=Decimal("Infinity")).validate()
 
     def test_naive_decision_timestamp_rejected(self) -> None:
-        naive = datetime(2026, 1, 1)  # noqa: DTZ001 -- intentionally naive
+        naive = datetime(2026, 1, 1)
         with self.assertRaisesRegex(SignedResearchExposureV2Error, "decision_at_must_be_timezone_aware"):
             observation(decision_at=naive).validate()
 
