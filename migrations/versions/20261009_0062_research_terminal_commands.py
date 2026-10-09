@@ -58,6 +58,15 @@ def upgrade() -> None:
     )
     op.execute("CREATE INDEX research_terminal_command_events_idx "
                "ON research_terminal_command_events(command_id, occurred_at)")
+    # At most one claim, one RUNNING and one terminal outcome per command: two workers can never
+    # both run a command, and no command can end twice.
+    op.execute("CREATE UNIQUE INDEX research_terminal_command_one_claim "
+               "ON research_terminal_command_events(command_id) WHERE state='CLAIMED'")
+    op.execute("CREATE UNIQUE INDEX research_terminal_command_one_running "
+               "ON research_terminal_command_events(command_id) WHERE state='RUNNING'")
+    op.execute("CREATE UNIQUE INDEX research_terminal_command_one_terminal "
+               "ON research_terminal_command_events(command_id) "
+               "WHERE state IN ('BLOCKED','SUCCEEDED','FAILED','STOPPED','EXITED')")
     op.execute(immutable_trigger_sql("research_terminal_command_events"))
 
 

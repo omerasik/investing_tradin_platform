@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -48,6 +49,8 @@ from trade_platform.research_terminal_commands_v1 import (
 )
 
 RESEARCH_DISK_GUARD_GIB = 24.0
+#: Engineering bound on concurrent runner children (each is one symbol's live/paper loop).
+MAX_RUNNERS = 6
 RUNNER_KINDS = frozenset({"RESEARCH_WATCH_START", "PAPER_INCUBATION_START"})
 WORKER_KINDS = frozenset(INPUT_MODELS) - INLINE_KINDS
 HEAVY_KINDS = frozenset({"STRATEGY_SEARCH", "CANDIDATE_FREEZE", "DECIMAL_RERUN", "HOLDOUT_VALIDATE"}) | RUNNER_KINDS
@@ -67,6 +70,7 @@ class Worker:
         self.ledger = PostgresTerminalCommandLedgerV1(self.database)
         self.name = f"{socket.gethostname()}:research-terminal-worker:{os.getpid()}"
         self.children: dict[UUID, subprocess.Popen[bytes]] = {}
+        self.child_kinds: dict[UUID, str] = {}
 
     # -- gates -------------------------------------------------------------
     def readiness(self, cycle_id: str | None = None) -> Any:
@@ -202,8 +206,15 @@ class Worker:
 
     def start_runner(self, command: CommandView) -> dict[str, Any]:
         inputs = command.inputs
+        same = {k: inputs.get(k) for k in ("family", "dataset_version_id", "symbol", "watchlist_id")}
+        for view in self.ledger.running(RUNNER_KINDS):
+            if view.kind == command.kind and {k: view.inputs.get(k) for k in same} == same:
+                raise Blocked([f"RUNNER_ALREADY_RUNNING:{view.command_id}"])
+        if len(self.children) >= MAX_RUNNERS:
+            raise Blocked([f"RUNNER_LIMIT_REACHED:{MAX_RUNNERS}"])
         script = "live_signals.py" if command.kind == "RESEARCH_WATCH_START" else "paper_incubation.py"
-        argv = [sys.executable, "-u", str(ROOT / "scripts" / script), "run", "--dsn", self.args.dsn,
+        # The DSN travels in the child's environment, never in its (world-readable) argv.
+        argv = [sys.executable, "-u", str(ROOT / "scripts" / script), "run",
                 "--family", inputs["family"], "--dataset", inputs["dataset_version_id"], "--symbol", inputs["symbol"]]
         if inputs.get("watchlist_id"):
             argv += ["--watchlist", inputs["watchlist_id"]]
@@ -215,17 +226,28 @@ class Worker:
         logs.mkdir(parents=True, exist_ok=True)
         log = logs / f"terminal-{command.kind.lower()}-{command.command_id}.log"
         handle = log.open("ab")
-        child = subprocess.Popen(argv, stdout=handle, stderr=subprocess.STDOUT, cwd=ROOT)
+        env = {**os.environ, "TRADE_PLATFORM_RESEARCH_DSN": self.args.dsn}
+        child = subprocess.Popen(argv, stdout=handle, stderr=subprocess.STDOUT, cwd=ROOT, env=env)
         self.children[command.command_id] = child
+        self.child_kinds[command.command_id] = command.kind
         return {"pid": child.pid, "log": str(log), "worker": self.name}
 
     def stop_runner(self, command: CommandView) -> dict[str, Any]:
         start_id = UUID(command.inputs["start_command_id"])
-        child = self.children.pop(start_id, None)
+        expected = command.kind.replace("_STOP", "_START")
+        child = self.children.get(start_id)
         if child is None:
             raise Blocked(["RUNNER_NOT_OWNED_BY_THIS_WORKER_OR_NOT_RUNNING"])
+        if self.child_kinds.get(start_id) != expected:
+            raise Blocked([f"STOP_KIND_DOES_NOT_MATCH_THE_RUNNER:{self.child_kinds.get(start_id)}"])
         child.terminate()
-        child.wait(timeout=30)
+        try:
+            child.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait(timeout=30)
+        self.children.pop(start_id)
+        self.child_kinds.pop(start_id, None)
         self.ledger.record(start_id, "STOPPED", {"by_command": str(command.command_id), "returncode": child.returncode},
                            actor=self.name)
         return {"stopped": str(start_id), "returncode": child.returncode}
@@ -252,7 +274,8 @@ class Worker:
                                actor=self.name)
             return
         except Exception as error:  # noqa: BLE001 -- every refusal or failure is recorded, never swallowed
-            self.ledger.record(command.command_id, "FAILED", {"error": type(error).__name__, "detail": str(error)[:2000]},
+            detail = re.sub(r"postgres(?:ql)?://\S+", "<dsn>", str(error))[:2000]
+            self.ledger.record(command.command_id, "FAILED", {"error": type(error).__name__, "detail": detail},
                                actor=self.name)
             return
         state = "RUNNING" if command.kind in RUNNER_KINDS else "SUCCEEDED"
@@ -262,7 +285,16 @@ class Worker:
         for start_id, child in list(self.children.items()):
             if child.poll() is not None:
                 self.children.pop(start_id)
+                self.child_kinds.pop(start_id, None)
                 self.ledger.record(start_id, "EXITED", {"returncode": child.returncode}, actor=self.name)
+
+    def single_instance(self) -> None:
+        """One worker per database: a session advisory lock held for this process's life."""
+        with self.database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute("SELECT pg_try_advisory_lock(hashtext('research_terminal_worker_v1'))")
+            row = cursor.fetchone()
+        if not row or not row[0]:
+            raise SystemExit("another research terminal worker holds the lock for this database")
 
     def kinds_now(self) -> frozenset[str]:
         if shutil.disk_usage(Path.home()).free < self.args.disk_guard_gib * (1 << 30):
@@ -270,6 +302,7 @@ class Worker:
         return WORKER_KINDS
 
     def run(self) -> None:
+        self.single_instance()  # so every older claim below is from a worker that is gone
         prefix = f"{socket.gethostname()}:research-terminal-worker:"
         abandoned = self.ledger.abandon_stale_claims(worker_prefix=prefix, actor=self.name)
         for view in self.ledger.running(RUNNER_KINDS):

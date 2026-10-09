@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -41,7 +42,8 @@ from trade_platform.persistence import PostgresDatabase
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("run", "recent"))
-    parser.add_argument("--dsn", required=True)
+    parser.add_argument("--dsn", default=os.environ.get("TRADE_PLATFORM_RESEARCH_DSN"),
+                        help="PostgreSQL DSN (default: TRADE_PLATFORM_RESEARCH_DSN, so it stays out of argv)")
     parser.add_argument("--family")
     parser.add_argument("--dataset", type=UUID)
     parser.add_argument("--data-root", type=Path, default=None)
@@ -52,6 +54,8 @@ def main() -> None:
     parser.add_argument("--capture-root", type=Path, default=None)
     parser.add_argument("--poll-seconds", type=float, default=5.0)
     args = parser.parse_args()
+    if not args.dsn:
+        raise SystemExit("--dsn or TRADE_PLATFORM_RESEARCH_DSN is required")
     database = PostgresDatabase(args.dsn)
     store = PostgresLiveSignalStoreV1(database)
     if args.command == "recent":

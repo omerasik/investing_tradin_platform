@@ -42,9 +42,9 @@ from datetime import UTC, date, datetime
 from typing import Any, Final, Literal
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from .persistence import PostgresDatabase
+from .persistence import PersistenceError, PostgresDatabase
 from .strategy_lab_study_v1 import identity_hash_v1
 
 COMMAND_SCHEMA_VERSION_V1: Final = "research-terminal-command-v1"
@@ -106,6 +106,13 @@ class PreregistrationInputs(_Window):
     authorized_by: str | None = Field(default=None, min_length=1, max_length=120)
     authorized_on: date | None = None
 
+    @field_validator("cost_policy")
+    @classmethod
+    def _bounded_cost_policy(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is not None and len(json.dumps(value, default=str)) > 8_192:
+            raise ValueError("cost_policy_too_large")
+        return value
+
 
 class HoldoutOpenInputs(_Inputs):
     preregistration_hash: str = Field(pattern=_HASH)
@@ -141,9 +148,18 @@ class AccountRegisterInputs(_Inputs):
 
 class AccountPolicyInputs(_Inputs):
     account_id: str = Field(pattern=r"^[a-z][a-z0-9_-]{2,63}$")
-    values: dict[str, str | int | list[str]]
+    values: dict[str, str | int | list[str]] = Field(max_length=32)
     approved_by: str | None = Field(default=None, min_length=1, max_length=120)
     approved_on: date | None = None
+
+    @field_validator("values")
+    @classmethod
+    def _bounded_values(cls, value: dict[str, str | int | list[str]]) -> dict[str, str | int | list[str]]:
+        for name, item in value.items():
+            if len(name) > 64 or (isinstance(item, str) and len(item) > 64) or (
+                    isinstance(item, list) and (len(item) > 20 or any(len(s) > 20 for s in item))):
+                raise ValueError("account_policy_value_too_large")
+        return value
 
 
 class RunnerStartInputs(_Window):
@@ -249,6 +265,15 @@ class CommandView(BaseModel):
     updated_at: datetime
 
 
+#: Owner approval fields; each must name the authenticated subject who requests the command.
+_OWNER_FIELDS: Final = ("authorized_by", "approved_by", "opened_by")
+
+
+def _unique_violation(error: BaseException) -> bool:
+    cause = error.__cause__
+    return cause is not None and getattr(cause, "sqlstate", None) == "23505"
+
+
 def _event(cursor: Any, command_id: UUID, state: str, detail: Mapping[str, Any], actor: str) -> None:
     cursor.execute(
         "INSERT INTO research_terminal_command_events (event_id, command_id, state, detail, actor, occurred_at) "
@@ -281,51 +306,77 @@ class PostgresTerminalCommandLedgerV1:
         """Record a request (idempotent per key) and its gate verdict: REQUESTED or BLOCKED."""
         inputs = parse_inputs_v1(kind, raw_inputs)
         command_id, content_hash = command_identity_v1(kind, inputs, idempotency_key)
-        if not requested_by.strip():
+        subject = requested_by.strip()
+        if not subject:
             raise TerminalCommandError("requested_by_required")
-        with self._database.transaction() as connection, connection.cursor() as cursor:
-            cursor.execute("SELECT command_id FROM research_terminal_commands WHERE idempotency_key=%s",
-                           (idempotency_key,))
-            existing = cursor.fetchone()
-            if existing is not None:
-                if existing[0] != command_id:
-                    raise TerminalCommandError("idempotency_key_reused_for_a_different_command")
-            else:
-                cursor.execute(
-                    "INSERT INTO research_terminal_commands (command_id, idempotency_key, kind, inputs, content_hash, "
-                    "requested_by, requested_at) VALUES (%s,%s,%s,%s::jsonb,%s,%s,%s)",
-                    (command_id, idempotency_key, kind, json.dumps(inputs, sort_keys=True), content_hash,
-                     requested_by.strip(), datetime.now(UTC)))
-                reasons = gate_reasons_v1(kind, inputs, readiness)
-                if reasons:
-                    _event(cursor, command_id, "BLOCKED", {"reasons": reasons, "at": "request",
-                                                          "readiness_state_hash": readiness.state_hash}, "api")
+        for name in _OWNER_FIELDS:
+            # An approval is the authenticated principal's own act, never free text typed for someone else.
+            if inputs.get(name) is not None and inputs[name] != subject:
+                raise TerminalCommandError(f"{name}_must_be_the_authenticated_subject")
+        try:
+            with self._database.transaction() as connection, connection.cursor() as cursor:
+                cursor.execute("SELECT command_id FROM research_terminal_commands WHERE idempotency_key=%s",
+                               (idempotency_key,))
+                existing = cursor.fetchone()
+                if existing is not None:
+                    if existing[0] != command_id:
+                        raise TerminalCommandError("idempotency_key_reused_for_a_different_command")
                 else:
-                    _event(cursor, command_id, "REQUESTED", {"readiness_state_hash": readiness.state_hash}, "api")
+                    cursor.execute(
+                        "INSERT INTO research_terminal_commands (command_id, idempotency_key, kind, inputs, "
+                        "content_hash, requested_by, requested_at) VALUES (%s,%s,%s,%s::jsonb,%s,%s,%s)",
+                        (command_id, idempotency_key, kind, json.dumps(inputs, sort_keys=True), content_hash,
+                         subject, datetime.now(UTC)))
+                    reasons = gate_reasons_v1(kind, inputs, readiness)
+                    if reasons:
+                        _event(cursor, command_id, "BLOCKED", {"reasons": reasons, "at": "request",
+                                                              "readiness_state_hash": readiness.state_hash}, "api")
+                    else:
+                        _event(cursor, command_id, "REQUESTED", {"readiness_state_hash": readiness.state_hash}, "api")
+        except PersistenceError as error:
+            if not _unique_violation(error):
+                raise
+            # A concurrent request with the same key won the insert: it is the same command or a conflict.
+            with self._database.transaction() as connection, connection.cursor() as cursor:
+                cursor.execute("SELECT command_id FROM research_terminal_commands WHERE idempotency_key=%s",
+                               (idempotency_key,))
+                row = cursor.fetchone()
+            if row is None or row[0] != command_id:
+                raise TerminalCommandError("idempotency_key_reused_for_a_different_command") from error
         return self.get(command_id)
 
     def record(self, command_id: UUID, state: str, detail: Mapping[str, Any], *, actor: str) -> None:
-        with self._database.transaction() as connection, connection.cursor() as cursor:
-            latest = _latest(cursor, command_id)
-            if latest is None:
-                raise TerminalCommandError("command_not_found")
-            if latest[0] in TERMINAL_STATES:
-                raise TerminalCommandError(f"command_already_terminal:{latest[0]}")
-            _event(cursor, command_id, state, detail, actor)
+        try:
+            with self._database.transaction() as connection, connection.cursor() as cursor:
+                latest = _latest(cursor, command_id)
+                if latest is None:
+                    raise TerminalCommandError("command_not_found")
+                if latest[0] in TERMINAL_STATES:
+                    raise TerminalCommandError(f"command_already_terminal:{latest[0]}")
+                _event(cursor, command_id, state, detail, actor)
+        except PersistenceError as error:
+            if _unique_violation(error):  # a concurrent writer recorded the outcome first
+                raise TerminalCommandError("command_outcome_already_recorded") from error
+            raise
 
     def claim(self, *, worker: str, kinds: frozenset[str]) -> CommandView | None:
-        """The oldest REQUESTED command of ``kinds``, claimed under a row lock (one worker wins)."""
-        with self._database.transaction() as connection, connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT c.command_id FROM research_terminal_commands c WHERE c.kind = ANY(%s) AND "
-                "(SELECT e.state FROM research_terminal_command_events e WHERE e.command_id = c.command_id "
-                " ORDER BY e.occurred_at DESC, e.event_id DESC LIMIT 1) = 'REQUESTED' "
-                "ORDER BY c.requested_at, c.command_id LIMIT 1 FOR UPDATE OF c SKIP LOCKED",
-                (sorted(kinds),))
-            row = cursor.fetchone()
-            if row is None:
+        """The oldest REQUESTED command of ``kinds``. The one-claim index makes a second claimer lose."""
+        try:
+            with self._database.transaction() as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT c.command_id FROM research_terminal_commands c WHERE c.kind = ANY(%s) AND "
+                    "(SELECT e.state FROM research_terminal_command_events e WHERE e.command_id = c.command_id "
+                    " ORDER BY e.occurred_at DESC, e.event_id DESC LIMIT 1) = 'REQUESTED' "
+                    "ORDER BY c.requested_at, c.command_id LIMIT 1 FOR UPDATE OF c SKIP LOCKED",
+                    (sorted(kinds),))
+                row = cursor.fetchone()
+                if row is None:
+                    return None
+                _event(cursor, row[0], "CLAIMED", {"worker": worker}, worker)
+        except PersistenceError as error:
+            if _unique_violation(error):
                 return None
-            _event(cursor, row[0], "CLAIMED", {"worker": worker}, worker)
+            raise
         return self.get(row[0])
 
     def abandon_stale_claims(self, *, worker_prefix: str, actor: str) -> int:

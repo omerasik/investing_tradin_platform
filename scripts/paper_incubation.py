@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from datetime import UTC, datetime
@@ -46,7 +47,8 @@ from trade_platform.strategy_lab_policies_v1 import gross_cost_policy_v1
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("run", "report"))
-    parser.add_argument("--dsn", required=True)
+    parser.add_argument("--dsn", default=os.environ.get("TRADE_PLATFORM_RESEARCH_DSN"),
+                        help="PostgreSQL DSN (default: TRADE_PLATFORM_RESEARCH_DSN, so it stays out of argv)")
     parser.add_argument("--family")
     parser.add_argument("--dataset", type=UUID)
     parser.add_argument("--data-root", type=Path, default=None)
@@ -54,6 +56,8 @@ def main() -> None:
     parser.add_argument("--capture-root", type=Path, default=None)
     parser.add_argument("--poll-seconds", type=float, default=5.0)
     args = parser.parse_args()
+    if not args.dsn:
+        raise SystemExit("--dsn or TRADE_PLATFORM_RESEARCH_DSN is required")
     database = PostgresDatabase(args.dsn)
     fills = PostgresPaperIncubationStoreV1(database)
     # OR-6: no verified fee schedule exists yet, so incubation economics are gross.

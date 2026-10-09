@@ -13,7 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 
 @unittest.skipUnless(os.environ.get("POSTGRES_TEST_DSN"), "POSTGRES_TEST_DSN not configured")
@@ -114,7 +114,7 @@ class TerminalCommandsPostgresTests(unittest.TestCase):
 
             # The real holdout cannot be opened: the refusal names the owner gate.
             opening = post(owner, "HOLDOUT_OPEN", {"preregistration_hash": draft["detail"]["preregistration_hash"],
-                                                  "confirm_cycle_id": "cycle-2026-08-20", "opened_by": "pg-test"},
+                                                  "confirm_cycle_id": "cycle-2026-08-20", "opened_by": "owner"},
                            "open", "owner-commands")
             self.assertEqual(409, opening.status_code)
             self.assertTrue(any(r.startswith("BLOCKED_OWNER_DECISION_OR_7") for r in opening.json()["detail"]["reasons"]))
@@ -132,14 +132,36 @@ class TerminalCommandsPostgresTests(unittest.TestCase):
             self.assertEqual(("SUCCEEDED", "UNCONFIGURED"), (policy["state"], policy["detail"]["status"]))
             self.assertIn("MISSING_OWNER_PAPER_STARTING_CAPITAL_OR_11", policy["detail"]["unresolved"])
             selected = rerun.identity["authoritative_selection"]["selected"][0]["trial_id"]
+            # An approval names the authenticated owner, never someone else typed in as free text.
+            forged = post(owner, "WATCHLIST_RECORD", {"watchlist_id": f"cmd-{run}", "entries": [], "approved_by":
+                                                      "someone-else", "approved_on": "2026-10-09"}, "forged",
+                          "owner-commands")
+            self.assertEqual(422, forged.status_code)
+            self.assertIn("approved_by_must_be_the_authenticated_subject", forged.text)
             watch = post(owner, "WATCHLIST_RECORD", {"watchlist_id": f"cmd-{run}", "entries": [
                 {"study_id": str(study.study_id), "rerun_hash": rerun.rerun_hash, "trial_id": selected,
-                 "symbol": "BTCUSDT"}], "approved_by": "pg-test", "approved_on": "2026-10-09"}, "watch",
+                 "symbol": "BTCUSDT"}], "approved_by": "owner", "approved_on": "2026-10-09"}, "watch",
                 "owner-commands").json()
             self.assertEqual(("SUCCEEDED", "ACTIVE"), (watch["state"], watch["detail"]["status"]))
             start = post(research, "RESEARCH_WATCH_START", {**window, "symbol": "BTCUSDT",
                                                             "watchlist_id": f"cmd-{run}"}, "watchstart")
             self.assertEqual(409, start.status_code)  # forward bars wait on the real holdout (OR-7)
+            # The database itself refuses a second claim or a second outcome of one command.
+            from trade_platform.persistence import PersistenceError
+            from trade_platform.research_terminal_commands_v1 import (
+                PostgresTerminalCommandLedgerV1,
+                TerminalCommandError,
+            )
+
+            ledger = PostgresTerminalCommandLedgerV1(database)
+            done_id = first.json()["command_id"]
+            with self.assertRaises(PersistenceError), database.transaction() as connection, \
+                    connection.cursor() as cursor:
+                cursor.execute("INSERT INTO research_terminal_command_events (event_id, command_id, state, detail, "
+                               "actor, occurred_at) VALUES (gen_random_uuid(), %s, 'CLAIMED', '{}'::jsonb, 'x', now())",
+                               (done_id,))
+            with self.assertRaisesRegex(TerminalCommandError, "already_terminal"):
+                ledger.record(UUID(done_id), "FAILED", {}, actor="x")
         finally:
             database.close()
 

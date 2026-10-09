@@ -143,8 +143,10 @@ function CommandsSection({ readiness, commands, unavailable }: {
       <p>
         Every command runs through the authority that owns it, is checked against the readiness above, and is recorded
         with its outcome. Search, freeze, rerun, validation and runners are carried out by the command worker
-        (<code>scripts/research_terminal_worker.py</code>). Opening the one-shot holdout is an owner command
-        (<code>HOLDOUT_OPEN</code>) on the owner endpoint, deliberately not offered here.
+        (<code>scripts/research_terminal_worker.py</code>). Owner decisions — watch list (OR-9), account and
+        account policy (OR-11), preregistration authorization and the one-shot holdout opening (OR-7) — are
+        submitted with the owner&apos;s own credential (<code>scripts/terminal_command.py</code>), never through this
+        page&apos;s shared token, and every approval is bound to that authenticated owner.
       </p>
       <CommandConsole blocked={blockedCommands(readiness)} />
       {commands && commands.length ? (
