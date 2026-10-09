@@ -181,5 +181,68 @@ class SingleRecorderTests(unittest.TestCase):
             self.assertIn("production   RUNNING", out.getvalue())
 
 
+class UniverseAcceptanceCommandTests(unittest.TestCase):
+    def test_the_head_bound_has_no_default(self) -> None:
+        from contextlib import redirect_stderr
+
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            CLI.main(["universe-acceptance"])
+
+    def test_an_empty_universe_root_is_not_met(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = CLI.main(
+                    ["--root", directory, "universe-acceptance", "--max-head-unproven-seconds", "30"]
+                )
+        self.assertEqual(code, 1)
+        self.assertIn("no proven coverage", out.getvalue())
+
+    def test_a_proven_joint_run_is_reported_per_symbol(self) -> None:
+        import tempfile
+        from uuid import uuid4
+
+        from trade_platform.first_party_capture_archive_v1 import (
+            CaptureArchiveAvailabilityV1,
+            CaptureCoverageIntervalV1,
+            ProvenWindowV1,
+        )
+        from trade_platform.first_party_capture_hourly_acceptance_v1 import HOUR_NANOS
+
+        hour = 1_791_504_000 * 1_000_000_000
+        proven = CaptureArchiveAvailabilityV1(
+            windows=(
+                ProvenWindowV1(
+                    session_id=uuid4(),
+                    interval=CaptureCoverageIntervalV1(
+                        start_utc_nanos=hour + 5_000_000_000,
+                        last_proven_utc_nanos=hour + HOUR_NANOS,
+                        end_proof="OPERATOR_BOUNDED_STOP",
+                        record_count=1,
+                    ),
+                ),
+            ),
+            gaps=(),
+            excluded=(),
+        )
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(CLI, "derive_archive_availability_v1", return_value=proven):
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = CLI.main(
+                    [
+                        "--root", directory, "universe-acceptance",
+                        "--max-head-unproven-seconds", "30", "--required-hours", "1",
+                    ]
+                )
+        self.assertEqual(code, 0)
+        text = out.getvalue()
+        for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT"):
+            self.assertIn(f"== {symbol}: 1 COMPLETE hour(s)", text)
+        self.assertIn("acceptance     MET", text)
+
+
 if __name__ == "__main__":
     unittest.main()

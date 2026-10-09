@@ -31,6 +31,7 @@ Inspect, prove, compact and back up the archive::
 
     .venv\\Scripts\\python scripts/capture_bybit_public.py health
     .venv\\Scripts\\python scripts/capture_bybit_public.py availability
+    .venv\\Scripts\\python scripts/capture_bybit_public.py universe-acceptance --max-head-unproven-seconds S
     .venv\\Scripts\\python scripts/capture_bybit_public.py replay <partition-directory>
     .venv\\Scripts\\python scripts/capture_bybit_public.py compact
     .venv\\Scripts\\python scripts/capture_bybit_public.py backup <destination-root>
@@ -69,6 +70,7 @@ from trade_platform.first_party_capture_archive_v1 import (
     compaction_candidates_v1,
     default_archive_root,
     derive_archive_availability_by_source_v1,
+    derive_archive_availability_v1,
     disk_free_bytes_v1,
     iter_compaction_results_v1,
     nanos_to_datetime,
@@ -83,6 +85,7 @@ from trade_platform.first_party_capture_authority_v1 import (
     first_party_bybit_measurement_contracts_v1,
     first_party_bybit_universe_contracts_v1,
 )
+from trade_platform.first_party_capture_hourly_acceptance_v1 import derive_hourly_acceptance_v1
 from trade_platform.first_party_capture_measurement_v1 import (
     CapacityMeasurementV1,
     build_capacity_report_v1,
@@ -447,6 +450,60 @@ def _availability(args: argparse.Namespace) -> int:
     return 0
 
 
+def _iso(utc_nanos: int) -> str:
+    return nanos_to_datetime(utc_nanos).isoformat()
+
+
+def _universe_acceptance(args: argparse.Namespace) -> int:
+    """Joint manifest-proven hourly acceptance of the R1B universe (exit 0 met, 1 not)."""
+    root = _universe_root(args)
+    contracts = first_party_bybit_universe_contracts_v1()
+    acceptance = derive_hourly_acceptance_v1(
+        [
+            (
+                contract.exchange_symbol,
+                derive_archive_availability_v1(root, contract=contract).windows,
+            )
+            for contract in contracts
+        ],
+        max_head_unproven_nanos=round(args.max_head_unproven_seconds * 1_000_000_000),
+        required_consecutive_hours=args.required_hours,
+    )
+    print(f"universe root  {root}")
+    print("evidence       COMPLETE-partition manifests only; wall-clock time is never evidence")
+    print(f"head bound     {args.max_head_unproven_seconds:g} s unproven hand-off per hour (operator)")
+    if acceptance.first_hour_start_utc_nanos is None:
+        print("no proven coverage for any universe symbol")
+        return 1
+    first = acceptance.first_hour_start_utc_nanos
+    print(f"hours judged   {acceptance.hours_judged} from {_iso(first)}")
+    for symbol in acceptance.symbols:
+        print(f"== {symbol.symbol}: {symbol.complete_hours} COMPLETE hour(s)")
+        if args.verbose:
+            for segment in symbol.segments:
+                head = (
+                    "" if segment.head_unproven_nanos is None
+                    else f" head={segment.head_unproven_nanos / 1e9:.3f}s"
+                )
+                detail = "" if segment.detail is None else f" end_proof={segment.detail}"
+                print(f"   {_iso(segment.hour_start_utc_nanos)} {segment.verdict}{head}{detail}")
+    for run in acceptance.runs:
+        print(f"JOINT RUN      {_iso(run.first_hour_start_utc_nanos)} -> {_iso(run.end_utc_nanos)} "
+              f"{run.hours} h")
+    observed = acceptance.max_head_unproven_observed_nanos
+    if observed is not None:
+        print(f"max head seen  {observed / 1e9:.3f} s over COMPLETE hours")
+    longest = acceptance.longest_run
+    print(f"longest run    {0 if longest is None else longest.hours} h; "
+          f"current run {acceptance.current_run_hours} h; required {acceptance.required_consecutive_hours} h")
+    if acceptance.met:
+        print("acceptance     MET on manifests (burn-in acceptance itself stays the owner's, OR-1)")
+        return 0
+    remaining = acceptance.required_consecutive_hours - acceptance.current_run_hours
+    print(f"acceptance     NOT MET: {remaining} more consecutive jointly COMPLETE hour(s) needed")
+    return 1
+
+
 def _compact(args: argparse.Namespace) -> int:
     root = _root(args)
     failed = 0
@@ -540,6 +597,22 @@ def main(argv: list[str] | None = None) -> int:
 
     availability = sub.add_parser("availability", help="proven windows and gaps, per source")
     availability.set_defaults(handler=_availability)
+
+    acceptance = sub.add_parser(
+        "universe-acceptance",
+        help="R1B: consecutive manifest-proven COMPLETE hours for every universe symbol at once",
+    )
+    acceptance.add_argument(
+        "--max-head-unproven-seconds",
+        type=float,
+        required=True,
+        help="longest unproven segment hand-off at an hour's start (operator's choice, no default)",
+    )
+    acceptance.add_argument(
+        "--required-hours", type=int, default=24, help="consecutive hours required (Option B: 24)"
+    )
+    acceptance.add_argument("--verbose", action="store_true", help="print every symbol's hour verdicts")
+    acceptance.set_defaults(handler=_universe_acceptance)
 
     compact = sub.add_parser("compact", help="losslessly compress finalized partitions")
     compact.set_defaults(handler=_compact)
