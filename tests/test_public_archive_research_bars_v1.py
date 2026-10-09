@@ -12,13 +12,17 @@ from pathlib import Path
 from tests.test_bybit_public_archive_v1 import STANDARD, FakeArchive, _csv, _gz
 from trade_platform.bybit_public_archive_v1 import HttpResponseV1, build_archive_dataset_v1
 from trade_platform.public_archive_research_bars_v1 import (
+    DERIVED,
     EVICTED,
     NOT_PUBLISHED,
     PINNED,
+    REJECTED,
     UNVERIFIABLE,
     ResearchBarsError,
     acquire_and_derive_day_v1,
+    archive_day_status_v1,
     build_research_bar_dataset_v1,
+    contiguous_derived_spans_v1,
     dataset_file_manifests_v1,
     evict_archive_raw_v1,
     list_research_bar_datasets_v1,
@@ -39,9 +43,11 @@ NOW = datetime(2026, 10, 8, tzinfo=UTC)
 class DayArchive:
     """Serves a fixture file per day (shifted onto that day), 404 for days in ``missing``."""
 
-    def __init__(self, *, missing: frozenset[date] = frozenset(), tamper: bool = False) -> None:
+    def __init__(self, *, missing: frozenset[date] = frozenset(), tamper: bool = False,
+                 duplicate: frozenset[date] = frozenset()) -> None:
         self.missing = missing
         self.tamper = tamper
+        self.duplicate = duplicate
         self.calls = 0
 
     def __call__(self, url: str, headers: Mapping[str, str]) -> HttpResponseV1:
@@ -54,7 +60,10 @@ class DayArchive:
         rows = [(offset + shift, price, size) for offset, price, size in STANDARD]
         if self.tamper:
             rows = [*rows, (300 + shift, "105.0", "0.001")]
-        return FakeArchive(_gz(_csv(rows)))(url, headers)
+        text = _csv(rows)
+        if day in self.duplicate:
+            text = text.replace("id-000003", "id-000002")
+        return FakeArchive(_gz(text))(url, headers)
 
 
 class ResearchBarsTests(unittest.TestCase):
@@ -104,6 +113,41 @@ class ResearchBarsTests(unittest.TestCase):
         with self.assertRaisesRegex(ResearchBarsError, "window_day_not_derived"):
             build_research_bar_dataset_v1(self.root, "BTCUSDT", DAY, third + timedelta(days=1), store=self.store)
 
+    def test_a_rejected_day_is_never_derived_bridged_or_refetched(self) -> None:
+        second, third, fourth = (DAY + timedelta(days=n) for n in (1, 2, 3))
+        fetch = DayArchive(duplicate=frozenset({second}))
+        states = [self._step(day, fetch).state for day in (DAY, second, third, fourth)]
+        self.assertEqual([EVICTED, REJECTED, EVICTED, EVICTED], states)  # acquisition moved on
+        self.assertEqual(REJECTED, archive_day_status_v1(self.root, "BTCUSDT", second))
+        counting = DayArchive()
+        self.assertEqual(REJECTED, self._step(second, counting).state)
+        self.assertEqual(0, counting.calls)
+        # A window that needs the day is refused, with the reason, unless the gap is admitted.
+        with self.assertRaisesRegex(ResearchBarsError, "window_requires_a_rejected_day:.*archive_trade_id_repeated"):
+            build_research_bar_dataset_v1(self.root, "BTCUSDT", DAY, fourth, store=self.store)
+        admitted = build_research_bar_dataset_v1(self.root, "BTCUSDT", DAY, fourth, store=self.store,
+                                                 admit_rejected_days=True)
+        (rejected,) = admitted.identity["rejected_days"]
+        self.assertEqual((second.isoformat(), "archive_trade_id_repeated"), (rejected["utc_day"], rejected["reason"]))
+        self.assertEqual([{"after": DAY.isoformat(), "before": third.isoformat()}], admitted.identity["day_gaps"])
+        self.assertEqual(3, len(admitted.identity["files"]))
+        days_in_frame = {row[0].date() for row in self.store.iter_rows(self.store.load_manifest(
+            admitted.bar_frame_manifest_hash))}
+        self.assertNotIn(second, days_in_frame)  # no row invented for the rejected day
+        # Any continuity requirement fails on it.
+        with self.assertRaisesRegex(ResearchBarsError, f"window_not_continuous:BTCUSDT:{second.isoformat()}"):
+            build_research_bar_dataset_v1(self.root, "BTCUSDT", DAY, fourth, store=self.store,
+                                          admit_rejected_days=True, require_continuous=True)
+        # A window on either side proceeds with its exact bounds, without the key.
+        after = build_research_bar_dataset_v1(self.root, "BTCUSDT", third, fourth, store=self.store,
+                                              require_continuous=True)
+        self.assertNotIn("rejected_days", after.identity)
+        self.assertEqual(
+            [{"first_utc_day": DAY.isoformat(), "last_utc_day": DAY.isoformat(), "days": 1},
+             {"first_utc_day": third.isoformat(), "last_utc_day": fourth.isoformat(), "days": 2}],
+            contiguous_derived_spans_v1(self.root, "BTCUSDT", DAY, fourth),
+        )
+
     def test_window_identity_is_deterministic_and_reloads_with_proof(self) -> None:
         fetch = DayArchive()
         for offset in range(3):
@@ -140,6 +184,14 @@ class ResearchBarsTests(unittest.TestCase):
         # Fail closed from then on: no second chance with the original bytes.
         with self.assertRaisesRegex(ResearchBarsError, "unverifiable"):
             restore_archive_raw_v1(self.root, manifest, fetch=DayArchive(), now=lambda: NOW)
+
+    def test_a_restore_the_strict_parse_now_refuses_marks_the_file_unverifiable(self) -> None:
+        self._step(DAY, DayArchive())
+        manifest = load_file_manifest_v1(self.root, "BTCUSDT", DAY)
+        with self.assertRaisesRegex(ResearchBarsError, "publisher_bytes_changed"):
+            restore_archive_raw_v1(self.root, manifest, fetch=DayArchive(duplicate=frozenset({DAY})), now=lambda: NOW)
+        self.assertEqual(UNVERIFIABLE, retention_state_v1(self.root, "BTCUSDT", DAY))
+        self.assertEqual(DERIVED, archive_day_status_v1(self.root, "BTCUSDT", DAY))  # no contradictory record
 
     def test_a_pinned_file_is_restored_and_never_evicted(self) -> None:
         self._step(DAY, DayArchive())

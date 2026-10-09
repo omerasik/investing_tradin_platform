@@ -36,7 +36,15 @@ Window datasets
 :func:`build_research_bar_dataset_v1` concatenates verified day frames for one
 symbol and a contiguous day range into one content-addressed dataset. A day
 the publisher never published is a declared gap; a day that was not acquired
-or not derived is refused, never skipped. The frame carries no knowledge time
+or not derived is refused, never skipped. A day whose published file the
+strict parse **rejected** (see :mod:`trade_platform.bybit_public_archive_v1`)
+is refused by default; with ``admit_rejected_days=True`` it becomes a declared
+gap listed under ``rejected_days`` with its refusal reason and file SHA-256 --
+never interpolated, bridged or repaired, and the bar frame simply has no rows
+for it (the SDK breaks rolling windows at a missing day). The key is absent
+when no day was rejected, so windows without one keep their identity.
+``require_continuous=True`` refuses any window with a gap of either kind, and
+:func:`contiguous_derived_spans_v1` lists the gap-free spans that exist. The frame carries no knowledge time
 (``market_knowledge_at`` is NULL): T2 knowledge time is event time plus the
 owner-declared OR-5 dissemination lag, which a study applies through its
 declared timing policy, so the lag sensitivity sweep never needs another frame.
@@ -59,7 +67,9 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from .bybit_public_archive_v1 import (
     ARCHIVE_BAR_SEMANTIC_VERSION_V1,
+    ARCHIVE_DAY_REJECTED,
     ARCHIVE_NORMALIZATION_SEMANTIC_VERSION_V1,
+    REJECTED_STRICT_PARSE,
     ArchiveFileManifestV1,
     BybitPublicArchiveError,
     FetchV1,
@@ -68,6 +78,7 @@ from .bybit_public_archive_v1 import (
     build_archive_bars_v1,
     bybit_public_trade_archive_contract_v1,
     iter_archive_trades_v1,
+    load_archive_day_rejection_v1,
     load_archive_file_manifest_v1,
     urllib_fetch_v1,
     verify_archive_file_v1,
@@ -86,6 +97,12 @@ UNVERIFIABLE: Final = "UNVERIFIABLE_PUBLISHER_BYTES_CHANGED"
 
 #: A day the publisher answered 404 for: a declared gap, with its evidence.
 NOT_PUBLISHED: Final = "NOT_PUBLISHED"
+#: A published day the strict parse refused: never derived, never repaired.
+REJECTED: Final = REJECTED_STRICT_PARSE
+#: A day with a verified day-bars record.
+DERIVED: Final = "DERIVED"
+#: Neither derived nor declared: not yet acquired (a window refuses it).
+NOT_ACQUIRED: Final = "NOT_ACQUIRED"
 
 _NAMESPACE: Final = uuid5(NAMESPACE_URL, "trade_platform.public_archive_research_bars_v1")
 
@@ -217,6 +234,40 @@ def is_not_published_v1(root: Path, symbol: str, day: date) -> bool:
     return _paths(root, symbol, day)["not_published"].exists()
 
 
+def archive_day_status_v1(root: Path, symbol: str, day: date, *, holdout_opening: Any = None) -> str:
+    """DERIVED, NOT_PUBLISHED, REJECTED or NOT_ACQUIRED. Contradictory evidence fails closed."""
+    _refuse_holdout(day, holdout_opening)
+    states = [
+        state for state, present in (
+            (DERIVED, _paths(root, symbol, day)["day_bars"].exists()),
+            (NOT_PUBLISHED, is_not_published_v1(root, symbol, day)),
+            (REJECTED, load_archive_day_rejection_v1(root, symbol, day) is not None),
+        ) if present
+    ]
+    if len(states) > 1:
+        raise ResearchBarsError(f"archive_day_has_contradictory_records:{symbol}:{day.isoformat()}:{','.join(states)}")
+    return states[0] if states else NOT_ACQUIRED
+
+
+def contiguous_derived_spans_v1(root: Path, symbol: str, first: date, last: date) -> list[dict[str, Any]]:
+    """Every maximal run of consecutive DERIVED days in ``[first, last]`` (pre-holdout only).
+
+    Reads day records only, never bar rows. The caller picks a span; nothing
+    here chooses one or joins spans across a gap.
+    """
+    spans: list[dict[str, Any]] = []
+    run: list[date] = []
+    for day in [*_days(first, last), None]:
+        if day is not None and archive_day_status_v1(root, symbol, day) == DERIVED:
+            run.append(day)
+            continue
+        if run:
+            spans.append({"first_utc_day": run[0].isoformat(), "last_utc_day": run[-1].isoformat(),
+                          "days": len(run)})
+            run = []
+    return spans
+
+
 # ---------------------------------------------------------------------------
 # Retention (OR-1)
 # ---------------------------------------------------------------------------
@@ -289,6 +340,11 @@ def restore_archive_raw_v1(
         try:
             fetched = acquire_archive_day_v1(staging, manifest.symbol, day, fetch=fetch, now=now)
         except BybitPublicArchiveError as error:
+            refused = load_archive_day_rejection_v1(staging, manifest.symbol, day)
+            if str(error) == ARCHIVE_DAY_REJECTED and refused is not None:
+                # The publisher now serves bytes the strict parse refuses: history changed.
+                _record_retention(paths, manifest, UNVERIFIABLE, at=now(), detail={"refetch_rejected": refused})
+                raise ResearchBarsError("archive_publisher_bytes_changed_artifact_unverifiable") from error
             # A fetch that cannot even be proven is not a changed history: refuse, record nothing.
             raise ResearchBarsError(f"archive_restore_failed:{error}") from error
         if fetched.identity() != manifest.identity():
@@ -383,20 +439,36 @@ def _days(first: date, last: date, opening: Any = None) -> list[date]:
 
 def build_research_bar_dataset_v1(
     root: Path, symbol: str, first: date, last: date, *, store: ResearchFrameStoreV1,
-    holdout_opening: Any = None,
+    holdout_opening: Any = None, require_continuous: bool = False, admit_rejected_days: bool = False,
 ) -> ResearchBarDatasetV1:
-    """Concatenate verified day frames into one window dataset; gaps declared, never filled."""
+    """Concatenate verified day frames into one window dataset; gaps declared, never filled.
+
+    A rejected day refuses the window unless ``admit_rejected_days``; then it is
+    a declared gap. ``require_continuous`` refuses any gap at all.
+    """
     contract = bybit_public_trade_archive_contract_v1()
     records: list[DayBarsV1] = []
     gaps: list[str] = []
+    rejected: list[dict[str, Any]] = []
     for day in _days(first, last, holdout_opening):
-        record = load_day_bars_v1(root, symbol, day)
+        status = archive_day_status_v1(root, symbol, day, holdout_opening=holdout_opening)
+        record = load_day_bars_v1(root, symbol, day) if status == DERIVED else None
+        rejection = load_archive_day_rejection_v1(root, symbol, day) if status == REJECTED else None
         if record is not None:
             records.append(record)
-        elif is_not_published_v1(root, symbol, day):
+        elif status == NOT_PUBLISHED:
             gaps.append(day.isoformat())
+        elif rejection is not None:
+            if not admit_rejected_days:
+                raise ResearchBarsError(
+                    f"window_requires_a_rejected_day:{symbol}:{day.isoformat()}:{rejection['reason']}")
+            rejected.append({"utc_day": day.isoformat(), "reason": rejection["reason"],
+                             "file_sha256": rejection["file_identity"]["sha256"]})
         else:
             raise ResearchBarsError(f"window_day_not_derived:{symbol}:{day.isoformat()}")
+    if require_continuous and (gaps or rejected):
+        missing = sorted([*gaps, *(item["utc_day"] for item in rejected)])
+        raise ResearchBarsError(f"window_not_continuous:{symbol}:{','.join(missing)}")
     if not records:
         raise ResearchBarsError("window_has_no_published_day")
     manifests = []
@@ -446,6 +518,8 @@ def build_research_bar_dataset_v1(
         "bar_frame": {"logical_content_hash": written.logical_content_hash, "row_count": written.row_count},
         "last_bar_close_at": last_close[0].astimezone(UTC).isoformat(),
     }
+    if rejected:  # absent when none, so every window without a rejected day keeps its identity
+        identity["rejected_days"] = rejected
     content_hash = identity_hash_v1(identity)
     dataset = ResearchBarDatasetV1(
         identity=identity, content_hash=content_hash,
@@ -499,7 +573,8 @@ def list_research_bar_datasets_v1(store: ResearchFrameStoreV1) -> list[dict[str,
         out.append({"dataset_version_id": payload["dataset_version_id"], "symbol": identity["symbol"],
                     "first_utc_day": identity["first_utc_day"], "last_utc_day": identity["last_utc_day"],
                     "bars": identity["bar_frame"]["row_count"], "files": len(identity["files"]),
-                    "not_published_days": len(identity["not_published_days"])})
+                    "not_published_days": len(identity["not_published_days"]),
+                    "rejected_days": len(identity.get("rejected_days", []))})
     return out
 
 
@@ -522,10 +597,15 @@ def acquire_and_derive_day_v1(
     fetch: FetchV1 = urllib_fetch_v1, now: Callable[[], datetime] = lambda: datetime.now(UTC),
     holdout_opening: Any = None,
 ) -> DayStepV1:
-    """Acquire (resumable), derive, and optionally evict one day. Idempotent."""
+    """Acquire (resumable), derive, and optionally evict one day. Idempotent.
+
+    A rejected day returns ``REJECTED`` (from its record, without any download)
+    so a long acquisition moves on to the next day; it is never derived.
+    """
     _refuse_holdout(day, holdout_opening)
-    if is_not_published_v1(root, symbol, day):
-        return DayStepV1(symbol, day.isoformat(), NOT_PUBLISHED, 0, False)
+    status = archive_day_status_v1(root, symbol, day, holdout_opening=holdout_opening)
+    if status in (NOT_PUBLISHED, REJECTED):
+        return DayStepV1(symbol, day.isoformat(), status, 0, False)
     record = load_day_bars_v1(root, symbol, day)
     paths = _paths(root, symbol, day)
     if record is not None and not paths["raw"].exists():
@@ -538,6 +618,8 @@ def acquire_and_derive_day_v1(
         if str(error) == "archive_day_not_published":
             record_not_published_v1(root, symbol, day, observed_at=now())
             return DayStepV1(symbol, day.isoformat(), NOT_PUBLISHED, 0, False)
+        if str(error) == ARCHIVE_DAY_REJECTED:
+            return DayStepV1(symbol, day.isoformat(), REJECTED, 0, False)
         raise
     record = derive_archive_day_bars_v1(root, manifest, store=store)
     evicted = evict and evict_archive_raw_v1(root, manifest, store=store, now=now)
@@ -565,9 +647,12 @@ def dataset_file_manifests_v1(root: Path, dataset: ResearchBarDatasetV1) -> Sequ
 __all__ = [
     "BAR_DATASET_SCHEMA_VERSION_V1",
     "DAY_BARS_SCHEMA_VERSION_V1",
+    "DERIVED",
     "EVICTED",
+    "NOT_ACQUIRED",
     "NOT_PUBLISHED",
     "PINNED",
+    "REJECTED",
     "RETAINED",
     "UNVERIFIABLE",
     "DayBarsV1",
@@ -575,7 +660,9 @@ __all__ = [
     "ResearchBarDatasetV1",
     "ResearchBarsError",
     "acquire_and_derive_day_v1",
+    "archive_day_status_v1",
     "build_research_bar_dataset_v1",
+    "contiguous_derived_spans_v1",
     "dataset_file_manifests_v1",
     "derive_archive_day_bars_v1",
     "evict_archive_raw_v1",

@@ -5,7 +5,14 @@
     python scripts/bybit_public_archive.py crosscheck --symbol BTCUSDT --from ... --to ...
     python scripts/bybit_public_archive.py overlap --symbol BTCUSDT --from D --to D --dsn ... --t4-dataset <id>
     python scripts/bybit_public_archive.py research-bars --symbol ETHUSDT --from 2025-08-20 --to 2026-08-19
-    python scripts/bybit_public_archive.py window --symbol ETHUSDT --from 2025-08-20 --to 2026-08-18
+    python scripts/bybit_public_archive.py window --symbol ETHUSDT --from 2025-08-20 --to 2026-08-18 [--require-continuous]
+    python scripts/bybit_public_archive.py spans --symbol BTCUSDT --from 2025-08-20 --to 2026-08-19
+    python scripts/bybit_public_archive.py verify-rejected --symbol BTCUSDT --from 2025-11-27 --to 2025-11-27
+
+A day whose published bytes the strict parse refuses is quarantined with a
+rejection record (``REJECTED`` in research-bars output) and never downloaded
+again; a window needing it is refused unless ``--admit-rejected-days`` makes it
+a declared gap.
 
 Downloads only from https://public.bybit.com/trading/ and, for ``crosscheck``,
 the public REST kline endpoint (unauthenticated public market data), resumably,
@@ -118,18 +125,51 @@ def _window(args: argparse.Namespace) -> None:
     dataset = build_research_bar_dataset_v1(
         args.root, args.symbol, date.fromisoformat(args.first), date.fromisoformat(args.last),
         store=ResearchFrameStoreV1(args.data_root),
+        require_continuous=args.require_continuous, admit_rejected_days=args.admit_rejected_days,
     )
     print(json.dumps({"dataset_version_id": str(dataset.dataset_version_id), "content_hash": dataset.content_hash,
                       "bars": dataset.identity["bar_frame"]["row_count"], "files": len(dataset.identity["files"]),
                       "not_published_days": dataset.identity["not_published_days"],
+                      "rejected_days": dataset.identity.get("rejected_days", []),
                       "day_gaps": dataset.identity["day_gaps"],
                       "last_bar_close_at": dataset.identity["last_bar_close_at"]}, indent=1))
 
 
+def _spans(args: argparse.Namespace, days: list[date]) -> None:
+    """Day status census (records only, no bar rows): gap-free spans, rejected and missing days."""
+    from trade_platform.bybit_public_archive_v1 import load_archive_day_rejection_v1
+    from trade_platform.public_archive_research_bars_v1 import (
+        DERIVED,
+        REJECTED,
+        archive_day_status_v1,
+        contiguous_derived_spans_v1,
+    )
+
+    statuses = {day: archive_day_status_v1(args.root, args.symbol, day) for day in days}
+    rejected = []
+    for day, status in statuses.items():
+        record = load_archive_day_rejection_v1(args.root, args.symbol, day) if status == REJECTED else None
+        if record is not None:
+            rejected.append({"utc_day": day.isoformat(), "reason": record["reason"],
+                             "diagnostic": {k: v for k, v in record["diagnostic"].items() if k != "offending_rows"},
+                             "file_sha256": record["file_identity"]["sha256"]})
+    print(json.dumps({
+        "symbol": args.symbol, "from": args.first, "to": args.last,
+        "counts": {s: sum(1 for v in statuses.values() if v == s) for s in sorted(set(statuses.values()))},
+        "spans": contiguous_derived_spans_v1(args.root, args.symbol, days[0], days[-1]),
+        "rejected_days": rejected,
+        "other_days": {d.isoformat(): s for d, s in statuses.items() if s not in (DERIVED, REJECTED)},
+    }, indent=1))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("acquire", "build", "crosscheck", "overlap", "research-bars", "window"))
+    parser.add_argument("command", choices=("acquire", "build", "crosscheck", "overlap", "research-bars", "window",
+                                            "spans", "verify-rejected"))
     parser.add_argument("--keep-raw", action="store_true", help="research-bars: do not evict raw files (OR-1)")
+    parser.add_argument("--require-continuous", action="store_true", help="window: refuse any day gap")
+    parser.add_argument("--admit-rejected-days", action="store_true",
+                        help="window: a rejected day becomes a declared gap instead of refusing the window")
     parser.add_argument("--t4-dataset", help="overlap: sealed T4 dataset_version_id")
     parser.add_argument("--capture-root", type=Path, default=None, help="overlap: first-party capture root")
     parser.add_argument("--symbol", required=True)
@@ -146,6 +186,18 @@ def main() -> None:
         return
     if args.command == "window":
         _window(args)
+        return
+    if args.command == "spans":
+        _spans(args, days)
+        return
+    if args.command == "verify-rejected":
+        from trade_platform.bybit_public_archive_v1 import verify_archive_day_rejection_v1
+
+        for day in days:
+            record = verify_archive_day_rejection_v1(args.root, args.symbol, day)
+            print(json.dumps({"utc_day": day.isoformat(), "reproduced": record["reason"],
+                              "file_identity": record["file_identity"], "diagnostic": record["diagnostic"]},
+                             indent=1))
         return
     if args.command == "acquire":
         for day in days:
