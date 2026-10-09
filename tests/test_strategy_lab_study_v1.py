@@ -347,7 +347,7 @@ class StudyTests(unittest.TestCase):
 
     def test_naive_datetimes_and_bad_hashes_are_refused(self) -> None:
         with self.assertRaises(StrategyLabStudyError):
-            _study(evaluation_upper_bound_exclusive=datetime(2026, 8, 1))  # noqa: DTZ001
+            _study(evaluation_upper_bound_exclusive=datetime(2026, 8, 1))
         with self.assertRaises(StrategyLabStudyError):
             _strategy(implementation_sha256="A" * 64)
         with self.assertRaises(StrategyLabStudyError):

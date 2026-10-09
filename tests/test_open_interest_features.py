@@ -44,7 +44,7 @@ class OpenInterestChangeDefinitionTests(unittest.TestCase):
 class AwareHelperTests(unittest.TestCase):
     def test_naive_datetime_rejected(self) -> None:
         with self.assertRaisesRegex(OpenInterestFeatureError, "event_at_must_be_timezone_aware"):
-            _aware(datetime(2025, 1, 1), "event_at")  # noqa: DTZ001
+            _aware(datetime(2025, 1, 1), "event_at")
 
     def test_aware_datetime_accepted(self) -> None:
         _aware(datetime(2025, 1, 1, tzinfo=UTC), "event_at")

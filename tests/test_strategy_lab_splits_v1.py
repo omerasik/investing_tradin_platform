@@ -93,7 +93,7 @@ class PurgedWalkForwardTests(unittest.TestCase):
             {"embargo": -H},
             {"evaluation_end_exclusive": T0 + 12 * H},
             {"evaluation_end_exclusive": UNTOUCHED_HOLDOUT_BOUNDARY_V1 + H},
-            {"first_test_start": datetime(2026, 1, 1)},  # noqa: DTZ001
+            {"first_test_start": datetime(2026, 1, 1)},
         )
         for overrides in bad:
             with self.subTest(overrides=overrides), self.assertRaises(StrategyLabSplitError):

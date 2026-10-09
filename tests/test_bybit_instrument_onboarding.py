@@ -291,7 +291,7 @@ class BybitInstrumentMetadataParsingTests(unittest.TestCase):
             parse_bybit_instrument_metadata(
                 # Naive on purpose: this is the case under test.
                 _envelope(),
-                retrieved_at=datetime(2026, 9, 14, 21, 44),  # noqa: DTZ001
+                retrieved_at=datetime(2026, 9, 14, 21, 44),
             )
 
     def test_expected_hash_mismatch_fails_closed(self) -> None:
@@ -455,7 +455,7 @@ class BybitRecordBuilderTests(unittest.TestCase):
             bybit_btcusdt_professional_instrument(
                 # Naive on purpose: this is the case under test.
                 self.snapshot,
-                datetime(2026, 9, 14, 22, 0),  # noqa: DTZ001
+                datetime(2026, 9, 14, 22, 0),
             )
 
     def test_mappings_use_the_provider_namespace_and_stay_open_ended(self) -> None:

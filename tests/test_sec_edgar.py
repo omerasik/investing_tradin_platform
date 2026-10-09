@@ -226,7 +226,7 @@ class ResearchAvailabilityPolicyTests(unittest.TestCase):
     def test_naive_accepted_at_is_rejected(self) -> None:
         with self.assertRaises(SecEdgarError):
             compute_research_available_at(
-                datetime(2024, 2, 1, 18, 0),  # naive  # noqa: DTZ001
+                datetime(2024, 2, 1, 18, 0),  # naive
                 venue="XNAS", calendar_master=FakeCalendarMaster(), known_at=datetime(2024, 2, 1, tzinfo=UTC),
             )
 
