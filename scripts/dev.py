@@ -8,6 +8,13 @@ Prerequisites:
 Usage:
   python scripts/dev.py
   python scripts/dev.py --reset-db
+  python scripts/dev.py --research
+
+``--research`` serves the operator terminal over the real research database
+(``trade_platform_research`` in the ``trade-platform-postgres-dev-research``
+container, where the acquired windows, studies, frozen candidates and Decimal
+reruns live) instead of the ``trade_platform`` fixture database. It migrates
+that database to head and never seeds or resets it.
 """
 
 from __future__ import annotations
@@ -27,6 +34,9 @@ from urllib.parse import urlparse
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 WEB_DIR = ROOT_DIR / "web"
+FIXTURE_DATABASE = "trade_platform"
+RESEARCH_DATABASE = "trade_platform_research"
+RESEARCH_CONTAINER = "trade-platform-postgres-dev-research"
 
 
 def log(msg: str, prefix: str = "▶") -> None:
@@ -189,8 +199,25 @@ def start_postgres(postgres_port: int, reset_db: bool = False) -> None:
         )
         sys.exit(1)
 
+    wait_for_postgres(postgres_port, FIXTURE_DATABASE)
+
+
+def start_research_postgres(postgres_port: int) -> None:
+    """Start the existing research container; never create, reset or seed it."""
+    log(f"Starting the research PostgreSQL container {RESEARCH_CONTAINER}...")
+    res = subprocess.run(["docker", "start", RESEARCH_CONTAINER], capture_output=True, text=True, check=False)
+    if res.returncode != 0:
+        log_error(
+            f"Failed to start {RESEARCH_CONTAINER}.\n{res.stderr}\n"
+            "--research serves the existing research database; it never creates one."
+        )
+        sys.exit(1)
+    wait_for_postgres(postgres_port, RESEARCH_DATABASE)
+
+
+def wait_for_postgres(postgres_port: int, database: str) -> None:
     log("Waiting for PostgreSQL database readiness...")
-    dsn = f"postgresql://postgres:postgres@127.0.0.1:{postgres_port}/trade_platform"  # pragma: allowlist secret
+    dsn = f"postgresql://postgres:postgres@127.0.0.1:{postgres_port}/{database}"  # pragma: allowlist secret
     deadline = time.time() + 30
     import psycopg
 
@@ -201,7 +228,7 @@ def start_postgres(postgres_port: int, reset_db: bool = False) -> None:
                 conn.cursor() as cur,
             ):
                 cur.execute("SELECT 1")
-                log_success(f"PostgreSQL container is healthy on localhost:{postgres_port}.")
+                log_success(f"PostgreSQL database {database} is healthy on localhost:{postgres_port}.")
                 return
         except (OSError, psycopg.Error):
             time.sleep(1)
@@ -213,9 +240,9 @@ def start_postgres(postgres_port: int, reset_db: bool = False) -> None:
     sys.exit(1)
 
 
-def run_migrations(postgres_port: int) -> None:
-    log("Applying Alembic migrations...")
-    dsn = f"postgresql+psycopg://postgres:postgres@127.0.0.1:{postgres_port}/trade_platform"  # pragma: allowlist secret
+def run_migrations(postgres_port: int, database: str = FIXTURE_DATABASE) -> None:
+    log(f"Applying Alembic migrations to {database}...")
+    dsn = f"postgresql+psycopg://postgres:postgres@127.0.0.1:{postgres_port}/{database}"  # pragma: allowlist secret
     env = os.environ.copy()
     env["POSTGRES_DSN"] = dsn
     env["PYTHONPATH"] = str(ROOT_DIR / "src")
@@ -252,9 +279,11 @@ def seed_demo(postgres_port: int) -> None:
     log_success(f"Demo evidence seed completed: {result.stdout.strip()}")
 
 
-def start_backend(postgres_port: int, api_port: int, operator_token: str) -> subprocess.Popen[str]:
-    log(f"Starting FastAPI backend on http://127.0.0.1:{api_port}...")
-    dsn = f"postgresql://postgres:postgres@127.0.0.1:{postgres_port}/trade_platform"  # pragma: allowlist secret
+def start_backend(
+    postgres_port: int, api_port: int, operator_token: str, database: str = FIXTURE_DATABASE,
+) -> subprocess.Popen[str]:
+    log(f"Starting FastAPI backend on http://127.0.0.1:{api_port} over {database}...")
+    dsn = f"postgresql://postgres:postgres@127.0.0.1:{postgres_port}/{database}"  # pragma: allowlist secret
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT_DIR / "src")
     env["POSTGRES_DSN"] = dsn
@@ -404,6 +433,12 @@ def main() -> None:
         help="Seed deterministic local synthetic engineering evidence after migrations.",
     )
     parser.add_argument(
+        "--research",
+        action="store_true",
+        help=f"Serve the real research database {RESEARCH_DATABASE} (container {RESEARCH_CONTAINER}); "
+        "migrates it, never seeds or resets it.",
+    )
+    parser.add_argument(
         "--postgres-port",
         type=int,
         default=int(os.environ.get("POSTGRES_PORT", "5439")),
@@ -422,6 +457,9 @@ def main() -> None:
         help="Port for Next.js dashboard (default: 3000).",
     )
     args = parser.parse_args()
+    if args.research and (args.demo or args.reset_db):
+        parser.error("--research never seeds or resets the research database (drop --demo/--reset-db)")
+    database = RESEARCH_DATABASE if args.research else FIXTURE_DATABASE
 
     operator_token = os.environ.get("TRADE_PLATFORM_OPERATOR_TOKEN", "local-dev-operator-token")
     view_token = os.environ.get("TRADE_PLATFORM_DASHBOARD_VIEW_TOKEN", "local-dev-view-password")
@@ -430,12 +468,15 @@ def main() -> None:
     )
 
     pnpm_cmd = check_prerequisites(args.postgres_port, args.api_port, args.port)
-    start_postgres(args.postgres_port, reset_db=args.reset_db)
-    run_migrations(args.postgres_port)
+    if args.research:
+        start_research_postgres(args.postgres_port)
+    else:
+        start_postgres(args.postgres_port, reset_db=args.reset_db)
+    run_migrations(args.postgres_port, database)
     if args.demo:
         seed_demo(args.postgres_port)
 
-    backend_proc = start_backend(args.postgres_port, args.api_port, operator_token)
+    backend_proc = start_backend(args.postgres_port, args.api_port, operator_token, database)
     frontend_proc = start_frontend(
         pnpm_cmd, args.api_port, args.port, operator_token, view_token, session_secret
     )

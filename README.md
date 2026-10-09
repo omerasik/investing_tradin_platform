@@ -49,6 +49,14 @@ engineering scenario, use:
 python scripts/dev.py --reset-db --demo
 ```
 
+To operate the research terminal (`/terminal`) over the real acquired windows,
+studies, frozen candidates and Decimal reruns, serve the research database
+instead of the fixture database (it is migrated to head, never seeded or reset):
+
+```bash
+python scripts/dev.py --research
+```
+
 The dashboard safely shows explicit unavailable states on a fresh database.
 Deployment-owned `web/dashboard.config.json` remains an optional override for
 pinning a specific authority record; it is not required for PostgreSQL

@@ -2,7 +2,7 @@
 # This is NOT a second roadmap: requirements stay in MASTER_ROADMAP.md, design
 # stays in module docstrings, history stays in git.
 
-updated: 2026-10-08
+updated: 2026-10-09
 
 # Phase naming. Since 2026-09-24 the owner-approved canonical roadmap uses an
 # "R" series (R0-R15, owner review points OR-1..OR-14). It is distinct from the
@@ -72,6 +72,20 @@ first_real_studies: >-
   all SUCCEEDED, frozen top-10, Decimal authority selection ESTABLISHED for all
   three. SEARCH_NON_AUTHORITATIVE / gross / T2 CONDITIONAL. BTC and ETH years
   still acquiring.
+activation_pass_2026_10_09: >-
+  ETH window da5bca46 (524,160 bars) and SOL cacd0ea5: 6 studies, all frozen,
+  Decimal selection ESTABLISHED (60 candidates RECONCILED, 0 held/trade
+  divergence). BTC 2025-11-28..2026-08-18 RESOURCE_BLOCKED: 0.4 GiB RAM free and
+  commit 30.4/31.1 GiB with the research DB up beside capture; 2025-11-27 stays
+  REJECTED_STRICT_PARSE. Research DB was at 0058 (dev.py only migrated the
+  fixture DB): upgraded to 0062; 'scripts/dev.py --research' now serves it.
+  Funding finding: validation rejects any holdout funding-window crossing
+  (FUNDING_EXPOSURE_NOT_MODELLED_FAIL_CLOSED) and every candidate crosses in
+  development (24..1,091 per year), so no candidate can reach INCUBATING
+  until OR-6 decides funding. Gross break-even per side: mean_reversion_z
+  0.20-1.05 bps, trend_ma_cross 0.38-6.33, ETH breakout 0.69-6.54, SOL
+  breakout <= 0.37 (gross-negative). Universe L1 (11.15 h): 1 tick 99.9 % of
+  time, BTC 0.01 / ETH 0.04 / SOL 0.91 bps full spread; max 2.82/3.62/2.71.
 or7_packet:                   # options for the owner; nothing here is decided
   holdout_end: >-
     A) 2026-09-24 (T2 holdout up to the first T4 day, ~35 days); B) the latest
@@ -307,6 +321,11 @@ r1b_universe:                 # OR-2 = U2: BTCUSDT ETHUSDT SOLUSDT, tickers + pu
     sleep, newly found); 10-09 06:00:00 -> 16:15:05Z (~10.25 h, host reboot at
     15:54Z; last arrival 06:06:55Z in an unmanifested partition). Recorders
     restarted 2026-10-09T16:14Z.
+  coverage_2026_10_09_19z: >-
+    From manifests: 11.14 h per symbol (BTC = ETH = SOL; +2.76 h since the
+    16:14Z restart), 7 COMPLETE hourly segments, current consecutive run
+    17:00Z.. (2 complete). Option B (24 consecutive COMPLETE hours) is earliest
+    2026-10-10T17:00Z if nothing interrupts; not accepted (OR-1 open).
   open_point: >-
     R0 v1 keeps recording BTCUSDT beside the universe (+~0.30 GB/day gzip)
     until the owner retires it; not changed here.
