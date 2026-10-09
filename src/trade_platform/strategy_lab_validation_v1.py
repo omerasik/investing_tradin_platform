@@ -626,6 +626,7 @@ def validate_on_holdout_v1(
                     "symbol": holdout.symbol, "dataset_version_id": str(holdout.dataset_version_id),
                     "dataset_content_hash": holdout.content_hash, "bars": bars.size,
                     "not_published_days": list(holdout.identity["not_published_days"]),
+                    "rejected_days": list(holdout.identity.get("rejected_days", [])),
                     "warmup": "INSIDE_THE_HOLDOUT_NO_CARRY_IN"},
         "candidates": results,
         "claim_ceiling": "CONDITIONAL_T2_HOLDOUT_INCUBATION_REQUIRED",

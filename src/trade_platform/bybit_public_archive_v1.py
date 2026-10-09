@@ -48,6 +48,20 @@ Provider-published versus calculated
 binary float in scientific notation and is not carried). ``homeNotional`` must
 equal ``size`` exactly for a linear contract, which is checked, not assumed.
 Bars are the platform's own reconstruction and say so.
+
+A published day the strict parse refuses
+----------------------------------------
+Publisher bytes that download completely and decompress with a valid CRC but
+fail the strict parse (for example BTCUSDT 2025-11-27 repeats a ``trdMatchID``)
+are **rejected**, never repaired: no row is dropped or de-duplicated and no
+duplicate is chosen as authoritative. :func:`acquire_archive_day_v1` keeps the
+exact bytes in quarantine, writes a rejection record (the refusal code, the
+offending rows verbatim, the file identity, ETag and Last-Modified) and raises
+:data:`ARCHIVE_DAY_REJECTED`; it writes no manifest, so no bar can be derived
+from the file. Every later acquisition of that day refuses from the record
+without downloading again. :func:`verify_archive_day_rejection_v1` re-proves the
+quarantined bytes and reproduces the same refusal. A gzip/CRC failure is not a
+rejection (it can be a broken transfer): the partial is deleted as before.
 """
 
 from __future__ import annotations
@@ -84,6 +98,12 @@ ARCHIVE_NORMALIZATION_SEMANTIC_VERSION_V1: Final = "bybit-public-trade-archive-n
 ARCHIVE_BAR_SEMANTIC_VERSION_V1: Final = "bybit-public-trade-archive-1m-event-time-1.0.0"
 T2_PUBLICATION_LAG_SLOT_V1: Final = "UNSET_PENDING_OWNER_DECISION_OR_5"
 
+#: Refusal code of an acquisition whose day carries a rejection record.
+ARCHIVE_DAY_REJECTED: Final = "archive_day_rejected"
+#: Retention/day state of a published file the strict parse refused.
+REJECTED_STRICT_PARSE: Final = "REJECTED_STRICT_PARSE"
+ARCHIVE_REJECTION_SCHEMA_VERSION_V1: Final = "public-archive-day-rejection-v1"
+
 ARCHIVE_TERMS_VERSION_V1: Final = (
     "operator-declared:bybit-public-trading-archive:v1:"
     "publicly-served-unauthenticated;terms-text-not-machine-verified-2026-09-24"
@@ -109,7 +129,15 @@ TURNOVER_QUANTUM_V1: Final = Decimal("1E-8")
 
 
 class BybitPublicArchiveError(ValueError):
-    """Raised on any integrity, schema, ordering or identity failure. Always fail closed."""
+    """Raised on any integrity, schema, ordering or identity failure. Always fail closed.
+
+    ``str(error)`` is the stable refusal code; ``detail`` carries diagnostics
+    (for example the offending row indices), never a repaired value.
+    """
+
+    def __init__(self, code: str, detail: Mapping[str, Any] | None = None) -> None:
+        super().__init__(code)
+        self.detail: dict[str, Any] = dict(detail or {})
 
 
 def _sha256_json(payload: Mapping[str, Any]) -> str:
@@ -323,10 +351,18 @@ def acquire_archive_day_v1(
     mismatch raises; nothing is overwritten). A ``.part`` file is resumed
     from its length. The finished file must match the server's total length,
     decompress completely and parse under the strict schema before its
-    manifest is written; a failure deletes the partial and raises.
+    manifest is written; a transfer or decompression failure deletes the
+    partial and raises. Bytes that decompress but fail the strict parse are
+    quarantined with a rejection record and raise :data:`ARCHIVE_DAY_REJECTED`;
+    a day with a rejection record is refused without any download.
     """
     contract = bybit_public_trade_archive_contract_v1()
     final, part, manifest_path = _file_paths(root, contract, symbol, day)
+    rejection = load_archive_day_rejection_v1(root, symbol, day)
+    if rejection is not None:
+        if manifest_path.exists():
+            raise BybitPublicArchiveError("archive_day_both_manifested_and_rejected")
+        raise BybitPublicArchiveError(ARCHIVE_DAY_REJECTED, {"reason": rejection["reason"]})
     if manifest_path.exists():
         manifest = load_archive_file_manifest_v1(manifest_path)
         verify_archive_file_v1(root, manifest)
@@ -376,12 +412,22 @@ def acquire_archive_day_v1(
         raise BybitPublicArchiveError("archive_download_length_mismatch")
     try:
         uncompressed_sha, uncompressed_bytes = _gzip_digest(part)
-        with gzip.open(part, "rt", encoding="utf-8", newline="") as handle:
-            for _ in iter_archive_trades_v1(handle, symbol=symbol, day=day):
-                pass
     except BybitPublicArchiveError:
         part.unlink(missing_ok=True)
         raise
+    try:
+        with gzip.open(part, "rt", encoding="utf-8", newline="") as handle:
+            for _ in iter_archive_trades_v1(handle, symbol=symbol, day=day):
+                pass
+    except BybitPublicArchiveError as error:
+        record = _reject_archive_day(
+            root, part, contract=contract, symbol=symbol, day=day, url=url, error=error,
+            identity={"source_id": str(contract.source_id), "symbol": symbol, "utc_day": day.isoformat(),
+                      "file_name": final.name, "bytes": total, "sha256": _file_sha256(part),
+                      "uncompressed_bytes": uncompressed_bytes, "uncompressed_sha256": uncompressed_sha},
+            http_etag=etag, http_last_modified=last_modified, retrieved_at=now().isoformat(),
+        )
+        raise BybitPublicArchiveError(ARCHIVE_DAY_REJECTED, {"reason": record["reason"]}) from error
     os.replace(part, final)
     manifest = ArchiveFileManifestV1(
         source_id=str(contract.source_id), symbol=symbol, utc_day=day.isoformat(), url=url,
@@ -393,6 +439,104 @@ def acquire_archive_day_v1(
     staged.write_text(json.dumps(asdict(manifest), sort_keys=True, indent=1), encoding="utf-8")
     os.replace(staged, manifest_path)
     return manifest
+
+
+def _rejection_paths(root: Path, symbol: str, day: date) -> tuple[Path, Path]:
+    """(quarantined bytes, rejection record) of one day."""
+    final, _, _ = _file_paths(root, bybit_public_trade_archive_contract_v1(), symbol, day)
+    return final.with_name(final.name + ".rejected"), final.with_name(final.name + ".rejected.json")
+
+
+def _offending_rows(path: Path, indices: Sequence[int]) -> dict[str, list[str]]:
+    """The named data rows verbatim (0-based, header excluded), for the rejection record."""
+    wanted = set(indices)
+    out: dict[str, list[str]] = {}
+    if not wanted:
+        return out
+    try:
+        with gzip.open(path, "rt", encoding="utf-8", newline="") as handle:
+            reader = csv.reader(handle)
+            next(reader, None)
+            for index, row in enumerate(reader):
+                if index in wanted:
+                    out[str(index)] = row
+                    if len(out) == len(wanted):
+                        break
+    except (UnicodeDecodeError, csv.Error):
+        pass  # diagnostics are best effort; the refusal code and the bytes are the evidence
+    return out
+
+
+def _row_indices(detail: Mapping[str, Any]) -> list[int]:
+    return sorted({v for k, v in detail.items() if k.endswith("row_index") and isinstance(v, int)})
+
+
+def _reject_archive_day(
+    root: Path, part: Path, *, contract: PublicArchiveSourceContractV1, symbol: str, day: date, url: str,
+    error: BybitPublicArchiveError, identity: Mapping[str, Any], http_etag: str | None,
+    http_last_modified: str | None, retrieved_at: str,
+) -> dict[str, Any]:
+    """Quarantine refused publisher bytes and record why. Nothing is repaired or chosen."""
+    quarantine, record_path = _rejection_paths(root, symbol, day)
+    detail = dict(error.detail)
+    record = {
+        "schema_version": ARCHIVE_REJECTION_SCHEMA_VERSION_V1,
+        "state": REJECTED_STRICT_PARSE,
+        "source_id": str(contract.source_id), "symbol": symbol, "utc_day": day.isoformat(), "url": url,
+        "reason": str(error),
+        "diagnostic": {**detail, "offending_rows": _offending_rows(part, _row_indices(detail))},
+        "file_identity": dict(identity),
+        "http_etag": http_etag, "http_last_modified": http_last_modified, "retrieved_at": retrieved_at,
+        "normalization_semantic_version": ARCHIVE_NORMALIZATION_SEMANTIC_VERSION_V1,
+        "quarantined_file": quarantine.name,
+        "repair": "NONE_NOT_DEDUPLICATED_NO_ROW_CHOSEN_NO_BRIDGE",
+    }
+    os.replace(part, quarantine)
+    staged = record_path.with_name(record_path.name + ".tmp")
+    staged.write_text(json.dumps(record, sort_keys=True, indent=1), encoding="utf-8")
+    os.replace(staged, record_path)
+    return record
+
+
+def load_archive_day_rejection_v1(root: Path, symbol: str, day: date) -> dict[str, Any] | None:
+    """The day's rejection record, or ``None``. A malformed record fails closed."""
+    _, path = _rejection_paths(root, symbol, day)
+    if not path.exists():
+        return None
+    record = json.loads(path.read_text(encoding="utf-8"))
+    if (
+        record.get("schema_version") != ARCHIVE_REJECTION_SCHEMA_VERSION_V1
+        or record.get("state") != REJECTED_STRICT_PARSE
+        or record.get("symbol") != symbol
+        or record.get("utc_day") != day.isoformat()
+        or not record.get("reason")
+    ):
+        raise BybitPublicArchiveError("archive_rejection_record_malformed")
+    return dict(record)
+
+
+def verify_archive_day_rejection_v1(root: Path, symbol: str, day: date) -> dict[str, Any]:
+    """Re-prove the quarantined bytes against the record and reproduce the same refusal."""
+    record = load_archive_day_rejection_v1(root, symbol, day)
+    if record is None:
+        raise BybitPublicArchiveError("archive_day_not_rejected")
+    quarantine, _ = _rejection_paths(root, symbol, day)
+    identity = record["file_identity"]
+    if not quarantine.exists():
+        raise BybitPublicArchiveError("archive_rejected_bytes_not_retained")
+    if quarantine.stat().st_size != identity["bytes"] or _file_sha256(quarantine) != identity["sha256"]:
+        raise BybitPublicArchiveError("archive_rejected_bytes_differ_from_record")
+    if _gzip_digest(quarantine) != (identity["uncompressed_sha256"], identity["uncompressed_bytes"]):
+        raise BybitPublicArchiveError("archive_rejected_bytes_differ_from_record")
+    expected = {k: v for k, v in record["diagnostic"].items() if k != "offending_rows"}
+    try:
+        with gzip.open(quarantine, "rt", encoding="utf-8", newline="") as handle:
+            for _ in iter_archive_trades_v1(handle, symbol=symbol, day=day):
+                pass
+    except BybitPublicArchiveError as error:
+        if str(error) == record["reason"] and error.detail == expected:
+            return record
+    raise BybitPublicArchiveError("archive_rejection_not_reproduced")
 
 
 # ---------------------------------------------------------------------------
@@ -441,7 +585,23 @@ def _micros(text: str) -> int:
 
 
 def iter_archive_trades_v1(handle: io.TextIOBase | Any, *, symbol: str, day: date) -> Iterator[ArchiveTradeV1]:
-    """Strict, ordered parse of one daily file. Raises on the first defect."""
+    """Strict, ordered parse of one daily file. Raises on the first defect.
+
+    A row defect carries ``detail["row_index"]`` (0-based, header excluded);
+    a repeated trade id also carries the first row with that id.
+    """
+    position = [-1]
+    try:
+        yield from _iter_archive_trades(handle, symbol=symbol, day=day, position=position)
+    except BybitPublicArchiveError as error:
+        if position[0] >= 0:
+            error.detail.setdefault("row_index", position[0])
+        raise
+
+
+def _iter_archive_trades(
+    handle: io.TextIOBase | Any, *, symbol: str, day: date, position: list[int]
+) -> Iterator[ArchiveTradeV1]:
     reader = csv.reader(handle)
     header = next(reader, None)
     if header is None or tuple(header) != ARCHIVE_SCHEMA_V1:
@@ -449,8 +609,9 @@ def iter_archive_trades_v1(handle: io.TextIOBase | Any, *, symbol: str, day: dat
     day_start = (datetime(day.year, day.month, day.day, tzinfo=UTC) - _EPOCH) // timedelta(microseconds=1)
     day_end = day_start + 86_400_000_000
     previous = -1
-    seen: set[str] = set()
+    seen: dict[str, int] = {}
     for index, row in enumerate(reader):
+        position[0] = index
         if len(row) != len(ARCHIVE_SCHEMA_V1):
             raise BybitPublicArchiveError("archive_row_width_mismatch")
         ts, row_symbol, side, size, price, tick, match_id, _gross, home, foreign, rpi = row
@@ -467,8 +628,10 @@ def iter_archive_trades_v1(handle: io.TextIOBase | Any, *, symbol: str, day: dat
         if not match_id.strip():
             raise BybitPublicArchiveError("archive_trade_id_missing")
         if match_id in seen:
-            raise BybitPublicArchiveError("archive_trade_id_repeated")
-        seen.add(match_id)
+            raise BybitPublicArchiveError("archive_trade_id_repeated", {
+                "trade_id": match_id, "first_row_index": seen[match_id], "row_index": index,
+            })
+        seen[match_id] = index
         quantity = _positive(size, "size")
         if _positive(home, "home_notional") != quantity:
             raise BybitPublicArchiveError("archive_home_notional_differs_from_size")
@@ -702,7 +865,9 @@ class PostgresPublicArchiveCatalogV1:
 
 
 __all__ = [
+    "ARCHIVE_DAY_REJECTED",
     "ARCHIVE_SCHEMA_V1",
+    "REJECTED_STRICT_PARSE",
     "T2_ARCHIVE_OHLCV_1M_FRAME",
     "T2_ARCHIVE_TRADE_FRAME",
     "T2_PUBLICATION_LAG_SLOT_V1",
@@ -717,7 +882,9 @@ __all__ = [
     "build_archive_dataset_v1",
     "bybit_public_trade_archive_contract_v1",
     "iter_archive_trades_v1",
+    "load_archive_day_rejection_v1",
     "load_archive_file_manifest_v1",
     "urllib_fetch_v1",
+    "verify_archive_day_rejection_v1",
     "verify_archive_file_v1",
 ]

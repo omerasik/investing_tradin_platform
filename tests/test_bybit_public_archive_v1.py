@@ -7,6 +7,7 @@ network call is made.
 from __future__ import annotations
 
 import gzip
+import hashlib
 import io
 import shutil
 import tempfile
@@ -16,7 +17,9 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 from trade_platform.bybit_public_archive_v1 import (
+    ARCHIVE_DAY_REJECTED,
     ARCHIVE_SCHEMA_V1,
+    REJECTED_STRICT_PARSE,
     T2_PUBLICATION_LAG_SLOT_V1,
     BybitPublicArchiveError,
     HttpResponseV1,
@@ -25,6 +28,8 @@ from trade_platform.bybit_public_archive_v1 import (
     build_archive_dataset_v1,
     bybit_public_trade_archive_contract_v1,
     iter_archive_trades_v1,
+    load_archive_day_rejection_v1,
+    verify_archive_day_rejection_v1,
     verify_archive_file_v1,
 )
 
@@ -144,6 +149,42 @@ class ArchiveTests(unittest.TestCase):
         with self.assertRaises(BybitPublicArchiveError):
             acquire_archive_day_v1(self.temp, "BTCUSDT", DAY, fetch=FakeArchive(bytes(body)))
         self.assertEqual(list(self.temp.rglob("*.gz*")), [])
+
+    def test_a_strict_parse_refusal_is_quarantined_recorded_and_never_refetched(self) -> None:
+        body = _gz(_csv(STANDARD).replace("id-000001", "id-000000"))  # the publisher repeats a trade id
+        fake = FakeArchive(body)
+        with self.assertRaisesRegex(BybitPublicArchiveError, ARCHIVE_DAY_REJECTED) as raised:
+            acquire_archive_day_v1(self.temp, "BTCUSDT", DAY, fetch=fake)
+        self.assertEqual("archive_trade_id_repeated", raised.exception.detail["reason"])
+        self.assertEqual([], list(self.temp.rglob("*.manifest.json")))  # nothing can be derived
+        self.assertEqual([], list(self.temp.rglob("*.part")))
+        record = load_archive_day_rejection_v1(self.temp, "BTCUSDT", DAY)
+        assert record is not None
+        self.assertEqual(REJECTED_STRICT_PARSE, record["state"])
+        self.assertEqual({"trade_id": "id-000000", "first_row_index": 0, "row_index": 1},
+                         {k: v for k, v in record["diagnostic"].items() if k != "offending_rows"})
+        self.assertEqual({"0", "1"}, set(record["diagnostic"]["offending_rows"]))  # both rows, verbatim
+        self.assertEqual(hashlib.sha256(body).hexdigest(), record["file_identity"]["sha256"])
+        self.assertEqual(len(body), record["file_identity"]["bytes"])
+        self.assertEqual('"e-1"', record["http_etag"])
+        self.assertTrue(record["repair"].startswith("NONE"))
+        # Known rejected: refused from the record, nothing downloaded again.
+        again = FakeArchive(body)
+        with self.assertRaisesRegex(BybitPublicArchiveError, ARCHIVE_DAY_REJECTED):
+            acquire_archive_day_v1(self.temp, "BTCUSDT", DAY, fetch=again)
+        self.assertEqual([], again.calls)
+        # The quarantined bytes re-prove and reproduce the same refusal; tampering is detected.
+        self.assertEqual(record, verify_archive_day_rejection_v1(self.temp, "BTCUSDT", DAY))
+        quarantined = next(self.temp.rglob("*.csv.gz.rejected"))
+        quarantined.write_bytes(_gz(_csv(STANDARD)))
+        with self.assertRaisesRegex(BybitPublicArchiveError, "differ_from_record"):
+            verify_archive_day_rejection_v1(self.temp, "BTCUSDT", DAY)
+
+    def test_a_row_defect_names_its_row(self) -> None:
+        with self.assertRaises(BybitPublicArchiveError) as raised:
+            list(iter_archive_trades_v1(io.StringIO(_csv([STANDARD[1], STANDARD[0]])), symbol="BTCUSDT", day=DAY))
+        self.assertEqual(("archive_rows_not_in_time_order", {"row_index": 1}),
+                         (str(raised.exception), raised.exception.detail))
 
     def test_stored_file_tampering_fails_verification(self) -> None:
         manifest = acquire_archive_day_v1(self.temp, "BTCUSDT", DAY, fetch=FakeArchive(_gz(_csv(STANDARD))))
