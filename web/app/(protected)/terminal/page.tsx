@@ -4,6 +4,7 @@ import {
   getStrategyLabStudies,
   getTerminalAccounts,
   getTerminalActivation,
+  getTerminalCommands,
   getTerminalIncubation,
   getTerminalOverview,
   getTerminalReruns,
@@ -13,8 +14,11 @@ import {
   stateText,
   utc,
   type ActivationReadiness,
+  type ReadinessAnswer,
+  type TerminalCommand,
   type TerminalCycle,
 } from "../../lib/data-access";
+import { CommandConsole } from "./command-console";
 import { WorkspaceToolbar } from "../../components/workspace-toolbar";
 import { QualityStateBadge } from "../../components/quality-state-badge";
 import { DataTable } from "../../components/data-table";
@@ -113,6 +117,58 @@ function ActivationPanel({ readiness }: { readiness: ActivationReadiness }) {
   );
 }
 
+/** Command kinds gated by a readiness answer (mirrors READINESS_GATES in research_terminal_commands_v1). */
+const COMMAND_GATES: Record<string, ReadinessAnswer["key"]> = {
+  STRATEGY_SEARCH: "research_run",
+  RESEARCH_WATCH_START: "research_watch",
+  PAPER_INCUBATION_START: "paper_incubation",
+};
+
+function blockedCommands(readiness: ActivationReadiness | undefined): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const [kind, key] of Object.entries(COMMAND_GATES)) {
+    const answer = readiness?.answers.find((item) => item.key === key);
+    if (!answer) out[kind] = ["ACTIVATION_READINESS_UNAVAILABLE"];
+    else if (answer.status === "BLOCKED") out[kind] = answer.reasons;
+  }
+  return out;
+}
+
+function CommandsSection({ readiness, commands, unavailable }: {
+  readiness: ActivationReadiness | undefined; commands: TerminalCommand[] | undefined; unavailable: string;
+}) {
+  return (
+    <section aria-label="Terminal commands" className="margin-bottom-24">
+      <h3>Commands</h3>
+      <p>
+        Every command runs through the authority that owns it, is checked against the readiness above, and is recorded
+        with its outcome. Search, freeze, rerun, validation and runners are carried out by the command worker
+        (<code>scripts/research_terminal_worker.py</code>). Owner decisions — watch list (OR-9), account and
+        account policy (OR-11), preregistration authorization and the one-shot holdout opening (OR-7) — are
+        submitted with the owner&apos;s own credential (<code>scripts/terminal_command.py</code>), never through this
+        page&apos;s shared token, and every approval is bound to that authenticated owner.
+      </p>
+      <CommandConsole blocked={blockedCommands(readiness)} />
+      {commands && commands.length ? (
+        <DataTable caption="Recent commands" ariaLabel="Recent commands">
+          <thead><tr><th scope="col">Requested (UTC)</th><th scope="col">Command</th><th scope="col">By</th><th scope="col">State</th><th scope="col">Outcome</th></tr></thead>
+          <tbody>
+            {commands.map((command) => (
+              <tr key={command.command_id}>
+                <td><time dateTime={command.requested_at}>{utc(command.requested_at)}</time></td>
+                <td title={JSON.stringify(command.inputs)}>{command.kind}</td>
+                <td>{command.requested_by}</td>
+                <td><Claim label={command.state} /></td>
+                <td><code>{JSON.stringify(command.detail).slice(0, 240)}</code></td>
+              </tr>
+            ))}
+          </tbody>
+        </DataTable>
+      ) : <p className="empty-notice">{commands ? "No command recorded yet." : unavailable}</p>}
+    </section>
+  );
+}
+
 function CycleSummary({ cycle }: { cycle: TerminalCycle }) {
   return (
     <p>
@@ -127,13 +183,14 @@ function CycleSummary({ cycle }: { cycle: TerminalCycle }) {
 export default async function ResearchTerminalPage() {
   const ctx = await getWorkspaceContext();
   const [overviewResult, captureResult, signalsResult, studiesResult, rerunsResult, validationResult, accountsResult, incubationResult,
-    activationResult] =
+    activationResult, commandsResult] =
     await Promise.all([
       getTerminalOverview(ctx), getCaptureAvailability(ctx), getTerminalSignals(ctx), getStrategyLabStudies(ctx),
       getTerminalReruns(ctx), getTerminalValidation(ctx), getTerminalAccounts(ctx), getTerminalIncubation(ctx),
-      getTerminalActivation(ctx),
+      getTerminalActivation(ctx), getTerminalCommands(ctx),
     ]);
   const activation = activationResult.state === "AVAILABLE" ? activationResult.value : undefined;
+  const commands = commandsResult.state === "AVAILABLE" ? commandsResult.value : undefined;
   const overview = overviewResult.state === "AVAILABLE" ? overviewResult.value : undefined;
   const capture = captureResult.state === "AVAILABLE" ? captureResult.value : undefined;
   const signals = signalsResult.state === "AVAILABLE" ? signalsResult.value : undefined;
@@ -162,6 +219,7 @@ export default async function ResearchTerminalPage() {
 
       <Step id="command-center" title="Command Center">
         {activation ? <ActivationPanel readiness={activation} /> : <p className="empty-notice">{stateText(activationResult)}</p>}
+        <CommandsSection readiness={activation} commands={commands} unavailable={stateText(commandsResult)} />
         {overview ? (
           <>
             <div className="metrics-strip">

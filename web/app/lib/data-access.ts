@@ -651,6 +651,21 @@ export function getTerminalActivation(ctx: WorkspaceContext): Promise<EvidenceRe
   return terminal(ctx, authorityUrl(ctx.origin, "/operator-dashboard/research-terminal/activation"), "Activation readiness is unavailable.");
 }
 
+export type TerminalCommand = {
+  command_id: string;
+  kind: string;
+  inputs: Record<string, unknown>;
+  requested_by: string;
+  requested_at: string;
+  state: string;
+  detail: Record<string, unknown>;
+  updated_at: string;
+};
+
+export function getTerminalCommands(ctx: WorkspaceContext): Promise<EvidenceResult<TerminalCommand[]>> {
+  return terminal(ctx, authorityUrl(ctx.origin, "/operator-dashboard/research-terminal/commands?limit=30"), "Terminal commands are unavailable.");
+}
+
 export type StrategyLabStudySummary = {
   study_id: string;
   strategy_family: string;
