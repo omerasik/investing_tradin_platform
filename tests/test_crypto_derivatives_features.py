@@ -94,7 +94,7 @@ class AwareHelperTests(unittest.TestCase):
         with self.assertRaisesRegex(
             CryptoDerivativesFeatureError, "event_at_must_be_timezone_aware"
         ):
-            _aware(datetime(2025, 1, 1), "event_at")  # noqa: DTZ001
+            _aware(datetime(2025, 1, 1), "event_at")
 
     def test_aware_datetime_accepted(self) -> None:
         _aware(datetime(2025, 1, 1, tzinfo=UTC), "event_at")

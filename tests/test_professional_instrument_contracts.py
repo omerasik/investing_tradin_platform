@@ -20,7 +20,7 @@ class ProfessionalInstrumentContractTests(unittest.TestCase):
         self.assertIn("not XAUUSD spot or GC futures", gold.underlying_reference)
 
     def test_timestamps_must_be_timezone_aware(self) -> None:
-        naive = datetime(2024, 1, 1)  # noqa: DTZ001 - deliberate rejection fixture
+        naive = datetime(2024, 1, 1)
         with self.assertRaisesRegex(InstrumentMasterError, "registered_at_must_be_timezone_aware"):
             mvp_instrument_universe(naive)
 

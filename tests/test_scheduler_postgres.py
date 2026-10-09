@@ -496,7 +496,7 @@ class RetentionManifestsDueForEvaluationTests(unittest.TestCase):
         with self.assertRaises(RetentionEvidenceError):
             self.store.manifests_due_for_evaluation(self.now, limit=0)
         with self.assertRaises(RetentionEvidenceError):
-            self.store.manifests_due_for_evaluation(datetime(2026, 9, 6, 12))  # noqa: DTZ001 - deliberately naive
+            self.store.manifests_due_for_evaluation(datetime(2026, 9, 6, 12))
 
 
 if __name__ == "__main__":

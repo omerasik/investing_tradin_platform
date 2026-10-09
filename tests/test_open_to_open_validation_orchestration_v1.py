@@ -1938,7 +1938,7 @@ class RequestValidationTests(unittest.TestCase):
     def test_naive_evaluated_at_is_rejected(self) -> None:
         request = replace(
             _request(_fixture_evidence(span_days=10)),
-            evaluated_at=datetime(2026, 6, 1),  # noqa: DTZ001
+            evaluated_at=datetime(2026, 6, 1),
         )
         with self.assertRaises(OpenToOpenValidationOrchestrationV1Error) as error:
             request.validate()
