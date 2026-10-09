@@ -279,6 +279,12 @@ class ChargeRuleTests(_Root):
         flip = self.steps([0, 1, -1, -1, 0], cost="0.0005")  # long pays 1.02x vs short receives
         self.assertEqual((Decimal("-0.000102"), Decimal(0)), (flip.steps[1], flip.steps[2]))
 
+    def test_a_position_at_a_first_bar_opening_on_a_settlement_is_refused(self) -> None:
+        bars = minute_bars(datetime(2026, 6, 1, 8, tzinfo=UTC), ["100", "100"])
+        self.assertEqual(1, self.steps([0, 0], bars=bars).flat)
+        with self.assertRaises(FundingHistoryError):  # held_positions_v1 never produces it; refused, not approximated
+            self.steps([1, 1], bars=bars)
+
     def test_a_missing_bar_at_the_instant_is_flat_or_not_costable(self) -> None:
         gapped = minute_bars(datetime(2026, 6, 1, 7, 58, tzinfo=UTC), ["100", "100", "102", "102", "102"], skip=[2])
         self.assertEqual(1, self.steps([0, 0, 0, 0], bars=gapped).flat)

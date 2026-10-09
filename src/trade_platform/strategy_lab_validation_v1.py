@@ -80,7 +80,7 @@ from .bybit_funding_history_v1 import (
     require_covering_complete_v1,
 )
 from .persistence import PostgresDatabase
-from .public_archive_research_bars_v1 import ResearchBarDatasetV1
+from .public_archive_research_bars_v1 import ResearchBarDatasetV1, ResearchBarsError
 from .research_data_plane_v1 import ResearchFrameStoreV1
 from .strategy_lab_authority_rerun_v1 import (
     SELECTION_ESTABLISHED,
@@ -601,7 +601,7 @@ def validate_on_holdout_v1(
     try:
         funding = load_funding_history_v1(store.root, funding.dataset_version_id, holdout_opening=opening)
         require_covering_complete_v1(funding, bars, frozen["symbol"])
-    except FundingHistoryError as error:
+    except (FundingHistoryError, ResearchBarsError, OSError, LookupError, ValueError) as error:
         raise StrategyLabValidationError(f"validation_requires_complete_published_funding:{error}") from error
     if (funding.identity["first_utc_day"], funding.identity["last_utc_day"]) != (
         start.date().isoformat(), (end - _DAY).date().isoformat()

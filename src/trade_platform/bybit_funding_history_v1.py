@@ -452,6 +452,10 @@ def funding_steps_v1(
         if k < n and opens[k] == at:
             before = held[k - 1] if k else 0  # no carry-in: the evaluated span starts flat
             after = held[k]
+            if k == 0 and after:
+                # held_positions_v1 starts every segment flat; a position at the first bar has no
+                # prior interval to book a settlement at its open on, so it is refused, not approximated.
+                raise FundingHistoryError("position_at_the_first_bar_cannot_be_funded_exactly")
             if before == 0 and after == 0:
                 flat += 1
             elif before == after:
@@ -468,7 +472,7 @@ def funding_steps_v1(
                         held[k - 1] - previous)
                 pay_after = after * rate * growth if after else Decimal(0)
                 # Either outcome is a cash flow at T, booked on interval k-1 so it compounds from T exactly.
-                steps[k - 1 if k else 0] -= max(pay_before, pay_after)
+                steps[k - 1] -= max(pay_before, pay_after)
         else:
             j = k - 1  # span_start <= at and at is not a bar open, so j >= 0
             if held[j] == 0:
