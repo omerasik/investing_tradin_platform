@@ -26,6 +26,34 @@ phase:
     R4.6 SDK + search -> R4.7 Decimal rerun -> R6 preregistration/holdout registry
     -> R8 live T4 signals -> R9 account policy boundary -> R10 paper incubation -> UI-2.
   owner_gates_open: OR-7 (validation/holdout packet), OR-11 (accounts/risk), OR-9 (watchlist/alerts), fee schedule.
+  owner_direction_2026_10_09: >-
+    Activation campaign. OR-1: acceptance = 24 consecutive manifest-proven
+    COMPLETE hourly segments for BTC/ETH/SOL (Option B); earlier evidence stays
+    valid, no gap bridged, R0 BTC retirement waits for it. OR-6 funding F3:
+    real, official, zero-cost Bybit-published settled funding (no constant, no
+    inference) -> bybit_funding_history_v1. REAL HOLDOUT NOT OPENED: it waits
+    for the owner values listed under prepared_packets.
+
+prepared_packets:             # prepared, NOT approved; nothing here is an owner decision until applied
+  or6: >-
+    Slippage candidate CONSERVATIVE_MEDIUM = 1 / 2.5 / 5 bps per side (three
+    named SlippageScenarioV1 entries), ready to approve. Funding: charged from
+    Bybit-published settled funding (F3). MISSING: verified Bybit maker and taker
+    fee for the actual account/VIP tier with a verification reference.
+  or7: >-
+    ETHUSDT breakout_channel study 566bdfb8; holdout end Option B (latest
+    admissible published archive day at opening); minimum trades 50; acceptance
+    net total_return > 0 AND max_drawdown <= cap; incubation 28 days. MISSING:
+    the max-drawdown cap, authorized_by / authorized_on.
+  or9: >-
+    Core watch list: ETH trend 01e0595f, SOL trend db8f92df, ETH breakout
+    8813e8d1 and e275f278; optional DIAGNOSTIC/COST-SENTINEL only: ETH mean
+    reversion a204fdbd, SOL mean reversion 2a11033e. No SOL breakout (development
+    evidence gross-negative). No real watch before OR-7 and owner authorization.
+  or11: >-
+    Unchanged and fail-closed: every economic/risk value in or11_packet is
+    MISSING_OWNER_*; the seven unsupported paper-v1 controls may be declared
+    NOT_APPLICABLE only by the owner.
   not_in_scope: >-
     VALIDATED claims by 10-31; T4 as search data this cycle; invented fees,
     slippage, capital or limits; L2 slippage model; basis/funding families.
@@ -42,6 +70,18 @@ r6_validation: >-
   holdout days without it), Decimal holdout validation under every OR-5 lag
   and approved cost scenario, append-only candidate states ending INCUBATING
   or REJECTED (PROFESSIONALLY_VALIDATED reserved). Holdout NOT opened.
+or6_f3_funding: >-
+  bybit_funding_history_v1: strict, checkpointed per-day pages of
+  /v5/market/funding/history behind the research-bars holdout gate; identity =
+  published content, raw-page SHA-256 in separate provenance; COMPLETE only on
+  one uniform spacing with tight edges (else refused, never interpolated);
+  T2_EVENT_TIME outcome only. Charge rule bybit-funding-charge-v1 on the unit
+  exposure model (venue payer rule; flat not charged; fill at the funding-instant
+  open charges the worse outcome once; held at a missing bar = not costable,
+  fails closed). Holdout validation requires it over exactly the opened span.
+  Real dev-year check 2025-08-20..2026-08-19: BTC/ETH/SOL each COMPLETE, 1,095
+  settlements, uniform 8 h (00/08/16 UTC); two independent fetches gave the same
+  content hash (provenance differs: the body carries server time).
 r8_live_signals: >-
   live_signals_v1 + migration 0058 (PR #190): live T4 bars through the R3A
   normalizer (a capture gap or recorded interruption discards the open minute
@@ -326,6 +366,14 @@ r1b_universe:                 # OR-2 = U2: BTCUSDT ETHUSDT SOLUSDT, tickers + pu
     16:14Z restart), 7 COMPLETE hourly segments, current consecutive run
     17:00Z.. (2 complete). Option B (24 consecutive COMPLETE hours) is earliest
     2026-10-10T17:00Z if nothing interrupts; not accepted (OR-1 open).
+  clean_run_or1_option_b: >-
+    Counted from manifests only (availability on the universe root), never wall
+    clock: a COMPLETE hourly segment starts within seconds of HH:00 and ends with
+    OPERATOR_BOUNDED_STOP or UTC_DAY_ROLLOVER; the few seconds between segments
+    are session boundaries, any longer hole restarts the count. 2026-10-09T20:30Z:
+    BTC/ETH/SOL 3/24 (17:00, 18:00, 19:00Z) after the 16:14Z restart (the
+    16:14-17:00 lead-in is complete but not a whole hour). Uninterrupted, 24/24
+    closes ~2026-10-10T17:00Z.
   open_point: >-
     R0 v1 keeps recording BTCUSDT beside the universe (+~0.30 GB/day gzip)
     until the owner retires it; not changed here.

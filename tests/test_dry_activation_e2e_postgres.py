@@ -93,6 +93,7 @@ class DryActivationE2EPostgresTests(unittest.TestCase):
         return build_study("breakout_channel", study.datasets[0].dataset_version_id, data_root), data_root
 
     def test_the_whole_activation_chain_runs_on_engineering_evidence_and_the_real_holdout_stays_closed(self) -> None:
+        from tests.test_bybit_funding_history_v1 import fixture_funding_history
         from tests.test_live_signals_v1 import _live_bars
         from tests.test_strategy_lab_e2e_fixture import FIRST_DAY, SyntheticDays
         from tests.test_strategy_lab_validation_v1 import (
@@ -188,7 +189,8 @@ class DryActivationE2EPostgresTests(unittest.TestCase):
                                           evict=True, fetch=SyntheticDays())
             holdout = build_research_bar_dataset_v1(archive, "BTCUSDT", FIRST_DAY, FIRST_DAY + timedelta(days=1),
                                                     store=store)
-            run = validate_on_holdout_v1(packet, opening, holdout, store=store)
+            funding = fixture_funding_history(store.root, "BTCUSDT", FIRST_DAY, 2)
+            run = validate_on_holdout_v1(packet, opening, holdout, store=store, funding=funding)
             states = [{**event, "evidence_hash": run.content_hash} for event in run.state_events]
             incubating = [s for s in states if s["state"] == "INCUBATING"]
             self.assertTrue(incubating, [(s["trial_id"], s["reasons"]) for s in states])

@@ -206,6 +206,7 @@ class Worker:
                 "preregistration_hash": opening.preregistration_hash}
 
     def holdout_validate(self, command: CommandView) -> dict[str, Any]:
+        from trade_platform.bybit_funding_history_v1 import acquire_funding_history_v1
         from trade_platform.public_archive_research_bars_v1 import (
             acquire_and_derive_day_v1,
             build_research_bar_dataset_v1,
@@ -231,7 +232,8 @@ class Worker:
             day += timedelta(days=1)
         holdout = build_research_bar_dataset_v1(self.args.archive_root, packet.symbol, first, last, store=store,
                                                 holdout_opening=opening)
-        run = validate_on_holdout_v1(packet, opening, holdout, store=store)
+        funding = acquire_funding_history_v1(store.root, packet.symbol, first, last, holdout_opening=opening)
+        run = validate_on_holdout_v1(packet, opening, holdout, store=store, funding=funding)
         registry.record_validation(run)
         return {"validation_hash": run.content_hash,
                 "states": {item["trial_id"]: item["state"] for item in run.identity["candidates"]}}
