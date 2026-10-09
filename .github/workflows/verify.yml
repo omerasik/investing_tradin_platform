@@ -16,6 +16,10 @@ jobs:
     services:
       postgres:
         image: postgres:16-alpine
+        # Authenticated Docker Hub pull: anonymous pulls from shared runner IPs hit HTTP 429.
+        credentials:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
         env:
           POSTGRES_DB: trade_platform
           POSTGRES_PASSWORD: postgres
@@ -67,6 +71,11 @@ jobs:
       - run: cyclonedx-py environment --output-file sbom-python.json
       - name: Scan tracked source and configuration for credential patterns and entropy
         run: detect-secrets-hook --baseline .secrets.baseline $(git ls-files -- . ':!.secrets.baseline')
+      - name: Authenticate Docker Hub pulls for the container build, scan and staging steps
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: printf '%s' "$DOCKERHUB_TOKEN" | docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
       - name: Build and verify hardened non-root research API container
         run: |
           image_ref="trade-platform-research:${GITHUB_SHA}"
