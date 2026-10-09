@@ -234,8 +234,9 @@ def is_not_published_v1(root: Path, symbol: str, day: date) -> bool:
     return _paths(root, symbol, day)["not_published"].exists()
 
 
-def archive_day_status_v1(root: Path, symbol: str, day: date) -> str:
+def archive_day_status_v1(root: Path, symbol: str, day: date, *, holdout_opening: Any = None) -> str:
     """DERIVED, NOT_PUBLISHED, REJECTED or NOT_ACQUIRED. Contradictory evidence fails closed."""
+    _refuse_holdout(day, holdout_opening)
     states = [
         state for state, present in (
             (DERIVED, _paths(root, symbol, day)["day_bars"].exists()),
@@ -339,6 +340,11 @@ def restore_archive_raw_v1(
         try:
             fetched = acquire_archive_day_v1(staging, manifest.symbol, day, fetch=fetch, now=now)
         except BybitPublicArchiveError as error:
+            refused = load_archive_day_rejection_v1(staging, manifest.symbol, day)
+            if str(error) == ARCHIVE_DAY_REJECTED and refused is not None:
+                # The publisher now serves bytes the strict parse refuses: history changed.
+                _record_retention(paths, manifest, UNVERIFIABLE, at=now(), detail={"refetch_rejected": refused})
+                raise ResearchBarsError("archive_publisher_bytes_changed_artifact_unverifiable") from error
             # A fetch that cannot even be proven is not a changed history: refuse, record nothing.
             raise ResearchBarsError(f"archive_restore_failed:{error}") from error
         if fetched.identity() != manifest.identity():
@@ -445,7 +451,7 @@ def build_research_bar_dataset_v1(
     gaps: list[str] = []
     rejected: list[dict[str, Any]] = []
     for day in _days(first, last, holdout_opening):
-        status = archive_day_status_v1(root, symbol, day)
+        status = archive_day_status_v1(root, symbol, day, holdout_opening=holdout_opening)
         record = load_day_bars_v1(root, symbol, day) if status == DERIVED else None
         rejection = load_archive_day_rejection_v1(root, symbol, day) if status == REJECTED else None
         if record is not None:
@@ -597,7 +603,7 @@ def acquire_and_derive_day_v1(
     so a long acquisition moves on to the next day; it is never derived.
     """
     _refuse_holdout(day, holdout_opening)
-    status = archive_day_status_v1(root, symbol, day)
+    status = archive_day_status_v1(root, symbol, day, holdout_opening=holdout_opening)
     if status in (NOT_PUBLISHED, REJECTED):
         return DayStepV1(symbol, day.isoformat(), status, 0, False)
     record = load_day_bars_v1(root, symbol, day)

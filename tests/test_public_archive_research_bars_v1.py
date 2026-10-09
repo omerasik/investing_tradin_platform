@@ -12,6 +12,7 @@ from pathlib import Path
 from tests.test_bybit_public_archive_v1 import STANDARD, FakeArchive, _csv, _gz
 from trade_platform.bybit_public_archive_v1 import HttpResponseV1, build_archive_dataset_v1
 from trade_platform.public_archive_research_bars_v1 import (
+    DERIVED,
     EVICTED,
     NOT_PUBLISHED,
     PINNED,
@@ -183,6 +184,14 @@ class ResearchBarsTests(unittest.TestCase):
         # Fail closed from then on: no second chance with the original bytes.
         with self.assertRaisesRegex(ResearchBarsError, "unverifiable"):
             restore_archive_raw_v1(self.root, manifest, fetch=DayArchive(), now=lambda: NOW)
+
+    def test_a_restore_the_strict_parse_now_refuses_marks_the_file_unverifiable(self) -> None:
+        self._step(DAY, DayArchive())
+        manifest = load_file_manifest_v1(self.root, "BTCUSDT", DAY)
+        with self.assertRaisesRegex(ResearchBarsError, "publisher_bytes_changed"):
+            restore_archive_raw_v1(self.root, manifest, fetch=DayArchive(duplicate=frozenset({DAY})), now=lambda: NOW)
+        self.assertEqual(UNVERIFIABLE, retention_state_v1(self.root, "BTCUSDT", DAY))
+        self.assertEqual(DERIVED, archive_day_status_v1(self.root, "BTCUSDT", DAY))  # no contradictory record
 
     def test_a_pinned_file_is_restored_and_never_evicted(self) -> None:
         self._step(DAY, DayArchive())

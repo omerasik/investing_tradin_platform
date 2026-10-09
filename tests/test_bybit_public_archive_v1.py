@@ -180,6 +180,15 @@ class ArchiveTests(unittest.TestCase):
         with self.assertRaisesRegex(BybitPublicArchiveError, "differ_from_record"):
             verify_archive_day_rejection_v1(self.temp, "BTCUSDT", DAY)
 
+    def test_publisher_text_that_is_not_utf8_is_rejected_not_a_crash(self) -> None:
+        body = gzip.compress(_csv(STANDARD).encode() + b"\xff\xfe,broken\n", mtime=0)
+        with self.assertRaisesRegex(BybitPublicArchiveError, ARCHIVE_DAY_REJECTED):
+            acquire_archive_day_v1(self.temp, "BTCUSDT", DAY, fetch=FakeArchive(body))
+        record = load_archive_day_rejection_v1(self.temp, "BTCUSDT", DAY)
+        assert record is not None
+        self.assertEqual("archive_text_not_strict_utf8_csv", record["reason"])
+        self.assertEqual(record, verify_archive_day_rejection_v1(self.temp, "BTCUSDT", DAY))
+
     def test_a_row_defect_names_its_row(self) -> None:
         with self.assertRaises(BybitPublicArchiveError) as raised:
             list(iter_archive_trades_v1(io.StringIO(_csv([STANDARD[1], STANDARD[0]])), symbol="BTCUSDT", day=DAY))

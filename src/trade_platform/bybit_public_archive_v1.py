@@ -62,6 +62,8 @@ from the file. Every later acquisition of that day refuses from the record
 without downloading again. :func:`verify_archive_day_rejection_v1` re-proves the
 quarantined bytes and reproduces the same refusal. A gzip/CRC failure is not a
 rejection (it can be a broken transfer): the partial is deleted as before.
+A rejection is permanent under every later parser version too; reconsidering
+one is an explicit operator action, never automatic.
 """
 
 from __future__ import annotations
@@ -491,10 +493,11 @@ def _reject_archive_day(
         "quarantined_file": quarantine.name,
         "repair": "NONE_NOT_DEDUPLICATED_NO_ROW_CHOSEN_NO_BRIDGE",
     }
-    os.replace(part, quarantine)
+    # Record first: a crash before the move still refuses the day with the file identity kept.
     staged = record_path.with_name(record_path.name + ".tmp")
     staged.write_text(json.dumps(record, sort_keys=True, indent=1), encoding="utf-8")
     os.replace(staged, record_path)
+    os.replace(part, quarantine)
     return record
 
 
@@ -597,6 +600,12 @@ def iter_archive_trades_v1(handle: io.TextIOBase | Any, *, symbol: str, day: dat
         if position[0] >= 0:
             error.detail.setdefault("row_index", position[0])
         raise
+    except (UnicodeDecodeError, csv.Error) as error:
+        # Publisher text that is not strict UTF-8 CSV is a parse refusal like any other.
+        detail: dict[str, Any] = {"error": type(error).__name__}
+        if position[0] >= 0:
+            detail["after_row_index"] = position[0]
+        raise BybitPublicArchiveError("archive_text_not_strict_utf8_csv", detail) from error
 
 
 def _iter_archive_trades(
