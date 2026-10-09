@@ -680,8 +680,9 @@ export type StrategyLabStudySummary = {
 
 export type StrategyLabStudyPage = { state: "AVAILABLE" | "UNAVAILABLE"; items: StrategyLabStudySummary[] };
 
-function terminal<T>(ctx: WorkspaceContext, target: string, unavailable: string): Promise<EvidenceResult<T>> {
-  return readEvidence<T>(authorityUrl(ctx.origin, target), ctx.protectedApi, unavailable);
+/** ``url`` is already an ``authorityUrl(...)``; wrapping it again made the proxy refuse every terminal read. */
+function terminal<T>(ctx: WorkspaceContext, url: string, unavailable: string): Promise<EvidenceResult<T>> {
+  return readEvidence<T>(url, ctx.protectedApi, unavailable);
 }
 
 export function getTerminalOverview(ctx: WorkspaceContext): Promise<EvidenceResult<TerminalOverview>> {
