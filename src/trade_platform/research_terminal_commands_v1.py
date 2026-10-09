@@ -408,8 +408,9 @@ class PostgresTerminalCommandLedgerV1:
 def read_commands_v1(cursor: Any, *, limit: int = 50, command_id: UUID | None = None) -> list[CommandView]:
     """Commands newest first with their latest event (read-only)."""
     where, params = ("WHERE c.command_id=%s", (command_id,)) if command_id else ("", ())
+    # where is one of two fixed literals; every value is a bound parameter.
     cursor.execute(
-        "SELECT c.command_id, c.kind, c.inputs, c.requested_by, c.requested_at, e.state, e.detail, e.occurred_at "
+        "SELECT c.command_id, c.kind, c.inputs, c.requested_by, c.requested_at, e.state, e.detail, e.occurred_at "  # nosec B608
         "FROM research_terminal_commands c JOIN LATERAL (SELECT state, detail, occurred_at FROM "
         "research_terminal_command_events x WHERE x.command_id = c.command_id ORDER BY occurred_at DESC, "
         f"event_id DESC LIMIT 1) e ON TRUE {where} ORDER BY c.requested_at DESC, c.command_id LIMIT %s",
