@@ -14,7 +14,9 @@ Rules, all fail-closed:
 
 * **Runs.** Windows of one session are chained into a single run only across a
   ``UTC_DAY_ROLLOVER`` end proof -- the same connected session rotating its
-  partition at midnight. Any other end proof ends the run; a different session
+  partition at midnight -- and only into a window that starts on the very next
+  UTC day. A missing, unmanifested or failed partition of a long-lived session
+  is never bridged. Any other end proof ends the run; a different session
   always starts a new one. Two sessions never form one run, however close.
 * **COMPLETE hour.** UTC hour ``[H, H + 1 h)`` of one symbol is COMPLETE when a
   single run starts no later than ``H + max_head_unproven`` and its exclusive
@@ -58,6 +60,7 @@ from trade_platform.first_party_capture_archive_v1 import (
 from trade_platform.first_party_capture_authority_v1 import FirstPartyCaptureContractV1
 
 HOUR_NANOS: Final = 3_600 * 1_000_000_000
+DAY_NANOS: Final = 24 * HOUR_NANOS
 
 
 class HourlySegmentAcceptanceError(ValueError):
@@ -212,7 +215,9 @@ def chain_proven_runs_v1(windows: Sequence[ProvenWindowV1]) -> tuple[ProvenRunV1
     """Chain one source's proven windows into runs, in start order.
 
     A window continues the previous run only when both belong to the same
-    session and the previous window ended with ``UTC_DAY_ROLLOVER``.
+    session, the previous window ended with ``UTC_DAY_ROLLOVER`` and this one
+    starts on the UTC day right after the previous window's last proven
+    instant (a rollover proves one midnight, never a missing day).
     """
     ordered = sorted(
         windows, key=lambda window: (window.interval.start_utc_nanos, str(window.session_id))
@@ -226,6 +231,8 @@ def chain_proven_runs_v1(windows: Sequence[ProvenWindowV1]) -> tuple[ProvenRunV1
             previous is not None
             and previous.end_proof == END_PROOF_UTC_DAY_ROLLOVER
             and interval.start_utc_nanos >= previous.end_utc_nanos
+            and interval.start_utc_nanos // DAY_NANOS
+            == (previous.end_utc_nanos - 1) // DAY_NANOS + 1
         ):
             runs.remove(previous)
             run = ProvenRunV1(
