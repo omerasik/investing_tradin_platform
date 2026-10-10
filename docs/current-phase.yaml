@@ -377,7 +377,9 @@ r1b_universe:                 # OR-2 = U2: BTCUSDT ETHUSDT SOLUSDT, tickers + pu
     never judged. 2026-10-09T23:05Z, S=60 (diagnostic): 11 COMPLETE hours
     per symbol, joint runs 2/2/1/6 h, current 17:00Z..23:00Z = 6 h, max head
     hand-off seen 8.05 s (any S >= 8.05 gives the same verdicts). NOT MET:
-    18 more consecutive jointly COMPLETE hours.
+    18 more consecutive jointly COMPLETE hours. '--verify' admits only
+    partitions that fully replay: 66/66 (22 per symbol) replayed, 0 failed,
+    identical verdicts (200 s, ~33 MB, below-normal priority).
   clean_run_or1_option_b: >-
     Counted from manifests only (availability on the universe root), never wall
     clock: a COMPLETE hourly segment starts within seconds of HH:00 and ends with

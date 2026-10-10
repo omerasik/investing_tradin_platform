@@ -346,5 +346,131 @@ class JointAcceptanceTests(unittest.TestCase):
 
 
 
+class VerifiedWindowsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from trade_platform.first_party_capture_authority_v1 import (
+            first_party_bybit_universe_contracts_v1,
+        )
+
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name) / "archive"
+        self.btc, self.eth, _ = first_party_bybit_universe_contracts_v1()
+
+    def test_only_fully_replayed_partitions_of_the_source_contribute(self) -> None:
+        from tests.test_first_party_capture_archive_v1 import _complete_partition
+        from trade_platform.first_party_capture_hourly_acceptance_v1 import verified_windows_v1
+
+        _complete_partition(self.root, contract=self.btc, count=3)
+        _complete_partition(self.root, contract=self.eth, count=2, first=10)
+        verified = verified_windows_v1(self.root, self.btc)
+        self.assertEqual(verified.verified_partitions, 1)
+        self.assertEqual(verified.failed, ())
+        self.assertEqual(len(verified.windows), 1)
+        self.assertEqual(verified.windows[0].interval.record_count, 3)
+
+    def test_a_partition_that_fails_replay_proves_nothing_and_is_named(self) -> None:
+        from tests.test_first_party_capture_archive_v1 import (
+            _complete_partition,
+            _rewrite_manifest,
+        )
+        from trade_platform.first_party_capture_archive_v1 import derive_archive_availability_v1
+        from trade_platform.first_party_capture_hourly_acceptance_v1 import verified_windows_v1
+
+        directory = _complete_partition(self.root, contract=self.btc, count=3)
+
+        def overclaim(manifest: dict) -> None:
+            manifest["record_count"] += 1
+            manifest["coverage"][0]["record_count"] += 1
+
+        _rewrite_manifest(directory, overclaim)
+        # Hash-consistent forged claims pass the manifest-level read ...
+        self.assertEqual(
+            len(derive_archive_availability_v1(self.root, contract=self.btc).windows), 1
+        )
+        # ... but not a full replay, so the partition proves nothing here.
+        verified = verified_windows_v1(self.root, self.btc)
+        self.assertEqual(verified.windows, ())
+        self.assertEqual(verified.verified_partitions, 0)
+        self.assertEqual(len(verified.failed), 1)
+        self.assertEqual(verified.failed[0][0], directory)
+        self.assertIn("count", verified.failed[0][1])
+
+    def test_a_replay_rejected_middle_day_is_never_bridged(self) -> None:
+        from datetime import UTC, date, datetime
+
+        from tests.test_first_party_capture_archive_v1 import (
+            _measurement_payload,
+            _rewrite_manifest,
+        )
+        from trade_platform.first_party_capture_archive_v1 import (
+            CaptureClockReadingV1,
+            CapturePartitionWriterV1,
+            build_capture_record_v1,
+        )
+        from trade_platform.first_party_capture_hourly_acceptance_v1 import verified_windows_v1
+
+        # One session recording across two midnights: three partitions linked
+        # by UTC_DAY_ROLLOVER, sequence continuous, as the recorder writes them.
+        session = uuid4()
+        midnight = int(datetime(2026, 9, 23, tzinfo=UTC).timestamp()) * SECOND
+        days = (date(2026, 9, 22), date(2026, 9, 23), date(2026, 9, 24))
+        arrivals = (
+            (midnight - HOUR_NANOS + SECOND, midnight - MS),
+            (midnight + MS, midnight + 24 * HOUR_NANOS - MS),
+            (midnight + 24 * HOUR_NANOS + MS, midnight + 25 * HOUR_NANOS),
+        )
+        proofs = (END_PROOF_UTC_DAY_ROLLOVER, END_PROOF_UTC_DAY_ROLLOVER, END_PROOF_OPERATOR_BOUNDED_STOP)
+        payload = _measurement_payload(self.btc.exchange_symbol)
+        directories = []
+        sequence = 0
+        for day, times, proof in zip(days, arrivals, proofs, strict=True):
+            writer = CapturePartitionWriterV1(
+                root=self.root, contract=self.btc, session_id=session, day=day,
+                clock_resolution_nanos=15_625_000,
+            )
+            for arrival in times:
+                writer.append_record(build_capture_record_v1(
+                    contract=self.btc, session_id=session, sequence=sequence,
+                    clock=CaptureClockReadingV1(
+                        arrival_utc_nanos=arrival, arrival_monotonic_nanos=arrival - midnight + 10**15
+                    ),
+                    payload_text=payload,
+                ))
+                sequence += 1
+            writer.declare_coverage(CaptureCoverageIntervalV1(
+                start_utc_nanos=times[0], last_proven_utc_nanos=times[1], end_proof=proof, record_count=2
+            ))
+            directories.append(writer.finalize().parent)
+
+        def judge() -> tuple[int, object]:
+            verified = verified_windows_v1(self.root, self.btc)
+            return len(verified.failed), derive_hourly_acceptance_v1(
+                [("BTCUSDT", verified.windows)], max_unproven_nanos=HEAD, required_consecutive_hours=24
+            )
+
+        failed, intact = judge()
+        self.assertEqual(failed, 0)
+        self.assertEqual([run.hours for run in intact.runs], [26])
+        self.assertTrue(intact.met)
+
+        def overclaim(manifest: dict) -> None:
+            manifest["record_count"] += 1
+            manifest["coverage"][0]["record_count"] += 1
+
+        _rewrite_manifest(directories[1], overclaim)
+        failed, forged = judge()
+        self.assertEqual(failed, 1)
+        middle_day = forged.symbols[0].segments[1:25]
+        self.assertTrue(all(item.verdict is HourVerdictV1.NO_PROVEN_COVERAGE for item in middle_day))
+        # 23:00 now ends 1 ms short of midnight with nothing after it: not proven either.
+        self.assertIs(forged.symbols[0].segments[0].verdict, HourVerdictV1.COVERAGE_ENDS_BEFORE_HOUR_END)
+        self.assertEqual([run.hours for run in forged.runs], [1])
+        self.assertFalse(forged.met)
+
+
 if __name__ == "__main__":
     unittest.main()
