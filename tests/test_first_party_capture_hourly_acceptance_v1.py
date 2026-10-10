@@ -69,6 +69,21 @@ class ChainRunsTests(unittest.TestCase):
         )
         self.assertEqual(len(runs), 3)
 
+    def test_rollover_never_bridges_a_missing_day(self) -> None:
+        # The day-0 partition of a long-lived session is missing (deleted,
+        # unmanifested or failed --verify): its day must not be bridged.
+        session = uuid4()
+        windows = [
+            window(DAY - HOUR_NANOS, DAY - 1, END_PROOF_UTC_DAY_ROLLOVER, session),
+            window(DAY + 24 * HOUR_NANOS, DAY + 25 * HOUR_NANOS, session=session),
+        ]
+        self.assertEqual(len(chain_proven_runs_v1(windows)), 2)
+        acceptance = derive_hourly_acceptance_v1(
+            [("BTCUSDT", windows)], max_head_unproven_nanos=0, required_consecutive_hours=24
+        )
+        self.assertFalse(acceptance.met)
+        self.assertEqual(acceptance.longest_run.hours if acceptance.longest_run else 0, 1)
+
     def test_rollover_into_another_session_does_not_join(self) -> None:
         runs = chain_proven_runs_v1(
             [
