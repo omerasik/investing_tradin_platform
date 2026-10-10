@@ -195,7 +195,7 @@ class UniverseAcceptanceCommandTests(unittest.TestCase):
             out = io.StringIO()
             with redirect_stdout(out):
                 code = CLI.main(
-                    ["--root", directory, "universe-acceptance", "--max-head-unproven-seconds", "30"]
+                    ["--root", directory, "universe-acceptance", "--max-unproven-seconds", "30"]
                 )
         self.assertEqual(code, 1)
         self.assertIn("no proven coverage", out.getvalue())
@@ -234,7 +234,7 @@ class UniverseAcceptanceCommandTests(unittest.TestCase):
                 code = CLI.main(
                     [
                         "--root", directory, "universe-acceptance",
-                        "--max-head-unproven-seconds", "30", "--required-hours", "1",
+                        "--max-unproven-seconds", "30", "--required-hours", "1",
                     ]
                 )
         self.assertEqual(code, 0)

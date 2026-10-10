@@ -368,11 +368,13 @@ r1b_universe:                 # OR-2 = U2: BTCUSDT ETHUSDT SOLUSDT, tickers + pu
     2026-10-10T17:00Z if nothing interrupts; not accepted (OR-1 open).
   hourly_acceptance: >-
     first_party_capture_hourly_acceptance_v1 + 'capture_bybit_public.py
-    universe-acceptance --max-head-unproven-seconds S' (S is the operator's
-    hand-off bound, no default): an hour is COMPLETE only when one proven run
-    (same-session windows linked only by UTC_DAY_ROLLOVER) starts within S of
-    the hour and reaches its end; jointly COMPLETE only for all three symbols;
-    the open hour is never judged. 2026-10-09T23:05Z, S=60: 11 COMPLETE hours
+    universe-acceptance --max-unproven-seconds S' (S is the operator's
+    hand-off bound, no default, NOT owner-approved): an hour is COMPLETE only
+    when one proven run (same-session windows linked only by a next-day
+    UTC_DAY_ROLLOVER, each window's interval kept) reaches its end and leaves at
+    most S of it unproven (segment head + midnight hand-off, measured, never
+    bridged); jointly COMPLETE only for all three symbols; the open hour is
+    never judged. 2026-10-09T23:05Z, S=60 (diagnostic): 11 COMPLETE hours
     per symbol, joint runs 2/2/1/6 h, current 17:00Z..23:00Z = 6 h, max head
     hand-off seen 8.05 s (any S >= 8.05 gives the same verdicts). NOT MET:
     18 more consecutive jointly COMPLETE hours. '--verify' admits only
