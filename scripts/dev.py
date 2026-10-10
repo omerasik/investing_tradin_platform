@@ -15,11 +15,20 @@ Usage:
 container, where the acquired windows, studies, frozen candidates and Decimal
 reruns live) instead of the ``trade_platform`` fixture database. It migrates
 that database to head and never seeds or resets it.
+
+The dashboard's ``web/dashboard.config.json`` (or the file named by
+``TRADE_PLATFORM_DASHBOARD_CONFIG_PATH``) takes precedence over the environment
+this script hands to Next.js. Before starting anything, a preflight therefore
+refuses to launch when that file pins an API URL, dashboard origin or operator
+token source that disagrees with this launch; otherwise the terminal would come
+up with every card failing. Token values are compared, never printed.
 """
 
 from __future__ import annotations
 
 import argparse
+import hmac
+import json
 import os
 import shutil
 import signal
@@ -29,6 +38,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -37,6 +47,8 @@ WEB_DIR = ROOT_DIR / "web"
 FIXTURE_DATABASE = "trade_platform"
 RESEARCH_DATABASE = "trade_platform_research"
 RESEARCH_CONTAINER = "trade-platform-postgres-dev-research"
+DASHBOARD_CONFIG_PATH_ENV = "TRADE_PLATFORM_DASHBOARD_CONFIG_PATH"
+OPERATOR_TOKEN_ENV = "TRADE_PLATFORM_OPERATOR_TOKEN"
 
 
 def log(msg: str, prefix: str = "▶") -> None:
@@ -162,6 +174,95 @@ def check_prerequisites(postgres_port: int, api_port: int, dashboard_port: int) 
 
     log_success("Prerequisites verified successfully.")
     return pnpm_cmd
+
+
+def dashboard_config_path(environ: Mapping[str, str]) -> Path:
+    """The file ``web/app/dashboard-config.ts`` reads (relative to ``web/``, its cwd)."""
+    configured = environ.get(DASHBOARD_CONFIG_PATH_ENV)
+    return WEB_DIR / configured if configured else WEB_DIR / "dashboard.config.json"
+
+
+def _same_secret(expected: str, actual: str | None) -> bool:
+    return actual is not None and hmac.compare_digest(expected.encode(), actual.encode())
+
+
+def dashboard_config_conflicts(
+    path: Path,
+    *,
+    api_port: int,
+    dashboard_port: int,
+    operator_token: str,
+    environ: Mapping[str, str],
+) -> list[str]:
+    """Why the dashboard config at ``path`` would override this launch into an unusable one.
+
+    Mirrors the loader's precedence: a key present in the file wins over the
+    environment set by :func:`start_frontend`. An absent file conflicts with
+    nothing. Messages name keys, URLs and ports, never a token value.
+    """
+    if not path.exists():
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return [f"{path} is not a readable JSON document"]
+    if not isinstance(raw, dict):
+        return [f"{path} is not a JSON object"]
+    conflicts: list[str] = []
+
+    expected_urls = {
+        "api_base_url": f"http://127.0.0.1:{api_port}",
+        "dashboard_origin": f"http://127.0.0.1:{dashboard_port}",
+    }
+    for key, expected in expected_urls.items():
+        if key not in raw:
+            continue
+        value = raw[key]
+        if not isinstance(value, str) or value.strip().rstrip("/") != expected:
+            conflicts.append(f"{key}={value!r} but this launch serves {expected}")
+
+    token_file = raw.get("operator_token_file")
+    token_env = raw.get("operator_token_env")
+    if token_file is not None and token_env is not None:
+        conflicts.append("operator_token_file and operator_token_env are both set")
+    elif token_file is not None:
+        try:
+            file_token = Path(token_file).read_text(encoding="utf-8").strip() if isinstance(token_file, str) else None
+        except (OSError, UnicodeDecodeError):
+            file_token = None
+        if not _same_secret(operator_token, file_token):
+            conflicts.append(
+                "operator_token_file does not hold the operator token this launch gives the API "
+                "(the dashboard would be rejected with 401)"
+            )
+    elif token_env is not None and token_env != OPERATOR_TOKEN_ENV:
+        env_token = environ.get(token_env) if isinstance(token_env, str) else None
+        if not _same_secret(operator_token, env_token):
+            conflicts.append(
+                f"operator_token_env={token_env!r} does not hold the operator token this launch "
+                "gives the API (the dashboard would be rejected with 401)"
+            )
+    return conflicts
+
+
+def preflight_dashboard_config(api_port: int, dashboard_port: int, operator_token: str) -> None:
+    """Refuse to start when the dashboard config would silently override this launch."""
+    path = dashboard_config_path(os.environ)
+    conflicts = dashboard_config_conflicts(
+        path,
+        api_port=api_port,
+        dashboard_port=dashboard_port,
+        operator_token=operator_token,
+        environ=os.environ,
+    )
+    if conflicts:
+        log_error(
+            f"Dashboard config {path} overrides this launch and would leave the terminal unusable:\n"
+            + "".join(f"  - {conflict}\n" for conflict in conflicts)
+            + "Align that file with --api-port/--port and the operator token, or point "
+            f"{DASHBOARD_CONFIG_PATH_ENV} at a config that matches. Nothing was started."
+        )
+        sys.exit(1)
 
 
 def start_postgres(postgres_port: int, reset_db: bool = False) -> None:
@@ -411,7 +512,7 @@ def print_banner(
         " Live:       DISABLED\n"
         "\033[32m========================================================================\033[0m\n"
         f" Operator View Password: \033[1;33m{view_token}\033[0m\n"
-        " (Use this password to authenticate at http://localhost:3000/login)\n"
+        f" (Use this password to authenticate at http://127.0.0.1:{dashboard_port}/login)\n"
         "\033[32m========================================================================\033[0m\n"
         " Press \033[1;31mCtrl+C\033[0m to stop child services cleanly.\n",
         flush=True,
@@ -467,6 +568,7 @@ def main() -> None:
         "TRADE_PLATFORM_SESSION_SECRET", "local-dev-session-secret-change-in-production"
     )
 
+    preflight_dashboard_config(args.api_port, args.port, operator_token)
     pnpm_cmd = check_prerequisites(args.postgres_port, args.api_port, args.port)
     if args.research:
         start_research_postgres(args.postgres_port)
