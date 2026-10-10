@@ -31,7 +31,7 @@ Inspect, prove, compact and back up the archive::
 
     .venv\\Scripts\\python scripts/capture_bybit_public.py health
     .venv\\Scripts\\python scripts/capture_bybit_public.py availability
-    .venv\\Scripts\\python scripts/capture_bybit_public.py universe-acceptance --max-head-unproven-seconds S
+    .venv\\Scripts\\python scripts/capture_bybit_public.py universe-acceptance --max-unproven-seconds S
     .venv\\Scripts\\python scripts/capture_bybit_public.py replay <partition-directory>
     .venv\\Scripts\\python scripts/capture_bybit_public.py compact
     .venv\\Scripts\\python scripts/capture_bybit_public.py backup <destination-root>
@@ -466,12 +466,12 @@ def _universe_acceptance(args: argparse.Namespace) -> int:
             )
             for contract in contracts
         ],
-        max_head_unproven_nanos=round(args.max_head_unproven_seconds * 1_000_000_000),
+        max_unproven_nanos=round(args.max_unproven_seconds * 1_000_000_000),
         required_consecutive_hours=args.required_hours,
     )
     print(f"universe root  {root}")
     print("evidence       COMPLETE-partition manifests only; wall-clock time is never evidence")
-    print(f"head bound     {args.max_head_unproven_seconds:g} s unproven hand-off per hour (operator)")
+    print(f"unproven bound {args.max_unproven_seconds:g} s of hand-off per hour: head + midnight rollover (operator)")
     if acceptance.first_hour_start_utc_nanos is None:
         print("no proven coverage for any universe symbol")
         return 1
@@ -482,17 +482,17 @@ def _universe_acceptance(args: argparse.Namespace) -> int:
         if args.verbose:
             for segment in symbol.segments:
                 head = (
-                    "" if segment.head_unproven_nanos is None
-                    else f" head={segment.head_unproven_nanos / 1e9:.3f}s"
+                    "" if segment.unproven_nanos is None
+                    else f" unproven={segment.unproven_nanos / 1e9:.3f}s"
                 )
                 detail = "" if segment.detail is None else f" end_proof={segment.detail}"
                 print(f"   {_iso(segment.hour_start_utc_nanos)} {segment.verdict}{head}{detail}")
     for run in acceptance.runs:
         print(f"JOINT RUN      {_iso(run.first_hour_start_utc_nanos)} -> {_iso(run.end_utc_nanos)} "
               f"{run.hours} h")
-    observed = acceptance.max_head_unproven_observed_nanos
+    observed = acceptance.max_unproven_observed_nanos
     if observed is not None:
-        print(f"max head seen  {observed / 1e9:.3f} s over COMPLETE hours")
+        print(f"max unproven   {observed / 1e9:.3f} s seen in a COMPLETE hour")
     longest = acceptance.longest_run
     print(f"longest run    {0 if longest is None else longest.hours} h; "
           f"current run {acceptance.current_run_hours} h; required {acceptance.required_consecutive_hours} h")
@@ -603,10 +603,10 @@ def main(argv: list[str] | None = None) -> int:
         help="R1B: consecutive manifest-proven COMPLETE hours for every universe symbol at once",
     )
     acceptance.add_argument(
-        "--max-head-unproven-seconds",
+        "--max-unproven-seconds",
         type=float,
         required=True,
-        help="longest unproven segment hand-off at an hour's start (operator's choice, no default)",
+        help="most unproven hand-off time inside one hour: segment head plus any midnight rollover (operator's choice, no default)",
     )
     acceptance.add_argument(
         "--required-hours", type=int, default=24, help="consecutive hours required (Option B: 24)"

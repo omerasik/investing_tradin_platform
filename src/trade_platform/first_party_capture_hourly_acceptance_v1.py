@@ -15,16 +15,21 @@ Rules, all fail-closed:
 * **Runs.** Windows of one session are chained into a single run only across a
   ``UTC_DAY_ROLLOVER`` end proof -- the same connected session rotating its
   partition at midnight -- and only into a window that starts on the very next
-  UTC day. A missing, unmanifested or failed partition of a long-lived session
-  is never bridged. Any other end proof ends the run; a different session
-  always starts a new one. Two sessions never form one run, however close.
+  UTC day. Any other end proof ends the run; a different session always starts
+  a new one. Two sessions never form one run, however close. A run keeps each
+  of its proven intervals: chaining never turns the time between two windows
+  into proven coverage.
 * **COMPLETE hour.** UTC hour ``[H, H + 1 h)`` of one symbol is COMPLETE when a
-  single run starts no later than ``H + max_head_unproven`` and its exclusive
-  end reaches ``H + 1 h``. The head ``[H, run start)`` is the unavoidable
-  hand-off between bounded hourly segments (connect, subscribe, head clock
-  sample). It stays unproven, is reported per hour, and is bounded by an
-  explicit operator parameter with no default: how long a hand-off may be is
-  an acceptance choice, not something this module invents.
+  single run reaches ``H + 1 h`` (exclusive end of its last window) and the
+  part of the hour that run does *not* prove -- measured against its own
+  proven intervals -- totals at most ``max_unproven``. That unproven time is
+  the unavoidable hand-off: the head ``[H, run start)`` between bounded hourly
+  segments (connect, subscribe, head clock sample), and the instant between
+  the last record before and the first record after a midnight rollover. It is
+  reported per hour and bounded by one explicit operator parameter with no
+  default: how long a hand-off may be is an acceptance choice, not something
+  this module invents. A missing, unmanifested or replay-rejected partition
+  leaves its time unproven, so the hours it covered can never be COMPLETE.
 * **Joint hour.** An hour is jointly COMPLETE only when it is COMPLETE for every
   required symbol. A symbol with no evidence makes every hour incomplete.
 * **Horizon.** Only hours that end at or before the latest proven instant of
@@ -63,31 +68,59 @@ class HourVerdictV1(StrEnum):
     COMPLETE = "COMPLETE"
     #: No proven window of any run intersects the hour.
     NO_PROVEN_COVERAGE = "NO_PROVEN_COVERAGE"
-    #: Coverage exists, but no run starts within the head bound and reaches the hour's end.
+    #: Coverage exists, but no run starts within the bound and reaches the hour's end.
     COVERAGE_ENDS_BEFORE_HOUR_END = "COVERAGE_ENDS_BEFORE_HOUR_END"
-    #: The only runs that reach the hour's end start later than the head bound.
+    #: The only runs that reach the hour's end start later than the bound.
     HEAD_UNPROVEN_EXCEEDS_BOUND = "HEAD_UNPROVEN_EXCEEDS_BOUND"
+    #: A run spans the hour, but the time between its proven intervals exceeds the bound.
+    UNPROVEN_GAP_EXCEEDS_BOUND = "UNPROVEN_GAP_EXCEEDS_BOUND"
 
 
 @dataclass(frozen=True, slots=True)
 class ProvenRunV1:
-    """Consecutive proven windows of one session, linked only by day rollovers."""
+    """Consecutive proven windows of one session, linked only by day rollovers.
+
+    ``intervals`` holds each window's ``[start, exclusive end)``, in order; the
+    time between them is unproven and stays so.
+    """
 
     session_id: UUID
-    start_utc_nanos: int
-    end_utc_nanos: int  # exclusive representational bound of the last window
+    intervals: tuple[tuple[int, int], ...]
     end_proof: str
-    rollover_links: int
+
+    @property
+    def start_utc_nanos(self) -> int:
+        return self.intervals[0][0]
+
+    @property
+    def end_utc_nanos(self) -> int:
+        """Exclusive representational bound of the last window."""
+        return self.intervals[-1][1]
+
+    @property
+    def rollover_links(self) -> int:
+        return len(self.intervals) - 1
+
+    def unproven_nanos(self, start_utc_nanos: int, end_utc_nanos: int) -> int:
+        """How much of ``[start, end)`` none of this run's proven intervals covers."""
+        proven = sum(
+            max(0, min(end, end_utc_nanos) - max(start, start_utc_nanos))
+            for start, end in self.intervals
+        )
+        return (end_utc_nanos - start_utc_nanos) - proven
 
 
 @dataclass(frozen=True, slots=True)
 class HourlySegmentV1:
-    """One symbol's verdict for the UTC hour starting at ``hour_start_utc_nanos``."""
+    """One symbol's verdict for the UTC hour starting at ``hour_start_utc_nanos``.
+
+    ``unproven_nanos`` is the part of the hour the named run does not prove.
+    """
 
     hour_start_utc_nanos: int
     verdict: HourVerdictV1
     session_id: UUID | None = None
-    head_unproven_nanos: int | None = None
+    unproven_nanos: int | None = None
     detail: str | None = None
 
     @property
@@ -122,7 +155,7 @@ class HourlyAcceptanceV1:
     """The joint hourly acceptance over every required symbol."""
 
     required_consecutive_hours: int
-    max_head_unproven_nanos: int
+    max_unproven_nanos: int
     first_hour_start_utc_nanos: int | None
     hours_judged: int
     symbols: tuple[SymbolHoursV1, ...]
@@ -148,14 +181,15 @@ class HourlyAcceptanceV1:
         return longest is not None and longest.hours >= self.required_consecutive_hours
 
     @property
-    def max_head_unproven_observed_nanos(self) -> int | None:
-        heads = [
-            segment.head_unproven_nanos
+    def max_unproven_observed_nanos(self) -> int | None:
+        """The longest unproven hand-off inside any COMPLETE hour."""
+        observed = [
+            segment.unproven_nanos
             for symbol in self.symbols
             for segment in symbol.segments
-            if segment.complete and segment.head_unproven_nanos is not None
+            if segment.complete and segment.unproven_nanos is not None
         ]
-        return max(heads) if heads else None
+        return max(observed) if observed else None
 
 
 def chain_proven_runs_v1(windows: Sequence[ProvenWindowV1]) -> tuple[ProvenRunV1, ...]:
@@ -164,7 +198,8 @@ def chain_proven_runs_v1(windows: Sequence[ProvenWindowV1]) -> tuple[ProvenRunV1
     A window continues the previous run only when both belong to the same
     session, the previous window ended with ``UTC_DAY_ROLLOVER`` and this one
     starts on the UTC day right after the previous window's last proven
-    instant (a rollover proves one midnight, never a missing day).
+    instant (a rollover proves one midnight, never a missing day). Linking
+    keeps both intervals; the time between them stays unproven.
     """
     ordered = sorted(
         windows, key=lambda window: (window.interval.start_utc_nanos, str(window.session_id))
@@ -173,6 +208,7 @@ def chain_proven_runs_v1(windows: Sequence[ProvenWindowV1]) -> tuple[ProvenRunV1
     runs: list[ProvenRunV1] = []
     for window in ordered:
         interval = window.interval
+        own = (interval.start_utc_nanos, interval.end_utc_nanos)
         previous = open_runs.pop(window.session_id, None)
         if (
             previous is not None
@@ -184,51 +220,49 @@ def chain_proven_runs_v1(windows: Sequence[ProvenWindowV1]) -> tuple[ProvenRunV1
             runs.remove(previous)
             run = ProvenRunV1(
                 session_id=window.session_id,
-                start_utc_nanos=previous.start_utc_nanos,
-                end_utc_nanos=interval.end_utc_nanos,
+                intervals=(*previous.intervals, own),
                 end_proof=interval.end_proof,
-                rollover_links=previous.rollover_links + 1,
             )
         else:
-            run = ProvenRunV1(
-                session_id=window.session_id,
-                start_utc_nanos=interval.start_utc_nanos,
-                end_utc_nanos=interval.end_utc_nanos,
-                end_proof=interval.end_proof,
-                rollover_links=0,
-            )
+            run = ProvenRunV1(session_id=window.session_id, intervals=(own,), end_proof=interval.end_proof)
         runs.append(run)
         open_runs[window.session_id] = run
     return tuple(sorted(runs, key=lambda run: (run.start_utc_nanos, str(run.session_id))))
 
 
 def classify_hour_v1(
-    runs: Sequence[ProvenRunV1], hour_start_utc_nanos: int, *, max_head_unproven_nanos: int
+    runs: Sequence[ProvenRunV1], hour_start_utc_nanos: int, *, max_unproven_nanos: int
 ) -> HourlySegmentV1:
-    """One symbol's verdict for one UTC hour, from its proven runs only."""
+    """One symbol's verdict for one UTC hour, from its proven runs only.
+
+    Every verdict naming a run reports how much of the hour that run leaves
+    unproven, measured against its own intervals.
+    """
     if hour_start_utc_nanos % HOUR_NANOS:
         raise HourlySegmentAcceptanceError("hour_start_is_not_on_the_utc_hour_grid")
     hour_end = hour_start_utc_nanos + HOUR_NANOS
-    head_limit = hour_start_utc_nanos + max_head_unproven_nanos
-    intersecting = [
-        run
-        for run in runs
-        if run.start_utc_nanos < hour_end and run.end_utc_nanos > hour_start_utc_nanos
-    ]
+    head_limit = hour_start_utc_nanos + max_unproven_nanos
+
+    def unproven(run: ProvenRunV1) -> int:
+        return run.unproven_nanos(hour_start_utc_nanos, hour_end)
+
+    intersecting = [run for run in runs if unproven(run) < HOUR_NANOS]
     if not intersecting:
         return HourlySegmentV1(hour_start_utc_nanos, HourVerdictV1.NO_PROVEN_COVERAGE)
-    complete = [
+    spanning = [
         run
         for run in intersecting
         if run.start_utc_nanos <= head_limit and run.end_utc_nanos >= hour_end
     ]
-    if complete:
-        best = min(complete, key=lambda run: (run.start_utc_nanos, str(run.session_id)))
+    if spanning:
+        best = min(spanning, key=lambda run: (unproven(run), run.start_utc_nanos, str(run.session_id)))
+        verdict = (
+            HourVerdictV1.COMPLETE
+            if unproven(best) <= max_unproven_nanos
+            else HourVerdictV1.UNPROVEN_GAP_EXCEEDS_BOUND
+        )
         return HourlySegmentV1(
-            hour_start_utc_nanos,
-            HourVerdictV1.COMPLETE,
-            session_id=best.session_id,
-            head_unproven_nanos=max(0, best.start_utc_nanos - hour_start_utc_nanos),
+            hour_start_utc_nanos, verdict, session_id=best.session_id, unproven_nanos=unproven(best)
         )
     headed = [run for run in intersecting if run.start_utc_nanos <= head_limit]
     if headed:
@@ -237,7 +271,7 @@ def classify_hour_v1(
             hour_start_utc_nanos,
             HourVerdictV1.COVERAGE_ENDS_BEFORE_HOUR_END,
             session_id=last.session_id,
-            head_unproven_nanos=max(0, last.start_utc_nanos - hour_start_utc_nanos),
+            unproven_nanos=unproven(last),
             detail=last.end_proof,
         )
     late = min(intersecting, key=lambda run: (run.start_utc_nanos, str(run.session_id)))
@@ -245,7 +279,7 @@ def classify_hour_v1(
         hour_start_utc_nanos,
         HourVerdictV1.HEAD_UNPROVEN_EXCEEDS_BOUND,
         session_id=late.session_id,
-        head_unproven_nanos=late.start_utc_nanos - hour_start_utc_nanos,
+        unproven_nanos=unproven(late),
     )
 
 
@@ -264,7 +298,7 @@ def _consecutive_runs(first_hour: int, joint: Sequence[bool]) -> tuple[Consecuti
 def derive_hourly_acceptance_v1(
     windows_by_symbol: Sequence[tuple[str, Sequence[ProvenWindowV1]]],
     *,
-    max_head_unproven_nanos: int,
+    max_unproven_nanos: int,
     required_consecutive_hours: int,
 ) -> HourlyAcceptanceV1:
     """Judge every complete UTC hour across the required symbols, jointly.
@@ -277,8 +311,8 @@ def derive_hourly_acceptance_v1(
     symbols = [symbol for symbol, _ in windows_by_symbol]
     if len(set(symbols)) != len(symbols):
         raise HourlySegmentAcceptanceError("acceptance_symbols_must_be_distinct")
-    if not 0 <= max_head_unproven_nanos < HOUR_NANOS:
-        raise HourlySegmentAcceptanceError("max_head_unproven_must_be_within_one_hour")
+    if not 0 <= max_unproven_nanos < HOUR_NANOS:
+        raise HourlySegmentAcceptanceError("max_unproven_must_be_within_one_hour")
     if required_consecutive_hours < 1:
         raise HourlySegmentAcceptanceError("required_consecutive_hours_must_be_positive")
 
@@ -287,7 +321,7 @@ def derive_hourly_acceptance_v1(
     if not all_runs:
         return HourlyAcceptanceV1(
             required_consecutive_hours=required_consecutive_hours,
-            max_head_unproven_nanos=max_head_unproven_nanos,
+            max_unproven_nanos=max_unproven_nanos,
             first_hour_start_utc_nanos=None,
             hours_judged=0,
             symbols=tuple(SymbolHoursV1(symbol, ()) for symbol in symbols),
@@ -304,7 +338,7 @@ def derive_hourly_acceptance_v1(
                 classify_hour_v1(
                     runs,
                     first_hour + index * HOUR_NANOS,
-                    max_head_unproven_nanos=max_head_unproven_nanos,
+                    max_unproven_nanos=max_unproven_nanos,
                 )
                 for index in range(hours)
             ),
@@ -316,7 +350,7 @@ def derive_hourly_acceptance_v1(
     )
     return HourlyAcceptanceV1(
         required_consecutive_hours=required_consecutive_hours,
-        max_head_unproven_nanos=max_head_unproven_nanos,
+        max_unproven_nanos=max_unproven_nanos,
         first_hour_start_utc_nanos=first_hour,
         hours_judged=hours,
         symbols=symbol_hours,
