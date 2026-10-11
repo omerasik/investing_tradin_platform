@@ -195,7 +195,7 @@ export default async function EvidencePage() {
               </thead>
               <tbody>
                 {capture.sources.map((source) => (
-                  <tr key={source.source_id}>
+                  <tr key={`${source.archive}-${source.source_id}`}>
                     <td><strong>{source.exchange_symbol}</strong></td>
                     <td><code>{source.purpose}</code></td>
                     <td className="tabular-num">{duration(source.proven_seconds)}</td>

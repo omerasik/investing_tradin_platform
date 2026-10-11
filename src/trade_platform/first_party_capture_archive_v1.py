@@ -107,7 +107,7 @@ import shutil
 import time
 import zlib
 from bisect import bisect_right
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
@@ -1421,8 +1421,16 @@ def derive_capture_gaps_v1(windows: Sequence[ProvenWindowV1]) -> tuple[CaptureGa
     return tuple(gaps)
 
 
+#: Reads one partition's status; :func:`read_partition_status_v1` unless a caller
+#: (the dashboard read model) supplies a memoizing equivalent.
+PartitionStatusReaderV1 = Callable[..., CapturePartitionV1]
+
+
 def derive_archive_availability_v1(
-    root: Path, *, contract: FirstPartyCaptureContractV1 | None = None
+    root: Path,
+    *,
+    contract: FirstPartyCaptureContractV1 | None = None,
+    status_reader: PartitionStatusReaderV1 | None = None,
 ) -> CaptureArchiveAvailabilityV1:
     """Proven coverage across every session under an archive root.
 
@@ -1439,8 +1447,13 @@ def derive_archive_availability_v1(
     those are another source's evidence, so they are out of scope here rather
     than excluded -- merging them would let one symbol's coverage make another
     symbol's time look observed. See :func:`derive_archive_availability_by_source_v1`.
+
+    ``status_reader`` replaces :func:`read_partition_status_v1` and must return
+    exactly what it would; it exists so a long-lived reader can avoid re-hashing
+    unchanged finalized partitions, never to relax the classification.
     """
     authorized = first_party_bybit_capture_contract_v1() if contract is None else contract
+    read_status = read_partition_status_v1 if status_reader is None else status_reader
     wanted = str(authorized.source_id)
     windows: list[ProvenWindowV1] = []
     excluded: list[tuple[Path, tuple[str, ...]]] = []
@@ -1448,7 +1461,7 @@ def derive_archive_availability_v1(
         claimed = session_source_id_v1(directory)
         if claimed is not None and claimed != wanted:
             continue
-        partition = read_partition_status_v1(directory, contract=authorized)
+        partition = read_status(directory, contract=authorized)
         if partition.status != PARTITION_STATUS_COMPLETE or partition.session_id is None:
             excluded.append((directory, partition.reasons))
             continue
@@ -1473,7 +1486,7 @@ class SourceAvailabilityV1:
 
 
 def derive_archive_availability_by_source_v1(
-    root: Path,
+    root: Path, *, status_reader: PartitionStatusReaderV1 | None = None,
 ) -> tuple[tuple[SourceAvailabilityV1, ...], tuple[tuple[Path, tuple[str, ...]], ...]]:
     """Availability per authorized contract present under ``root``, never merged.
 
@@ -1493,7 +1506,10 @@ def derive_archive_availability_by_source_v1(
             present.add(claimed)
     results = tuple(
         SourceAvailabilityV1(
-            contract=contract, availability=derive_archive_availability_v1(root, contract=contract)
+            contract=contract,
+            availability=derive_archive_availability_v1(
+                root, contract=contract, status_reader=status_reader
+            ),
         )
         for contract in authorized_first_party_capture_contracts_v1()
         if str(contract.source_id) in present
@@ -1805,6 +1821,7 @@ __all__ = [
     "CompactionResultV1",
     "FirstPartyCaptureArchiveError",
     "FirstPartyCaptureRecordV1",
+    "PartitionStatusReaderV1",
     "ProvenWindowV1",
     "SourceAvailabilityV1",
     "backup_archive_v1",

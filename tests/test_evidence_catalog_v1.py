@@ -21,6 +21,7 @@ from trade_platform.bybit_public_archive_v1 import (
 from trade_platform.config import PlatformConfig
 from trade_platform.evidence_catalog_v1 import (
     NO_TIMING_AUTHORITY_V1,
+    PartitionStatusCacheV1,
     read_capture_availability_v1,
     read_evidence_catalog_v1,
     timing_sources_v1,
@@ -31,11 +32,13 @@ from trade_platform.evidence_tier_authority_v1 import (
 )
 from trade_platform.first_party_capture_archive_v1 import (
     END_PROOF_OPERATOR_BOUNDED_STOP,
+    RECORDS_FILE_NAME,
     CaptureClockReadingV1,
     CaptureCoverageIntervalV1,
     CaptureLifecycleEventV1,
     CapturePartitionWriterV1,
     build_capture_record_v1,
+    read_partition_status_v1,
 )
 from trade_platform.first_party_capture_authority_v1 import (
     first_party_bybit_capture_contract_v1,
@@ -223,6 +226,61 @@ class CaptureAvailabilityTests(unittest.TestCase):
         view = read_capture_availability_v1(self.root, now=NOW)
         (source,) = view.sources
         self.assertEqual(("ETHUSDT", "UNIVERSE"), (source.exchange_symbol, source.purpose))
+
+    def test_the_universe_root_adds_its_own_rows_and_btc_never_merges_with_r0(self) -> None:
+        universe = self.root.parent / "capture-universe-r1b"
+        _partition(self.root, first=0, count=3)
+        _partition(universe, contract=first_party_bybit_universe_contract_v1("BTCUSDT"), first=0, count=2)
+        crashed = _partition(universe, contract=first_party_bybit_universe_contract_v1("BTCUSDT"),
+                             first=5, count=1, finalize=False)
+        view = read_capture_availability_v1(self.root, universe_root=universe, now=NOW)
+        rows = {(source.archive, source.purpose): source for source in view.sources}
+        self.assertEqual({("capture", "PRODUCTION"), ("capture-universe-r1b", "UNIVERSE")}, set(rows))
+        r0, u2 = rows["capture", "PRODUCTION"], rows["capture-universe-r1b", "UNIVERSE"]
+        self.assertEqual(("BTCUSDT", "BTCUSDT"), (r0.exchange_symbol, u2.exchange_symbol))
+        self.assertEqual(first_party_bybit_capture_contract_v1().source_id, r0.source_id)
+        self.assertEqual(first_party_bybit_universe_contract_v1("BTCUSDT").source_id, u2.source_id)
+        self.assertEqual((3, 2), (r0.proven_record_count, u2.proven_record_count))
+        self.assertEqual([], r0.not_finalized)
+        (excluded,) = u2.not_finalized
+        self.assertEqual(crashed.relative_to(universe.parent).as_posix(), excluded.partition)
+        self.assertTrue(excluded.partition.startswith("capture-universe-r1b/"))
+
+    def test_a_missing_or_repeated_universe_root_is_said_not_invented(self) -> None:
+        _partition(self.root)
+        missing = read_capture_availability_v1(self.root, universe_root=self.root.parent / "nope", now=NOW)
+        self.assertEqual("AVAILABLE", missing.state)
+        self.assertEqual(["PRODUCTION"], [source.purpose for source in missing.sources])
+        self.assertTrue(any("universe capture archive root does not exist" in item for item in missing.limitations))
+        same = read_capture_availability_v1(self.root, universe_root=self.root, now=NOW)
+        self.assertEqual(1, len(same.sources))
+        self.assertTrue(any("read once" in item for item in same.limitations))
+
+    def test_the_cache_skips_unchanged_complete_partitions_and_reproves_changed_ones(self) -> None:
+        complete = _partition(self.root, first=0, count=3)
+        _partition(self.root, first=5, count=2, finalize=False)
+        cache = PartitionStatusCacheV1()
+        with patch("trade_platform.evidence_catalog_v1.read_partition_status_v1",
+                   wraps=read_partition_status_v1) as reader:
+            first = read_capture_availability_v1(self.root, now=NOW, status_cache=cache)
+            self.assertEqual(2, reader.call_count)
+            second = read_capture_availability_v1(self.root, now=NOW, status_cache=cache)
+            # Only the open partition is read again; the finalized one is not re-hashed.
+            self.assertEqual(3, reader.call_count)
+            self.assertEqual(first.sources, second.sources)
+            self.assertEqual(1, len(cache))
+            records = complete / RECORDS_FILE_NAME
+            records.write_bytes(records.read_bytes() + b"\n")
+            third = read_capture_availability_v1(self.root, now=NOW, status_cache=cache)
+            self.assertEqual(5, reader.call_count)
+        (source,) = third.sources
+        self.assertEqual([], source.windows)  # the altered partition is re-proved and fails closed
+        self.assertTrue(any(
+            "manifest_file_checksum_mismatch:records.ndjson" in reason
+            for item in source.not_finalized for reason in item.reasons
+        ))
+        self.assertEqual(0, len(cache))
+        self.assertTrue(any("re-proved only when" in item for item in third.limitations))
 
 
 class EvidenceEndpointTests(unittest.TestCase):
