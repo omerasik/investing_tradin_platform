@@ -16,6 +16,7 @@ from .config import PlatformConfig
 from .evidence_catalog_v1 import (
     CaptureAvailabilityView,
     EvidenceCatalogView,
+    PartitionStatusCacheV1,
     read_capture_availability_v1,
 )
 from .fundamentals import SQLiteFundamentalStore
@@ -336,6 +337,7 @@ def build_app(
     operator_dashboard_queries: PostgresOperatorDashboardQueries | None = None,
     authorization_decision_sink: AuthorizationDecisionSink | None = None,
     capture_archive_root: Path | None = None,
+    universe_capture_archive_root: Path | None = None,
     research_data_root: Path | None = None,
     terminal_commands: PostgresTerminalCommandLedgerV1 | None = None,
 ) -> FastAPI:
@@ -376,6 +378,8 @@ def build_app(
     app.state.promotion_ledger = promotion_ledger
     app.state.operator_dashboard_queries = operator_dashboard_queries
     app.state.capture_archive_root = capture_archive_root
+    app.state.universe_capture_archive_root = universe_capture_archive_root
+    app.state.partition_status_cache = PartitionStatusCacheV1()
     app.state.research_data_root = research_data_root
     app.state.terminal_commands = terminal_commands
 
@@ -655,9 +659,13 @@ def build_app(
 
     @app.get("/operator-dashboard/capture-availability", response_model=CaptureAvailabilityView)
     def dashboard_capture_availability(_: None = Depends(protected_operator)) -> object:
-        """Proven first-party capture coverage under the configured root (UNCONFIGURED if none)."""
+        """Proven first-party capture coverage under the configured roots (UNCONFIGURED if none)."""
         try:
-            return read_capture_availability_v1(app.state.capture_archive_root)
+            return read_capture_availability_v1(
+                app.state.capture_archive_root,
+                universe_root=app.state.universe_capture_archive_root,
+                status_cache=app.state.partition_status_cache,
+            )
         except Exception as error:
             raise HTTPException(status_code=503, detail="Capture availability unavailable.") from error
 

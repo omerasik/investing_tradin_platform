@@ -339,6 +339,8 @@ export type CaptureAvailability = {
   as_of: string;
   disk_free_bytes: number | null;
   sources: {
+    /** The archive root's directory name; R0 and the R1B universe are separate roots, never merged. */
+    archive: string;
     source_id: string;
     exchange_symbol: string;
     purpose: "PRODUCTION" | "UNIVERSE" | "MEASUREMENT";

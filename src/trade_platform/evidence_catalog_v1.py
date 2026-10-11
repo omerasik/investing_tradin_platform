@@ -21,7 +21,12 @@ Two projections, deliberately separate:
 :func:`read_capture_availability_v1`
     The first-party capture archive on the recorder host's filesystem: proven
     coverage windows, derived gaps and excluded partitions per authorized
-    capture contract, and the newest recorded clock-offset sample.
+    capture contract, and the newest recorded clock-offset sample. The
+    production root (R0) and, when configured, the OR-2 universe root (R1B) are
+    read separately; each source is its own row, labelled with its archive and
+    keyed by its contract's ``source_id``, so R0 BTCUSDT and universe BTCUSDT
+    never merge. :class:`PartitionStatusCacheV1` keeps a long-lived API from
+    re-hashing every unchanged finalized partition on each request.
 
 What this module never claims
 -----------------------------
@@ -42,6 +47,7 @@ What this module never claims
 from __future__ import annotations
 
 import json
+import threading
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, Final, Literal, Protocol
@@ -51,14 +57,18 @@ from pydantic import BaseModel
 
 from .evidence_tier_authority_v1 import authorized_timing_contracts_v1
 from .first_party_capture_archive_v1 import (
+    PARTITION_STATUS_COMPLETE,
+    CapturePartitionV1,
     derive_archive_availability_by_source_v1,
     disk_free_bytes_v1,
     find_partitions_v1,
     nanos_to_datetime,
     read_lifecycle_v1,
+    read_partition_status_v1,
     session_source_id_v1,
 )
 from .first_party_capture_authority_v1 import (
+    FirstPartyCaptureContractV1,
     capture_purpose_v1,
     resolve_t4_registered_first_party_capture_contract_v1,
 )
@@ -200,6 +210,8 @@ class ClockOffsetSampleView(BaseModel):
 
 
 class CaptureSourceAvailabilityView(BaseModel):
+    #: The archive root this row was read from (its directory name, never a host path).
+    archive: str
     source_id: UUID
     exchange_symbol: str
     purpose: Literal["PRODUCTION", "UNIVERSE", "MEASUREMENT"]
@@ -405,7 +417,7 @@ def _relative(root: Path, directory: Path) -> str:
         return directory.name
 
 
-def _latest_clock_offset(root: Path, source_id: str) -> ClockOffsetSampleView | None:
+def _latest_clock_offset(root: Path, base: Path, source_id: str) -> ClockOffsetSampleView | None:
     """The newest CLOCK_OFFSET_SAMPLE across this source's partitions, or ``None``.
 
     A partition still being written may end in a half-written line; such a
@@ -438,18 +450,77 @@ def _latest_clock_offset(root: Path, source_id: str) -> ClockOffsetSampleView | 
         sampled_at=nanos_to_datetime(arrival),
         offset_estimate_seconds=int(detail["offset_estimate_nanos"]) / 1e9,
         offset_bound_seconds=int(detail["offset_bound_nanos"]) / 1e9,
-        partition=_relative(root, directory),
+        partition=_relative(base, directory),
     )
 
 
+def _file_signature(directory: Path) -> tuple[tuple[str, int, int], ...] | None:
+    """Name, size and modification time of every file in a partition, or ``None``."""
+    try:
+        return tuple(sorted(
+            (path.name, stat.st_size, stat.st_mtime_ns)
+            for path in directory.iterdir()
+            if path.is_file()
+            for stat in (path.stat(),)
+        ))
+    except OSError:
+        return None
+
+
+class PartitionStatusCacheV1:
+    """Memoized :func:`read_partition_status_v1` for one long-lived reader (the API).
+
+    Only a COMPLETE status is kept, and only while every file in its partition
+    shows the same name, size and modification time as when the status was
+    proven (taken before and after the read, so a compaction racing the read is
+    never cached). Any change -- compaction, a rewrite, an added or removed file
+    -- re-proves the partition in full. Open and PARTIAL partitions are read
+    every time. The cache trusts file metadata for unchanged files, so it is a
+    display aid only: acceptance (``universe-acceptance --verify``) and every
+    dataset re-verify partitions themselves and never use it.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._entries: dict[tuple[str, str], tuple[tuple[tuple[str, int, int], ...], CapturePartitionV1]] = {}
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._entries)
+
+    def __call__(
+        self, directory: Path, *, contract: FirstPartyCaptureContractV1 | None = None,
+    ) -> CapturePartitionV1:
+        key = (str(directory), "" if contract is None else str(contract.source_id))
+        before = _file_signature(directory)
+        with self._lock:
+            hit = self._entries.get(key)
+        if hit is not None and before is not None and hit[0] == before:
+            return hit[1]
+        status = read_partition_status_v1(directory, contract=contract)
+        after = _file_signature(directory)
+        with self._lock:
+            if status.status == PARTITION_STATUS_COMPLETE and before is not None and before == after:
+                self._entries[key] = (before, status)
+            else:
+                self._entries.pop(key, None)
+        return status
+
+
 def read_capture_availability_v1(
-    root: Path | None, *, now: datetime | None = None,
+    root: Path | None,
+    *,
+    universe_root: Path | None = None,
+    now: datetime | None = None,
+    status_cache: PartitionStatusCacheV1 | None = None,
 ) -> CaptureAvailabilityView:
     """Proven capture coverage under ``root``; ``UNCONFIGURED`` when there is no root.
 
     The API process sees an archive only when the operator points it at one
     (the recorder writes on its own host). An unconfigured or missing root is
-    reported as such -- never as "no capture happened".
+    reported as such -- never as "no capture happened". ``universe_root`` adds
+    the R1B universe archive as separate rows; a missing one is a limitation,
+    not an empty universe.
     """
     as_of = now or datetime.now(UTC)
     if root is None:
@@ -462,7 +533,54 @@ def read_capture_availability_v1(
             state="UNAVAILABLE", as_of=as_of, disk_free_bytes=None, sources=[], unattributed=[],
             limitations=["The configured capture archive root does not exist on this host."],
         )
-    per_source, unattributed = derive_archive_availability_by_source_v1(root)
+    # (root, base that partition names are shown relative to). The production
+    # root keeps its historical bare relative names; others carry their root's name.
+    roots: list[tuple[Path, Path]] = [(root, root)]
+    limitations: list[str] = []
+    if universe_root is not None:
+        if universe_root.resolve() == root.resolve():
+            limitations.append("The universe archive root is the production root; it is read once.")
+        elif not universe_root.is_dir():
+            limitations.append("The configured universe capture archive root does not exist on this host.")
+        else:
+            roots.append((universe_root, universe_root.parent))
+    sources: list[CaptureSourceAvailabilityView] = []
+    unattributed: list[CaptureExclusionView] = []
+    for archive_root, base in roots:
+        archive_sources, archive_unattributed = _read_archive_sources(archive_root, base, status_cache)
+        for source in archive_sources:
+            if any(seen.source_id == source.source_id for seen in sources):
+                limitations.append(
+                    f"Source {source.source_id} appears under more than one archive root; "
+                    "each root's row is shown separately, never merged."
+                )
+        sources.extend(archive_sources)
+        unattributed.extend(archive_unattributed)
+    return CaptureAvailabilityView(
+        state="AVAILABLE",
+        as_of=as_of,
+        disk_free_bytes=disk_free_bytes_v1(root),
+        sources=sources,
+        unattributed=unattributed,
+        limitations=[
+            "Only COMPLETE partitions prove coverage; open or interrupted partitions prove nothing.",
+            "Files cannot show whether a recorder process is running right now.",
+            "Clock offsets are recorded evidence; no arrival time is ever adjusted by them.",
+            *(
+                [("An unchanged finalized partition's checksums are re-proved only when one of its "
+                  "files changes size or modification time; acceptance and datasets replay in full.")]
+                if status_cache is not None else []
+            ),
+            *limitations,
+        ],
+    )
+
+
+def _read_archive_sources(
+    root: Path, base: Path, status_cache: PartitionStatusCacheV1 | None,
+) -> tuple[list[CaptureSourceAvailabilityView], list[CaptureExclusionView]]:
+    """One archive root's sources, each kept to its own contract."""
+    per_source, unattributed = derive_archive_availability_by_source_v1(root, status_reader=status_cache)
     sources = []
     for item in per_source:
         availability = item.availability
@@ -477,6 +595,7 @@ def read_capture_availability_v1(
             for window in availability.windows
         ]
         sources.append(CaptureSourceAvailabilityView(
+            archive=root.name,
             source_id=item.contract.source_id,
             exchange_symbol=item.contract.exchange_symbol,
             purpose=capture_purpose_v1(item.contract).value,
@@ -495,26 +614,15 @@ def read_capture_availability_v1(
                 for gap in availability.gaps
             ],
             not_finalized=[
-                CaptureExclusionView(partition=_relative(root, directory), reasons=list(reasons))
+                CaptureExclusionView(partition=_relative(base, directory), reasons=list(reasons))
                 for directory, reasons in availability.excluded
             ],
-            latest_clock_offset=_latest_clock_offset(root, str(item.contract.source_id)),
+            latest_clock_offset=_latest_clock_offset(root, base, str(item.contract.source_id)),
         ))
-    return CaptureAvailabilityView(
-        state="AVAILABLE",
-        as_of=as_of,
-        disk_free_bytes=disk_free_bytes_v1(root),
-        sources=sources,
-        unattributed=[
-            CaptureExclusionView(partition=_relative(root, directory), reasons=list(reasons))
-            for directory, reasons in unattributed
-        ],
-        limitations=[
-            "Only COMPLETE partitions prove coverage; open or interrupted partitions prove nothing.",
-            "Files cannot show whether a recorder process is running right now.",
-            "Clock offsets are recorded evidence; no arrival time is ever adjusted by them.",
-        ],
-    )
+    return sources, [
+        CaptureExclusionView(partition=_relative(base, directory), reasons=list(reasons))
+        for directory, reasons in unattributed
+    ]
 
 
 __all__ = [
@@ -524,6 +632,7 @@ __all__ = [
     "NO_TIMING_AUTHORITY_V1",
     "CaptureAvailabilityView",
     "EvidenceCatalogView",
+    "PartitionStatusCacheV1",
     "read_capture_availability_v1",
     "read_evidence_catalog_v1",
     "timing_sources_v1",

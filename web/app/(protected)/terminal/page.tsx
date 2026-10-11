@@ -271,11 +271,11 @@ export default async function ResearchTerminalPage() {
         <p>What first-party capture has proven per source. Gaps are shown as gaps, never bridged.</p>
         {capture ? (
           <DataTable caption="First-party capture by source" ariaLabel="Capture by source">
-            <thead><tr><th scope="col">Symbol</th><th scope="col">Purpose</th><th scope="col">Proven</th><th scope="col">Finalized windows</th><th scope="col">Gaps</th><th scope="col">Partitions proving nothing</th></tr></thead>
+            <thead><tr><th scope="col">Symbol</th><th scope="col">Purpose</th><th scope="col">Archive</th><th scope="col">Proven</th><th scope="col">Finalized windows</th><th scope="col">Gaps</th><th scope="col">Partitions proving nothing</th></tr></thead>
             <tbody>
               {capture.sources.map((source) => (
-                <tr key={`${source.exchange_symbol}-${source.purpose}`}>
-                  <td>{source.exchange_symbol}</td><td>{source.purpose}</td><td className="tabular-num">{hours(source.proven_seconds)}</td>
+                <tr key={`${source.archive}-${source.source_id}`}>
+                  <td>{source.exchange_symbol}</td><td>{source.purpose}</td><td>{source.archive}</td><td className="tabular-num">{hours(source.proven_seconds)}</td>
                   <td className="tabular-num">{source.windows.length}</td><td className="tabular-num">{source.gaps.length}</td><td className="tabular-num">{source.not_finalized.length}</td>
                 </tr>
               ))}
