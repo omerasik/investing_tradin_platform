@@ -35,9 +35,20 @@ Rules, all fail-closed:
 * **Horizon.** Only hours that end at or before the latest proven instant of
   any required symbol are judged; the open hour (its partition has no manifest
   yet) is never judged either way.
+* **Current run.** The run ending at the last judged hour is history, not a
+  live count. :func:`acceptance_status_v1` calls it current only when nothing
+  says it has stopped: no required symbol has a run that proves more of the
+  pending hour (the first unjudged one) than the hand-off bound and then ends
+  inside it (the 2026-10-10 02:19Z ``CONNECTION_LOST`` case), and the
+  observation time is no more than one UTC hour past the last judged hour, so
+  no fully elapsed hour is missing its manifest. Wall-clock time can only
+  withdraw the "current" claim; it never adds a proven hour, never changes a
+  verdict and never touches the longest run that decides acceptance.
 
-Metadata-level, like availability itself: a dataset built on these hours must
-still verify each partition it uses. Passing this check is evidence for OR-1;
+By default this is metadata-level, like availability itself.
+:func:`verified_windows_v1` instead admits only partitions that fully replay
+(``universe-acceptance --verify``); a dataset built on these hours must still
+verify each partition it uses. Passing this check is evidence for OR-1;
 accepting the burn-in stays the owner's decision.
 """
 
@@ -46,13 +57,21 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import Final
 from uuid import UUID
 
 from trade_platform.first_party_capture_archive_v1 import (
     END_PROOF_UTC_DAY_ROLLOVER,
+    PARTITION_STATUS_COMPLETE,
+    FirstPartyCaptureArchiveError,
     ProvenWindowV1,
+    find_partitions_v1,
+    read_partition_status_v1,
+    session_source_id_v1,
+    verify_partition_v1,
 )
+from trade_platform.first_party_capture_authority_v1 import FirstPartyCaptureContractV1
 
 HOUR_NANOS: Final = 3_600 * 1_000_000_000
 DAY_NANOS: Final = 24 * HOUR_NANOS
@@ -141,9 +160,26 @@ class ConsecutiveHoursV1:
 
 
 @dataclass(frozen=True, slots=True)
+class PendingHourInterruptionV1:
+    """Manifested evidence inside the pending hour that ends before the hour does.
+
+    No run reaches the pending hour's end (else it would be judged), so a
+    proven window stopping inside it means that symbol's capture stopped
+    there. Reported only: it never changes an hour verdict.
+    """
+
+    symbol: str
+    session_id: UUID
+    end_utc_nanos: int
+    end_proof: str
+
+
+@dataclass(frozen=True, slots=True)
 class SymbolHoursV1:
     symbol: str
     segments: tuple[HourlySegmentV1, ...]
+    #: Exclusive end of this symbol's latest proven window; ``None`` without evidence.
+    latest_proven_end_utc_nanos: int | None = None
 
     @property
     def complete_hours(self) -> int:
@@ -161,6 +197,7 @@ class HourlyAcceptanceV1:
     symbols: tuple[SymbolHoursV1, ...]
     joint_complete: tuple[bool, ...]
     runs: tuple[ConsecutiveHoursV1, ...]
+    pending_hour_interruptions: tuple[PendingHourInterruptionV1, ...] = ()
 
     @property
     def longest_run(self) -> ConsecutiveHoursV1 | None:
@@ -169,11 +206,30 @@ class HourlyAcceptanceV1:
         return max(self.runs, key=lambda run: (run.hours, run.first_hour_start_utc_nanos))
 
     @property
-    def current_run_hours(self) -> int:
-        """Consecutive jointly COMPLETE hours ending at the last judged hour (0 if it is not)."""
+    def last_judged_hour_end_utc_nanos(self) -> int | None:
+        """End of the last judged hour, i.e. the start of the pending hour."""
+        if self.first_hour_start_utc_nanos is None:
+            return None
+        return self.first_hour_start_utc_nanos + self.hours_judged * HOUR_NANOS
+
+    @property
+    def last_judged_run_hours(self) -> int:
+        """Consecutive jointly COMPLETE hours ending at the last judged hour (0 if it is not).
+
+        History, not a live count: whether this run is still current is
+        :func:`acceptance_status_v1`'s question.
+        """
         if not self.joint_complete or not self.joint_complete[-1] or not self.runs:
             return 0
         return self.runs[-1].hours
+
+    @property
+    def joint_evidence_end_utc_nanos(self) -> int | None:
+        """The latest instant every required symbol has proven evidence up to (``None`` if one has none)."""
+        ends = [symbol.latest_proven_end_utc_nanos for symbol in self.symbols]
+        if not ends or any(end is None for end in ends):
+            return None
+        return min(end for end in ends if end is not None)
 
     @property
     def met(self) -> bool:
@@ -190,6 +246,127 @@ class HourlyAcceptanceV1:
             if segment.complete and segment.unproven_nanos is not None
         ]
         return max(observed) if observed else None
+
+
+class CurrentRunStateV1(StrEnum):
+    """Whether the run at the last judged hour can still be called current."""
+
+    #: Nothing says capture stopped: the run may still grow.
+    CURRENT = "CURRENT"
+    #: A required symbol's evidence inside the pending hour already ended early.
+    INTERRUPTED = "INTERRUPTED"
+    #: A whole UTC hour has elapsed since the last judged hour without its manifest.
+    STALE = "STALE"
+    #: The observation time is before the last judged hour ended: the observing
+    #: clock contradicts the evidence, so nothing about the present is claimed.
+    OBSERVED_BEFORE_EVIDENCE = "OBSERVED_BEFORE_EVIDENCE"
+    #: No hour has been judged yet.
+    NO_EVIDENCE = "NO_EVIDENCE"
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptanceStatusV1:
+    """The acceptance as seen at ``observed_at_utc_nanos``.
+
+    ``acceptance`` is unchanged by the observation; only ``current_run_hours``
+    depends on it, and only downwards.
+    """
+
+    acceptance: HourlyAcceptanceV1
+    observed_at_utc_nanos: int
+    state: CurrentRunStateV1
+    #: Fully elapsed UTC hours after the last judged hour (0 or 1 is normal).
+    unjudged_elapsed_hours: int | None
+
+    @property
+    def current_run_hours(self) -> int:
+        """The last judged run while it is CURRENT, else 0: a stopped run is never continued."""
+        if self.state is not CurrentRunStateV1.CURRENT:
+            return 0
+        return self.acceptance.last_judged_run_hours
+
+    @property
+    def evidence_age_nanos(self) -> int | None:
+        """Observation time minus the joint evidence end (how old the newest joint proof is)."""
+        end = self.acceptance.joint_evidence_end_utc_nanos
+        return None if end is None else self.observed_at_utc_nanos - end
+
+    @property
+    def remaining_hours(self) -> int:
+        """Consecutive jointly COMPLETE hours still needed (0 once met)."""
+        if self.acceptance.met:
+            return 0
+        return self.acceptance.required_consecutive_hours - self.current_run_hours
+
+
+def acceptance_status_v1(
+    acceptance: HourlyAcceptanceV1, *, observed_at_utc_nanos: int
+) -> AcceptanceStatusV1:
+    """Say whether the run at the last judged hour is still current at the observation time.
+
+    Evidence first: a pending-hour interruption makes the run INTERRUPTED
+    whatever the clock says. The observation time only ever downgrades: STALE
+    once the observation's own UTC hour starts two or more hours after the last
+    judged hour (the hour in between has fully elapsed and has no manifest).
+    One hour of slack covers the hour that has just closed and is still being
+    finalized; no tunable threshold is involved.
+    """
+    end = acceptance.last_judged_hour_end_utc_nanos
+    if end is None:
+        return AcceptanceStatusV1(acceptance, observed_at_utc_nanos, CurrentRunStateV1.NO_EVIDENCE, None)
+    lag_hours = (observed_at_utc_nanos // HOUR_NANOS * HOUR_NANOS - end) // HOUR_NANOS
+    if acceptance.pending_hour_interruptions:
+        state = CurrentRunStateV1.INTERRUPTED
+    elif observed_at_utc_nanos < end:
+        state = CurrentRunStateV1.OBSERVED_BEFORE_EVIDENCE
+    elif lag_hours >= 2:
+        state = CurrentRunStateV1.STALE
+    else:
+        state = CurrentRunStateV1.CURRENT
+    return AcceptanceStatusV1(acceptance, observed_at_utc_nanos, state, max(0, lag_hours))
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedWindowsV1:
+    """One source's windows from partitions that fully replayed, and those that did not."""
+
+    windows: tuple[ProvenWindowV1, ...]
+    verified_partitions: int
+    failed: tuple[tuple[Path, str], ...]
+
+
+def verified_windows_v1(root: Path, contract: FirstPartyCaptureContractV1) -> VerifiedWindowsV1:
+    """Proven windows of ``contract`` whose partitions re-prove every record.
+
+    Stronger than manifest-level availability: each COMPLETE partition is
+    replayed in full (:func:`verify_partition_v1` -- file hashes, record
+    hashes re-derived under the contract, ordering, coverage placement and
+    counts). A partition that fails contributes no window at all and is named
+    with its reason, so its hours can only become incomplete. Streams one
+    record at a time; cost is CPU and disk reads, not memory.
+    """
+    wanted = str(contract.source_id)
+    windows: list[ProvenWindowV1] = []
+    failed: list[tuple[Path, str]] = []
+    verified = 0
+    for directory in find_partitions_v1(root):
+        if session_source_id_v1(directory) != wanted:
+            continue
+        status = read_partition_status_v1(directory, contract=contract)
+        if status.status != PARTITION_STATUS_COMPLETE or status.session_id is None:
+            continue  # proves nothing either way; availability lists it as excluded
+        try:
+            verification = verify_partition_v1(directory, contract=contract)
+        except FirstPartyCaptureArchiveError as error:
+            failed.append((directory, str(error)))
+            continue
+        verified += 1
+        windows.extend(
+            ProvenWindowV1(session_id=verification.session_id, interval=interval)
+            for interval in verification.coverage
+        )
+    windows.sort(key=lambda window: window.interval.start_utc_nanos)
+    return VerifiedWindowsV1(windows=tuple(windows), verified_partitions=verified, failed=tuple(failed))
 
 
 def chain_proven_runs_v1(windows: Sequence[ProvenWindowV1]) -> tuple[ProvenRunV1, ...]:
@@ -328,6 +505,10 @@ def derive_hourly_acceptance_v1(
             joint_complete=(),
             runs=(),
         )
+
+    def latest_end(runs: Sequence[ProvenRunV1]) -> int | None:
+        return max((run.end_utc_nanos for run in runs), default=None)
+
     first_hour = min(run.start_utc_nanos for run in all_runs) // HOUR_NANOS * HOUR_NANOS
     horizon = max(run.end_utc_nanos for run in all_runs) // HOUR_NANOS * HOUR_NANOS
     hours = max(0, (horizon - first_hour) // HOUR_NANOS)
@@ -342,6 +523,7 @@ def derive_hourly_acceptance_v1(
                 )
                 for index in range(hours)
             ),
+            latest_end(runs),
         )
         for symbol, runs in runs_by_symbol
     )
@@ -356,19 +538,56 @@ def derive_hourly_acceptance_v1(
         symbols=symbol_hours,
         joint_complete=joint,
         runs=_consecutive_runs(first_hour, joint),
+        pending_hour_interruptions=_pending_hour_interruptions(
+            runs_by_symbol, first_hour + hours * HOUR_NANOS, max_unproven_nanos
+        ),
     )
+
+
+def _pending_hour_interruptions(
+    runs_by_symbol: Sequence[tuple[str, Sequence[ProvenRunV1]]],
+    pending_start: int,
+    max_unproven_nanos: int,
+) -> tuple[PendingHourInterruptionV1, ...]:
+    """Each symbol's latest run that proves part of the pending hour and stops inside it.
+
+    No run reaches the pending hour's end (the horizon is the latest proven
+    instant, floored). A previous hour's segment overrunning the grid by its
+    hand-off (at most ``max_unproven``) is the normal boundary, not a stop.
+    A run proving more of the pending hour than that and then ending is a
+    capture that stopped inside the hour.
+    """
+    pending_end = pending_start + HOUR_NANOS
+    found: list[PendingHourInterruptionV1] = []
+    for symbol, runs in runs_by_symbol:
+        inside = [
+            run
+            for run in runs
+            if pending_start < run.end_utc_nanos < pending_end
+            and HOUR_NANOS - run.unproven_nanos(pending_start, pending_end) > max_unproven_nanos
+        ]
+        if inside:
+            last = max(inside, key=lambda run: (run.end_utc_nanos, str(run.session_id)))
+            found.append(PendingHourInterruptionV1(symbol, last.session_id, last.end_utc_nanos, last.end_proof))
+    return tuple(found)
 
 
 __all__ = [
     "HOUR_NANOS",
+    "AcceptanceStatusV1",
     "ConsecutiveHoursV1",
+    "CurrentRunStateV1",
     "HourVerdictV1",
     "HourlyAcceptanceV1",
     "HourlySegmentAcceptanceError",
     "HourlySegmentV1",
+    "PendingHourInterruptionV1",
     "ProvenRunV1",
     "SymbolHoursV1",
+    "VerifiedWindowsV1",
+    "acceptance_status_v1",
     "chain_proven_runs_v1",
     "classify_hour_v1",
     "derive_hourly_acceptance_v1",
+    "verified_windows_v1",
 ]

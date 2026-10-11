@@ -14,9 +14,11 @@ from trade_platform.first_party_capture_archive_v1 import (
 )
 from trade_platform.first_party_capture_hourly_acceptance_v1 import (
     HOUR_NANOS,
+    CurrentRunStateV1,
     HourlySegmentAcceptanceError,
     HourVerdictV1,
     ProvenRunV1,
+    acceptance_status_v1,
     chain_proven_runs_v1,
     classify_hour_v1,
     derive_hourly_acceptance_v1,
@@ -288,7 +290,7 @@ class JointAcceptanceTests(unittest.TestCase):
         self.assertEqual(acceptance.hours_judged, 4)
         self.assertEqual(acceptance.joint_complete, (True, True, False, True))
         self.assertEqual([run.hours for run in acceptance.runs], [2, 1])
-        self.assertEqual(acceptance.current_run_hours, 1)
+        self.assertEqual(acceptance.last_judged_run_hours, 1)
         self.assertFalse(acceptance.met)
 
     def test_met_when_the_longest_joint_run_reaches_the_requirement(self) -> None:
@@ -299,7 +301,7 @@ class JointAcceptanceTests(unittest.TestCase):
             required_consecutive_hours=3,
         )
         self.assertTrue(acceptance.met)
-        self.assertEqual(acceptance.current_run_hours, 3)
+        self.assertEqual(acceptance.last_judged_run_hours, 3)
         self.assertEqual(acceptance.max_unproven_observed_nanos, 5 * SECOND)
 
     def test_a_symbol_without_evidence_blocks_every_hour(self) -> None:
@@ -344,6 +346,258 @@ class JointAcceptanceTests(unittest.TestCase):
         self.assertIsNone(acceptance.first_hour_start_utc_nanos)
         self.assertFalse(acceptance.met)
 
+
+UNIVERSE = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
+MINUTE = 60 * SECOND
+#: 2026-10-10T02:00Z, the hour the 2026-10-10 connection loss fell in.
+INCIDENT_HOUR = DAY + 26 * HOUR_NANOS
+#: Bounded segments 2026-10-09T17:00Z..2026-10-10T02:00Z (9 jointly COMPLETE hours).
+BEFORE_INCIDENT = tuple(range(17, 26))
+#: The 02:00Z segments' last proven record, then CONNECTION_LOST (all three symbols).
+CONNECTION_LOST_AT = INCIDENT_HOUR + 19 * MINUTE + 23_627_043_000
+#: Capture resumed 2026-10-11T19:26:46Z, about 41 h after the loss.
+RESUMED_AT = DAY + 2 * 24 * HOUR_NANOS + 19 * HOUR_NANOS + 26 * MINUTE + 46 * SECOND
+
+
+def incident_windows(*, partial: bool = True, resumed: bool = False) -> list[tuple[str, list[ProvenWindowV1]]]:
+    """Each universe symbol's manifested windows around the 2026-10-10 02:19Z loss."""
+    out = []
+    for symbol in UNIVERSE:
+        windows = [segment(hour, head_seconds=6) for hour in BEFORE_INCIDENT]
+        if partial:
+            windows.append(window(INCIDENT_HOUR + 6 * SECOND, CONNECTION_LOST_AT, END_PROOF_CONNECTION_LOST))
+        if resumed:
+            resume_hour_end = RESUMED_AT // HOUR_NANOS * HOUR_NANOS + HOUR_NANOS
+            windows.append(window(RESUMED_AT, resume_hour_end + SECOND // 2))
+        out.append((symbol, windows))
+    return out
+
+
+def at(utc: str) -> int:
+    from datetime import datetime
+
+    return int(datetime.fromisoformat(utc).timestamp()) * SECOND
+
+
+class CurrentRunStatusTests(unittest.TestCase):
+    """The run at the last judged hour is history; it is current only while nothing says it stopped."""
+
+    def acceptance(self, **kwargs: bool):  # type: ignore[no-untyped-def]
+        return derive_hourly_acceptance_v1(
+            incident_windows(**kwargs), max_unproven_nanos=60 * SECOND, required_consecutive_hours=24
+        )
+
+    def test_the_2026_10_10_connection_loss_is_not_a_current_run_41_hours_later(self) -> None:
+        acceptance = self.acceptance()
+        # Historical calculation unchanged: the 9 h run and the 02:00Z horizon.
+        self.assertEqual(acceptance.longest_run.hours, 9)  # type: ignore[union-attr]
+        self.assertEqual(acceptance.last_judged_hour_end_utc_nanos, INCIDENT_HOUR)
+        self.assertEqual(acceptance.last_judged_run_hours, 9)
+        self.assertFalse(acceptance.met)
+        self.assertEqual(
+            [(stop.symbol, stop.end_utc_nanos, stop.end_proof) for stop in acceptance.pending_hour_interruptions],
+            [(symbol, CONNECTION_LOST_AT + 1, END_PROOF_CONNECTION_LOST) for symbol in UNIVERSE],
+        )
+        status = acceptance_status_v1(acceptance, observed_at_utc_nanos=at("2026-10-11T19:59:09+00:00"))
+        self.assertIs(status.state, CurrentRunStateV1.INTERRUPTED)
+        self.assertEqual(status.current_run_hours, 0)
+        self.assertEqual(status.remaining_hours, 24)
+        self.assertEqual(status.unjudged_elapsed_hours, 41)
+        self.assertGreater(status.evidence_age_nanos, 41 * HOUR_NANOS)  # type: ignore[operator]
+        self.assertLess(status.evidence_age_nanos, 42 * HOUR_NANOS)  # type: ignore[operator]
+
+    def test_an_interruption_is_evidence_whatever_the_clock_says(self) -> None:
+        status = acceptance_status_v1(self.acceptance(), observed_at_utc_nanos=at("2026-10-10T02:30:00+00:00"))
+        self.assertIs(status.state, CurrentRunStateV1.INTERRUPTED)
+        self.assertEqual(status.current_run_hours, 0)
+
+    def test_without_the_partial_manifest_the_clock_alone_makes_the_run_stale(self) -> None:
+        acceptance = self.acceptance(partial=False)
+        self.assertEqual(acceptance.pending_hour_interruptions, ())
+        for observed, state, current in (
+            ("2026-10-10T02:30:00+00:00", CurrentRunStateV1.CURRENT, 9),
+            ("2026-10-10T03:00:05+00:00", CurrentRunStateV1.CURRENT, 9),  # 02:00Z hour still finalizing
+            ("2026-10-10T04:00:00+00:00", CurrentRunStateV1.STALE, 0),
+            ("2026-10-11T19:59:09+00:00", CurrentRunStateV1.STALE, 0),
+        ):
+            with self.subTest(observed=observed):
+                status = acceptance_status_v1(acceptance, observed_at_utc_nanos=at(observed))
+                self.assertIs(status.state, state)
+                self.assertEqual(status.current_run_hours, current)
+                self.assertEqual(status.acceptance.longest_run.hours, 9)  # type: ignore[union-attr]
+
+    def test_elapsed_time_never_adds_an_hour(self) -> None:
+        acceptance = self.acceptance(partial=False)
+        counts = {
+            acceptance_status_v1(acceptance, observed_at_utc_nanos=INCIDENT_HOUR + n * HOUR_NANOS).current_run_hours
+            for n in range(48)
+        }
+        self.assertLessEqual(max(counts), acceptance.last_judged_run_hours)
+
+    def test_the_resumed_capture_starts_from_zero_and_its_hand_off_is_no_interruption(self) -> None:
+        acceptance = self.acceptance(resumed=True)
+        # 2026-10-11T19:00Z is judged: its head (26 min) exceeds the bound, so no hour is bridged.
+        self.assertEqual(acceptance.last_judged_hour_end_utc_nanos, at("2026-10-11T20:00:00+00:00"))
+        self.assertEqual(acceptance.last_judged_run_hours, 0)
+        self.assertEqual(acceptance.longest_run.hours, 9)  # type: ignore[union-attr]
+        self.assertEqual(acceptance.pending_hour_interruptions, ())  # 0.5 s overrun is the hand-off
+        status = acceptance_status_v1(acceptance, observed_at_utc_nanos=at("2026-10-11T20:05:00+00:00"))
+        self.assertIs(status.state, CurrentRunStateV1.CURRENT)
+        self.assertEqual(status.current_run_hours, 0)
+        self.assertEqual(status.remaining_hours, 24)
+
+    def test_an_observation_before_the_evidence_claims_nothing_current(self) -> None:
+        status = acceptance_status_v1(
+            self.acceptance(partial=False), observed_at_utc_nanos=INCIDENT_HOUR - SECOND
+        )
+        self.assertIs(status.state, CurrentRunStateV1.OBSERVED_BEFORE_EVIDENCE)
+        self.assertEqual(status.current_run_hours, 0)
+
+    def test_a_met_acceptance_stays_met_when_evidence_goes_stale(self) -> None:
+        hours = [segment(hour) for hour in range(3)]
+        acceptance = derive_hourly_acceptance_v1(
+            [("BTCUSDT", hours)], max_unproven_nanos=HEAD, required_consecutive_hours=3
+        )
+        status = acceptance_status_v1(acceptance, observed_at_utc_nanos=DAY + 30 * HOUR_NANOS)
+        self.assertIs(status.state, CurrentRunStateV1.STALE)
+        self.assertTrue(status.acceptance.met)
+        self.assertEqual(status.remaining_hours, 0)
+
+    def test_no_evidence_has_no_current_run(self) -> None:
+        acceptance = derive_hourly_acceptance_v1(
+            [("BTCUSDT", [])], max_unproven_nanos=HEAD, required_consecutive_hours=1
+        )
+        status = acceptance_status_v1(acceptance, observed_at_utc_nanos=DAY)
+        self.assertIs(status.state, CurrentRunStateV1.NO_EVIDENCE)
+        self.assertEqual(status.current_run_hours, 0)
+        self.assertIsNone(status.evidence_age_nanos)
+
+
+
+class VerifiedWindowsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from trade_platform.first_party_capture_authority_v1 import (
+            first_party_bybit_universe_contracts_v1,
+        )
+
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name) / "archive"
+        self.btc, self.eth, _ = first_party_bybit_universe_contracts_v1()
+
+    def test_only_fully_replayed_partitions_of_the_source_contribute(self) -> None:
+        from tests.test_first_party_capture_archive_v1 import _complete_partition
+        from trade_platform.first_party_capture_hourly_acceptance_v1 import verified_windows_v1
+
+        _complete_partition(self.root, contract=self.btc, count=3)
+        _complete_partition(self.root, contract=self.eth, count=2, first=10)
+        verified = verified_windows_v1(self.root, self.btc)
+        self.assertEqual(verified.verified_partitions, 1)
+        self.assertEqual(verified.failed, ())
+        self.assertEqual(len(verified.windows), 1)
+        self.assertEqual(verified.windows[0].interval.record_count, 3)
+
+    def test_a_partition_that_fails_replay_proves_nothing_and_is_named(self) -> None:
+        from tests.test_first_party_capture_archive_v1 import (
+            _complete_partition,
+            _rewrite_manifest,
+        )
+        from trade_platform.first_party_capture_archive_v1 import derive_archive_availability_v1
+        from trade_platform.first_party_capture_hourly_acceptance_v1 import verified_windows_v1
+
+        directory = _complete_partition(self.root, contract=self.btc, count=3)
+
+        def overclaim(manifest: dict) -> None:
+            manifest["record_count"] += 1
+            manifest["coverage"][0]["record_count"] += 1
+
+        _rewrite_manifest(directory, overclaim)
+        # Hash-consistent forged claims pass the manifest-level read ...
+        self.assertEqual(
+            len(derive_archive_availability_v1(self.root, contract=self.btc).windows), 1
+        )
+        # ... but not a full replay, so the partition proves nothing here.
+        verified = verified_windows_v1(self.root, self.btc)
+        self.assertEqual(verified.windows, ())
+        self.assertEqual(verified.verified_partitions, 0)
+        self.assertEqual(len(verified.failed), 1)
+        self.assertEqual(verified.failed[0][0], directory)
+        self.assertIn("count", verified.failed[0][1])
+
+    def test_a_replay_rejected_middle_day_is_never_bridged(self) -> None:
+        from datetime import UTC, date, datetime
+
+        from tests.test_first_party_capture_archive_v1 import (
+            _measurement_payload,
+            _rewrite_manifest,
+        )
+        from trade_platform.first_party_capture_archive_v1 import (
+            CaptureClockReadingV1,
+            CapturePartitionWriterV1,
+            build_capture_record_v1,
+        )
+        from trade_platform.first_party_capture_hourly_acceptance_v1 import verified_windows_v1
+
+        # One session recording across two midnights: three partitions linked
+        # by UTC_DAY_ROLLOVER, sequence continuous, as the recorder writes them.
+        session = uuid4()
+        midnight = int(datetime(2026, 9, 23, tzinfo=UTC).timestamp()) * SECOND
+        days = (date(2026, 9, 22), date(2026, 9, 23), date(2026, 9, 24))
+        arrivals = (
+            (midnight - HOUR_NANOS + SECOND, midnight - MS),
+            (midnight + MS, midnight + 24 * HOUR_NANOS - MS),
+            (midnight + 24 * HOUR_NANOS + MS, midnight + 25 * HOUR_NANOS),
+        )
+        proofs = (END_PROOF_UTC_DAY_ROLLOVER, END_PROOF_UTC_DAY_ROLLOVER, END_PROOF_OPERATOR_BOUNDED_STOP)
+        payload = _measurement_payload(self.btc.exchange_symbol)
+        directories = []
+        sequence = 0
+        for day, times, proof in zip(days, arrivals, proofs, strict=True):
+            writer = CapturePartitionWriterV1(
+                root=self.root, contract=self.btc, session_id=session, day=day,
+                clock_resolution_nanos=15_625_000,
+            )
+            for arrival in times:
+                writer.append_record(build_capture_record_v1(
+                    contract=self.btc, session_id=session, sequence=sequence,
+                    clock=CaptureClockReadingV1(
+                        arrival_utc_nanos=arrival, arrival_monotonic_nanos=arrival - midnight + 10**15
+                    ),
+                    payload_text=payload,
+                ))
+                sequence += 1
+            writer.declare_coverage(CaptureCoverageIntervalV1(
+                start_utc_nanos=times[0], last_proven_utc_nanos=times[1], end_proof=proof, record_count=2
+            ))
+            directories.append(writer.finalize().parent)
+
+        def judge() -> tuple[int, object]:
+            verified = verified_windows_v1(self.root, self.btc)
+            return len(verified.failed), derive_hourly_acceptance_v1(
+                [("BTCUSDT", verified.windows)], max_unproven_nanos=HEAD, required_consecutive_hours=24
+            )
+
+        failed, intact = judge()
+        self.assertEqual(failed, 0)
+        self.assertEqual([run.hours for run in intact.runs], [26])
+        self.assertTrue(intact.met)
+
+        def overclaim(manifest: dict) -> None:
+            manifest["record_count"] += 1
+            manifest["coverage"][0]["record_count"] += 1
+
+        _rewrite_manifest(directories[1], overclaim)
+        failed, forged = judge()
+        self.assertEqual(failed, 1)
+        middle_day = forged.symbols[0].segments[1:25]
+        self.assertTrue(all(item.verdict is HourVerdictV1.NO_PROVEN_COVERAGE for item in middle_day))
+        # 23:00 now ends 1 ms short of midnight with nothing after it: not proven either.
+        self.assertIs(forged.symbols[0].segments[0].verdict, HourVerdictV1.COVERAGE_ENDS_BEFORE_HOUR_END)
+        self.assertEqual([run.hours for run in forged.runs], [1])
+        self.assertFalse(forged.met)
 
 
 if __name__ == "__main__":
