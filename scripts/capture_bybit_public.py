@@ -108,6 +108,9 @@ _GIB = 1024**3
 RECORDER_LOCK_NAME = "recorder"
 #: Exit code when another live recorder already holds the root.
 EXIT_ALREADY_RUNNING = 4
+#: Exit code when free disk space is (or fell) below the floor. A service
+#: manager must not restart on it (deploy/oci/systemd: RestartPreventExitStatus).
+EXIT_DISK_FLOOR = 2
 
 #: An engineering safety floor, not an economic parameter: below it capture
 #: stops cleanly rather than filling the system volume.
@@ -178,9 +181,9 @@ def _run(args: argparse.Namespace) -> int:
         )
     except CaptureDiskBudgetError as error:
         print(f"refused: {error}")
-        return 2
+        return EXIT_DISK_FLOOR
     _print_fleet(result)
-    return 2 if result.end_proof == END_PROOF_DISK_BUDGET_STOP else 0
+    return EXIT_DISK_FLOOR if result.end_proof == END_PROOF_DISK_BUDGET_STOP else 0
 
 
 def segment_bound_seconds(now_epoch_seconds: float, segment_seconds: float) -> float:
@@ -241,7 +244,7 @@ def _supervise_contracts(
             )
         except CaptureDiskBudgetError as error:
             print(f"refused: {error}; free space before restarting capture")
-            return 2
+            return EXIT_DISK_FLOOR
         except KeyboardInterrupt:
             return 0
         except Exception as error:  # noqa: BLE001 - supervisor must outlive any failure
@@ -251,7 +254,7 @@ def _supervise_contracts(
         _print_fleet(result)
         if result.end_proof == END_PROOF_DISK_BUDGET_STOP:
             print("stopped: free disk space fell below the floor")
-            return 2
+            return EXIT_DISK_FLOOR
         if segment is None or result.end_proof != END_PROOF_OPERATOR_BOUNDED_STOP:
             return 0
         print(f"{datetime.now(UTC).isoformat()} segment finalized; starting the next")
@@ -283,7 +286,7 @@ def _measure(args: argparse.Namespace) -> int:
         )
     except CaptureDiskBudgetError as error:
         print(f"refused: {error}")
-        return 2
+        return EXIT_DISK_FLOOR
     measured = time.monotonic() - started
     measurement.sample_resources()
 

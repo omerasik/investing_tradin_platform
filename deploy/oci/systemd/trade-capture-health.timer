@@ -1,0 +1,9 @@
+[Unit]
+Description=Hourly trade-platform capture health snapshot (after each segment hand-off)
+
+[Timer]
+OnCalendar=*-*-* *:10:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
