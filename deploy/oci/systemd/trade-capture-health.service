@@ -9,7 +9,8 @@ Type=oneshot
 User=trade-capture
 Group=trade-capture
 EnvironmentFile=/etc/trade-capture/capture.env
-ExecStart=/opt/trade-capture/current/deploy/oci/trade-capture-health.sh
+# Through bash (bin_t): SELinux-enforcing hosts label /opt usr_t, not an entrypoint.
+ExecStart=/usr/bin/bash /opt/trade-capture/current/deploy/oci/trade-capture-health.sh
 # The lock probe opens the existing lock file; it never takes the lock from a recorder.
 ReadWritePaths=/srv/trade-capture
 NoNewPrivileges=yes
@@ -17,3 +18,5 @@ ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 CapabilityBoundingSet=
+# Same weight as the recorders, so the scheduling probe measures their class.
+CPUWeight=1000

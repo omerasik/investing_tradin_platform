@@ -24,7 +24,7 @@ User=trade-capture
 Group=trade-capture
 EnvironmentFile=/etc/trade-capture/capture.env
 WorkingDirectory=/srv/trade-capture
-ExecStart=/usr/bin/python3 -I -B -u /opt/trade-capture/current/scripts/capture_bybit_public.py --root ${R0_ROOT} supervise --segment-seconds 3600 --min-free-gb ${MIN_FREE_GB}
+ExecStart=/opt/trade-capture/python -I -B -u /opt/trade-capture/current/scripts/capture_bybit_public.py --root ${R0_ROOT} supervise --segment-seconds 3600 --min-free-gb ${MIN_FREE_GB}
 Restart=on-failure
 RestartSec=60
 RestartPreventExitStatus=2 4
@@ -32,6 +32,10 @@ KillSignal=SIGINT
 TimeoutStopSec=180
 UMask=0027
 MemoryMax=1G
+# Scheduling priority over equal-weight (100) neighbours such as container scopes.
+# A weight raises the recorder's share under contention; it does NOT bound wakeup
+# latency. Validation measures that (README, "Acceptance criteria").
+CPUWeight=1000
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

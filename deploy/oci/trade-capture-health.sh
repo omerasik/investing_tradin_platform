@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
 # Read-only health of the R0 and U2 recorders on the OCI capture VM.
 #
-#   sudo -u trade-capture /opt/trade-capture/current/deploy/oci/trade-capture-health.sh
+#   sudo systemctl start trade-capture-health.service && journalctl -u trade-capture-health -n 40
 #
+# (Run it through the unit: it carries the recorders' CPUWeight, so the
+# scheduling probe describes their class, not an SSH session's.)
 # Prints unit state, the recorder lock on each root, the age of the newest
 # finalized manifest, disk runway above the floor (from the bytes actually
-# written for the previous UTC day) and clock-sync state. Exit 0 when every
-# check passes, 1 otherwise. Writes nothing; evidence comes from manifests.
+# written for the previous UTC day), clock-sync state and capture_host_probe.py
+# (scheduling lateness, the recorders' own clock samples, memory headroom).
+# Exit 0 when every check passes, 1 otherwise. Writes nothing.
 set -u
 
 ENV_FILE=/etc/trade-capture/capture.env
 APP=/opt/trade-capture/current
+# Interpreter link chosen by install.sh (Python >= 3.11; the system python3 is untouched).
+PYTHON=/opt/trade-capture/python
 CLI="$APP/scripts/capture_bybit_public.py"
 ARCHIVE_MOUNT=/srv/trade-capture
 # Hourly segments finalize a manifest per symbol every hour; allow one missed
@@ -34,7 +39,7 @@ done
 for pair in "r0:$R0_ROOT" "u2:$U2_ROOT"; do
     label=${pair%%:*}
     root=${pair#*:}
-    lock=$(/usr/bin/python3 -I -B "$CLI" --root "$root" status --recent 1 | head -n 1)
+    lock=$("$PYTHON" -I -B "$CLI" --root "$root" status --recent 1 | head -n 1)
     echo "lock_$label        ${lock#* }"
     case "$lock" in *RUNNING\ pid=*) ;; *) fail=1 ;; esac
     newest=$(find "$root" -name MANIFEST.json -printf '%T@\n' 2>/dev/null | sort -n | tail -n 1)
@@ -72,6 +77,8 @@ if command -v chronyc >/dev/null 2>&1; then
     chronyc -n tracking 2>/dev/null | grep -E '^(Reference ID|System time|Last offset|Leap status)' \
         | sed 's/^/chrony         /'
 fi
+
+"$PYTHON" -I -B "$APP/deploy/oci/capture_host_probe.py" "$R0_ROOT" "$U2_ROOT" || fail=1
 
 if [ "$fail" -eq 0 ]; then echo "verdict        OK"; else echo "verdict        ATTENTION"; fi
 exit "$fail"
