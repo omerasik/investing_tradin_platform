@@ -1,0 +1,8 @@
+# /etc/chrony/sources.d/oci.sources
+# OCI's link-local NTP service. Ubuntu's chrony.conf already reads sourcedir
+# /etc/chrony/sources.d and keeps "makestep 1 3": the clock may be STEPPED only
+# in the first three updates after boot (before the recorders start, see
+# time-sync.target + chrony-wait.service); afterwards it is only SLEWED, which
+# moves CLOCK_REALTIME and CLOCK_MONOTONIC together and so never trips the
+# recorder's 2 s wall-versus-monotonic discontinuity rule.
+server 169.254.169.254 iburst
