@@ -85,7 +85,13 @@ from trade_platform.first_party_capture_authority_v1 import (
     first_party_bybit_measurement_contracts_v1,
     first_party_bybit_universe_contracts_v1,
 )
-from trade_platform.first_party_capture_hourly_acceptance_v1 import derive_hourly_acceptance_v1
+from trade_platform.first_party_capture_hourly_acceptance_v1 import (
+    HOUR_NANOS,
+    CurrentRunStateV1,
+    acceptance_status_v1,
+    derive_hourly_acceptance_v1,
+    verified_windows_v1,
+)
 from trade_platform.first_party_capture_measurement_v1 import (
     CapacityMeasurementV1,
     build_capacity_report_v1,
@@ -454,23 +460,41 @@ def _iso(utc_nanos: int) -> str:
     return nanos_to_datetime(utc_nanos).isoformat()
 
 
+def _utc_now_nanos() -> int:
+    """The observation time; it can only withdraw a "current run" claim, never prove an hour."""
+    return time.time_ns()
+
+
 def _universe_acceptance(args: argparse.Namespace) -> int:
     """Joint manifest-proven hourly acceptance of the R1B universe (exit 0 met, 1 not)."""
     root = _universe_root(args)
     contracts = first_party_bybit_universe_contracts_v1()
+    windows_by_symbol = []
+    failed_verification = 0
+    for contract in contracts:
+        if args.verify:
+            verified = verified_windows_v1(root, contract)
+            print(f"verified       {contract.exchange_symbol}: {verified.verified_partitions} "
+                  f"partition(s) fully replayed, {len(verified.failed)} failed")
+            for directory, reason in verified.failed:
+                print(f"VERIFY FAILED  {directory} {reason}")
+            failed_verification += len(verified.failed)
+            windows = verified.windows
+        else:
+            windows = derive_archive_availability_v1(root, contract=contract).windows
+        windows_by_symbol.append((contract.exchange_symbol, windows))
     acceptance = derive_hourly_acceptance_v1(
-        [
-            (
-                contract.exchange_symbol,
-                derive_archive_availability_v1(root, contract=contract).windows,
-            )
-            for contract in contracts
-        ],
+        windows_by_symbol,
         max_unproven_nanos=round(args.max_unproven_seconds * 1_000_000_000),
         required_consecutive_hours=args.required_hours,
     )
     print(f"universe root  {root}")
-    print("evidence       COMPLETE-partition manifests only; wall-clock time is never evidence")
+    evidence = (
+        "fully replayed COMPLETE partitions" if args.verify else "COMPLETE-partition manifests only"
+    )
+    print(f"evidence       {evidence}; wall-clock time is never evidence")
+    if failed_verification:
+        print(f"WARNING        {failed_verification} partition(s) failed verification and prove nothing")
     print(f"unproven bound {args.max_unproven_seconds:g} s of hand-off per hour: head + midnight rollover (operator)")
     if acceptance.first_hour_start_utc_nanos is None:
         print("no proven coverage for any universe symbol")
@@ -493,14 +517,33 @@ def _universe_acceptance(args: argparse.Namespace) -> int:
     observed = acceptance.max_unproven_observed_nanos
     if observed is not None:
         print(f"max unproven   {observed / 1e9:.3f} s seen in a COMPLETE hour")
+    status = acceptance_status_v1(acceptance, observed_at_utc_nanos=_utc_now_nanos())
     longest = acceptance.longest_run
-    print(f"longest run    {0 if longest is None else longest.hours} h; "
-          f"current run {acceptance.current_run_hours} h; required {acceptance.required_consecutive_hours} h")
+    if longest is None:
+        print("longest run    0 h (historical, proven)")
+    else:
+        print(f"longest run    {longest.hours} h (historical, proven): "
+              f"{_iso(longest.first_hour_start_utc_nanos)} -> {_iso(longest.end_utc_nanos)}")
+    last_end = first + acceptance.hours_judged * HOUR_NANOS
+    print(f"last judged    hour ending {_iso(last_end)}: run {acceptance.last_judged_run_hours} h ending there")
+    for stop in acceptance.pending_hour_interruptions:
+        print(f"INTERRUPTED    {stop.symbol} evidence stops inside the next hour at "
+              f"{_iso(stop.end_utc_nanos)} ({stop.end_proof})")
+    joint_end = acceptance.joint_evidence_end_utc_nanos
+    age = status.evidence_age_nanos
+    if joint_end is not None and age is not None:
+        print(f"evidence to    {_iso(joint_end)} (all symbols); observed {_iso(status.observed_at_utc_nanos)}, "
+              f"{age / 3.6e12:.1f} h later; {status.unjudged_elapsed_hours} elapsed hour(s) unjudged")
+    print(f"current run    {status.current_run_hours} h ({status.state}); "
+          f"required {acceptance.required_consecutive_hours} h; the clock never adds an hour")
     if acceptance.met:
-        print("acceptance     MET on manifests (burn-in acceptance itself stays the owner's, OR-1)")
+        print(f"acceptance     MET on {evidence} (burn-in acceptance itself stays the owner's, OR-1)")
         return 0
-    remaining = acceptance.required_consecutive_hours - acceptance.current_run_hours
-    print(f"acceptance     NOT MET: {remaining} more consecutive jointly COMPLETE hour(s) needed")
+    if status.state is CurrentRunStateV1.CURRENT:
+        print(f"acceptance     NOT MET: {status.remaining_hours} more consecutive jointly COMPLETE hour(s) needed")
+    else:
+        print(f"acceptance     NOT MET: the run ending {_iso(last_end)} is not current ({status.state}); "
+              f"{status.remaining_hours} consecutive jointly COMPLETE hour(s) needed from new evidence")
     return 1
 
 
@@ -612,6 +655,11 @@ def main(argv: list[str] | None = None) -> int:
         "--required-hours", type=int, default=24, help="consecutive hours required (Option B: 24)"
     )
     acceptance.add_argument("--verbose", action="store_true", help="print every symbol's hour verdicts")
+    acceptance.add_argument(
+        "--verify",
+        action="store_true",
+        help="admit only partitions that fully replay (record hashes, order, counts); slower",
+    )
     acceptance.set_defaults(handler=_universe_acceptance)
 
     compact = sub.add_parser("compact", help="losslessly compress finalized partitions")

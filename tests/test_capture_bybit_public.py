@@ -243,6 +243,35 @@ class UniverseAcceptanceCommandTests(unittest.TestCase):
             self.assertIn(f"== {symbol}: 1 COMPLETE hour(s)", text)
         self.assertIn("acceptance     MET", text)
 
+    def test_a_stopped_run_is_reported_as_history_not_as_the_current_run(self) -> None:
+        """2026-10-11T19:59Z: the CLI said "current run 9 h" 41 h after the 02:19Z loss."""
+        import tempfile
+
+        from tests.test_first_party_capture_hourly_acceptance_v1 import at, incident_windows
+        from trade_platform.first_party_capture_archive_v1 import CaptureArchiveAvailabilityV1
+
+        (_, windows), *_ = incident_windows()
+        proven = CaptureArchiveAvailabilityV1(windows=tuple(windows), gaps=(), excluded=())
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(CLI, "derive_archive_availability_v1", return_value=proven), \
+                patch.object(CLI, "_utc_now_nanos", return_value=at("2026-10-11T19:59:09+00:00")):
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = CLI.main(
+                    ["--root", directory, "universe-acceptance", "--max-unproven-seconds", "60"]
+                )
+        self.assertEqual(code, 1)
+        text = out.getvalue()
+        self.assertIn("longest run    9 h (historical, proven): 2026-10-09T17:00:00+00:00", text)
+        self.assertIn("last judged    hour ending 2026-10-10T02:00:00+00:00: run 9 h ending there", text)
+        for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT"):
+            self.assertIn(f"INTERRUPTED    {symbol} evidence stops inside the next hour at "
+                          "2026-10-10T02:19:23.627044+00:00 (CONNECTION_LOST)", text)
+        self.assertIn("41.7 h later; 41 elapsed hour(s) unjudged", text)
+        self.assertIn("current run    0 h (INTERRUPTED)", text)
+        self.assertIn("24 consecutive jointly COMPLETE hour(s) needed from new evidence", text)
+        self.assertNotIn("current run    9 h", text)
+
 
 if __name__ == "__main__":
     unittest.main()
