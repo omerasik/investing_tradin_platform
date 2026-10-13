@@ -2,7 +2,7 @@
 # This is NOT a second roadmap: requirements stay in MASTER_ROADMAP.md, design
 # stays in module docstrings, history stays in git.
 
-updated: 2026-10-09
+updated: 2026-10-13
 
 # Phase naming. Since 2026-09-24 the owner-approved canonical roadmap uses an
 # "R" series (R0-R15, owner review points OR-1..OR-14). It is distinct from the
@@ -403,6 +403,34 @@ r1b_universe:                 # OR-2 = U2: BTCUSDT ETHUSDT SOLUSDT, tickers + pu
   open_point: >-
     R0 v1 keeps recording BTCUSDT beside the universe (+~0.30 GB/day gzip)
     until the owner retires it; not changed here.
+
+oci_1_validation:             # stage 1 of deploy/oci/README.md; NON-AUTHORITATIVE, Windows stays the writer
+  host: >-
+    OCI instance-20260920-0326 (A1.Flex 4 OCPU/24 GB, OL9.8, SELinux enforcing,
+    cgroup v2), shared with ~10 owner Docker containers (load ~145, untouched).
+    Owner-created 100 GB Always Free block volume (WWN 60beba4e...38d7, XFS
+    UUID 00029bdb, fstab nofail) at /srv/trade-capture; python3.12 3.12.15
+    beside system 3.9. Release 797f9fa installed 2026-10-13; units
+    trade-capture-r0/-u2 + health timer active since 20:54:37Z, validation roots.
+  fault_tests_2026_10_13: >-
+    Before the window, all passed: first hourly segment COMPLETE (end_proof
+    OPERATOR_BOUNDED_STOP, auto-compacted ~6.6x); replay verifies; SIGKILL u2
+    21:01:38Z -> restarted 60 s later as a new session, killed partitions stay
+    manifest-less (excluded); second writer on either root exit 4; disk floor
+    exit 2 (scratch root); clean stop -> OPERATOR_INTERRUPT; unmounted volume ->
+    systemd remounts it from fstab before start (RequiresMountsFor), nothing on
+    the boot disk; 0 AVC denials. Health snapshot: sched_late p99 4.11 ms max
+    7.60 ms at CPUWeight 1000; clock +8.6..+11.4 ms +/- ~97 ms; chrony us-level.
+    NOT done: VM reboot (a stopped owner container scan-100 has restart=always
+    and would start on boot -> owner decision).
+  backup_drill: >-
+    ssh pull -> Windows 'backup' re-verified 8 COMPLETE partitions; restore of
+    the backup into an empty root replays COMPLETE, records.ndjson.gz sha256
+    ca050faf identical to the VM original.
+  window: >-
+    24 h U2 window = whole hours 2026-10-13T22:00Z .. 10-14T22:00Z, no restart.
+    Evaluated with universe-acceptance --max-unproven-seconds 10 (DIAGNOSTIC,
+    not owner-approved). Cutover, R0 retirement, Windows stop: owner only.
 
 or_packet_evidence:           # facts only; every decision stays with the owner
   or1_refetch: >-
