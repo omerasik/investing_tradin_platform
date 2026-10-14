@@ -226,6 +226,35 @@ class OracleLinuxHostTests(unittest.TestCase):
         self.assertNotIn("/usr/bin/python3 ", health)
         self.assertIn("capture_host_probe.py", health)
 
+    def test_health_never_execs_chronyc_under_no_new_privileges(self) -> None:
+        # 2026-10-14: every snapshot logged an nnp_transition AVC (initrc_t ->
+        # chronyc_t). The fix drops the informational call; it never widens
+        # SELinux policy or drops the unit's sandboxing.
+        service = _unit("trade-capture-health.service")["Service"]
+        self.assertEqual(service["NoNewPrivileges"], "yes")
+        self.assertEqual(service["ProtectSystem"], "strict")
+        self.assertEqual(service["CapabilityBoundingSet"], "")
+        commands = [
+            line for line in (DEPLOY / "trade-capture-health.sh").read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        self.assertFalse([line for line in commands if "chronyc" in line])
+        self.assertTrue([line for line in commands if "timedatectl show -p NTPSynchronized" in line])
+
+    def test_health_separates_service_state_from_coverage_evidence(self) -> None:
+        health = (DEPLOY / "trade-capture-health.sh").read_text(encoding="utf-8")
+        self.assertIn('echo "service        OK"', health)
+        self.assertIn('echo "service        ATTENTION"', health)
+        self.assertNotIn('echo "verdict', health)
+        facts = [line for line in health.splitlines() if "universe-hours" in line and "$CLI" in line]
+        self.assertEqual(len(facts), 1)
+        self.assertIn('--root "$U2_ROOT"', facts[0])
+        # Facts only: no hand-off bound, and they never set the exit code.
+        self.assertNotIn("max-unproven-seconds", health)
+        self.assertNotIn("fail=1", facts[0])
+        self.assertIn("NOT JUDGED HERE", health)
+        self.assertTrue(health.rstrip().endswith('exit "$fail"'))
+
 
 class CaptureHostProbeTests(unittest.TestCase):
     def test_percentile_is_nearest_rank(self) -> None:

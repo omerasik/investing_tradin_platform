@@ -138,19 +138,41 @@ ssh <vm> systemctl --failed
 ssh <vm> sudo -u trade-capture /opt/trade-capture/python -I -B /opt/trade-capture/current/scripts/capture_bybit_public.py --root /srv/trade-capture/validation/capture-universe-r1b universe-acceptance --max-unproven-seconds <S>
 ```
 
-The health check exits 1 (`verdict ATTENTION`) if a unit is not active, a root's
+The health check exits 1 (`service ATTENTION`) if a unit is not active, a root's
 lock is not held, the newest manifest is older than 75 min, free space is at or
 below the floor, the clock is not NTP-synchronized, or a probe criterion fails.
 Run it through the unit: an SSH session's cgroup does not carry the recorders'
 CPU weight.
 
+`service OK` is service health, never market-data evidence: on 2026-10-14 it
+read OK every hour while connection losses and > 10 s hand-offs broke the
+window. The `u2_hours` lines (`universe-hours --hours 2`) state, per symbol and
+whole UTC hour, whether one proven run reached the hour's end, how much of the
+hour it left unproven, and every stop inside the hour (`CONNECTION_LOST`,
+`PEER_CLOSED`, ...) -- from COMPLETE partitions only, with no bound and no
+verdict, and without changing the exit code. COMPLETE hours are decided only by
+`universe-acceptance --max-unproven-seconds S`.
+
+The health unit does not run `chronyc`: under `NoNewPrivileges` SELinux denies
+its `chronyc_t` transition (`nnp_transition`). Sync state comes from
+`timedatectl`, the offset from the recorders' own clock samples; run
+`chronyc tracking` from an SSH session for chrony's view.
+
 ## 6. Upgrades
 
 A restart ends the open hour, so that hour is not COMPLETE and an acceptance run
-restarts: upgrade outside acceptance windows. Install the new release with step 3,
-then `sudo systemctl restart trade-capture-r0 trade-capture-u2`. Old releases stay
-under `/opt/trade-capture/releases/`; roll back by re-running that release's
-`install.sh` and restarting.
+restarts: upgrade outside acceptance windows. Install the new release with step 3
+(running recorders keep the release they resolved at start), then, between
+HH:50 and HH:58 UTC, `sudo systemctl restart trade-capture-r0 trade-capture-u2`:
+only hour HH is lost, and the new session's first bounded stop is the HH+1:00
+hand-off. Old releases stay under `/opt/trade-capture/releases/`; roll back by
+re-running that release's `install.sh` and restarting the same way.
+
+Since the hourly hand-off fix the next segment starts as soon as the last one is
+finalized; the finished hour is compacted by the new segment once all its lanes
+have acknowledged their subscriptions (one partition per minute, never within
+2 min of the next hand-off). Raw partitions of the last hour therefore remain for
+a few minutes after HH:00; `compact` and `backup` treat them exactly as before.
 
 ## 7. Backups
 
@@ -174,7 +196,7 @@ partitions and re-verifies every hash.
 | Unit failed, `last_exit=4` | Another recorder holds that root. Find it (`status`); never run two. |
 | Unit failed, start limit hit | Ten crashes in an hour: `journalctl -u <unit>`, fix, `systemctl reset-failed <unit>`, start. |
 | Units not started after boot | `/srv/trade-capture` not mounted (the assert held). Fix the attachment/fstab. |
-| SELinux denial | `sudo ausearch -m avc -ts recent`; re-run `install.sh` (restores labels). |
+| SELinux denial | `sudo ausearch --input-logs -m avc -ts recent`; re-run `install.sh` (restores labels). |
 | Remove the deployment | `systemctl disable --now trade-capture-r0 trade-capture-u2 trade-capture-health.timer`; the archive volume and its data stay. |
 | VM or volume lost | Rebuild (2-3); history comes back from the step 7 copies via `backup`. Re-provisioning never bridges the hole. |
 

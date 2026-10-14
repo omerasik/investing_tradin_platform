@@ -600,5 +600,105 @@ class VerifiedWindowsTests(unittest.TestCase):
         self.assertFalse(forged.met)
 
 
+class HourFactsTests(unittest.TestCase):
+    """Operations facts: what the runs show about an hour, with no bound and no verdict."""
+
+    def test_a_long_head_is_reported_not_judged(self) -> None:
+        from trade_platform.first_party_capture_hourly_acceptance_v1 import hour_facts_v1
+
+        runs = chain_proven_runs_v1([segment(0, head_seconds=11)])
+        facts = hour_facts_v1(runs, DAY)
+        self.assertEqual(facts.reaching_unproven_nanos, 11 * SECOND)
+        self.assertEqual(facts.stops, ())
+
+    def test_a_connection_loss_is_a_stop_and_the_later_run_carries_the_hole(self) -> None:
+        from trade_platform.first_party_capture_hourly_acceptance_v1 import hour_facts_v1
+
+        session = uuid4()
+        runs = chain_proven_runs_v1([
+            window(DAY + 4 * SECOND, DAY + 988 * SECOND, END_PROOF_CONNECTION_LOST, session),
+            window(DAY + 1_012 * SECOND, DAY + HOUR_NANOS + SECOND // 2, session=session),
+        ])
+        facts = hour_facts_v1(runs, DAY)
+        self.assertEqual(facts.reaching_unproven_nanos, 1_012 * SECOND)
+        self.assertEqual(facts.stops, ((DAY + 988 * SECOND + 1, END_PROOF_CONNECTION_LOST),))
+        # The same evidence is never COMPLETE under the diagnostic bound of 10 s.
+        self.assertFalse(classify_hour_v1(runs, DAY, max_unproven_nanos=10 * SECOND).complete)
+
+    def test_the_previous_segment_overrunning_the_grid_is_not_a_stop(self) -> None:
+        from trade_platform.first_party_capture_hourly_acceptance_v1 import hour_facts_v1
+
+        runs = chain_proven_runs_v1([segment(0), segment(1)])
+        self.assertEqual(hour_facts_v1(runs, DAY + HOUR_NANOS).stops, ())
+        # A bounded stop by a run that started inside the hour is reported.
+        early = chain_proven_runs_v1([window(DAY + 5 * SECOND, DAY + 600 * SECOND)])
+        facts = hour_facts_v1(early, DAY)
+        self.assertIsNone(facts.reaching_unproven_nanos)
+        self.assertEqual(facts.stops, ((DAY + 600 * SECOND + 1, END_PROOF_OPERATOR_BOUNDED_STOP),))
+
+    def test_no_evidence_reaches_nothing(self) -> None:
+        from trade_platform.first_party_capture_hourly_acceptance_v1 import hour_facts_v1
+
+        facts = hour_facts_v1((), DAY)
+        self.assertIsNone(facts.reaching_unproven_nanos)
+        self.assertEqual(facts.stops, ())
+        with self.assertRaises(HourlySegmentAcceptanceError):
+            hour_facts_v1((), DAY + 1)
+
+
+class ProvenWindowsBetweenTests(unittest.TestCase):
+    setUp = VerifiedWindowsTests.setUp
+
+    def test_only_partitions_touching_the_range_are_proven(self) -> None:
+        from unittest import mock
+
+        from tests.test_first_party_capture_archive_v1 import _complete_partition, _reading
+        from trade_platform import first_party_capture_hourly_acceptance_v1 as module
+        from trade_platform.first_party_capture_archive_v1 import (
+            derive_archive_availability_v1,
+            read_partition_status_v1,
+        )
+
+        inside = _complete_partition(self.root, contract=self.btc, count=3)
+        _complete_partition(self.root, contract=self.eth, count=3)  # another source
+        start = _reading(0).arrival_utc_nanos
+        proved: list[object] = []
+
+        def counting(directory, **kwargs):
+            proved.append(directory)
+            return read_partition_status_v1(directory, **kwargs)
+
+        with mock.patch.object(module, "read_partition_status_v1", side_effect=counting):
+            windows = module.proven_windows_between_v1(
+                self.root, self.btc, start_utc_nanos=start, end_utc_nanos=start + HOUR_NANOS
+            )
+            elsewhere = module.proven_windows_between_v1(
+                self.root, self.btc, start_utc_nanos=start + HOUR_NANOS,
+                end_utc_nanos=start + 2 * HOUR_NANOS,
+            )
+        self.assertEqual(proved, [inside])  # the later range proved nothing at all
+        self.assertEqual(elsewhere, ())
+        self.assertEqual(windows, derive_archive_availability_v1(self.root, contract=self.btc).windows)
+        with self.assertRaises(HourlySegmentAcceptanceError):
+            module.proven_windows_between_v1(self.root, self.btc, start_utc_nanos=start, end_utc_nanos=start)
+
+    def test_a_tampered_partition_in_range_proves_nothing(self) -> None:
+        from tests.test_first_party_capture_archive_v1 import _complete_partition, _reading
+        from trade_platform.first_party_capture_hourly_acceptance_v1 import (
+            proven_windows_between_v1,
+        )
+
+        directory = _complete_partition(self.root, contract=self.btc, count=3)
+        with (directory / "records.ndjson").open("a", encoding="utf-8") as handle:
+            handle.write("{}\n")
+        start = _reading(0).arrival_utc_nanos
+        self.assertEqual(
+            proven_windows_between_v1(
+                self.root, self.btc, start_utc_nanos=start, end_utc_nanos=start + HOUR_NANOS
+            ),
+            (),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

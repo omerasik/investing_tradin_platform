@@ -54,6 +54,7 @@ accepting the burn-in stays the owner's decision.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -62,8 +63,11 @@ from typing import Final
 from uuid import UUID
 
 from trade_platform.first_party_capture_archive_v1 import (
+    END_PROOF_OPERATOR_BOUNDED_STOP,
     END_PROOF_UTC_DAY_ROLLOVER,
+    MANIFEST_FILE_NAME,
     PARTITION_STATUS_COMPLETE,
+    CaptureCoverageIntervalV1,
     FirstPartyCaptureArchiveError,
     ProvenWindowV1,
     find_partitions_v1,
@@ -572,11 +576,103 @@ def _pending_hour_interruptions(
     return tuple(found)
 
 
+@dataclass(frozen=True, slots=True)
+class HourFactsV1:
+    """What one symbol's proven runs show about one UTC hour: no bound, no verdict.
+
+    An operations view (the OCI health snapshot), so that a running service is
+    never mistaken for proven coverage. ``reaching_unproven_nanos`` is how much
+    of the hour the best run reaching the hour's end leaves unproven (``None``
+    when no run reaches it); ``stops`` are the runs that end inside the hour --
+    ``(exclusive end, end proof)`` -- other than the previous bounded segment
+    overrunning the grid line. Whether the hour is COMPLETE is
+    :func:`derive_hourly_acceptance_v1`'s question, under an explicit bound.
+    """
+
+    hour_start_utc_nanos: int
+    reaching_unproven_nanos: int | None
+    stops: tuple[tuple[int, str], ...]
+
+
+def hour_facts_v1(runs: Sequence[ProvenRunV1], hour_start_utc_nanos: int) -> HourFactsV1:
+    """Facts for one symbol's UTC hour from its proven runs only."""
+    if hour_start_utc_nanos % HOUR_NANOS:
+        raise HourlySegmentAcceptanceError("hour_start_is_not_on_the_utc_hour_grid")
+    hour_end = hour_start_utc_nanos + HOUR_NANOS
+    reaching = [
+        run.unproven_nanos(hour_start_utc_nanos, hour_end)
+        for run in runs
+        if run.end_utc_nanos >= hour_end
+        and run.unproven_nanos(hour_start_utc_nanos, hour_end) < HOUR_NANOS
+    ]
+    stops = sorted(
+        (run.end_utc_nanos, run.end_proof)
+        for run in runs
+        if hour_start_utc_nanos < run.end_utc_nanos < hour_end
+        and not (
+            run.end_proof == END_PROOF_OPERATOR_BOUNDED_STOP
+            and run.start_utc_nanos < hour_start_utc_nanos
+        )
+    )
+    return HourFactsV1(hour_start_utc_nanos, min(reaching, default=None), tuple(stops))
+
+
+def _manifest_touches(directory: Path, start_utc_nanos: int, end_utc_nanos: int) -> bool:
+    """Whether a partition's manifest declares coverage inside ``[start, end)`` (unproven)."""
+    try:
+        manifest = json.loads((directory / MANIFEST_FILE_NAME).read_text(encoding="utf-8"))
+        intervals = [CaptureCoverageIntervalV1.from_payload(item) for item in manifest["coverage"]]
+    except (OSError, ValueError, KeyError, TypeError):
+        return False  # no readable manifest: PARTIAL, proves nothing anyway
+    return any(
+        interval.start_utc_nanos < end_utc_nanos and interval.end_utc_nanos > start_utc_nanos
+        for interval in intervals
+    )
+
+
+def proven_windows_between_v1(
+    root: Path,
+    contract: FirstPartyCaptureContractV1,
+    *,
+    start_utc_nanos: int,
+    end_utc_nanos: int,
+) -> tuple[ProvenWindowV1, ...]:
+    """``contract``'s proven windows from COMPLETE partitions touching ``[start, end)``.
+
+    The manifest is read only to choose which partitions to prove; every window
+    returned comes from :func:`read_partition_status_v1` of a COMPLETE
+    partition, exactly as in availability. It lets a recurring operations check
+    prove a few hours of partitions instead of re-hashing the whole archive.
+    Each window keeps its full interval; a run chained from fewer windows only
+    loses intervals outside the range, so facts for hours inside it are the
+    same.
+    """
+    if end_utc_nanos <= start_utc_nanos:
+        raise HourlySegmentAcceptanceError("window_range_must_not_be_empty")
+    wanted = str(contract.source_id)
+    windows: list[ProvenWindowV1] = []
+    for directory in find_partitions_v1(root):
+        if session_source_id_v1(directory) != wanted:
+            continue
+        if not _manifest_touches(directory, start_utc_nanos, end_utc_nanos):
+            continue
+        status = read_partition_status_v1(directory, contract=contract)
+        if status.status != PARTITION_STATUS_COMPLETE or status.session_id is None:
+            continue
+        windows.extend(
+            ProvenWindowV1(session_id=status.session_id, interval=interval)
+            for interval in status.coverage
+        )
+    windows.sort(key=lambda window: window.interval.start_utc_nanos)
+    return tuple(windows)
+
+
 __all__ = [
     "HOUR_NANOS",
     "AcceptanceStatusV1",
     "ConsecutiveHoursV1",
     "CurrentRunStateV1",
+    "HourFactsV1",
     "HourVerdictV1",
     "HourlyAcceptanceV1",
     "HourlySegmentAcceptanceError",
@@ -589,5 +685,7 @@ __all__ = [
     "chain_proven_runs_v1",
     "classify_hour_v1",
     "derive_hourly_acceptance_v1",
+    "hour_facts_v1",
+    "proven_windows_between_v1",
     "verified_windows_v1",
 ]

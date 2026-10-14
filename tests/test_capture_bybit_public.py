@@ -85,6 +85,8 @@ class SegmentedSuperviseTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(len(calls), 3)
         self.assertTrue(all(call["max_seconds"] == 1495.0 for call in calls))
+        # The next segment starts at once; compressing the last hour is its job.
+        self.assertTrue(all(call["compact_after_bounded_stop"] is False for call in calls))
 
     def test_any_other_end_proof_ends_the_segmented_loop(self) -> None:
         code, calls = self._supervise(
@@ -99,6 +101,7 @@ class SegmentedSuperviseTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(len(calls), 1)
         self.assertIsNone(calls[0]["max_seconds"])
+        self.assertTrue(calls[0]["compact_after_bounded_stop"])
 
 
 class UniverseRecorderTests(unittest.TestCase):
@@ -131,6 +134,7 @@ class UniverseRecorderTests(unittest.TestCase):
             self.assertEqual(first_party_bybit_universe_contracts_v1(), contracts)
             self.assertEqual(1495.0, kwargs["max_seconds"])
             self.assertEqual(Path(root), kwargs["archive_root"])
+            self.assertFalse(kwargs["compact_after_bounded_stop"])
 
     def test_the_universe_root_is_its_own_and_lock_guarded(self) -> None:
         import tempfile
@@ -271,6 +275,80 @@ class UniverseAcceptanceCommandTests(unittest.TestCase):
         self.assertIn("current run    0 h (INTERRUPTED)", text)
         self.assertIn("24 consecutive jointly COMPLETE hour(s) needed from new evidence", text)
         self.assertNotIn("current run    9 h", text)
+
+
+class UniverseHoursCommandTests(unittest.TestCase):
+    """OCI-1 2026-10-14: health said OK while hours broke; these facts say why, with no verdict."""
+
+    def test_hour_facts_come_from_real_partitions_without_a_bound(self) -> None:
+        import tempfile
+        from datetime import date
+        from uuid import uuid4
+
+        from tests.test_first_party_capture_archive_v1 import _measurement_payload
+        from trade_platform.first_party_capture_archive_v1 import (
+            CaptureClockReadingV1,
+            CaptureCoverageIntervalV1,
+            CaptureGapKindV1,
+            CaptureGapV1,
+            CapturePartitionWriterV1,
+            build_capture_record_v1,
+        )
+        from trade_platform.first_party_capture_authority_v1 import (
+            first_party_bybit_universe_contracts_v1,
+        )
+
+        second = 1_000_000_000
+        hour = 1_791_936_000 * second  # 2026-10-14T00:00:00Z
+        btc, eth, _ = first_party_bybit_universe_contracts_v1()
+
+        def partition(root: Path, contract, windows) -> None:
+            session = uuid4()
+            writer = CapturePartitionWriterV1(
+                root=root, contract=contract, session_id=session, day=date(2026, 10, 14),
+                clock_resolution_nanos=1_000,
+            )
+            sequence = 0
+            previous_end = None
+            for start, last, proof in windows:
+                if previous_end is not None:
+                    writer.declare_gap(CaptureGapV1(
+                        previous_end, start, CaptureGapKindV1.CONNECTION_LOSS.value
+                    ))
+                for arrival in (start, last):
+                    writer.append_record(build_capture_record_v1(
+                        contract=contract, session_id=session, sequence=sequence,
+                        clock=CaptureClockReadingV1(arrival, arrival - hour + 10**15),
+                        payload_text=_measurement_payload(contract.exchange_symbol),
+                    ))
+                    sequence += 1
+                interval = CaptureCoverageIntervalV1(start, last, proof, 2)
+                writer.declare_coverage(interval)
+                previous_end = interval.end_utc_nanos
+            writer.finalize()
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            partition(root, btc, [(hour + 10_568_000_000, hour + 3_600 * second + 300_000_000,
+                                   CLI.END_PROOF_OPERATOR_BOUNDED_STOP)])
+            partition(root, eth, [
+                (hour + 4_264_000_000, hour + 988_441_000_000, "CONNECTION_LOST"),
+                (hour + 1_011_820_000_000, hour + 3_600 * second + 500_000_000,
+                 CLI.END_PROOF_OPERATOR_BOUNDED_STOP),
+            ])
+            out = io.StringIO()
+            with patch.object(CLI, "_utc_now_nanos", return_value=hour + 4_200 * second), \
+                    redirect_stdout(out):
+                code = CLI.main(["--root", directory, "universe-hours", "--hours", "1"])
+        self.assertEqual(code, 0)  # facts never fail anything
+        text = out.getvalue()
+        self.assertIn("no hand-off bound, no verdict", text)
+        self.assertIn("2026-10-14T00:00:00+00:00 BTCUSDT: one run reaches the hour end, unproven 10.568 s\n",
+                      text)
+        self.assertIn("2026-10-14T00:00:00+00:00 ETHUSDT: one run reaches the hour end, unproven "
+                      "1011.820 s; stopped after 2026-10-14T00:16:28.441000+00:00 CONNECTION_LOST\n", text)
+        self.assertIn("2026-10-14T00:00:00+00:00 SOLUSDT: no run reaches the hour end\n", text)
+        self.assertNotIn("COMPLETE hour", text.replace("(COMPLETE hours: universe-acceptance)", ""))
 
 
 if __name__ == "__main__":

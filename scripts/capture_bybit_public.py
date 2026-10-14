@@ -32,6 +32,7 @@ Inspect, prove, compact and back up the archive::
     .venv\\Scripts\\python scripts/capture_bybit_public.py health
     .venv\\Scripts\\python scripts/capture_bybit_public.py availability
     .venv\\Scripts\\python scripts/capture_bybit_public.py universe-acceptance --max-unproven-seconds S
+    .venv\\Scripts\\python scripts/capture_bybit_public.py universe-hours --hours 2
     .venv\\Scripts\\python scripts/capture_bybit_public.py replay <partition-directory>
     .venv\\Scripts\\python scripts/capture_bybit_public.py compact
     .venv\\Scripts\\python scripts/capture_bybit_public.py backup <destination-root>
@@ -89,7 +90,10 @@ from trade_platform.first_party_capture_hourly_acceptance_v1 import (
     HOUR_NANOS,
     CurrentRunStateV1,
     acceptance_status_v1,
+    chain_proven_runs_v1,
     derive_hourly_acceptance_v1,
+    hour_facts_v1,
+    proven_windows_between_v1,
     verified_windows_v1,
 )
 from trade_platform.first_party_capture_measurement_v1 import (
@@ -216,7 +220,9 @@ def _supervise(args: argparse.Namespace) -> int:
     a finalized COMPLETE partition. A shutdown then loses only the open segment
     (left honestly PARTIAL) instead of an unfinalized day. The seconds between
     two segments are a real, visible gap in ``availability``; nothing bridges
-    them and no coverage is claimed across a segment boundary.
+    them and no coverage is claimed across a segment boundary. The next segment
+    starts as soon as the last one is finalized: compressing the finalized hour
+    is left to the next segment, after it has secured its own coverage.
     """
     return _supervise_contracts(args, (first_party_bybit_capture_contract_v1(),), _root(args))
 
@@ -247,6 +253,8 @@ def _supervise_contracts(
                 max_seconds=bound,
                 min_free_bytes=_min_free_bytes(args),
                 clock_sampler=bybit_clock_offset_payload_v1,
+                # Never compress between segments: the next one starts at once.
+                compact_after_bounded_stop=segment is None,
             )
         except CaptureDiskBudgetError as error:
             print(f"refused: {error}; free space before restarting capture")
@@ -550,6 +558,36 @@ def _universe_acceptance(args: argparse.Namespace) -> int:
     return 1
 
 
+def _universe_hours(args: argparse.Namespace) -> int:
+    """Facts for the last whole UTC hours of the universe: no bound, no verdict (exit 0).
+
+    For operations (the OCI health snapshot): a running recorder is not proven
+    coverage. The clock only picks which hours to show; every fact comes from
+    COMPLETE partitions. COMPLETE hours stay universe-acceptance's to decide.
+    """
+    if args.hours < 1:
+        raise SystemExit("--hours must be at least 1")
+    root = _universe_root(args)
+    end = _utc_now_nanos() // HOUR_NANOS * HOUR_NANOS
+    start = end - args.hours * HOUR_NANOS
+    print(f"facts          {root}: COMPLETE partitions only, no hand-off bound, no verdict "
+          f"(COMPLETE hours: universe-acceptance)")
+    for contract in first_party_bybit_universe_contracts_v1():
+        runs = chain_proven_runs_v1(
+            proven_windows_between_v1(root, contract, start_utc_nanos=start, end_utc_nanos=end)
+        )
+        for hour in range(start, end, HOUR_NANOS):
+            facts = hour_facts_v1(runs, hour)
+            reach = (
+                "no run reaches the hour end" if facts.reaching_unproven_nanos is None
+                else f"one run reaches the hour end, unproven {facts.reaching_unproven_nanos / 1e9:.3f} s"
+            )
+            # A stop is shown at its last proven instant (the window's end is exclusive).
+            stops = "".join(f"; stopped after {_iso(at - 1)} {proof}" for at, proof in facts.stops)
+            print(f"{_iso(hour)} {contract.exchange_symbol}: {reach}{stops}")
+    return 0
+
+
 def _compact(args: argparse.Namespace) -> int:
     root = _root(args)
     failed = 0
@@ -664,6 +702,13 @@ def main(argv: list[str] | None = None) -> int:
         help="admit only partitions that fully replay (record hashes, order, counts); slower",
     )
     acceptance.set_defaults(handler=_universe_acceptance)
+
+    hours = sub.add_parser(
+        "universe-hours",
+        help="R1B operations view: per-hour hand-off and stop facts, no bound and no verdict",
+    )
+    hours.add_argument("--hours", type=int, default=2, help="whole UTC hours before now (default 2)")
+    hours.set_defaults(handler=_universe_hours)
 
     compact = sub.add_parser("compact", help="losslessly compress finalized partitions")
     compact.set_defaults(handler=_compact)

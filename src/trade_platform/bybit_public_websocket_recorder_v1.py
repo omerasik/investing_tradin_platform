@@ -967,6 +967,19 @@ LANE_RESTART_BACKOFF_CEILING_SECONDS_V1: Final = 900.0
 #: healthy, and its next failure is a new fault rather than the same one.
 LANE_HEALTHY_RUN_SECONDS_V1: Final = 600.0
 
+#: Compaction waits for every running lane to acknowledge its subscriptions,
+#: but no longer than this: a lane that cannot connect (an outage, a delisted
+#: symbol) must not leave finalized partitions uncompressed indefinitely.
+COMPACTION_SECURE_WAIT_SECONDS_V1: Final = 300.0
+
+#: No compaction starts this close to the fleet's bound, so a slow one can never
+#: push a bounded stop -- and the next segment's head -- past its UTC grid line.
+COMPACTION_DEADLINE_MARGIN_SECONDS_V1: Final = 120.0
+
+#: While a stop is being collected or a started lane awaits its head clock
+#: sample, the supervisor polls this often, so neither waits a whole poll.
+TRANSITION_POLL_SECONDS_V1: Final = 0.05
+
 
 @dataclass(slots=True)
 class _FleetLane:
@@ -999,6 +1012,10 @@ def run_capture_fleet_v1(
     recorder_factory: Callable[..., BybitPublicCaptureRecorderV1] = BybitPublicCaptureRecorderV1,
     clock_sampler: Callable[[], Mapping[str, Any] | None] | None = None,
     clock_sample_interval_seconds: float = 900.0,
+    compact_after_bounded_stop: bool = True,
+    compaction_secure_wait_seconds: float = COMPACTION_SECURE_WAIT_SECONDS_V1,
+    compaction_deadline_margin_seconds: float = COMPACTION_DEADLINE_MARGIN_SECONDS_V1,
+    transition_poll_seconds: float = TRANSITION_POLL_SECONDS_V1,
 ) -> CaptureFleetResultV1:
     """Run one independent recorder per contract until stopped.
 
@@ -1030,6 +1047,19 @@ def run_capture_fleet_v1(
     recorder holds its first subscribe until its head sample was attempted, so
     the subscribe-time ``tickers`` snapshot (the only record with the complete
     funding state) arrives after that sample and can be bracketed.
+
+    Compaction never stands between two sessions. It runs on this thread at a
+    maintenance tick, one partition per tick, and only once the running session
+    is secured -- every running lane has its subscriptions acknowledged -- or
+    ``compaction_secure_wait_seconds`` have passed, and never within
+    ``compaction_deadline_margin_seconds`` of the bound, so it cannot push a
+    bounded stop past its grid line. A stop compacts what is left before
+    returning, except a bounded stop with ``compact_after_bounded_stop=False``:
+    a supervisor that starts the next segment at once leaves the hour it just
+    finalized to that segment, which compacts it after securing its own
+    coverage (the OCI-1 2026-10-14 hand-offs waited 3-10 s on compression).
+    Compaction itself is unchanged: proven, idempotent and restartable, so a
+    partition left uncompressed by a crash is simply compacted by a later run.
     """
     if not contracts:
         raise ValueError("fleet_requires_at_least_one_contract")
@@ -1092,14 +1122,35 @@ def run_capture_fleet_v1(
         )
         lane.thread.start()
 
-    def compact() -> None:
+    def compact(limit: int | None = None) -> None:
         if not compact_finalized:
             return
-        for outcome in iter_compaction_results_v1(compaction_candidates_v1(archive_root)):
+        candidates = compaction_candidates_v1(archive_root)
+        if limit is not None:
+            # A candidate that already failed in this run is not retried at
+            # every tick, so it can never hold back the ones behind it.
+            failed = {directory for directory, _ in compaction_failures}
+            candidates = tuple(c for c in candidates if c not in failed)[:limit]
+        for outcome in iter_compaction_results_v1(candidates):
             if isinstance(outcome, CompactionResultV1):
                 compactions.append(outcome)
             else:
                 compaction_failures.append(outcome)
+
+    def running(lane: _FleetLane) -> bool:
+        return lane.thread is not None and lane.thread.is_alive()
+
+    def session_secured(now: float) -> bool:
+        """Every running lane subscribed, or the bounded wait for that is over."""
+        if now - fleet_started >= compaction_secure_wait_seconds:
+            return True
+        return all(
+            not lane.head_sample_pending
+            and lane.recorder is not None
+            and lane.recorder.health().subscriptions_acknowledged
+            for lane in lanes
+            if running(lane)
+        )
 
     def collect(lane: _FleetLane, now: float) -> None:
         if lane.collected or lane.thread is None or lane.thread.is_alive():
@@ -1139,6 +1190,7 @@ def run_capture_fleet_v1(
                     # Queued before release, so the head sample precedes the subscribe.
                     lane.recorder.release_head_wait()
 
+    fleet_started = time.monotonic()
     for lane in lanes:
         start(lane)
     next_maintenance = time.monotonic() + maintenance_interval_seconds
@@ -1159,7 +1211,10 @@ def run_capture_fleet_v1(
                     sample_clock()  # closing evidence, as for a bounded stop
                     stop.request(END_PROOF_DISK_BUDGET_STOP)
                 else:
-                    compact()
+                    if (
+                        deadline is None or deadline - now > compaction_deadline_margin_seconds
+                    ) and session_secured(now):
+                        compact(limit=1)
                     if on_maintenance is not None:
                         on_maintenance()
                 next_maintenance = now + maintenance_interval_seconds
@@ -1172,13 +1227,14 @@ def run_capture_fleet_v1(
                 ):
                     restarts += 1
                     start(lane)
-            if stop.requested and all(
-                lane.thread is None or not lane.thread.is_alive() for lane in lanes
-            ):
+            if stop.requested and not any(running(lane) for lane in lanes):
                 for lane in lanes:
                     collect(lane, now)
                 break
-            time.sleep(poll_seconds)
+            transition = stop.requested or any(
+                lane.head_sample_pending and running(lane) for lane in lanes
+            )
+            time.sleep(min(poll_seconds, transition_poll_seconds) if transition else poll_seconds)
     except KeyboardInterrupt:
         # A second interrupt raised while waiting here propagates as-is.
         stop.request(END_PROOF_OPERATOR_INTERRUPT)
@@ -1187,9 +1243,11 @@ def run_capture_fleet_v1(
                 # A bounded join keeps the wait interruptible on Windows.
                 lane.thread.join(0.5)
             collect(lane, time.monotonic())
-    compact()
+    end_proof = stop.end_proof or END_PROOF_OPERATOR_BOUNDED_STOP
+    if end_proof != END_PROOF_OPERATOR_BOUNDED_STOP or compact_after_bounded_stop:
+        compact()
     return CaptureFleetResultV1(
-        end_proof=stop.end_proof or END_PROOF_OPERATOR_BOUNDED_STOP,
+        end_proof=end_proof,
         sessions=tuple(sessions),
         failures=dict(sorted(failures.items())),
         restarts=restarts,
@@ -1219,9 +1277,12 @@ def request_keep_awake_v1() -> bool:
 
 
 __all__: list[str] = [
+    "COMPACTION_DEADLINE_MARGIN_SECONDS_V1",
+    "COMPACTION_SECURE_WAIT_SECONDS_V1",
     "PING_INTERVAL_SECONDS_V1",
     "RECEIVE_TIMEOUT_SECONDS_V1",
     "RECONNECT_BACKOFF_SECONDS_V1",
+    "TRANSITION_POLL_SECONDS_V1",
     "BybitPublicCaptureRecorderV1",
     "BybitPublicPeerClosedError",
     "BybitPublicWebSocketError",

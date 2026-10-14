@@ -942,8 +942,12 @@ class ObserverAndClockEvidenceTests(_TempRootTest):
 class _FakeRecorderFactory:
     """Stands in for recorders so fleet supervision is proven without sockets."""
 
-    def __init__(self, failing: dict[str, int] | None = None) -> None:
+    def __init__(
+        self, failing: dict[str, int] | None = None, *, acknowledge: bool = False
+    ) -> None:
         self.failing = dict(failing or {})
+        #: Whether each session acknowledges its subscriptions once it runs.
+        self.acknowledge = acknowledge
         self.instances: list[_FakeRecorder] = []
 
     def __call__(self, **kwargs: object) -> _FakeRecorder:
@@ -973,6 +977,7 @@ class _FakeRecorder:
         #: (session already started, stop already requested) at each submission.
         self.evidence_states: list[tuple[bool, bool]] = []
         self.session_started = False
+        self.acknowledged = False
         self.symbol = contract.exchange_symbol  # type: ignore[attr-defined]
 
     def submit_clock_evidence(self, detail: str) -> None:
@@ -988,6 +993,7 @@ class _FakeRecorder:
         if self.factory.failing.get(self.symbol, 0) > 0:
             self.factory.failing[self.symbol] -= 1
             raise RuntimeError("simulated lane failure")
+        self.acknowledged = self.factory.acknowledge
         while not self.stop.requested:
             time.sleep(0.002)
 
@@ -995,7 +1001,7 @@ class _FakeRecorder:
         return CaptureHealthV1(
             session_id=None,
             connected=False,
-            subscriptions_acknowledged=False,
+            subscriptions_acknowledged=self.acknowledged,
             records_written=0,
             coverage_open=False,
             last_arrival_utc=None,
@@ -1186,6 +1192,197 @@ class CaptureFleetTests(_TempRootTest):
         contract = first_party_bybit_measurement_contract_v1("BTCUSDT")
         with self.assertRaises(ValueError):
             run_capture_fleet_v1((contract, contract), archive_root=self.root)
+
+
+class HourlyHandOffCompactionTests(_TempRootTest):
+    """OCI-1 2026-10-14: compressing the finished hour delayed the next session's head.
+
+    Compaction now waits for the next segment to secure its own coverage; it
+    stays proven, idempotent and bounded, and a bounded stop never runs it.
+    """
+
+    FAST: ClassVar[dict[str, float]] = {
+        "poll_seconds": 0.005,
+        "lane_restart_backoff_seconds": 0.01,
+        "maintenance_interval_seconds": 0.01,
+        "compaction_deadline_margin_seconds": 0.0,
+    }
+
+    def _contracts(self) -> tuple:
+        return (
+            first_party_bybit_measurement_contract_v1("BTCUSDT"),
+            first_party_bybit_measurement_contract_v1("ETHUSDT"),
+        )
+
+    def _partition(self, count: int = 3) -> Path:
+        from tests.test_first_party_capture_archive_v1 import _complete_partition
+
+        return _complete_partition(self.root, count=count)
+
+    def _segment(
+        self,
+        factory: _FakeRecorderFactory,
+        *,
+        ticks: int = 400,
+        until_compacted: Path | None = None,
+        **options: object,
+    ):
+        """One fleet run, stopped after ``ticks`` maintenance ticks (or a compaction)."""
+        stop = CaptureStopSignalV1()
+        seen = {"ticks": 0}
+
+        def maintenance() -> None:
+            seen["ticks"] += 1
+            done = until_compacted is not None and (until_compacted / "COMPACTION.json").exists()
+            if done or seen["ticks"] >= ticks:
+                stop.request(END_PROOF_OPERATOR_BOUNDED_STOP)
+
+        settings = {**self.FAST, **options}
+        return run_capture_fleet_v1(
+            self._contracts(), archive_root=self.root, stop_signal=stop,
+            recorder_factory=factory, on_maintenance=maintenance,
+            **settings,  # type: ignore[arg-type]
+        )
+
+    def test_a_bounded_stop_leaves_the_finished_hour_to_the_next_segment(self) -> None:
+        directory = self._partition()
+        calls: list[object] = []
+        real = recorder_module.iter_compaction_results_v1
+        with mock.patch.object(
+            recorder_module, "iter_compaction_results_v1",
+            side_effect=lambda candidates: calls.append(tuple(candidates)) or real(()),
+        ):
+            result = run_capture_fleet_v1(
+                self._contracts(), archive_root=self.root, max_seconds=0.05,
+                recorder_factory=_FakeRecorderFactory(), compact_after_bounded_stop=False,
+                **self.FAST,
+            )
+        self.assertEqual(END_PROOF_OPERATOR_BOUNDED_STOP, result.end_proof)
+        self.assertEqual([], calls)  # not even attempted: the hand-off never waits on it
+        self.assertEqual((), result.compactions)
+        self.assertTrue((directory / "records.ndjson").exists())
+        self.assertEqual(PARTITION_STATUS_COMPLETE, read_partition_status_v1(directory).status)
+
+    def test_a_large_hour_is_compacted_only_after_the_next_session_is_secured(self) -> None:
+        # Bounded: 20,000 ticker records (~6 MB), the shape of a busy hour.
+        directory = self._partition(count=20_000)
+        manifest = (directory / "MANIFEST.json").read_bytes()
+        records = verify_partition_v1(directory).record_count
+        finished = run_capture_fleet_v1(
+            self._contracts(), archive_root=self.root, max_seconds=0.05,
+            recorder_factory=_FakeRecorderFactory(), compact_after_bounded_stop=False, **self.FAST,
+        )
+        self.assertEqual((), finished.compactions)
+
+        factory = _FakeRecorderFactory(acknowledge=True)
+        secured_at_compaction: list[list[bool]] = []
+        real = recorder_module.iter_compaction_results_v1
+
+        def spy(candidates):
+            secured_at_compaction.append([r.acknowledged for r in factory.instances])
+            return real(candidates)
+
+        with mock.patch.object(recorder_module, "iter_compaction_results_v1", side_effect=spy):
+            result = self._segment(
+                factory, until_compacted=directory, compact_after_bounded_stop=False
+            )
+        self.assertEqual([directory], [c.directory for c in result.compactions])
+        self.assertTrue(secured_at_compaction)
+        for states in secured_at_compaction:
+            self.assertEqual([True, True], states)
+        # Lossless and evidence-neutral: the manifest is untouched and replays.
+        self.assertFalse((directory / "records.ndjson").exists())
+        self.assertEqual(manifest, (directory / "MANIFEST.json").read_bytes())
+        self.assertEqual(records, verify_partition_v1(directory).record_count)
+        self.assertEqual(20_000, records)
+
+    def test_unsecured_lanes_defer_compaction_only_up_to_the_bounded_wait(self) -> None:
+        directory = self._partition()
+        waiting = self._segment(
+            _FakeRecorderFactory(acknowledge=False), ticks=20,
+            compact_after_bounded_stop=False, compaction_secure_wait_seconds=3_600.0,
+        )
+        self.assertEqual((), waiting.compactions)
+        self.assertTrue((directory / "records.ndjson").exists())
+        bounded = self._segment(
+            _FakeRecorderFactory(acknowledge=False), until_compacted=directory,
+            compact_after_bounded_stop=False, compaction_secure_wait_seconds=0.0,
+        )
+        self.assertEqual([directory], [c.directory for c in bounded.compactions])
+
+    def test_no_compaction_starts_near_the_bound(self) -> None:
+        directory = self._partition()
+        result = run_capture_fleet_v1(
+            self._contracts(), archive_root=self.root, max_seconds=0.2,
+            recorder_factory=_FakeRecorderFactory(acknowledge=True),
+            compact_after_bounded_stop=False,
+            **{**self.FAST, "compaction_deadline_margin_seconds": 60.0},  # type: ignore[arg-type]
+        )
+        self.assertEqual((), result.compactions)
+        self.assertTrue((directory / "records.ndjson").exists())
+
+    def test_one_partition_per_tick_and_a_failure_never_blocks_the_rest(self) -> None:
+        broken = self._partition()
+        with (broken / "records.ndjson").open("a", encoding="utf-8") as handle:
+            handle.write("{}\n")  # no longer the bytes its manifest binds
+        first = self._partition()
+        second = self._partition()
+        order = [broken, first, second]
+        real = recorder_module.compaction_candidates_v1
+
+        def segment(ticks: int):
+            with mock.patch.object(
+                recorder_module, "compaction_candidates_v1",
+                side_effect=lambda root: tuple(sorted(real(root), key=order.index)),
+            ):
+                return self._segment(
+                    _FakeRecorderFactory(acknowledge=True), ticks=ticks,
+                    compact_after_bounded_stop=False, compaction_secure_wait_seconds=0.0,
+                )
+
+        one_tick = segment(1)
+        self.assertEqual([], [c.directory for c in one_tick.compactions])
+        self.assertEqual([broken], [directory for directory, _ in one_tick.compaction_failures])
+        later = segment(3)
+        # Tick 1 retries the broken one once per run; ticks 2 and 3 move on.
+        self.assertEqual([broken], [directory for directory, _ in later.compaction_failures])
+        self.assertEqual([first, second], [c.directory for c in later.compactions])
+        self.assertTrue((broken / "records.ndjson").exists())  # never forced
+        self.assertEqual(PARTITION_STATUS_PARTIAL, read_partition_status_v1(broken).status)
+
+    def test_any_other_stop_still_compacts_before_returning(self) -> None:
+        directory = self._partition()
+        readings = iter([1_000] + [10] * 1_000)
+        with mock.patch.object(
+            recorder_module, "disk_free_bytes_v1", side_effect=lambda _: next(readings)
+        ):
+            result = run_capture_fleet_v1(
+                self._contracts(), archive_root=self.root, min_free_bytes=100, max_seconds=5.0,
+                recorder_factory=_FakeRecorderFactory(), compact_after_bounded_stop=False,
+                **self.FAST,
+            )
+        self.assertEqual(END_PROOF_DISK_BUDGET_STOP, result.end_proof)
+        self.assertEqual([directory], [c.directory for c in result.compactions])
+
+    def test_the_head_sample_is_taken_within_a_transition_poll(self) -> None:
+        # With a 1 s steady-state poll the head sample used to wait up to a poll.
+        factory = _FakeRecorderFactory()
+        started = time.monotonic()
+        stop = CaptureStopSignalV1()
+        released: list[float] = []
+
+        def sampler() -> dict[str, int]:
+            released.append(time.monotonic() - started)
+            stop.request(END_PROOF_OPERATOR_BOUNDED_STOP)
+            return {"n": 1}
+
+        run_capture_fleet_v1(
+            self._contracts(), archive_root=self.root, stop_signal=stop,
+            recorder_factory=factory, clock_sampler=sampler, poll_seconds=1.0,
+            clock_sample_interval_seconds=3_600.0, maintenance_interval_seconds=3_600.0,
+        )
+        self.assertTrue(released)
+        self.assertLess(released[0], 0.5)
 
 
 if __name__ == "__main__":
