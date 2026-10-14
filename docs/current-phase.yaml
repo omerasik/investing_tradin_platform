@@ -431,6 +431,24 @@ oci_1_validation:             # stage 1 of deploy/oci/README.md; NON-AUTHORITATI
     24 h U2 window = whole hours 2026-10-13T22:00Z .. 10-14T22:00Z, no restart.
     Evaluated with universe-acceptance --max-unproven-seconds 10 (DIAGNOSTIC,
     not owner-approved). Cutover, R0 retirement, Windows stop: owner only.
+  window_result_2026_10_14: >-
+    NOT MET (S=10 diagnostic, unchanged): longest joint run 11 h (02-13Z).
+    Real per-connection losses, kept as losses: ETH 00:16:28.441Z (peer FIN
+    after 21.7 s of silence, gap 23.4 s), BTC 00:18:43.914Z and SOL 01:10:34.840Z
+    (RST, gaps 2.6/3.1 s); R0 BTC RST 02:10:02Z; Windows saw none of them (its
+    sockets ran 00:00-00:47Z), so no recorder defect is shown; reconnect took
+    1.5-1.7 s. Hand-offs: next SESSION_STARTED at HH:00:03-:09.7 because
+    run_capture_fleet_v1 compacted the finished hour before returning (13-15Z
+    after ~350 MB raw hours), then 0.9/2.1 s to coverage (1 s poll); heads
+    10.6-11.8 s at 13Z, 9.0-10.2 s at 14Z, 10.9-11.0 s at 15Z. Health said OK
+    throughout; its chronyc call logged an nnp_transition AVC per run.
+  handoff_fix: >-
+    Bounded segments no longer compact at the hand-off: the next segment
+    compacts the finished hour after all lanes acknowledge (<= 300 s wait), one
+    partition per maintenance tick, never within 120 s of its bound; head sample
+    and stop collection poll at 50 ms. Health: 'service OK|ATTENTION' plus
+    'universe-hours' facts (no bound, no verdict); chronyc dropped. Not yet
+    deployed on OCI (owner approval).
 
 or_packet_evidence:           # facts only; every decision stays with the owner
   or1_refetch: >-

@@ -10,6 +10,17 @@
 # written for the previous UTC day), clock-sync state and capture_host_probe.py
 # (scheduling lateness, the recorders' own clock samples, memory headroom).
 # Exit 0 when every check passes, 1 otherwise. Writes nothing.
+#
+# This is SERVICE health only. A running recorder is not proven coverage: the
+# U2 hour facts below show, per symbol, whether one proven run reached each
+# recent hour's end and every stop inside it, with no bound and no verdict.
+# COMPLETE hours are decided only by 'universe-acceptance' with the operator's
+# explicit hand-off bound; nothing here affects the exit code.
+#
+# chronyc is deliberately not run: under the unit's NoNewPrivileges SELinux
+# refuses its chronyc_t domain transition (nnp_transition AVC). Sync state comes
+# from timedatectl, the offset from the recorders' own RTT-bounded samples; run
+# 'chronyc tracking' from an SSH session for chrony's view.
 set -u
 
 ENV_FILE=/etc/trade-capture/capture.env
@@ -73,12 +84,10 @@ awk -v a="$avail" -v f="$floor" -v d="$per_day" -v y="$yesterday" 'BEGIN {
 synced=$(timedatectl show -p NTPSynchronized --value 2>/dev/null)
 echo "clock_synced   ${synced:-unknown}"
 [ "$synced" = yes ] || fail=1
-if command -v chronyc >/dev/null 2>&1; then
-    chronyc -n tracking 2>/dev/null | grep -E '^(Reference ID|System time|Last offset|Leap status)' \
-        | sed 's/^/chrony         /'
-fi
 
 "$PYTHON" -I -B "$APP/deploy/oci/capture_host_probe.py" "$R0_ROOT" "$U2_ROOT" || fail=1
 
-if [ "$fail" -eq 0 ]; then echo "verdict        OK"; else echo "verdict        ATTENTION"; fi
+if [ "$fail" -eq 0 ]; then echo "service        OK"; else echo "service        ATTENTION"; fi
+"$PYTHON" -I -B "$CLI" --root "$U2_ROOT" universe-hours --hours 2 | sed 's/^/u2_hours       /'
+echo "evidence       NOT JUDGED HERE: service OK is not COMPLETE coverage (universe-acceptance decides)"
 exit "$fail"
