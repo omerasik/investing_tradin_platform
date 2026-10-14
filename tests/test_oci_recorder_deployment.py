@@ -320,6 +320,7 @@ class _MemoryStore:
     def __init__(self) -> None:
         self.objects: dict[str, bytes] = {}
         self.puts: list[str] = []
+        self.gets: list[str] = []
 
     def put_new(self, name: str, body: bytes) -> bool:
         self.puts.append(name)
@@ -329,32 +330,75 @@ class _MemoryStore:
         return True
 
     def get(self, name: str) -> bytes:
+        self.gets.append(name)
         return self.objects[name]
 
     def list_names(self, prefix: str) -> list[str]:
         return sorted(name for name in self.objects if name.startswith(prefix))
 
 
+#: The values trade-capture-backup.service passes (README 7a).
+BUDGET = {"horizon_days": 4, "budget_window_days": 7, "budget_bytes": 8_000_000_000}
+DAY = 86_400
+
+
+def _retar(body: bytes, *, rename: tuple[str, str] | None = None, mutate=None) -> bytes:
+    """Rewrite a partition tar, optionally moving its members or changing one file."""
+    import tarfile
+
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=io.BytesIO(body)) as source, \
+            tarfile.open(fileobj=buffer, mode="w", format=tarfile.USTAR_FORMAT) as target:
+        for member in source.getmembers():
+            data = source.extractfile(member).read()  # type: ignore[union-attr]
+            if mutate is not None:
+                data = mutate(member.name, data)
+            if rename is not None:
+                member.name = member.name.replace(*rename)
+            member.size = len(data)
+            target.addfile(member, io.BytesIO(data))
+    return buffer.getvalue()
+
+
 class _ArchiveTest(unittest.TestCase):
+    """``r0`` holds production-contract partitions, ``u2`` universe-contract ones."""
+
     def setUp(self) -> None:
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.base = Path(temp.name)
-        self.root = self.base / "u2"
+        self.root = self.base / "r0"
+        self.universe_root = self.base / "u2"
         self.state = self.base / "state"
         self.state.mkdir()
 
-    def _complete(self, *, compact: bool = True, count: int = 3) -> Path:
-        from tests.test_first_party_capture_archive_v1 import _complete_partition
+    def _complete(self, *, compact: bool = True, count: int = 3, universe: bool = False) -> Path:
+        from tests.test_first_party_capture_archive_v1 import CONTRACT, _complete_partition
         from trade_platform.first_party_capture_archive_v1 import compact_partition_v1
+        from trade_platform.first_party_capture_authority_v1 import (
+            first_party_bybit_universe_contracts_v1,
+        )
 
-        directory = _complete_partition(self.root, count=count)
+        contract = first_party_bybit_universe_contracts_v1()[0] if universe else CONTRACT
+        root = self.universe_root if universe else self.root
+        directory = _complete_partition(root, contract=contract, count=count)
         if compact:
             compact_partition_v1(directory)
         return directory
 
-    def _backup(self, store: _MemoryStore, **options: object):
-        return OFFSITE.run_backup([("u2", self.root)], store, self.state, **options)
+    def _name(self, directory: Path) -> str:
+        universe = self.universe_root in directory.parents
+        root = self.universe_root if universe else self.root
+        return f"{'u2' if universe else 'r0'}/{directory.relative_to(root).as_posix()}.tar"
+
+    def _backup(self, store: _MemoryStore, roots=None, **options: object):
+        settings = {**BUDGET, **options}
+        roots = [("r0", self.root), ("u2", self.universe_root)] if roots is None else roots
+        return OFFSITE.run_backup(roots, store, self.state, **settings)
+
+    def _ledger(self) -> list[dict]:
+        text = (self.state / OFFSITE.LEDGER_NAME).read_text(encoding="utf-8")
+        return [json.loads(line) for line in text.splitlines()]
 
 
 class OffsiteBackupTests(_ArchiveTest):
@@ -368,6 +412,7 @@ class OffsiteBackupTests(_ArchiveTest):
         )
 
         done = self._complete()
+        universe = self._complete(universe=True)
         raw = self._complete(compact=False)
         open_writer = CapturePartitionWriterV1(
             root=self.root, contract=first_party_bybit_capture_contract_v1(), session_id=uuid4(),
@@ -376,15 +421,17 @@ class OffsiteBackupTests(_ArchiveTest):
         self.addCleanup(open_writer.close_without_finalizing)
         store = _MemoryStore()
         report = self._backup(store)
-        name = f"u2/{done.relative_to(self.root).as_posix()}.tar"
-        self.assertEqual(report.uploaded, (name,))
-        self.assertEqual(report.pending_compaction, (f"u2/{raw.relative_to(self.root).as_posix()}.tar",))
+        self.assertEqual(report.uploaded, (self._name(done), self._name(universe)))
+        self.assertEqual(report.pending_compaction, (self._name(raw),))
         self.assertEqual(report.skipped_not_complete, 1)  # the OPEN partition
+        self.assertEqual(report.conflicts, ())
         self.assertTrue(report.ok)
+        self.assertEqual(report.ledger_states[OFFSITE.UPLOADED], 2)
+        self.assertEqual(report.ledger_states[OFFSITE.RESTORE_VERIFIED], 0)
         # The ledger makes the next run send nothing.
         again = self._backup(store)
-        self.assertEqual((again.uploaded, again.already_present), ((), ()))
-        self.assertEqual(store.puts, [name])
+        self.assertEqual((again.uploaded, again.conflicts), ((), ()))
+        self.assertEqual(store.puts, [self._name(done), self._name(universe)])
 
     def test_the_tar_is_deterministic_and_holds_exactly_the_partition(self) -> None:
         import tarfile
@@ -401,14 +448,54 @@ class OffsiteBackupTests(_ArchiveTest):
         )
         self.assertTrue(all(m.mtime == 0 and m.uid == 0 and m.isreg() for m in members))
 
-    def test_an_existing_object_is_never_overwritten_and_is_recorded(self) -> None:
+    def test_an_existing_object_is_never_overwritten_nor_counted_as_backed_up(self) -> None:
         directory = self._complete()
         store = _MemoryStore()
-        name = f"u2/{directory.relative_to(self.root).as_posix()}.tar"
+        name = self._name(directory)
         store.objects[name] = b"uploaded by an earlier, lost ledger"
         report = self._backup(store)
-        self.assertEqual(report.already_present, (name,))
+        self.assertEqual((report.uploaded, report.conflicts), ((), (name,)))
         self.assertEqual(store.objects[name], b"uploaded by an earlier, lost ledger")
+        self.assertEqual(report.unverified_in_window, (name,))
+        self.assertFalse(report.ok)  # fail closed: the remote content is unknown
+        (line,) = self._ledger()
+        self.assertEqual(line["outcome"], OFFSITE.REMOTE_EXISTS_UNVERIFIED)
+        self.assertNotIn(OFFSITE.UPLOADED, json.dumps(line))
+        # Idempotent: never re-sent, but it keeps the run in ATTENTION ...
+        again = self._backup(store)
+        self.assertEqual(store.puts, [name])
+        self.assertEqual(again.unverified_in_window, (name,))
+        self.assertFalse(again.ok)
+        # ... until the bucket's lifecycle window has passed; it is never promoted.
+        later = self._backup(store, now=line["at"] + 8 * DAY)
+        self.assertTrue(later.ok)
+        self.assertEqual(later.ledger_states[OFFSITE.REMOTE_EXISTS_UNVERIFIED], 1)
+        self.assertEqual(later.ledger_states[OFFSITE.UPLOADED], 0)
+
+    def test_a_pre_hardening_already_present_line_reads_unverified(self) -> None:
+        directory = self._complete()
+        name = self._name(directory)
+        legacy = {"object": name, "manifest_content_hash": json.loads(
+            (directory / "manifest.json").read_text(encoding="utf-8"))["manifest_content_hash"],
+            "tar_sha256": "0" * 64, "bytes": 10, "outcome": "ALREADY_PRESENT", "at": 2_000_000_000}
+        (self.state / OFFSITE.LEDGER_NAME).write_text(json.dumps(legacy) + "\n", encoding="utf-8")
+        report = self._backup(_MemoryStore(), now=2_000_000_000 + 60)
+        self.assertEqual(report.ledger_states[OFFSITE.REMOTE_EXISTS_UNVERIFIED], 1)
+        self.assertEqual(report.unverified_in_window, (name,))
+        self.assertFalse(report.ok)
+
+    def test_a_torn_ledger_line_never_swallows_the_next_entry(self) -> None:
+        first = self._complete()
+        store = _MemoryStore()
+        self._backup(store)
+        with (self.state / OFFSITE.LEDGER_NAME).open("a", encoding="utf-8") as handle:
+            handle.write('{"object": "r0/torn')  # a crash mid-append
+        second = self._complete()
+        report = self._backup(store)
+        self.assertEqual(report.uploaded, (self._name(second),))
+        ledger, inconsistent = OFFSITE.read_ledger(self.state / OFFSITE.LEDGER_NAME)
+        self.assertEqual(sorted(ledger), sorted([self._name(first), self._name(second)]))
+        self.assertEqual(inconsistent, ())
 
     def test_a_tampered_partition_is_never_uploaded(self) -> None:
         directory = self._complete()
@@ -418,6 +505,58 @@ class OffsiteBackupTests(_ArchiveTest):
         report = self._backup(store)
         self.assertEqual((report.uploaded, report.skipped_not_complete), ((), 1))
         self.assertEqual(store.objects, {})
+
+    def test_a_partition_off_its_canonical_path_or_label_is_never_uploaded(self) -> None:
+        from uuid import uuid4
+
+        directory = self._complete()
+        moved = directory.with_name(f"session={uuid4()}")
+        directory.rename(moved)  # internally COMPLETE, but its path misstates its session
+        store = _MemoryStore()
+        report = self._backup(store)
+        self.assertEqual(report.failures, ((self._name(moved), "partition_is_not_at_its_canonical_path"),))
+        self.assertEqual(store.puts, [])
+        # A production partition under the universe label is refused as well.
+        misfiled = self._complete()
+        self.state = self.base / "state-2"
+        self.state.mkdir()
+        report = self._backup(store, roots=[("u2", self.root)])
+        self.assertIn(
+            (f"u2/{misfiled.relative_to(self.root).as_posix()}.tar",
+             "partition_contract_is_not_approved_for_its_root_label"),
+            report.failures,
+        )
+        self.assertEqual(store.puts, [])
+        with self.assertRaises(OFFSITE.OffsiteError):
+            self._backup(store, roots=[("x9", self.root)])
+
+    def test_the_budget_withholds_uploads_and_alerts(self) -> None:
+        directories = [self._complete() for _ in range(3)]
+        store = _MemoryStore()
+        one = len(OFFSITE.partition_tar_bytes(
+            directories[0], directories[0].relative_to(self.root).as_posix()))
+        report = self._backup(store, budget_bytes=2 * one + one // 2)
+        self.assertEqual((len(report.uploaded), report.over_budget), (2, 1))
+        self.assertFalse(report.ok)
+        self.assertEqual(report.window_bytes, 2 * one)
+        # Bytes leave the estimate once the window (lifecycle + slack) has passed.
+        ledger_path = self.state / OFFSITE.LEDGER_NAME
+        aged = [{**line, "at": line["at"] - 7 * DAY - 1} for line in self._ledger()]
+        ledger_path.write_text("".join(json.dumps(line) + "\n" for line in aged), encoding="utf-8")
+        later = self._backup(store, budget_bytes=2 * one + one // 2)
+        self.assertEqual((len(later.uploaded), later.over_budget, later.window_bytes), (1, 0, one))
+        self.assertTrue(later.ok)
+
+    def test_partitions_beyond_the_horizon_are_never_sent(self) -> None:
+        self._complete()
+        store = _MemoryStore()
+        report = self._backup(store, now=__import__("time").time() + 5 * DAY)
+        self.assertEqual((report.uploaded, report.beyond_horizon), ((), 1))
+        self.assertTrue(report.ok)
+        self.assertEqual(store.puts, [])
+        for bad in ({"horizon_days": 0}, {"horizon_days": 8}, {"budget_bytes": 0}):
+            with self.assertRaises(OFFSITE.OffsiteError):
+                self._backup(store, **bad)
 
     def test_a_long_uncompacted_partition_fails_the_run(self) -> None:
         import time as clock
@@ -445,6 +584,7 @@ class OffsiteBackupTests(_ArchiveTest):
         report = self._backup(Broken())
         self.assertFalse(report.ok)
         self.assertEqual(report.failures[0][1], "put_failed:http_401")
+        self.assertFalse((self.state / OFFSITE.LEDGER_NAME).exists())
         self.assertEqual(len(self._backup(_MemoryStore()).uploaded), 1)
         self.assertTrue(directory.exists())
 
@@ -452,56 +592,244 @@ class OffsiteBackupTests(_ArchiveTest):
 class OffsiteRestoreTests(_ArchiveTest):
     def test_restore_replays_every_object_into_an_empty_root(self) -> None:
         directory = self._complete(count=5)
+        universe = self._complete(count=2, universe=True)
         store = _MemoryStore()
         self._backup(store)
         restored = self.base / "restored"
         report = OFFSITE.run_restore_verify(store, restored)
         self.assertEqual(report.failures, ())
-        self.assertEqual([count for _, count in report.verified], [5])
-        relative = directory.relative_to(self.root)
-        for path in directory.iterdir():
-            self.assertEqual(path.read_bytes(), (restored / "u2" / relative / path.name).read_bytes())
+        self.assertEqual([item.record_count for item in report.verified], [5, 2])
+        self.assertEqual([item.ledger_match for item in report.verified], [False, False])
+        for label, root, source in (("r0", self.root, directory), ("u2", self.universe_root, universe)):
+            for path in source.iterdir():
+                self.assertEqual(
+                    path.read_bytes(), (restored / label / source.relative_to(root) / path.name).read_bytes()
+                )
         with self.assertRaises(OFFSITE.OffsiteError):
             OFFSITE.run_restore_verify(store, restored)  # never into a non-empty root
 
     def test_a_corrupted_object_fails_verification(self) -> None:
-        import tarfile
+        directory = self._complete()
+        store = _MemoryStore()
+        self._backup(store)
+        (name,) = store.objects
+
+        def corrupt(member: str, data: bytes) -> bytes:
+            return data[:-8] + bytes(8) if member.endswith("records.ndjson.gz") else data
+
+        store.objects[name] = _retar(store.objects[name], mutate=corrupt)
+        report = OFFSITE.run_restore_verify(store, self.base / "restored")
+        self.assertEqual(report.verified, ())
+        self.assertEqual([failed for failed, _ in report.failures], [name])
+        self.assertIn(directory.relative_to(self.root).as_posix(), name)
+
+    def test_a_substituted_object_that_still_replays_is_caught_by_the_ledger(self) -> None:
+        self._complete()
+        store = _MemoryStore()
+        self._backup(store)
+        (name,) = store.objects
+        # Trailing bytes after the end-of-archive blocks: every member still
+        # extracts and replays identically, but the object is not what was sent.
+        store.objects[name] += b"\0" * 1024
+        blind = OFFSITE.run_restore_verify(store, self.base / "blind")
+        self.assertEqual([item.name for item in blind.verified], [name])
+        ledger, _ = OFFSITE.read_ledger(self.state / OFFSITE.LEDGER_NAME)
+        checked = OFFSITE.run_restore_verify(store, self.base / "checked", ledger=ledger)
+        self.assertEqual(checked.verified, ())
+        self.assertEqual(checked.failures, ((name, "OffsiteError:object_bytes_differ_from_the_ledger"),))
+        # An object the VM never recorded is refused too.
+        store.objects[name.replace("r0/", "u2/")] = store.objects[name]
+        other = OFFSITE.run_restore_verify(store, self.base / "other", ledger=ledger, prefix="u2/")
+        self.assertEqual(other.failures[0][1], "OffsiteError:object_is_not_in_the_backup_ledger")
+
+    def test_an_incorrectly_named_object_is_refused(self) -> None:
+        from uuid import uuid4
 
         directory = self._complete()
         store = _MemoryStore()
         self._backup(store)
         (name,) = store.objects
-        relative = directory.relative_to(self.root).as_posix()
-        buffer = io.BytesIO()
-        with tarfile.open(fileobj=io.BytesIO(store.objects[name])) as source, \
-                tarfile.open(fileobj=buffer, mode="w", format=tarfile.USTAR_FORMAT) as target:
-            for member in source.getmembers():
-                data = source.extractfile(member).read()  # type: ignore[union-attr]
-                if member.name.endswith("records.ndjson.gz"):
-                    data = data[:-8] + bytes(8)
-                member.size = len(data)
-                target.addfile(member, io.BytesIO(data))
-        store.objects[name] = buffer.getvalue()
+        body = store.objects.pop(name)
+        session = directory.name
+        # A self-consistent tar moved to another session's path still replays,
+        # but its own manifest names a different path.
+        renamed = name.replace(session, f"session={uuid4()}")
+        store.objects[renamed] = _retar(body, rename=(session, renamed.split("/")[-1][: -len(".tar")]))
+        # The same bytes filed under the other root label hold the wrong contract.
+        relabelled = name.replace("r0/", "u2/", 1)
+        store.objects[relabelled] = body
         report = OFFSITE.run_restore_verify(store, self.base / "restored")
         self.assertEqual(report.verified, ())
-        self.assertEqual([failed for failed, _ in report.failures], [name])
-        self.assertIn(relative, name)
+        self.assertEqual(
+            dict(report.failures),
+            {
+                renamed: "OffsiteError:partition_is_not_at_its_canonical_path",
+                relabelled: "OffsiteError:partition_contract_is_not_approved_for_its_root_label",
+            },
+        )
+
+    def test_names_outside_approved_labels_and_layout_are_never_fetched(self) -> None:
+        from uuid import uuid4
+
+        session = uuid4()
+        good = f"v1/exchange=BYBIT/instrument=X/date=2026-09-23/session={session}"
+        bad = [
+            f"x9/{good}.tar",                                     # unapproved label
+            f"../{good}.tar",                                     # traversal as label
+            f"r0/{good}",                                         # not a tar
+            f"r0/{good.replace('instrument=X', 'instrument=..')}.tar",
+            f"r0/{good.replace('date=2026-09-23', 'date=20260923')}.tar",
+            f"r0/{good.replace(str(session), str(session).upper())}.tar",
+            f"r0/v1/exchange=BYBIT/instrument=X/../../date=2026-09-23/session={session}.tar",
+            f"r0/v1/exchange=BYBIT/instrument=X/date=2026-09-23/extra/session={session}.tar",
+            f"r0/v2/exchange=BYBIT/instrument=X/date=2026-09-23/session={session}.tar",
+            f"r0//{good}.tar",
+            f"r0/{good.replace('exchange=', 'venue=')}.tar",
+        ]
+        store = _MemoryStore()
+        for name in bad:
+            store.objects[name] = b"never read"
+        report = OFFSITE.run_restore_verify(store, self.base / "restored")
+        self.assertEqual(report.verified, ())
+        self.assertEqual(sorted(name for name, _ in report.failures), sorted(bad))
+        self.assertEqual(store.gets, [])
+        self.assertEqual(list((self.base / "restored").iterdir()), [])
+        self.assertEqual(OFFSITE.parse_object_name(f"u2/{good}.tar"), ("u2", good))
 
     def test_members_outside_the_named_partition_are_refused(self) -> None:
         import tarfile
+        from uuid import uuid4
 
-        for member_name in ("../escape/session.json", "v1/other/session=x/session.json",
-                            "v1/a/session=b/evil.sh"):
+        relative = f"v1/exchange=BYBIT/instrument=X/date=2026-09-23/session={uuid4()}"
+        name = f"r0/{relative}.tar"
+        for member_name in ("../escape/session.json", f"{relative}/../../escape/session.json",
+                            "v1/other/session=x/session.json", f"{relative}/evil.sh",
+                            f"/{relative}/session.json"):
             buffer = io.BytesIO()
             with tarfile.open(fileobj=buffer, mode="w") as archive:
                 info = tarfile.TarInfo(member_name)
                 info.size = 2
                 archive.addfile(info, io.BytesIO(b"{}"))
             with self.assertRaises(OFFSITE.OffsiteError):
-                OFFSITE.extract_partition(buffer.getvalue(), "u2/v1/a/session=b.tar", self.base / "r")
+                OFFSITE.extract_partition(buffer.getvalue(), name, self.base / "r")
+        # A link member, and a tar that is not exactly one compacted partition.
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w") as archive:
+            info = tarfile.TarInfo(f"{relative}/session.json")
+            info.type = tarfile.SYMTYPE
+            info.linkname = "/etc/passwd"
+            archive.addfile(info)
         with self.assertRaises(OFFSITE.OffsiteError):
-            OFFSITE.extract_partition(b"", "u2/../session=b.tar", self.base / "r")
+            OFFSITE.extract_partition(buffer.getvalue(), name, self.base / "r")
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w") as archive:
+            info = tarfile.TarInfo(f"{relative}/session.json")
+            info.size = 2
+            archive.addfile(info, io.BytesIO(b"{}"))
+        with self.assertRaises(OFFSITE.OffsiteError) as caught:
+            OFFSITE.extract_partition(buffer.getvalue(), name, self.base / "r")
+        self.assertEqual(str(caught.exception), "tar_does_not_hold_exactly_one_compacted_partition")
+        with self.assertRaises(OFFSITE.OffsiteError):
+            OFFSITE.extract_partition(b"", "r0/../session=b.tar", self.base / "r")
         self.assertFalse((self.base / "escape").exists())
+        self.assertFalse((self.base / "r").exists() and any((self.base / "r").rglob("*.json")))
+
+
+class OffsiteVerificationStateTests(_ArchiveTest):
+    """Upload, unverified conflict and restore-verified stay three separate states."""
+
+    def _drill(self, store: _MemoryStore, name: str) -> Path:
+        """restore-verify --ledger --receipt on 'another host', through the CLI."""
+        ledger_copy = self.base / f"ledger-copy-{name}.ndjson"
+        ledger_copy.write_bytes((self.state / OFFSITE.LEDGER_NAME).read_bytes())
+        receipt = self.base / f"receipt-{name}.ndjson"
+        par = self.base / "par"
+        par.write_text(PAR + "\n", encoding="utf-8")
+        output = io.StringIO()
+        with patch.object(OFFSITE, "ParObjectStoreV1", return_value=store), redirect_stdout(output):
+            code = OFFSITE.main([
+                "restore-verify", "--par-file", str(par), "--destination", str(self.base / f"drill-{name}"),
+                "--ledger", str(ledger_copy), "--receipt", str(receipt),
+            ])
+        self.assertNotIn("SECRETTOKEN", output.getvalue())
+        self.assertEqual(code, 0, output.getvalue())
+        return receipt
+
+    def _accept(self, receipt: Path) -> tuple[int, str]:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = OFFSITE.main(["accept-restore", "--state-dir", str(self.state), "--receipt", str(receipt)])
+        return code, output.getvalue()
+
+    def test_only_a_matching_restore_receipt_marks_data_recoverable(self) -> None:
+        self._complete()
+        store = _MemoryStore()
+        report = self._backup(store)
+        self.assertEqual(report.ledger_states[OFFSITE.RESTORE_VERIFIED], 0)
+        receipt = self._drill(store, "a")
+        code, output = self._accept(receipt)
+        self.assertEqual(code, 0, output)
+        after = self._backup(store)
+        self.assertEqual(after.ledger_states[OFFSITE.RESTORE_VERIFIED], 1)
+        self.assertEqual(after.ledger_states[OFFSITE.UPLOADED], 0)
+        self.assertTrue(after.ok)
+        # Re-accepting is a no-op; a receipt with other bytes is refused.
+        self.assertEqual(self._accept(receipt)[0], 0)
+        (line,) = receipt.read_text(encoding="utf-8").splitlines()
+        forged = self.base / "forged.ndjson"
+        forged.write_text(json.dumps({**json.loads(line), "tar_sha256": "f" * 64}) + "\n", encoding="utf-8")
+        code, output = self._accept(forged)
+        self.assertEqual(code, 1)
+        self.assertIn("receipt_bytes_differ_from_the_ledger", output)
+
+    def test_a_conflict_resolves_only_when_the_remote_bytes_are_the_local_partition(self) -> None:
+        directory = self._complete()
+        name = self._name(directory)
+        genuine = OFFSITE.partition_tar_bytes(directory, directory.relative_to(self.root).as_posix())
+        # The object exists (a PUT whose response was lost), so this run cannot see its content.
+        store = _MemoryStore()
+        store.objects[name] = genuine
+        self.assertFalse(self._backup(store).ok)
+        code, output = self._accept(self._drill(store, "b"))
+        self.assertEqual(code, 0, output)
+        resolved = self._backup(store)
+        self.assertTrue(resolved.ok)
+        self.assertEqual(resolved.unverified_in_window, ())
+        self.assertEqual(resolved.ledger_states[OFFSITE.RESTORE_VERIFIED], 1)
+
+    def test_a_conflict_with_other_bytes_stays_unverified(self) -> None:
+        directory = self._complete()
+        name = self._name(directory)
+        store = _MemoryStore()
+        store.objects[name] = OFFSITE.partition_tar_bytes(
+            directory, directory.relative_to(self.root).as_posix()) + b"\0" * 512
+        self.assertFalse(self._backup(store).ok)
+        ledger, _ = OFFSITE.read_ledger(self.state / OFFSITE.LEDGER_NAME)
+        drill = OFFSITE.run_restore_verify(store, self.base / "drill", ledger=ledger)
+        self.assertEqual(drill.failures, ((name, "OffsiteError:object_bytes_differ_from_the_ledger"),))
+        still = self._backup(store)
+        self.assertEqual(still.unverified_in_window, (name,))
+        self.assertFalse(still.ok)
+
+    def test_the_cli_report_names_each_state_separately(self) -> None:
+        self._complete()
+        par = self.base / "par"
+        par.write_text(PAR + "\n", encoding="utf-8")
+        store = _MemoryStore()
+        output = io.StringIO()
+        argv = ["backup", "--root", f"r0={self.root}", "--root", f"u2={self.universe_root}",
+                "--par-file", str(par), "--state-dir", str(self.state),
+                "--horizon-days", "4", "--budget-window-days", "7", "--budget-bytes", "8000000000"]
+        with patch.object(OFFSITE, "ParObjectStoreV1", return_value=store), redirect_stdout(output):
+            self.assertEqual(OFFSITE.main(argv), 0)
+        text = output.getvalue()
+        self.assertIn("uploaded       1 created this run", text)
+        self.assertIn("conflict       0 ", text)
+        self.assertIn("ledger         1 UPLOADED, 0 RESTORE_VERIFIED, 0 REMOTE_EXISTS_UNVERIFIED", text)
+        self.assertNotIn("SECRETTOKEN", text)
+        with redirect_stdout(io.StringIO()), patch.object(sys, "stderr", io.StringIO()), \
+                self.assertRaises(SystemExit):
+            OFFSITE.main(argv[:-6])  # the budget flags have no defaults
 
 
 class OffsiteTransportTests(unittest.TestCase):
@@ -595,6 +923,17 @@ class OffsiteUnitTests(unittest.TestCase):
         self.assertEqual(argv[3], "/opt/trade-capture/current/deploy/oci/capture_offsite.py")
         self.assertIn("--root", argv)
         self.assertEqual(argv[argv.index("--state-dir") + 1], "/var/lib/trade-capture-backup")
+        # The storage budget is stated in the unit, matches the tests and README
+        # 7a, and leaves headroom under a 10 GB Standard allowance.
+        budget = {flag: int(argv[argv.index(f"--{flag.replace('_', '-')}") + 1]) for flag in BUDGET}
+        self.assertEqual(budget, BUDGET)
+        self.assertLessEqual(budget["budget_bytes"], 8_000_000_000)
+        readme = (DEPLOY / "README.md").read_text(encoding="utf-8")
+        lifecycle = int(re.search(r"delete objects after \*\*(\d+) days\*\*", readme).group(1))  # type: ignore[union-attr]
+        retention = int(re.search(r"time-bound \*\*(\d+) days\*\*", readme).group(1))  # type: ignore[union-attr]
+        self.assertLessEqual(budget["horizon_days"], retention)  # a lost ledger meets objects, never re-sends
+        self.assertLess(retention, lifecycle)
+        self.assertGreaterEqual(budget["budget_window_days"], lifecycle + 2)  # slack for a late lifecycle run
         timer = _unit("trade-capture-backup.timer")["Timer"]
         self.assertEqual(timer["OnCalendar"], "*-*-* *:25:00 UTC")
 

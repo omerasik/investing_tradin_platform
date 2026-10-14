@@ -16,7 +16,10 @@ Type=oneshot
 User=trade-capture
 Group=trade-capture
 EnvironmentFile=/etc/trade-capture/capture.env
-ExecStart=/opt/trade-capture/python -I -B /opt/trade-capture/current/deploy/oci/capture_offsite.py backup --root r0=${R0_ROOT} --root u2=${U2_ROOT} --par-file /etc/trade-capture/backup-par-url --state-dir /var/lib/trade-capture-backup
+# Storage budget (README 7a): bucket lifecycle deletes after 5 days; the ledger
+# counts 7 days (5 + 2 for a late lifecycle run) against 8.0 GB, 80 % of a 10 GB
+# Standard allowance; only partitions finalized in the last 4 days are sent.
+ExecStart=/opt/trade-capture/python -I -B /opt/trade-capture/current/deploy/oci/capture_offsite.py backup --root r0=${R0_ROOT} --root u2=${U2_ROOT} --par-file /etc/trade-capture/backup-par-url --state-dir /var/lib/trade-capture-backup --horizon-days 4 --budget-window-days 7 --budget-bytes 8000000000
 StateDirectory=trade-capture-backup
 StateDirectoryMode=0750
 TimeoutStartSec=50min

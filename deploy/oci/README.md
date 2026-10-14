@@ -191,50 +191,92 @@ every COMPLETE, compacted partition of both roots not yet in its ledger
 (`/var/lib/trade-capture-backup/uploaded-v1.ndjson`) is uploaded as one
 deterministic tar object `r0/<partition path>.tar` or `u2/<partition path>.tar`.
 OPEN, PARTIAL and not-yet-compacted partitions are never uploaded; a COMPLETE one
-still uncompacted after 2 h makes the run fail (alert). Each PUT carries
-`Content-MD5` (verified by the service) and `If-None-Match: *` (an existing
-object is never overwritten). The unit reads the archive read-only, runs at
-CPU weight 20 / nice 10 / idle I/O beside the recorders' weight 1000, and holds
-no credential other than the PAR.
+still uncompacted after 2 h makes the run fail (alert). So is a partition that
+is not at the canonical path of its own contract, day and session, or whose
+contract the label does not admit (`r0` = production contract, `u2` = universe
+contracts; no other label exists). Each PUT carries `Content-MD5` (verified by
+the service) and `If-None-Match: *` (an existing object is never overwritten).
+The unit reads the archive read-only, runs at CPU weight 20 / nice 10 / idle I/O
+beside the recorders' weight 1000, and holds no credential other than the PAR.
 
-| Item | Value (measured 2026-10-14 on the VM; Oracle's Always Free page, checked 2026-10-14) |
+**What the run's output means.** Three ledger states, never merged:
+
+| State | Set by | What it proves |
+| :--- | :--- | :--- |
+| `UPLOADED` | a PUT this client made that the service accepted | the bytes arrived (MD5-checked); not that they restore |
+| `REMOTE_EXISTS_UNVERIFIED` | a PUT that met an existing object (409/412) | nothing: the write-only PAR cannot read it. Never re-sent, never counted as backed up, and `backup ATTENTION` (alert) every run while inside the budget window |
+| `RESTORE_VERIFIED` | `accept-restore` with a matching drill receipt | the object was downloaded on another host, its SHA-256 equals the local partition's deterministic tar, and it replayed in full |
+
+`backup OK` therefore means "accepted uploads, no anomaly"; only
+`RESTORE_VERIFIED` means "recoverable off-host". A 409/412 normally means a PUT
+whose response was lost or a ledger written before a crash; the next drill
+resolves it (or proves the remote object is something else, and it stays
+unverified).
+
+**Storage budget.** Planned against **10 GB Standard** only, whatever else the
+tenancy may include, with no listing from the VM:
+
+| Item | Value |
 | :--- | :--- |
-| Growth | ~0.56 GB/day U2 + ~0.22 GB/day R0 compacted (volatile days higher) |
-| Free allowance | 20 GB combined in an Always-Free-only tenancy; 10 GB Standard (+10 GB IA, +10 GB Archive) on a paid or credit tenancy; 50,000 API requests/month |
-| Retention | 12 days of objects (~9.5 GB): fits the 10 GB Standard allowance either way |
-| Requests | ~4 partitions/hour -> ~3,000 PUT/month (+ listing/GET for restore drills) |
-| Cost | $0 within those allowances; Billing > Cost Analysis is the check |
+| Growth (measured 2026-10-14) | ~0.56 GB/day U2 + ~0.22 GB/day R0 compacted = ~0.78 GB/day; volatile days higher |
+| Lifecycle | delete after 5 days; a lifecycle run can be late, so up to ~7 days of objects may be present |
+| Expected occupancy | ~0.78 x 5-7 days = 3.9-5.5 GB (39-55 % of 10 GB) |
+| Guard (`--budget-window-days 7 --budget-bytes 8000000000`) | bytes the ledger shows sent in the last 7 days must stay <= 8.0 GB (80 %): it holds up to ~1.47x the measured rate sustained for a week; past that, uploads are withheld and the run alerts (no silent overage) |
+| Horizon (`--horizon-days 4`) | a partition finalized > 4 days ago is never sent, so a lost ledger meets existing objects (409/412) rather than re-uploading history the lifecycle deleted |
+| Requests | ~4 partitions/hour -> ~2,900 PUT/month, + one LIST page and one GET per object per drill (~500 every 3 days) |
+| Cost | none expected inside a 10 GB Standard allowance; Billing > Cost Analysis is the check |
+
+The guard is an estimate from the ledger: it cannot see objects older than the
+window that a late lifecycle run has not yet deleted, so the bucket's size in
+the Console is checked at every drill. Raise the budget or lengthen the
+lifecycle only after confirming the tenancy's actual allowance; the three
+numbers move together (horizon <= retention < lifecycle, window >= lifecycle + 2).
 
 Owner steps (home region, same compartment as the VM):
 
-1. Create bucket `trade-capture-backup` (Standard tier, private, no public access).
-2. Retention rule: time-bound **12 days**, so no object can be overwritten or
-   deleted before then (lock it only once satisfied: a locked rule cannot be shortened).
-3. Lifecycle policy rule: delete objects after **13 days** (needs the IAM statement
+1. Create bucket `trade-capture-backup` (Standard tier, private, no public
+   access, no auto-tiering, object versioning off).
+2. Retention rule: time-bound **4 days**, left **unlocked** during stage 1 (a
+   leaked write PAR then still cannot overwrite a recent object; a locked rule
+   can never be shortened or removed).
+3. Lifecycle policy rule: delete objects after **5 days** (needs the IAM statement
    `Allow service objectstorage-<region> to manage object-family in compartment <c>`).
 4. Pre-authenticated request on the bucket: **Permit object writes** only, no
    listing, expiry ~90 days (renew before it lapses: the run then fails and alerts).
-5. On the VM, without echoing the URL into history or logs:
+5. On the VM, without echoing the URL into history or logs (activation, owner-run):
    ```bash
    sudo install -m 0640 -o root -g trade-capture /dev/null /etc/trade-capture/backup-par-url
    sudoedit /etc/trade-capture/backup-par-url      # paste https://.../p/<token>/n/<ns>/b/trade-capture-backup/o/
-   sudo systemctl enable --now trade-capture-backup.timer
-   sudo systemctl start trade-capture-backup.service && journalctl -u trade-capture-backup -n 20 --no-pager
+   sudo systemctl start trade-capture-backup.service && journalctl -u trade-capture-backup -n 30 --no-pager
+   sudo systemctl enable --now trade-capture-backup.timer      # only after the first run reads backup OK
    ```
 
-**Restore drill (weekly, on another machine).** A second PAR on the bucket with
-**Permit object reads** and **Enable object listing** (short expiry), its URL in a
-local file, then:
+**Restore drill (every 3 days, with the 7b pull, on another machine).** A second
+PAR on the bucket with **Permit object reads** and **Enable object listing**
+(expiry of a day), its URL in a local file, and a copy of the VM's ledger:
 
 ```bash
-python deploy/oci/capture_offsite.py restore-verify --par-file <file> --destination <empty-dir> --limit 24
+ssh <vm> sudo cat /var/lib/trade-capture-backup/uploaded-v1.ndjson > ledger.ndjson
+python deploy/oci/capture_offsite.py restore-verify --par-file <file> --destination <empty-dir> --ledger ledger.ndjson --receipt receipt.ndjson
+scp receipt.ndjson <vm>:/tmp/receipt.ndjson
+ssh <vm> sudo -u trade-capture /opt/trade-capture/python -I -B /opt/trade-capture/current/deploy/oci/capture_offsite.py accept-restore --state-dir /var/lib/trade-capture-backup --receipt /tmp/receipt.ndjson
 ```
 
-Each object is extracted into the empty directory under the path its name
-states (anything else in the tar is refused) and fully replayed
-(`verify_partition_v1`: hashes, contract, ordering, coverage, counts). The
-restored tree is an archive root: `--root <empty-dir>/u2 universe-acceptance ...`
-works on it, and `backup` copies it into the long-term Windows archive.
+Before fetching anything, each listed name must be an approved label plus the
+canonical `v1/exchange=/instrument=/date=/session=` layout (traversal, other
+labels and other shapes are refused unread). Each object must hash to the
+ledger's SHA-256 for that name (an object the VM never recorded, or other
+bytes under a recorded name, is refused), is extracted into the empty
+directory under the path its name states (only the five files of a compacted
+partition, as regular files, are accepted), fully replayed
+(`verify_partition_v1`: hashes, contract, ordering, coverage, counts), and its
+own contract, day and session must name exactly that path. Without `--ledger`
+the drill still replays everything but cannot tell a substituted object whose
+internal hashes were recomputed; its receipt says `ledger_match:false`.
+`accept-restore` marks `RESTORE_VERIFIED` only where the receipt's SHA-256
+equals the ledger's. The restored tree is an archive root:
+`--root <empty-dir>/u2 universe-acceptance ...` works on it, and `backup` copies
+it into the long-term Windows archive.
 
 ### 7b. Pull to a second machine
 
@@ -249,7 +291,8 @@ python scripts/capture_bybit_public.py --root ~/oci-pull/capture-universe-r1b ba
 Without rsync on the VM, `ssh <vm> tar -C /srv/trade-capture/archive -cf - . | tar -xf -`
 into an empty directory works the same way. `backup` copies only COMPLETE
 partitions and re-verifies every hash. This is the long-term copy: 7a keeps only
-12 days.
+5 days, so pull at least every 3 days (well inside the 4-day retention), or a
+VM loss can leave a hole that neither copy holds.
 
 ### 7c. Alerts (dead-man's switch)
 
