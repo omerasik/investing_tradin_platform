@@ -476,7 +476,7 @@ class OffsiteBackupTests(_ArchiveTest):
         directory = self._complete()
         name = self._name(directory)
         legacy = {"object": name, "manifest_content_hash": json.loads(
-            (directory / "manifest.json").read_text(encoding="utf-8"))["manifest_content_hash"],
+            (directory / OFFSITE.MANIFEST_FILE_NAME).read_text(encoding="utf-8"))["manifest_content_hash"],
             "tar_sha256": "0" * 64, "bytes": 10, "outcome": "ALREADY_PRESENT", "at": 2_000_000_000}
         (self.state / OFFSITE.LEDGER_NAME).write_text(json.dumps(legacy) + "\n", encoding="utf-8")
         report = self._backup(_MemoryStore(), now=2_000_000_000 + 60)
