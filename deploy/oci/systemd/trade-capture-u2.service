@@ -18,6 +18,8 @@ RequiresMountsFor=/srv/trade-capture
 AssertPathIsMountPoint=/srv/trade-capture
 StartLimitIntervalSec=3600
 StartLimitBurst=10
+# Disk floor, held lock or start limit: one /fail ping (README section 7c).
+OnFailure=trade-capture-alert@%n.service
 
 [Service]
 Type=simple

@@ -33,6 +33,22 @@ ARCHIVE_MOUNT=/srv/trade-capture
 # hand-off plus slack before calling a root stale (an operations alert, not evidence).
 MAX_MANIFEST_AGE_SECONDS=4500
 
+# Dead-man's switch (README section 7c): with a healthchecks.io-compatible URL in
+# this file, the snapshot is posted as a success ping (exit 0) or a /fail ping
+# (exit 1); silence -- VM, timer or network down -- alerts by itself. Absent
+# file: no ping, nothing else changes. A failed ping never changes the exit code.
+PING_URL_FILE=/etc/trade-capture/alert-ping-url
+if [ -z "${TRADE_CAPTURE_HEALTH_INNER:-}" ] && [ -r "$PING_URL_FILE" ]; then
+    report=$(TRADE_CAPTURE_HEALTH_INNER=1 /usr/bin/bash "$0" 2>&1)
+    status=$?
+    printf '%s\n' "$report"
+    if [ "$status" -eq 0 ]; then outcome=success; else outcome=fail; fi
+    printf '%s\n' "$report" | "$PYTHON" -I -B "$APP/deploy/oci/capture_offsite.py" \
+        ping "$outcome" --url-file "$PING_URL_FILE" --context "trade-capture-health $outcome" \
+        | sed 's/^/alert_ping     /'
+    exit "$status"
+fi
+
 # shellcheck source=/dev/null
 . "$ENV_FILE"
 fail=0

@@ -1,0 +1,45 @@
+# Off-host backup: upload new COMPLETE, compacted partitions of both roots to an
+# OCI Object Storage bucket through a write-only bucket PAR (README section 7a).
+# Reads the archive, never writes it. Not enabled by install.sh; it is skipped
+# (not failed) until the owner puts the PAR URL in /etc/trade-capture/backup-par-url.
+[Unit]
+Description=trade-platform capture off-host backup (write-only PAR upload)
+Documentation=file:///opt/trade-capture/current/deploy/oci/README.md
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/srv/trade-capture
+ConditionPathExists=/etc/trade-capture/backup-par-url
+OnFailure=trade-capture-alert@%n.service
+
+[Service]
+Type=oneshot
+User=trade-capture
+Group=trade-capture
+EnvironmentFile=/etc/trade-capture/capture.env
+ExecStart=/opt/trade-capture/python -I -B /opt/trade-capture/current/deploy/oci/capture_offsite.py backup --root r0=${R0_ROOT} --root u2=${U2_ROOT} --par-file /etc/trade-capture/backup-par-url --state-dir /var/lib/trade-capture-backup
+StateDirectory=trade-capture-backup
+StateDirectoryMode=0750
+TimeoutStartSec=50min
+# Never compete with the recorders (CPUWeight=1000): idle I/O, low CPU weight.
+CPUWeight=20
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=512M
+UMask=0027
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+SystemCallArchitectures=native

@@ -300,6 +300,348 @@ class CaptureHostProbeTests(unittest.TestCase):
         self.assertEqual(PROBE.CLOCK_WORST_MS, float(match.group(1)))
 
 
+def _load_offsite() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("capture_offsite_oci", DEPLOY / "capture_offsite.py")
+    if spec is None or spec.loader is None:
+        raise RuntimeError("capture_offsite_unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # dataclasses resolve annotations through it
+    spec.loader.exec_module(module)
+    return module
+
+
+OFFSITE = _load_offsite()
+PAR = "https://objectstorage.eu-amsterdam-1.oraclecloud.com/p/SECRETTOKEN/n/ns/b/trade-capture-backup/o/"
+
+
+class _MemoryStore:
+    """An object store with OCI's create-only semantics, in memory."""
+
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+        self.puts: list[str] = []
+
+    def put_new(self, name: str, body: bytes) -> bool:
+        self.puts.append(name)
+        if name in self.objects:
+            return False
+        self.objects[name] = body
+        return True
+
+    def get(self, name: str) -> bytes:
+        return self.objects[name]
+
+    def list_names(self, prefix: str) -> list[str]:
+        return sorted(name for name in self.objects if name.startswith(prefix))
+
+
+class _ArchiveTest(unittest.TestCase):
+    def setUp(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.base = Path(temp.name)
+        self.root = self.base / "u2"
+        self.state = self.base / "state"
+        self.state.mkdir()
+
+    def _complete(self, *, compact: bool = True, count: int = 3) -> Path:
+        from tests.test_first_party_capture_archive_v1 import _complete_partition
+        from trade_platform.first_party_capture_archive_v1 import compact_partition_v1
+
+        directory = _complete_partition(self.root, count=count)
+        if compact:
+            compact_partition_v1(directory)
+        return directory
+
+    def _backup(self, store: _MemoryStore, **options: object):
+        return OFFSITE.run_backup([("u2", self.root)], store, self.state, **options)
+
+
+class OffsiteBackupTests(_ArchiveTest):
+    def test_only_complete_compacted_partitions_are_uploaded_once(self) -> None:
+        from datetime import date
+        from uuid import uuid4
+
+        from trade_platform.first_party_capture_archive_v1 import CapturePartitionWriterV1
+        from trade_platform.first_party_capture_authority_v1 import (
+            first_party_bybit_capture_contract_v1,
+        )
+
+        done = self._complete()
+        raw = self._complete(compact=False)
+        open_writer = CapturePartitionWriterV1(
+            root=self.root, contract=first_party_bybit_capture_contract_v1(), session_id=uuid4(),
+            day=date(2026, 9, 23),
+        )
+        self.addCleanup(open_writer.close_without_finalizing)
+        store = _MemoryStore()
+        report = self._backup(store)
+        name = f"u2/{done.relative_to(self.root).as_posix()}.tar"
+        self.assertEqual(report.uploaded, (name,))
+        self.assertEqual(report.pending_compaction, (f"u2/{raw.relative_to(self.root).as_posix()}.tar",))
+        self.assertEqual(report.skipped_not_complete, 1)  # the OPEN partition
+        self.assertTrue(report.ok)
+        # The ledger makes the next run send nothing.
+        again = self._backup(store)
+        self.assertEqual((again.uploaded, again.already_present), ((), ()))
+        self.assertEqual(store.puts, [name])
+
+    def test_the_tar_is_deterministic_and_holds_exactly_the_partition(self) -> None:
+        import tarfile
+
+        directory = self._complete()
+        relative = directory.relative_to(self.root).as_posix()
+        first = OFFSITE.partition_tar_bytes(directory, relative)
+        self.assertEqual(first, OFFSITE.partition_tar_bytes(directory, relative))
+        with tarfile.open(fileobj=io.BytesIO(first)) as archive:
+            members = archive.getmembers()
+        self.assertEqual(
+            sorted(member.name for member in members),
+            sorted(f"{relative}/{path.name}" for path in directory.iterdir()),
+        )
+        self.assertTrue(all(m.mtime == 0 and m.uid == 0 and m.isreg() for m in members))
+
+    def test_an_existing_object_is_never_overwritten_and_is_recorded(self) -> None:
+        directory = self._complete()
+        store = _MemoryStore()
+        name = f"u2/{directory.relative_to(self.root).as_posix()}.tar"
+        store.objects[name] = b"uploaded by an earlier, lost ledger"
+        report = self._backup(store)
+        self.assertEqual(report.already_present, (name,))
+        self.assertEqual(store.objects[name], b"uploaded by an earlier, lost ledger")
+
+    def test_a_tampered_partition_is_never_uploaded(self) -> None:
+        directory = self._complete()
+        with (directory / "lifecycle.ndjson").open("a", encoding="utf-8") as handle:
+            handle.write("{}\n")
+        store = _MemoryStore()
+        report = self._backup(store)
+        self.assertEqual((report.uploaded, report.skipped_not_complete), ((), 1))
+        self.assertEqual(store.objects, {})
+
+    def test_a_long_uncompacted_partition_fails_the_run(self) -> None:
+        import time as clock
+
+        self._complete(compact=False)
+        report = self._backup(_MemoryStore(), now=clock.time() + OFFSITE.STALE_UNCOMPACTED_SECONDS + 60)
+        self.assertEqual(len(report.stale_uncompacted), 1)
+        self.assertFalse(report.ok)
+
+    def test_uploads_per_run_are_bounded(self) -> None:
+        for _ in range(3):
+            self._complete()
+        store = _MemoryStore()
+        report = self._backup(store, max_uploads=2)
+        self.assertEqual((len(report.uploaded), report.deferred), (2, 1))
+        self.assertEqual(len(self._backup(store).uploaded), 1)
+
+    def test_a_transport_failure_is_reported_and_retried_next_run(self) -> None:
+        directory = self._complete()
+
+        class Broken(_MemoryStore):
+            def put_new(self, name: str, body: bytes) -> bool:
+                raise OFFSITE.OffsiteError("put_failed:http_401")
+
+        report = self._backup(Broken())
+        self.assertFalse(report.ok)
+        self.assertEqual(report.failures[0][1], "put_failed:http_401")
+        self.assertEqual(len(self._backup(_MemoryStore()).uploaded), 1)
+        self.assertTrue(directory.exists())
+
+
+class OffsiteRestoreTests(_ArchiveTest):
+    def test_restore_replays_every_object_into_an_empty_root(self) -> None:
+        directory = self._complete(count=5)
+        store = _MemoryStore()
+        self._backup(store)
+        restored = self.base / "restored"
+        report = OFFSITE.run_restore_verify(store, restored)
+        self.assertEqual(report.failures, ())
+        self.assertEqual([count for _, count in report.verified], [5])
+        relative = directory.relative_to(self.root)
+        for path in directory.iterdir():
+            self.assertEqual(path.read_bytes(), (restored / "u2" / relative / path.name).read_bytes())
+        with self.assertRaises(OFFSITE.OffsiteError):
+            OFFSITE.run_restore_verify(store, restored)  # never into a non-empty root
+
+    def test_a_corrupted_object_fails_verification(self) -> None:
+        import tarfile
+
+        directory = self._complete()
+        store = _MemoryStore()
+        self._backup(store)
+        (name,) = store.objects
+        relative = directory.relative_to(self.root).as_posix()
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=io.BytesIO(store.objects[name])) as source, \
+                tarfile.open(fileobj=buffer, mode="w", format=tarfile.USTAR_FORMAT) as target:
+            for member in source.getmembers():
+                data = source.extractfile(member).read()  # type: ignore[union-attr]
+                if member.name.endswith("records.ndjson.gz"):
+                    data = data[:-8] + bytes(8)
+                member.size = len(data)
+                target.addfile(member, io.BytesIO(data))
+        store.objects[name] = buffer.getvalue()
+        report = OFFSITE.run_restore_verify(store, self.base / "restored")
+        self.assertEqual(report.verified, ())
+        self.assertEqual([failed for failed, _ in report.failures], [name])
+        self.assertIn(relative, name)
+
+    def test_members_outside_the_named_partition_are_refused(self) -> None:
+        import tarfile
+
+        for member_name in ("../escape/session.json", "v1/other/session=x/session.json",
+                            "v1/a/session=b/evil.sh"):
+            buffer = io.BytesIO()
+            with tarfile.open(fileobj=buffer, mode="w") as archive:
+                info = tarfile.TarInfo(member_name)
+                info.size = 2
+                archive.addfile(info, io.BytesIO(b"{}"))
+            with self.assertRaises(OFFSITE.OffsiteError):
+                OFFSITE.extract_partition(buffer.getvalue(), "u2/v1/a/session=b.tar", self.base / "r")
+        with self.assertRaises(OFFSITE.OffsiteError):
+            OFFSITE.extract_partition(b"", "u2/../session=b.tar", self.base / "r")
+        self.assertFalse((self.base / "escape").exists())
+
+
+class OffsiteTransportTests(unittest.TestCase):
+    def _url_file(self, text: str) -> Path:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        path = Path(temp.name) / "url"
+        path.write_text(text + "\n", encoding="utf-8")
+        return path
+
+    def test_only_a_bucket_object_par_over_https_is_accepted(self) -> None:
+        self.assertEqual(OFFSITE.read_url_file(self._url_file(PAR), par=True), PAR)
+        for bad in (PAR.replace("https", "http"), PAR + "x", PAR + "?a=1", "https://example.org/o/"):
+            with self.assertRaises(OFFSITE.OffsiteError) as caught:
+                OFFSITE.read_url_file(self._url_file(bad), par=True)
+            self.assertNotIn("SECRETTOKEN", str(caught.exception))
+
+    def test_put_is_create_only_and_md5_checked_and_never_leaks_the_par(self) -> None:
+        import base64
+        import hashlib
+        import urllib.error
+
+        seen: list = []
+
+        def opener(request, timeout):
+            seen.append(request)
+            return b""
+
+        store = OFFSITE.ParObjectStoreV1(PAR)
+        with patch.object(OFFSITE, "_open", side_effect=opener):
+            self.assertTrue(store.put_new("u2/v1/x=1/session=a.tar", b"body"))
+        (request,) = seen
+        self.assertEqual(request.get_method(), "PUT")
+        self.assertEqual(request.full_url, PAR + "u2/v1/x=1/session=a.tar")
+        self.assertEqual(request.get_header("If-none-match"), "*")
+        self.assertEqual(
+            request.get_header("Content-md5"),
+            base64.b64encode(hashlib.md5(b"body", usedforsecurity=False).digest()).decode(),
+        )
+
+        def conflict(request, timeout):
+            raise urllib.error.HTTPError(request.full_url, 412, "Precondition Failed", None, None)
+
+        def denied(request, timeout):
+            raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", None, None)
+
+        with patch.object(OFFSITE, "_open", side_effect=conflict):
+            self.assertFalse(store.put_new("u2/a/session=b.tar", b"body"))
+        with patch.object(OFFSITE, "_open", side_effect=denied), \
+                self.assertRaises(OFFSITE.OffsiteError) as caught:
+            store.put_new("u2/a/session=b.tar", b"body")
+        self.assertEqual(str(caught.exception), "put_failed:http_401")
+
+    def test_ping_targets_success_or_fail_and_reports_no_url(self) -> None:
+        import urllib.error
+
+        url = "https://hc-ping.com/SECRET-UUID"
+        seen: list = []
+        with patch.object(OFFSITE, "_open", side_effect=lambda request, timeout: seen.append(request)):
+            OFFSITE.send_ping(url, "success", "service OK")
+            OFFSITE.send_ping(url, "fail", "x" * 50_000)
+        self.assertEqual([r.full_url for r in seen], [url, url + "/fail"])
+        self.assertEqual(len(seen[1].data), OFFSITE.PING_BODY_LIMIT)
+
+        def down(request, timeout):
+            raise urllib.error.URLError("unreachable")
+
+        with patch.object(OFFSITE, "_open", side_effect=down), \
+                patch.object(OFFSITE.time, "sleep"), \
+                self.assertRaises(OFFSITE.OffsiteError) as caught:
+            OFFSITE.send_ping(url, "fail", "")
+        self.assertNotIn("SECRET", str(caught.exception))
+
+
+class OffsiteUnitTests(unittest.TestCase):
+    def test_backup_unit_reads_the_archive_and_yields_to_the_recorders(self) -> None:
+        unit = _unit("trade-capture-backup.service")
+        service = unit["Service"]
+        self.assertEqual(unit["Unit"]["ConditionPathExists"], "/etc/trade-capture/backup-par-url")
+        self.assertEqual(unit["Unit"]["OnFailure"], "trade-capture-alert@%n.service")
+        self.assertEqual(service["User"], "trade-capture")
+        self.assertEqual(service["NoNewPrivileges"], "yes")
+        self.assertEqual(service["ProtectSystem"], "strict")
+        self.assertNotIn("ReadWritePaths", service)  # the archive stays read-only
+        self.assertEqual(service["StateDirectory"], "trade-capture-backup")
+        self.assertEqual(service["CapabilityBoundingSet"], "")
+        self.assertLess(int(service["CPUWeight"]), int(_unit("trade-capture-u2.service")["Service"]["CPUWeight"]))
+        self.assertEqual(service["IOSchedulingClass"], "idle")
+        argv = shlex.split(service["ExecStart"])
+        self.assertEqual(argv[:3], [INTERPRETER_LINK, "-I", "-B"])
+        self.assertEqual(argv[3], "/opt/trade-capture/current/deploy/oci/capture_offsite.py")
+        self.assertIn("--root", argv)
+        self.assertEqual(argv[argv.index("--state-dir") + 1], "/var/lib/trade-capture-backup")
+        timer = _unit("trade-capture-backup.timer")["Timer"]
+        self.assertEqual(timer["OnCalendar"], "*-*-* *:25:00 UTC")
+
+    def test_recorders_alert_when_they_enter_the_failed_state(self) -> None:
+        for name in RECORDER_UNITS:
+            self.assertEqual(_unit(name)["Unit"]["OnFailure"], "trade-capture-alert@%n.service", name)
+        alert = _unit("trade-capture-alert@.service")
+        self.assertEqual(alert["Unit"]["ConditionPathExists"], "/etc/trade-capture/alert-ping-url")
+        argv = shlex.split(alert["Service"]["ExecStart"])
+        self.assertEqual(argv[4:6], ["ping", "fail"])
+        self.assertEqual(alert["Service"]["NoNewPrivileges"], "yes")
+
+    def test_no_url_or_secret_is_shipped_and_nothing_is_enabled(self) -> None:
+        for path in (DEPLOY / "systemd").iterdir():
+            text = path.read_text(encoding="utf-8")
+            self.assertNotIn("https://", text, path.name)
+            self.assertNotIn("http://", text, path.name)
+        install = (DEPLOY / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("trade-capture-backup.timer", install)
+        self.assertNotIn("enable trade-capture-backup", install)
+        self.assertNotIn("enable --now trade-capture-backup", install)
+        for target in ("> /etc/trade-capture/backup-par-url", "> /etc/trade-capture/alert-ping-url"):
+            self.assertNotIn(target, install)
+
+    def test_health_pings_its_own_text_without_changing_its_exit(self) -> None:
+        health = (DEPLOY / "trade-capture-health.sh").read_text(encoding="utf-8")
+        self.assertIn("PING_URL_FILE=/etc/trade-capture/alert-ping-url", health)
+        self.assertIn('capture_offsite.py" \\\n        ping "$outcome"', health)
+        self.assertIn('exit "$status"', health)
+
+    def test_offsite_script_needs_only_the_standard_library(self) -> None:
+        probe = (
+            "import importlib.util, sys\n"
+            "before = set(sys.modules)\n"
+            f"spec = importlib.util.spec_from_file_location('m', {str(DEPLOY / 'capture_offsite.py')!r})\n"
+            "module = importlib.util.module_from_spec(spec)\n"
+            "sys.modules['m'] = module\n"
+            "spec.loader.exec_module(module)\n"
+            "tops = {name.split('.')[0] for name in set(sys.modules) - before}\n"
+            "print(' '.join(sorted(tops - set(sys.stdlib_module_names) - {'__main__', 'm'})))\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-I", "-c", probe], capture_output=True, text=True, check=True
+        )
+        self.assertEqual(result.stdout.split(), ["trade_platform"])
+
+
 @unittest.skipUnless(shutil.which("systemd-analyze"), "systemd-analyze not available")
 class SystemdAnalyzeVerifyTests(unittest.TestCase):
     def test_units_parse_without_unknown_or_invalid_settings(self) -> None:
@@ -307,7 +649,9 @@ class SystemdAnalyzeVerifyTests(unittest.TestCase):
             for unit in (DEPLOY / "systemd").iterdir():
                 # The absolute executables must exist where verify runs.
                 text = unit.read_text(encoding="utf-8").replace(INTERPRETER_LINK, sys.executable)
-                (Path(directory) / unit.name).write_text(text, encoding="utf-8")
+                # A template is verified as one instance of itself.
+                name = unit.name.replace("@.", "@verify.")
+                (Path(directory) / name).write_text(text, encoding="utf-8")
             result = subprocess.run(
                 ["systemd-analyze", "verify", *sorted(str(path) for path in Path(directory).iterdir())],
                 capture_output=True, text=True, check=False,
