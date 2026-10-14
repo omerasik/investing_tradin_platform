@@ -451,10 +451,15 @@ oci_1_validation:             # stage 1 of deploy/oci/README.md; NON-AUTHORITATI
     deployed on OCI (owner approval).
   offsite_backup_alerts: >-
     deploy/oci/capture_offsite.py + trade-capture-backup.timer (HH:25, write-only
-    bucket PAR, COMPLETE compacted partitions only, create-only + Content-MD5,
-    ledger, 12-day retention plan ~9.5 GB vs 10 GB Standard free), restore-verify
-    (read PAR, full replay) and a healthchecks.io-compatible dead-man ping from
-    health + OnFailure alerts. Installed disabled: bucket, PARs and check are
+    bucket PAR, COMPLETE compacted canonically-placed partitions of labels r0/u2
+    only, create-only + Content-MD5), restore-verify (read PAR, canonical names
+    only, ledger SHA-256 match, full replay, path = own contract/day/session) and
+    a healthchecks.io-compatible dead-man ping from health + OnFailure alerts.
+    Hardened before first activation: 409/412 is REMOTE_EXISTS_UNVERIFIED (never
+    backed up, ATTENTION) until a drill receipt makes it RESTORE_VERIFIED;
+    UPLOADED / RESTORE_VERIFIED reported apart. Budget vs 10 GB Standard: 4-day
+    retention (unlocked), 5-day lifecycle, ledger guard 8.0 GB over 7 days,
+    4-day upload horizon. Installed disabled: bucket, PARs and check are
     owner-created (README section 7); nothing created or enabled yet.
 
 or_packet_evidence:           # facts only; every decision stays with the owner
