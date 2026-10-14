@@ -1,0 +1,9 @@
+[Unit]
+Description=Hourly trade-platform capture off-host backup (after compaction and health)
+
+[Timer]
+OnCalendar=*-*-* *:25:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

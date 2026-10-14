@@ -13,7 +13,9 @@ pip-installed and no dashboard, database or analytics code is installed.
 | :--- | :--- | :--- |
 | `trade-capture-r0` | `supervise --segment-seconds 3600` | `R0_ROOT` |
 | `trade-capture-u2` | `universe --segment-seconds 3600` | `U2_ROOT` |
-| `trade-capture-health.timer` | read-only snapshot at HH:10 UTC | both |
+| `trade-capture-health.timer` | read-only snapshot at HH:10 UTC (+ dead-man ping, 7c) | both |
+| `trade-capture-backup.timer` | off-host upload at HH:25 UTC, owner-enabled (7a) | both, read-only |
+| `trade-capture-alert@.service` | `/fail` ping when a unit fails (7c) | none |
 
 **Restart semantics.** `Restart=on-failure` restarts a crash, OOM kill or signal
 death after 60 s as a **new session**, at most 10 times an hour. Exit 2 (disk
@@ -174,7 +176,67 @@ have acknowledged their subscriptions (one partition per minute, never within
 2 min of the next hand-off). Raw partitions of the last hour therefore remain for
 a few minutes after HH:00; `compact` and `backup` treat them exactly as before.
 
-## 7. Backups
+## 7. Backups and alerts
+
+Two independent copies: an automated hourly off-host upload (7a) and a periodic
+pull to a second machine (7b). Alerts (7c) make a failure actionable. Every
+piece below is installed by `install.sh` but does nothing until the owner creates
+the external resource and writes its URL to a root-owned file; this runbook never
+creates buckets, PARs, policies, accounts or checks.
+
+### 7a. Hourly upload to OCI Object Storage (owner-created bucket)
+
+`trade-capture-backup.timer` (HH:25 UTC) runs `deploy/oci/capture_offsite.py backup`:
+every COMPLETE, compacted partition of both roots not yet in its ledger
+(`/var/lib/trade-capture-backup/uploaded-v1.ndjson`) is uploaded as one
+deterministic tar object `r0/<partition path>.tar` or `u2/<partition path>.tar`.
+OPEN, PARTIAL and not-yet-compacted partitions are never uploaded; a COMPLETE one
+still uncompacted after 2 h makes the run fail (alert). Each PUT carries
+`Content-MD5` (verified by the service) and `If-None-Match: *` (an existing
+object is never overwritten). The unit reads the archive read-only, runs at
+CPU weight 20 / nice 10 / idle I/O beside the recorders' weight 1000, and holds
+no credential other than the PAR.
+
+| Item | Value (measured 2026-10-14 on the VM; Oracle's Always Free page, checked 2026-10-14) |
+| :--- | :--- |
+| Growth | ~0.56 GB/day U2 + ~0.22 GB/day R0 compacted (volatile days higher) |
+| Free allowance | 20 GB combined in an Always-Free-only tenancy; 10 GB Standard (+10 GB IA, +10 GB Archive) on a paid or credit tenancy; 50,000 API requests/month |
+| Retention | 12 days of objects (~9.5 GB): fits the 10 GB Standard allowance either way |
+| Requests | ~4 partitions/hour -> ~3,000 PUT/month (+ listing/GET for restore drills) |
+| Cost | $0 within those allowances; Billing > Cost Analysis is the check |
+
+Owner steps (home region, same compartment as the VM):
+
+1. Create bucket `trade-capture-backup` (Standard tier, private, no public access).
+2. Retention rule: time-bound **12 days**, so no object can be overwritten or
+   deleted before then (lock it only once satisfied: a locked rule cannot be shortened).
+3. Lifecycle policy rule: delete objects after **13 days** (needs the IAM statement
+   `Allow service objectstorage-<region> to manage object-family in compartment <c>`).
+4. Pre-authenticated request on the bucket: **Permit object writes** only, no
+   listing, expiry ~90 days (renew before it lapses: the run then fails and alerts).
+5. On the VM, without echoing the URL into history or logs:
+   ```bash
+   sudo install -m 0640 -o root -g trade-capture /dev/null /etc/trade-capture/backup-par-url
+   sudoedit /etc/trade-capture/backup-par-url      # paste https://.../p/<token>/n/<ns>/b/trade-capture-backup/o/
+   sudo systemctl enable --now trade-capture-backup.timer
+   sudo systemctl start trade-capture-backup.service && journalctl -u trade-capture-backup -n 20 --no-pager
+   ```
+
+**Restore drill (weekly, on another machine).** A second PAR on the bucket with
+**Permit object reads** and **Enable object listing** (short expiry), its URL in a
+local file, then:
+
+```bash
+python deploy/oci/capture_offsite.py restore-verify --par-file <file> --destination <empty-dir> --limit 24
+```
+
+Each object is extracted into the empty directory under the path its name
+states (anything else in the tar is refused) and fully replayed
+(`verify_partition_v1`: hashes, contract, ordering, coverage, counts). The
+restored tree is an archive root: `--root <empty-dir>/u2 universe-acceptance ...`
+works on it, and `backup` copies it into the long-term Windows archive.
+
+### 7b. Pull to a second machine
 
 Pull finalized partitions to a second machine and re-verify them there:
 
@@ -186,7 +248,26 @@ python scripts/capture_bybit_public.py --root ~/oci-pull/capture-universe-r1b ba
 
 Without rsync on the VM, `ssh <vm> tar -C /srv/trade-capture/archive -cf - . | tar -xf -`
 into an empty directory works the same way. `backup` copies only COMPLETE
-partitions and re-verifies every hash.
+partitions and re-verifies every hash. This is the long-term copy: 7a keeps only
+12 days.
+
+### 7c. Alerts (dead-man's switch)
+
+A healthchecks.io-compatible check (`<url>` = success, `<url>/fail` = failure;
+the free hosted tier or a self-hosted instance), owner-created, period 1 h,
+grace 20 min. Its URL goes into `/etc/trade-capture/alert-ping-url` (same
+`install`/`sudoedit` steps as 7a). Then:
+
+* every health snapshot (HH:10) posts its full text -- `service` line and the
+  `u2_hours` facts -- as a success ping, or as a `/fail` ping on `service ATTENTION`;
+* `trade-capture-r0`, `-u2` and `-backup` entering the failed state (disk floor,
+  held lock, start limit, failed upload) trigger `trade-capture-alert@<unit>`,
+  one `/fail` ping naming the unit;
+* silence alerts by itself: VM, timer or network down means no success ping.
+
+Only status text leaves the VM (no market data, no credential). Coverage facts
+ride along for visibility but never trigger an alert: COMPLETE hours stay
+`universe-acceptance`'s question. No Telegram or other existing channel is used.
 
 ## 8. Recovery and rollback
 
@@ -197,8 +278,10 @@ partitions and re-verifies every hash.
 | Unit failed, start limit hit | Ten crashes in an hour: `journalctl -u <unit>`, fix, `systemctl reset-failed <unit>`, start. |
 | Units not started after boot | `/srv/trade-capture` not mounted (the assert held). Fix the attachment/fstab. |
 | SELinux denial | `sudo ausearch --input-logs -m avc -ts recent`; re-run `install.sh` (restores labels). |
-| Remove the deployment | `systemctl disable --now trade-capture-r0 trade-capture-u2 trade-capture-health.timer`; the archive volume and its data stay. |
-| VM or volume lost | Rebuild (2-3); history comes back from the step 7 copies via `backup`. Re-provisioning never bridges the hole. |
+| Remove the deployment | `systemctl disable --now trade-capture-r0 trade-capture-u2 trade-capture-health.timer trade-capture-backup.timer`; the archive volume, its data and the bucket stay. |
+| VM or volume lost | Rebuild (2-3); history comes back from the step 7 copies (`restore-verify`, then `backup`). Re-provisioning never bridges the hole. |
+| Alert `/fail` from `trade-capture-alert@...` | `systemctl status <unit>`, `journalctl -u <unit> -n 50`; act on the row above for its exit code. |
+| Backup run failed | `journalctl -u trade-capture-backup -n 30`: `STALE` = compaction failing (`compact` on that root); `put_failed:http_401/404` = PAR expired or revoked (owner renews, rewrite the file). |
 
 ## 9. Shared host or isolated recorder host
 

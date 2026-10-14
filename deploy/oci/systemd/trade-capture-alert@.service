@@ -1,0 +1,21 @@
+# OnFailure= target of the recorder and backup units: one /fail ping naming the
+# unit that entered the failed state (disk floor, held lock, start limit, a
+# failed backup). Skipped until /etc/trade-capture/alert-ping-url exists.
+[Unit]
+Description=trade-platform capture failure alert for %i
+ConditionPathExists=/etc/trade-capture/alert-ping-url
+
+[Service]
+Type=oneshot
+User=trade-capture
+Group=trade-capture
+ExecStart=/opt/trade-capture/python -I -B /opt/trade-capture/current/deploy/oci/capture_offsite.py ping fail --url-file /etc/trade-capture/alert-ping-url --context "%i entered the failed state on %H"
+StandardInput=null
+TimeoutStartSec=2min
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=

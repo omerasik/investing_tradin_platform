@@ -449,6 +449,13 @@ oci_1_validation:             # stage 1 of deploy/oci/README.md; NON-AUTHORITATI
     and stop collection poll at 50 ms. Health: 'service OK|ATTENTION' plus
     'universe-hours' facts (no bound, no verdict); chronyc dropped. Not yet
     deployed on OCI (owner approval).
+  offsite_backup_alerts: >-
+    deploy/oci/capture_offsite.py + trade-capture-backup.timer (HH:25, write-only
+    bucket PAR, COMPLETE compacted partitions only, create-only + Content-MD5,
+    ledger, 12-day retention plan ~9.5 GB vs 10 GB Standard free), restore-verify
+    (read PAR, full replay) and a healthchecks.io-compatible dead-man ping from
+    health + OnFailure alerts. Installed disabled: bucket, PARs and check are
+    owner-created (README section 7); nothing created or enabled yet.
 
 or_packet_evidence:           # facts only; every decision stays with the owner
   or1_refetch: >-
