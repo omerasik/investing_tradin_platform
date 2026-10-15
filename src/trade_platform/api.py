@@ -21,11 +21,20 @@ from .evidence_catalog_v1 import (
 )
 from .fundamentals import SQLiteFundamentalStore
 from .instrument_chart_v1 import (
+    CHART_TIMEFRAMES_V1,
+    DEFAULT_CHART_CANDLES_V1,
     DEFAULT_CHART_POINTS_V1,
+    MAX_CHART_CANDLES_V1,
     MAX_CHART_POINTS_V1,
+    ChartCandlesView,
     ChartSeriesNotFound,
     ChartSeriesRefPage,
+    ChartSeriesRefView,
     ChartSeriesView,
+    ChartTimeframeUnavailable,
+    find_research_window_series_v1,
+    list_research_window_series_v1,
+    read_chart_candles_v1,
     read_chart_series_v1,
 )
 from .investments import (
@@ -673,8 +682,52 @@ def build_app(
     def dashboard_chart_series(
         _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
     ) -> object:
-        """Catalogued chartable bar frames with their claim ceiling."""
-        return read_dashboard(queries.chart_series)
+        """Catalogued chartable bar frames with their claim ceiling (T2 research windows first)."""
+        page = read_dashboard(queries.chart_series)
+        if not isinstance(page, ChartSeriesRefPage):
+            raise HTTPException(status_code=503, detail="Dashboard evidence unavailable.")
+        try:
+            windows = list_research_window_series_v1(app.state.research_data_root)
+        except Exception as error:
+            raise HTTPException(status_code=503, detail="Research window catalog unavailable.") from error
+        items = [*windows, *page.items]
+        return ChartSeriesRefPage(state="AVAILABLE" if items else "UNAVAILABLE", items=items)
+
+    def chart_series_ref(manifest_hash: str, queries: PostgresOperatorDashboardQueries) -> ChartSeriesRefView:
+        window = find_research_window_series_v1(app.state.research_data_root, manifest_hash)
+        if window is not None:
+            return window
+        try:
+            return queries.chart_series_ref(manifest_hash)
+        except DashboardObjectNotFound as error:
+            raise HTTPException(status_code=404, detail="Chart series not found.") from error
+        except DashboardQueryError as error:
+            raise HTTPException(status_code=503, detail="Dashboard evidence unavailable.") from error
+
+    @app.get("/operator-dashboard/chart-series/{manifest_hash}/candles", response_model=ChartCandlesView)
+    def dashboard_chart_series_candles(
+        manifest_hash: str,
+        timeframe: str = Query(min_length=2, max_length=3),
+        end: datetime | None = Query(default=None),
+        limit: int = Query(default=DEFAULT_CHART_CANDLES_V1, ge=1, le=MAX_CHART_CANDLES_V1),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """UTC-aligned candles of one catalogued 1-minute frame; partial candles and gaps declared."""
+        if timeframe not in CHART_TIMEFRAMES_V1:
+            raise HTTPException(status_code=422, detail="Unsupported chart timeframe.")
+        if end is not None and end.tzinfo is None:
+            raise HTTPException(status_code=422, detail="Chart end must carry a UTC offset.")
+        series = chart_series_ref(manifest_hash, queries)
+        if app.state.research_data_root is None:
+            raise HTTPException(status_code=503, detail="Research data plane is not configured.")
+        try:
+            return read_chart_candles_v1(
+                series, research_root=app.state.research_data_root, timeframe=timeframe, end=end, limit=limit,
+            )
+        except ChartTimeframeUnavailable as error:
+            raise HTTPException(status_code=404, detail="Chart timeframe unavailable for this series.") from error
+        except Exception as error:
+            raise HTTPException(status_code=503, detail="Chart candles unavailable.") from error
 
     @app.get("/operator-dashboard/chart-series/{manifest_hash}", response_model=ChartSeriesView)
     def dashboard_chart_series_bars(
@@ -684,12 +737,7 @@ def build_app(
         _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
     ) -> object:
         """Exact bucketed bars of one catalogued frame; 503 when no research data root is configured."""
-        try:
-            series = queries.chart_series_ref(manifest_hash)
-        except DashboardObjectNotFound as error:
-            raise HTTPException(status_code=404, detail="Chart series not found.") from error
-        except DashboardQueryError as error:
-            raise HTTPException(status_code=503, detail="Dashboard evidence unavailable.") from error
+        series = chart_series_ref(manifest_hash, queries)
         if app.state.research_data_root is None:
             raise HTTPException(status_code=503, detail="Research data plane is not configured.")
         try:

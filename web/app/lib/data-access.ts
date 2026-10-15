@@ -366,6 +366,41 @@ export type ChartSeriesRef = {
   instrument: string | null;
   row_count: number;
   tier_ceiling: string;
+  /** Timeframes the candle read serves; empty when the frame declares no bar interval. */
+  timeframes: string[];
+  /** Set only for a catalogued T2 research window. */
+  window: {
+    content_hash: string; source_id: string; first_utc_day: string; last_utc_day: string; files: number;
+    not_published_days: string[]; rejected_days: string[]; day_gaps: { after: string; before: string }[];
+    bar_logical_content_hash: string; last_bar_close_at: string;
+  } | null;
+};
+
+/** Stage B.1.1: one UTC-aligned candle; PARTIAL when ``bar_count < expected_bar_count``. */
+export type ChartCandle = {
+  open_at: string; close_at: string; first_bar_at: string; last_bar_at: string;
+  bar_count: number; expected_bar_count: number; complete: boolean;
+  open: string; high: string; low: string; close: string; volume: string;
+};
+
+export type ChartGap = { after_open_at: string; before_open_at: string; missing_candles: number };
+
+export type ChartCandles = {
+  state: "AVAILABLE" | "UNAVAILABLE";
+  version: string;
+  series: ChartSeriesRef;
+  timeframe: string;
+  coverage: {
+    first_bar_at: string | null; last_bar_close_at: string | null; source_bars: number; source_bar_seconds: number;
+    expected_source_bars: number; missing_source_bars: number;
+    holdout_boundary: string | null;
+  };
+  candles: ChartCandle[];
+  partial_candles: number;
+  gaps: ChartGap[];
+  end: string | null;
+  earlier_end: string | null;
+  limitations: string[];
 };
 
 export type ChartSeriesRefPage = { state: "AVAILABLE" | "UNAVAILABLE"; version: string; items: ChartSeriesRef[] };
@@ -747,6 +782,27 @@ export async function getChartSeries(
     authorityUrl(ctx.origin, `/operator-dashboard/chart-series/${encodeURIComponent(params.manifestHash)}?${query.toString()}`),
     Boolean(/^[0-9a-f]{64}$/.test(params.manifestHash) && ctx.protectedApi),
     "Chart series reference is unavailable.",
+  );
+}
+
+export const CHART_TIMEFRAMES = ["1m", "1h", "4h", "1d"] as const;
+const UTC_INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+export async function getChartCandles(
+  ctx: WorkspaceContext,
+  params: { manifestHash: string; timeframe: string; end?: string; limit?: number },
+): Promise<EvidenceResult<ChartCandles>> {
+  const query = new URLSearchParams({ timeframe: params.timeframe, limit: String(params.limit ?? 2000) });
+  const end = params.end && UTC_INSTANT_PATTERN.test(params.end) ? params.end : undefined;
+  if (end) query.set("end", end);
+  return readEvidence<ChartCandles>(
+    authorityUrl(ctx.origin, `/operator-dashboard/chart-series/${encodeURIComponent(params.manifestHash)}/candles?${query.toString()}`),
+    Boolean(
+      /^[0-9a-f]{64}$/.test(params.manifestHash)
+      && (CHART_TIMEFRAMES as readonly string[]).includes(params.timeframe)
+      && ctx.protectedApi,
+    ),
+    "Chart candles are unavailable.",
   );
 }
 
