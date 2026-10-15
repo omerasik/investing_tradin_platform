@@ -312,6 +312,47 @@ Only status text leaves the VM (no market data, no credential). Coverage facts
 ride along for visibility but never trigger an alert: COMPLETE hours stay
 `universe-acceptance`'s question. No Telegram or other existing channel is used.
 
+Write URL files with `sudo nano -I <file>` (after the `install` step above):
+`sudoedit` edits a copy under `/var/tmp`, and an interrupted session leaves
+nano's `.save` copy of the secret there. The Windows recorders have their own
+dead-man check: `scripts/windows_capture_deadman.ps1`.
+
+### 7d. Market-data coverage alert (separate check)
+
+Service health says the recorders run; it cannot say the archive holds the
+hour. `trade-capture-coverage.timer` (HH:15 UTC) runs
+`capture_bybit_public.py coverage-hours` on both roots for the last whole UTC
+hour: per symbol, the seconds that no COMPLETE partition's proven window covers,
+sessions merged. A 3 s reconnect is a 3 s hole; a missing partition (recorder
+down, PARTIAL) is a 3600 s one. Any symbol-hour above
+`COVERAGE_MAX_UNCOVERED_SECONDS` (set in the unit) makes the run `coverage
+ATTENTION`, posted as a `/fail` ping to **its own** check
+(`/etc/trade-capture/coverage-ping-url`; owner-created, period 1 h, grace
+20 min). Never the 7c check, never `trade-capture-alert@`, never the health
+verdict, and never a COMPLETE hour: the health `u2_hours` "unproven" figure is
+acceptance's run-based measure (a reset ends the run, so 01:16:47Z on
+2026-10-15 read 1010 s there for a 3.03 s hole).
+
+The threshold is an **operator paging setting, proposed, not owner-approved and
+not an acceptance bound**. Measured on OCI-1, 2026-10-13 21Z to 10-15 03Z:
+holes of 2.2-3.1 s (peer reset), 23-27 s (silence then peer close) and 46.8 s
+(45 s receive timeout), about one symbol-hour in eight; hand-off heads 5-12 s
+on 797f9fa, ~1-2 s expected after #213.
+
+| Threshold | Pages on | Misses |
+| :--- | :--- | :--- |
+| 10 s | nearly every reconnect (several a day) and any slow hand-off | nothing material; alert fatigue |
+| **60 s (unit default, proposed)** | a reconnect loop, a stalled feed > 1 min, a missing or PARTIAL hour, a recorder down | single reconnects (all observed ones) |
+| 300 s | multi-minute outages, a missing hour | everything shorter than 5 min |
+
+Enable after the owner creates the check:
+```bash
+sudo install -m 0640 -o root -g trade-capture /dev/null /etc/trade-capture/coverage-ping-url
+sudo nano -I /etc/trade-capture/coverage-ping-url      # paste https://hc-ping.com/<uuid>
+sudo systemctl start trade-capture-coverage.service && journalctl -u trade-capture-coverage -n 20 --no-pager
+sudo systemctl enable --now trade-capture-coverage.timer
+```
+
 ## 8. Recovery and rollback
 
 | Symptom | Action |

@@ -33,6 +33,7 @@ Inspect, prove, compact and back up the archive::
     .venv\\Scripts\\python scripts/capture_bybit_public.py availability
     .venv\\Scripts\\python scripts/capture_bybit_public.py universe-acceptance --max-unproven-seconds S
     .venv\\Scripts\\python scripts/capture_bybit_public.py universe-hours --hours 2
+    .venv\\Scripts\\python scripts/capture_bybit_public.py coverage-hours --scope universe --max-uncovered-seconds T
     .venv\\Scripts\\python scripts/capture_bybit_public.py replay <partition-directory>
     .venv\\Scripts\\python scripts/capture_bybit_public.py compact
     .venv\\Scripts\\python scripts/capture_bybit_public.py backup <destination-root>
@@ -85,6 +86,10 @@ from trade_platform.first_party_capture_authority_v1 import (
     first_party_bybit_capture_contract_v1,
     first_party_bybit_measurement_contracts_v1,
     first_party_bybit_universe_contracts_v1,
+)
+from trade_platform.first_party_capture_coverage_alert_v1 import (
+    coverage_breaches_v1,
+    measured_hour_coverage_v1,
 )
 from trade_platform.first_party_capture_hourly_acceptance_v1 import (
     HOUR_NANOS,
@@ -588,6 +593,45 @@ def _universe_hours(args: argparse.Namespace) -> int:
     return 0
 
 
+def _coverage_hours(args: argparse.Namespace) -> int:
+    """Measured holes per symbol and whole UTC hour against an operator alert threshold.
+
+    Exit 0 when no symbol-hour exceeds ``--max-uncovered-seconds``, 1 when one
+    does. An operations alert only: it never says an hour is COMPLETE (that is
+    universe-acceptance's, run-based question) and it is not service health.
+    """
+    if args.hours < 1:
+        raise SystemExit("--hours must be at least 1")
+    if args.scope == "universe":
+        root, contracts = _universe_root(args), first_party_bybit_universe_contracts_v1()
+    else:
+        root, contracts = _root(args), (first_party_bybit_capture_contract_v1(),)
+    threshold = round(args.max_uncovered_seconds * 1_000_000_000)
+    end = _utc_now_nanos() // HOUR_NANOS * HOUR_NANOS
+    start = end - args.hours * HOUR_NANOS
+    print(f"coverage_root  {root} ({args.scope}): COMPLETE partitions only, sessions merged")
+    hours = []
+    for contract in contracts:
+        windows = proven_windows_between_v1(root, contract, start_utc_nanos=start, end_utc_nanos=end)
+        hours.extend(
+            measured_hour_coverage_v1(contract.exchange_symbol, windows, hour)
+            for hour in range(start, end, HOUR_NANOS)
+        )
+    breaches = set(coverage_breaches_v1(hours, max_uncovered_nanos=threshold))
+    for hour in hours:
+        holes = ", ".join(
+            f"{_iso(hole_start)} +{(hole_end - hole_start) / 1e9:.3f} s" for hole_start, hole_end in hour.holes
+        )
+        mark = "ALERT" if hour in breaches else "ok"
+        print(f"coverage_hour  {_iso(hour.hour_start_utc_nanos)} {hour.symbol} {mark}: "
+              f"uncovered {hour.uncovered_nanos / 1e9:.3f} s in {len(hour.holes)} hole(s)"
+              f"{': ' + holes if holes else ''}")
+    verdict = "ATTENTION" if breaches else "OK"
+    print(f"coverage       {verdict}: {len(breaches)} symbol-hour(s) above {args.max_uncovered_seconds:g} s "
+          f"uncovered (operator alert threshold; not service health, not acceptance)")
+    return 1 if breaches else 0
+
+
 def _compact(args: argparse.Namespace) -> int:
     root = _root(args)
     failed = 0
@@ -709,6 +753,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     hours.add_argument("--hours", type=int, default=2, help="whole UTC hours before now (default 2)")
     hours.set_defaults(handler=_universe_hours)
+
+    coverage = sub.add_parser(
+        "coverage-hours",
+        help="operations alert: measured uncovered seconds per symbol-hour against a threshold",
+    )
+    coverage.add_argument("--scope", choices=("production", "universe"), required=True,
+                          help="production = R0 contract on --root; universe = the R1B symbols")
+    coverage.add_argument("--hours", type=int, default=1, help="whole UTC hours before now (default 1)")
+    # No default: how many uncovered seconds page someone is the operator's alert setting.
+    coverage.add_argument("--max-uncovered-seconds", type=float, required=True,
+                          help="alert when a symbol-hour has more uncovered time than this")
+    coverage.set_defaults(handler=_coverage_hours)
 
     compact = sub.add_parser("compact", help="losslessly compress finalized partitions")
     compact.set_defaults(handler=_compact)
