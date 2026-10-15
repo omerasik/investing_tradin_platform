@@ -986,7 +986,9 @@ class OffsiteUnitTests(unittest.TestCase):
         self.assertEqual(_unit("trade-capture-coverage.timer")["Timer"]["OnCalendar"], "*-*-* *:15:00 UTC")
         script = (DEPLOY / "trade-capture-coverage.sh").read_text(encoding="utf-8")
         self.assertTrue(script.startswith("#!/usr/bin/env bash\n"))
-        self.assertIn("PING_URL_FILE=/etc/trade-capture/coverage-ping-url", script)
+        ping_file = re.search(r"^PING_URL_FILE=(\S+)$", script, re.MULTILINE)
+        self.assertIsNotNone(ping_file)
+        self.assertEqual(ping_file.group(1), "/etc/trade-capture/coverage-ping-url")  # type: ignore[union-attr]
         self.assertNotIn("alert-ping-url", script)
         for scope in ("--scope production", "--scope universe"):
             self.assertIn(scope, script)
