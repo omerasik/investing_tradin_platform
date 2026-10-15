@@ -13,6 +13,7 @@ const paperAccountReconciliationPath = /^\/operator-dashboard\/paper-accounts\/[
 const instrumentDetailPath = /^\/operator-dashboard\/instruments\/(?:[A-Za-z0-9_-]|\.(?!\.)|:|%3[Aa]){1,240}$/;
 
 const chartSeriesPath = /^\/operator-dashboard\/chart-series\/[0-9a-f]{64}$/;
+const chartCandlesPath = /^\/operator-dashboard\/chart-series\/[0-9a-f]{64}\/candles$/;
 
 const parameterlessTargets = new Set([
   "/operator-dashboard/workspace-references",
@@ -82,6 +83,10 @@ export function allowedAuthorityTarget(target: string): boolean {
   if (bare && instrumentDetailPath.test(parsed.pathname)) return true;
   if (chartSeriesPath.test(parsed.pathname)) {
     return [...parsed.searchParams.keys()].every((key) => key === "instrument" || key === "max_points");
+  }
+  if (chartCandlesPath.test(parsed.pathname)) {
+    return parsed.searchParams.has("timeframe")
+      && [...parsed.searchParams.keys()].every((key) => key === "timeframe" || key === "end" || key === "limit");
   }
   const rule = queryTargets[parsed.pathname];
   if (!rule) return false;

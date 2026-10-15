@@ -1670,13 +1670,22 @@ footer {
 
 
 
-/* Phase R5 UI-1b: server-rendered candlestick chart */
-.bar-chart { margin: 0 0 16px; background: var(--bg-surface-inset); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 8px; }
-.bar-chart svg { display: block; height: auto; min-height: 220px; }
-.bar-chart-grid { stroke: var(--border-default); stroke-dasharray: 4 4; }
-.bar-chart-up line, .bar-chart-up rect { stroke: var(--status-available); fill: var(--status-available); }
-.bar-chart-down line, .bar-chart-down rect { stroke: var(--status-danger); fill: var(--status-danger); }
-.bar-chart-label { fill: var(--text-muted); font-family: var(--font-mono); font-size: 12px; }
+/* Stage B.1.1: interactive candlestick chart (lightweight-charts) */
+.market-chart { margin: 0 0 16px; background: var(--bg-surface-inset); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 8px; }
+.market-chart-canvas { position: relative; width: 100%; height: 440px; }
+.market-chart-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0 0 8px; font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); }
+.market-chart-legend strong { color: var(--text-primary); font-weight: 600; }
+.market-chart-legend-time { color: var(--text-secondary); }
+.market-chart-partial { color: var(--status-warning); font-weight: 600; }
+.market-chart-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.market-chart-controls button { padding: 4px 10px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: var(--bg-surface); color: var(--text-secondary); cursor: pointer; }
+.market-chart-controls button:hover { border-color: var(--border-focus); color: var(--text-primary); }
+.market-chart-hint { color: var(--text-muted); font-size: 12px; }
+.chart-historical-notice { margin: 0 0 12px; padding: 8px 12px; border: 1px solid var(--status-warning-border); border-radius: var(--radius-sm); background: var(--status-warning-bg); color: var(--text-primary); }
+.chart-option-unavailable { display: inline-block; padding: 4px 10px; border: 1px dashed var(--border-default); border-radius: var(--radius-sm); color: var(--text-muted); }
+.chart-paging { display: flex; flex-wrap: wrap; gap: 16px; margin: 0 0 16px; }
+.chart-gap-list { margin: 0 0 16px; color: var(--text-secondary); }
+.chart-gap-list ul { margin: 8px 0 0; padding-left: 20px; max-height: 240px; overflow-y: auto; }
 .chart-series-list { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; padding: 0; list-style: none; }
 .chart-series-list a { display: inline-block; padding: 4px 10px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); color: var(--text-secondary); text-decoration: none; }
 .chart-series-list a[aria-current="page"] { border-color: var(--border-focus); color: var(--text-primary); }
