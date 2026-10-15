@@ -333,8 +333,9 @@ verdict, and never a COMPLETE hour: the health `u2_hours` "unproven" figure is
 acceptance's run-based measure (a reset ends the run, so 01:16:47Z on
 2026-10-15 read 1010 s there for a 3.03 s hole).
 
-The threshold is an **operator paging setting, proposed, not owner-approved and
-not an acceptance bound**. Measured on OCI-1, 2026-10-13 21Z to 10-15 03Z:
+The threshold is an **operator paging setting: 60 s of total uncovered time per
+symbol per UTC hour, owner-approved 2026-10-15**. It is not the acceptance
+bound S and changes no verdict. Measured on OCI-1, 2026-10-13 21Z to 10-15 03Z:
 holes of 2.2-3.1 s (peer reset), 23-27 s (silence then peer close) and 46.8 s
 (45 s receive timeout), about one symbol-hour in eight; hand-off heads 5-12 s
 on 797f9fa, ~1-2 s expected after #213.
@@ -342,7 +343,7 @@ on 797f9fa, ~1-2 s expected after #213.
 | Threshold | Pages on | Misses |
 | :--- | :--- | :--- |
 | 10 s | nearly every reconnect (several a day) and any slow hand-off | nothing material; alert fatigue |
-| **60 s (unit default, proposed)** | a reconnect loop, a stalled feed > 1 min, a missing or PARTIAL hour, a recorder down | single reconnects (all observed ones) |
+| **60 s (unit setting, owner-approved)** | a reconnect loop, a stalled feed > 1 min, a missing or PARTIAL hour, a recorder down | single reconnects (all observed ones) |
 | 300 s | multi-minute outages, a missing hour | everything shorter than 5 min |
 
 Enable after the owner creates the check:

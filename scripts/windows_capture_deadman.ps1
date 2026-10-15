@@ -49,8 +49,13 @@ $cli = Join-Path $repo 'scripts\capture_bybit_public.py'
 
 if ($ShowTaskCommand) {
     $self = Join-Path $PSScriptRoot 'windows_capture_deadman.ps1'
+    # The absolute path of the PowerShell 7 running this (a Store install is an app
+    # execution alias under WindowsApps), so the task never depends on PATH lookup.
+    $pwsh = (Get-Process -Id $PID).Path
     Write-Output 'Owner opt-in (not executed). To run the dead-man check hourly at HH:15, run yourself:'
-    Write-Output "  Register-ScheduledTask -TaskName 'trade-platform-capture-deadman' -User `$env:USERNAME -Trigger (New-ScheduledTaskTrigger -Once -At (Get-Date -Minute 15 -Second 0) -RepetitionInterval (New-TimeSpan -Hours 1)) -Action (New-ScheduledTaskAction -Execute 'pwsh.exe' -Argument '-NoProfile -WindowStyle Hidden -File `"$self`"')"
+    # Battery settings: Windows' task defaults skip and stop tasks on battery, which
+    # would silence the dead-man (a false "down") while the recorders keep running.
+    Write-Output "  Register-ScheduledTask -TaskName 'trade-platform-capture-deadman' -User `$env:USERNAME -Trigger (New-ScheduledTaskTrigger -Once -At (Get-Date -Minute 15 -Second 0) -RepetitionInterval (New-TimeSpan -Hours 1)) -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -MultipleInstances IgnoreNew) -Action (New-ScheduledTaskAction -Execute '$pwsh' -Argument '-NoProfile -NonInteractive -WindowStyle Hidden -File `"$self`"')"
     Write-Output 'To remove it: Unregister-ScheduledTask -TaskName trade-platform-capture-deadman'
     return
 }

@@ -12,8 +12,8 @@ Type=oneshot
 User=trade-capture
 Group=trade-capture
 EnvironmentFile=/etc/trade-capture/capture.env
-# Operator alert threshold, proposed (README 7d): 60 s uncovered per symbol-hour.
-# Paging only; it is not an acceptance or evidence bound and changes no verdict.
+# Operator paging threshold, owner-approved 2026-10-15 (README 7d): 60 s total
+# uncovered per symbol per UTC hour. Not the acceptance bound S; changes no verdict.
 Environment=COVERAGE_MAX_UNCOVERED_SECONDS=60
 # Through bash (bin_t): SELinux-enforcing hosts label /opt usr_t, not an entrypoint.
 ExecStart=/usr/bin/bash /opt/trade-capture/current/deploy/oci/trade-capture-coverage.sh

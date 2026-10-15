@@ -982,7 +982,8 @@ class OffsiteUnitTests(unittest.TestCase):
         # The paging threshold is stated in the unit and in the README's trade-off table.
         threshold = service["Environment"].removeprefix("COVERAGE_MAX_UNCOVERED_SECONDS=")
         self.assertEqual(threshold, "60")
-        self.assertIn(f"**{threshold} s (unit default, proposed)**", (DEPLOY / "README.md").read_text(encoding="utf-8"))
+        self.assertIn(f"**{threshold} s (unit setting, owner-approved)**",
+                      (DEPLOY / "README.md").read_text(encoding="utf-8"))
         self.assertEqual(_unit("trade-capture-coverage.timer")["Timer"]["OnCalendar"], "*-*-* *:15:00 UTC")
         script = (DEPLOY / "trade-capture-coverage.sh").read_text(encoding="utf-8")
         self.assertTrue(script.startswith("#!/usr/bin/env bash\n"))
@@ -1032,6 +1033,15 @@ class WindowsDeadmanTests(unittest.TestCase):
         self.assertIn("ping $outcome --url-file $UrlFile", text)
         self.assertIn("[double]$MinFreeGB = 20", text)
         self.assertEqual(CLI.DEFAULT_MIN_FREE_GIB, 20)
+
+    def test_the_printed_task_keeps_pinging_on_battery(self) -> None:
+        # Windows' task defaults skip and stop a task on battery: on a laptop the
+        # dead-man would fall silent (a false "down") while the recorders still run.
+        text = self.SCRIPT.read_text(encoding="utf-8")
+        for setting in ("-AllowStartIfOnBatteries", "-DontStopIfGoingOnBatteries",
+                        "-MultipleInstances IgnoreNew", "-ExecutionTimeLimit"):
+            self.assertIn(setting, text)
+        self.assertNotIn("-Execute 'pwsh.exe'", text)  # absolute interpreter path, no PATH lookup
 
     @unittest.skipUnless(shutil.which("pwsh"), "pwsh not available")
     def test_empty_roots_report_attention_without_pinging(self) -> None:
