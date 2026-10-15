@@ -393,7 +393,7 @@ export type ChartCandles = {
   coverage: {
     first_bar_at: string | null; last_bar_close_at: string | null; source_bars: number; source_bar_seconds: number;
     expected_source_bars: number; missing_source_bars: number;
-    holdout_boundary: string | null; holdout_excluded_bars: number;
+    holdout_boundary: string | null;
   };
   candles: ChartCandle[];
   partial_candles: number;
@@ -421,7 +421,6 @@ export type ChartSeries = {
   bars_per_bucket: number;
   buckets: ChartBucket[];
   limitations: string[];
-  holdout_excluded_bars: number;
 };
 
 export function utc(value: string | null | undefined): string {

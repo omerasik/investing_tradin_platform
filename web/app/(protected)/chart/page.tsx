@@ -211,7 +211,7 @@ export default async function ChartPage({
               {
                 key: "holdout", label: "Holdout Excluded",
                 value: candles.coverage.holdout_boundary
-                  ? `${candles.coverage.holdout_excluded_bars.toLocaleString("en-US")} bars on/after ${candles.coverage.holdout_boundary.slice(0, 10)}`
+                  ? `Every bar on/after ${candles.coverage.holdout_boundary.slice(0, 10)} (never read)`
                   : "Not applicable (not T2 research bars)",
               },
             ]}

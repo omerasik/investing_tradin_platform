@@ -47,9 +47,11 @@ T2 research windows and the holdout
 windows (:mod:`trade_platform.public_archive_research_bars_v1`) to the catalog
 from their identity files; an identity whose hash does not re-derive is left
 out. Any T2 bar at or after ``UNTOUCHED_HOLDOUT_BOUNDARY_V1`` is excluded from
-every T2 read, and a window reaching the boundary is not catalogued: the
-untouched holdout stays unopened here. T4 first-party capture is forward-only
-and unaffected.
+every T2 read -- the queries only ever select rows before it, so holdout rows
+are neither returned nor counted -- and a window reaching the boundary is not
+catalogued: the untouched holdout stays unopened here. T1 and T4 frames are
+not cut by this module; whether the holdout extends across tiers is an owner
+decision (OR-7) that this module does not make.
 
 Integrity per read
 ------------------
@@ -178,7 +180,6 @@ class ChartSeriesView(BaseModel):
     bars_per_bucket: int
     buckets: list[ChartBucketView]
     limitations: list[str]
-    holdout_excluded_bars: int = 0
 
 
 class ChartCandleView(BaseModel):
@@ -213,8 +214,8 @@ class ChartCoverageView(BaseModel):
     source_bar_seconds: int
     expected_source_bars: int
     missing_source_bars: int
+    #: T2 rows at or after it are never selected (nor counted); ``None`` when no cut applies.
     holdout_boundary: datetime | None
-    holdout_excluded_bars: int
 
 
 class ChartCandlesView(BaseModel):
@@ -454,13 +455,8 @@ def read_chart_series_v1(
             instruments = [chosen]
             where, params = "", []
         at, volume = columns["at"], columns["volume"]
-        excluded = 0
         if series.frame_kind in _HOLDOUT_FRAME_KINDS:
-            cut = _epoch_us(UNTOUCHED_HOLDOUT_BOUNDARY_V1)
-            excluded = int(connection.execute(
-                f"SELECT COUNT(*) FROM {relation} WHERE epoch_us({at}) >= ?", [cut]  # nosec B608
-            ).fetchall()[0][0])
-            where, params = f"WHERE epoch_us({at}) < ?", [cut]
+            where, params = f"WHERE epoch_us({at}) < ?", [_epoch_us(UNTOUCHED_HOLDOUT_BOUNDARY_V1)]
         total = int(connection.execute(
             f"SELECT COUNT(*) FROM {relation} {where}", params  # nosec B608 - catalogued paths only
         ).fetchall()[0][0])
@@ -499,9 +495,8 @@ def read_chart_series_v1(
             "Buckets use first open, last close, max high, min low and summed volume; nothing is averaged.",
             "Missing bars are not filled; a bucket spans only bars present in the frame.",
             "Manifest and object hashes are re-checked per read; row-level re-hashing is not.",
-            *_holdout_limitations(series, excluded),
+            *_holdout_limitations(series),
         ],
-        holdout_excluded_bars=excluded,
     )
 
 
@@ -510,12 +505,12 @@ def _epoch_us(instant: datetime) -> int:
     return (delta.days * 86_400 + delta.seconds) * _MICROS + delta.microseconds
 
 
-def _holdout_limitations(series: ChartSeriesRefView, excluded: int) -> list[str]:
+def _holdout_limitations(series: ChartSeriesRefView) -> list[str]:
     if series.frame_kind not in _HOLDOUT_FRAME_KINDS:
         return []
     return [
         (f"T2 research bars at or after {UNTOUCHED_HOLDOUT_BOUNDARY_V1.date().isoformat()} are the untouched "
-         f"holdout and are never charted ({excluded} bars of this frame excluded)."),
+         "holdout: never read, charted, counted or summarized."),
     ]
 
 
@@ -570,9 +565,6 @@ def read_chart_candles_v1(
     where, params = (f"WHERE epoch_us({at}) < ?", [cut]) if cut is not None else ("", [])
     connection = duckdb.connect()
     try:
-        excluded = 0 if cut is None else int(connection.execute(
-            f"SELECT COUNT(*) FROM {relation} WHERE epoch_us({at}) >= ?", [cut]  # nosec B608 - catalogued paths only
-        ).fetchall()[0][0])
         count, distinct, first_us, last_us, off_grid = connection.execute(
             f"SELECT COUNT(*), COUNT(DISTINCT epoch_us({at})), MIN(epoch_us({at})), MAX(epoch_us({at})), "  # nosec B608
             f"COUNT(*) FILTER (WHERE epoch_us({at}) % ? <> 0) FROM {relation} {where}",
@@ -623,7 +615,7 @@ def read_chart_candles_v1(
         last_bar_close_at=_micros(int(last_us) + source_us) if total else None,
         source_bars=total, source_bar_seconds=source_seconds,
         expected_source_bars=expected_source, missing_source_bars=expected_source - total,
-        holdout_boundary=holdout, holdout_excluded_bars=excluded,
+        holdout_boundary=holdout,
     )
     earlier = bool(candles) and total > 0 and int(first_us) < _epoch_us(candles[0].open_at)
     return ChartCandlesView(
@@ -638,7 +630,7 @@ def read_chart_candles_v1(
             f"A candle with fewer than {expected} source bars is PARTIAL and shown as such, never completed.",
             "Periods with no source bar are gaps: never filled, interpolated or carried forward.",
             "Manifest and object hashes are re-checked per read; row-level re-hashing is not.",
-            *_holdout_limitations(series, excluded),
+            *_holdout_limitations(series),
         ],
     )
 

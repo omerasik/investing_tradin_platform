@@ -170,8 +170,10 @@ export function MarketChart({
         <button type="button" onClick={() => zoom(2)}>Zoom out</button>
         <button type="button" onClick={() => chartRef.current?.timeScale().fitContent()}>Fit all</button>
         <span className="market-chart-hint">Drag to pan, scroll or pinch to zoom, hover to inspect. All times UTC.</span>
+        {/* The library's NOTICE attribution (Apache-2.0 §4(d)) and the required link, since attributionLogo is off. */}
         <span className="market-chart-hint">
-          Charting by <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView</a> Lightweight Charts
+          TradingView Lightweight Charts™ Copyright (c) 2025 TradingView, Inc.{" "}
+          <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">https://www.tradingview.com/</a>
         </span>
       </figcaption>
     </figure>
