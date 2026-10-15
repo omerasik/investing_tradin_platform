@@ -1,0 +1,33 @@
+# Hourly market-data coverage alert (README section 7d): measured uncovered
+# seconds per symbol for the last whole UTC hour, pinged to its own check.
+#   journalctl -u trade-capture-coverage --since -3h
+# Not enabled by install.sh. ATTENTION (exit 1) is the alert's outcome, not a
+# unit failure: it never triggers trade-capture-alert@ nor touches service health.
+[Unit]
+Description=trade-platform capture market-data coverage alert
+RequiresMountsFor=/srv/trade-capture
+
+[Service]
+Type=oneshot
+User=trade-capture
+Group=trade-capture
+EnvironmentFile=/etc/trade-capture/capture.env
+# Operator paging threshold, owner-approved 2026-10-15 (README 7d): 60 s total
+# uncovered per symbol per UTC hour. Not the acceptance bound S; changes no verdict.
+Environment=COVERAGE_MAX_UNCOVERED_SECONDS=60
+# Through bash (bin_t): SELinux-enforcing hosts label /opt usr_t, not an entrypoint.
+ExecStart=/usr/bin/bash /opt/trade-capture/current/deploy/oci/trade-capture-coverage.sh
+SuccessExitStatus=1
+StandardInput=null
+TimeoutStartSec=10min
+# Reads the archive only; never competes with the recorders (CPUWeight=1000).
+CPUWeight=20
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=

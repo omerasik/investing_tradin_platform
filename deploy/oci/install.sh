@@ -48,9 +48,11 @@ install -d -o root -g trade-capture -m 0750 /etc/trade-capture
 # The release is code only (standard library Python): root-owned, read-only to the service.
 chown -R root:root "$RELEASE_DIR"
 chmod -R u+rwX,go+rX,go-w "$RELEASE_DIR"
-chmod 0755 "$RELEASE_DIR/deploy/oci/trade-capture-health.sh" "$RELEASE_DIR/deploy/oci/install.sh"
+chmod 0755 "$RELEASE_DIR/deploy/oci/trade-capture-health.sh" "$RELEASE_DIR/deploy/oci/install.sh" \
+    "$RELEASE_DIR/deploy/oci/trade-capture-coverage.sh"
 # Owner-provided URL files, if present, stay readable only by root and the service group.
-for secret in /etc/trade-capture/backup-par-url /etc/trade-capture/alert-ping-url; do
+for secret in /etc/trade-capture/backup-par-url /etc/trade-capture/alert-ping-url \
+              /etc/trade-capture/coverage-ping-url; do
     [ ! -e "$secret" ] || { chown root:trade-capture "$secret"; chmod 0640 "$secret"; }
 done
 ln -sfn "$PYTHON" /opt/trade-capture/python.new
@@ -58,12 +60,14 @@ mv -T /opt/trade-capture/python.new /opt/trade-capture/python
 ln -sfn "$RELEASE_DIR" /opt/trade-capture/current.new
 mv -T /opt/trade-capture/current.new /opt/trade-capture/current
 
-# The backup timer and the alert template are installed, never enabled here: they
-# do nothing until the owner adds /etc/trade-capture/backup-par-url or
-# alert-ping-url (README section 7); this script never writes those files.
+# The backup and coverage timers and the alert template are installed, never
+# enabled here: they do nothing until the owner adds /etc/trade-capture/
+# backup-par-url, alert-ping-url or coverage-ping-url and enables the timer
+# (README section 7); this script never writes those files.
 for unit in trade-capture-r0.service trade-capture-u2.service \
             trade-capture-health.service trade-capture-health.timer \
             trade-capture-backup.service trade-capture-backup.timer \
+            trade-capture-coverage.service trade-capture-coverage.timer \
             trade-capture-alert@.service; do
     install -m 0644 "$RELEASE_DIR/deploy/oci/systemd/$unit" "/etc/systemd/system/$unit"
 done

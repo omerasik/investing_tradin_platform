@@ -277,55 +277,65 @@ class UniverseAcceptanceCommandTests(unittest.TestCase):
         self.assertNotIn("current run    9 h", text)
 
 
+SECOND = 1_000_000_000
+#: 2026-10-14T00:00:00Z
+HOUR_14_00Z = 1_791_936_000 * SECOND
+
+
+def _partition(root: Path, contract, windows, *, hour: int = HOUR_14_00Z) -> None:
+    """One finalized (COMPLETE) partition with these proven windows and their gaps."""
+    from datetime import date
+    from uuid import uuid4
+
+    from tests.test_first_party_capture_archive_v1 import _measurement_payload
+    from trade_platform.first_party_capture_archive_v1 import (
+        CaptureClockReadingV1,
+        CaptureCoverageIntervalV1,
+        CaptureGapKindV1,
+        CaptureGapV1,
+        CapturePartitionWriterV1,
+        build_capture_record_v1,
+    )
+
+    session = uuid4()
+    writer = CapturePartitionWriterV1(
+        root=root, contract=contract, session_id=session, day=date(2026, 10, 14),
+        clock_resolution_nanos=1_000,
+    )
+    sequence = 0
+    previous_end = None
+    for start, last, proof in windows:
+        if previous_end is not None:
+            writer.declare_gap(CaptureGapV1(
+                previous_end, start, CaptureGapKindV1.CONNECTION_LOSS.value
+            ))
+        for arrival in (start, last):
+            writer.append_record(build_capture_record_v1(
+                contract=contract, session_id=session, sequence=sequence,
+                clock=CaptureClockReadingV1(arrival, arrival - hour + 10**15),
+                payload_text=_measurement_payload(contract.exchange_symbol),
+            ))
+            sequence += 1
+        interval = CaptureCoverageIntervalV1(start, last, proof, 2)
+        writer.declare_coverage(interval)
+        previous_end = interval.end_utc_nanos
+    writer.finalize()
+
+
 class UniverseHoursCommandTests(unittest.TestCase):
     """OCI-1 2026-10-14: health said OK while hours broke; these facts say why, with no verdict."""
 
     def test_hour_facts_come_from_real_partitions_without_a_bound(self) -> None:
         import tempfile
-        from datetime import date
-        from uuid import uuid4
 
-        from tests.test_first_party_capture_archive_v1 import _measurement_payload
-        from trade_platform.first_party_capture_archive_v1 import (
-            CaptureClockReadingV1,
-            CaptureCoverageIntervalV1,
-            CaptureGapKindV1,
-            CaptureGapV1,
-            CapturePartitionWriterV1,
-            build_capture_record_v1,
-        )
         from trade_platform.first_party_capture_authority_v1 import (
             first_party_bybit_universe_contracts_v1,
         )
 
-        second = 1_000_000_000
-        hour = 1_791_936_000 * second  # 2026-10-14T00:00:00Z
+        second = SECOND
+        hour = HOUR_14_00Z
         btc, eth, _ = first_party_bybit_universe_contracts_v1()
-
-        def partition(root: Path, contract, windows) -> None:
-            session = uuid4()
-            writer = CapturePartitionWriterV1(
-                root=root, contract=contract, session_id=session, day=date(2026, 10, 14),
-                clock_resolution_nanos=1_000,
-            )
-            sequence = 0
-            previous_end = None
-            for start, last, proof in windows:
-                if previous_end is not None:
-                    writer.declare_gap(CaptureGapV1(
-                        previous_end, start, CaptureGapKindV1.CONNECTION_LOSS.value
-                    ))
-                for arrival in (start, last):
-                    writer.append_record(build_capture_record_v1(
-                        contract=contract, session_id=session, sequence=sequence,
-                        clock=CaptureClockReadingV1(arrival, arrival - hour + 10**15),
-                        payload_text=_measurement_payload(contract.exchange_symbol),
-                    ))
-                    sequence += 1
-                interval = CaptureCoverageIntervalV1(start, last, proof, 2)
-                writer.declare_coverage(interval)
-                previous_end = interval.end_utc_nanos
-            writer.finalize()
+        partition = _partition
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -349,6 +359,74 @@ class UniverseHoursCommandTests(unittest.TestCase):
                       "1011.820 s; stopped after 2026-10-14T00:16:28.441000+00:00 CONNECTION_LOST\n", text)
         self.assertIn("2026-10-14T00:00:00+00:00 SOLUSDT: no run reaches the hour end\n", text)
         self.assertNotIn("COMPLETE hour", text.replace("(COMPLETE hours: universe-acceptance)", ""))
+
+
+class CoverageHoursCommandTests(unittest.TestCase):
+    """OCI-1 2026-10-15: a 3 s reset is a 3 s hole; a missing symbol-hour is a full one."""
+
+    def _run(self, directory: str, *args: str) -> tuple[int, str]:
+        out = io.StringIO()
+        with patch.object(CLI, "_utc_now_nanos", return_value=HOUR_14_00Z + 4_200 * SECOND), \
+                redirect_stdout(out):
+            code = CLI.main(["--root", directory, "coverage-hours", *args])
+        return code, out.getvalue()
+
+    def test_measured_holes_page_only_above_the_operator_threshold(self) -> None:
+        import tempfile
+
+        from trade_platform.first_party_capture_authority_v1 import (
+            first_party_bybit_universe_contracts_v1,
+        )
+
+        hour = HOUR_14_00Z
+        btc, eth, _ = first_party_bybit_universe_contracts_v1()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _partition(root, btc, [(hour + 1_200_000_000, hour + 3_600 * SECOND + 300_000_000,
+                                    CLI.END_PROOF_OPERATOR_BOUNDED_STOP)])
+            _partition(root, eth, [
+                (hour + 1_100_000_000, hour + 988_441_000_000, "CONNECTION_LOST"),
+                (hour + 991_473_000_000, hour + 3_600 * SECOND + 500_000_000,
+                 CLI.END_PROOF_OPERATOR_BOUNDED_STOP),
+            ])
+            quiet_code, quiet = self._run(directory, "--scope", "universe",
+                                          "--max-uncovered-seconds", "60")
+            strict_code, strict = self._run(directory, "--scope", "universe",
+                                            "--max-uncovered-seconds", "2")
+        self.assertEqual(quiet_code, 1)  # SOLUSDT has no partition: the whole hour is a hole
+        self.assertIn("2026-10-14T00:00:00+00:00 BTCUSDT ok: uncovered 1.200 s in 1 hole(s)", quiet)
+        self.assertIn("2026-10-14T00:00:00+00:00 ETHUSDT ok: uncovered 4.132 s in 2 hole(s): "
+                      "2026-10-14T00:00:00+00:00 +1.100 s, 2026-10-14T00:16:28.441001+00:00 +3.032 s",
+                      quiet)
+        self.assertIn("2026-10-14T00:00:00+00:00 SOLUSDT ALERT: uncovered 3600.000 s in 1 hole(s)", quiet)
+        self.assertIn("coverage       ATTENTION: 1 symbol-hour(s) above 60 s uncovered "
+                      "(operator alert threshold; not service health, not acceptance)", quiet)
+        self.assertEqual(strict_code, 1)
+        self.assertIn("ETHUSDT ALERT", strict)
+        self.assertIn("BTCUSDT ok", strict)
+
+    def test_production_scope_reads_the_r0_contract_and_passes_when_covered(self) -> None:
+        import tempfile
+
+        from trade_platform.first_party_capture_authority_v1 import (
+            first_party_bybit_capture_contract_v1,
+        )
+
+        hour = HOUR_14_00Z
+        with tempfile.TemporaryDirectory() as directory:
+            _partition(Path(directory), first_party_bybit_capture_contract_v1(),
+                       [(hour + 900_000_000, hour + 3_600 * SECOND + 200_000_000,
+                         CLI.END_PROOF_OPERATOR_BOUNDED_STOP)])
+            code, text = self._run(directory, "--scope", "production", "--max-uncovered-seconds", "60")
+        self.assertEqual(code, 0)
+        self.assertIn("BTCUSDT ok: uncovered 0.900 s", text)
+        self.assertIn("coverage       OK: 0 symbol-hour(s) above 60 s", text)
+
+    def test_the_threshold_has_no_default(self) -> None:
+        from contextlib import redirect_stderr
+
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            CLI.main(["coverage-hours", "--scope", "universe"])
 
 
 if __name__ == "__main__":

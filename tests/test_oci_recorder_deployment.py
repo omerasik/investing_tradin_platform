@@ -131,12 +131,14 @@ class RecorderUnitTests(unittest.TestCase):
         self.assertLessEqual(
             {"install.sh", "trade-capture-health.sh", "capture_host_probe.py",
              *(f"systemd/{unit}" for unit in RECORDER_UNITS),
-             "systemd/trade-capture-health.service", "systemd/trade-capture-health.timer"},
+             "systemd/trade-capture-health.service", "systemd/trade-capture-health.timer",
+             "trade-capture-coverage.sh", "systemd/trade-capture-coverage.service",
+             "systemd/trade-capture-coverage.timer"},
             names,
         )
         for path in shipped:
             self.assertNotIn(b"\r", path.read_bytes(), str(path))
-        for script in ("install.sh", "trade-capture-health.sh"):
+        for script in ("install.sh", "trade-capture-health.sh", "trade-capture-coverage.sh"):
             self.assertTrue(
                 (DEPLOY / script).read_text(encoding="utf-8").startswith("#!/usr/bin/env bash\n")
             )
@@ -964,6 +966,38 @@ class OffsiteUnitTests(unittest.TestCase):
         self.assertIn('capture_offsite.py" \\\n        ping "$outcome"', health)
         self.assertIn('exit "$status"', health)
 
+    def test_coverage_alert_is_its_own_check_never_service_health(self) -> None:
+        unit = _unit("trade-capture-coverage.service")
+        service = unit["Service"]
+        # ATTENTION is the alert's outcome, not a failed unit: no alert@ page, no health verdict.
+        self.assertEqual(service["SuccessExitStatus"], "1")
+        self.assertNotIn("OnFailure", unit["Unit"])
+        self.assertEqual(service["User"], "trade-capture")
+        self.assertEqual(service["NoNewPrivileges"], "yes")
+        self.assertEqual(service["ProtectSystem"], "strict")
+        self.assertNotIn("ReadWritePaths", service)  # reads the archive only
+        self.assertLess(int(service["CPUWeight"]), int(_unit("trade-capture-u2.service")["Service"]["CPUWeight"]))
+        self.assertEqual(shlex.split(service["ExecStart"]),
+                         ["/usr/bin/bash", "/opt/trade-capture/current/deploy/oci/trade-capture-coverage.sh"])
+        # The paging threshold is stated in the unit and in the README's trade-off table.
+        threshold = service["Environment"].removeprefix("COVERAGE_MAX_UNCOVERED_SECONDS=")
+        self.assertEqual(threshold, "60")
+        self.assertIn(f"**{threshold} s (unit setting, owner-approved)**",
+                      (DEPLOY / "README.md").read_text(encoding="utf-8"))
+        self.assertEqual(_unit("trade-capture-coverage.timer")["Timer"]["OnCalendar"], "*-*-* *:15:00 UTC")
+        script = (DEPLOY / "trade-capture-coverage.sh").read_text(encoding="utf-8")
+        self.assertTrue(script.startswith("#!/usr/bin/env bash\n"))
+        ping_file = re.search(r"^PING_URL_FILE=(\S+)$", script, re.MULTILINE)
+        self.assertIsNotNone(ping_file)
+        self.assertEqual(ping_file.group(1), "/etc/trade-capture/coverage-ping-url")  # type: ignore[union-attr]
+        self.assertNotIn("alert-ping-url", script)
+        for scope in ("--scope production", "--scope universe"):
+            self.assertIn(scope, script)
+        install = (DEPLOY / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("trade-capture-coverage.timer", install)
+        self.assertNotIn("enable --now trade-capture-coverage", install)
+        self.assertNotIn("> /etc/trade-capture/coverage-ping-url", install)
+
     def test_offsite_script_needs_only_the_standard_library(self) -> None:
         probe = (
             "import importlib.util, sys\n"
@@ -979,6 +1013,52 @@ class OffsiteUnitTests(unittest.TestCase):
             [sys.executable, "-I", "-c", probe], capture_output=True, text=True, check=True
         )
         self.assertEqual(result.stdout.split(), ["trade_platform"])
+
+
+class WindowsDeadmanTests(unittest.TestCase):
+    """2026-10-14 22:27Z: both Windows recorders stopped at the disk floor, unnoticed for 5 h."""
+
+    SCRIPT = ROOT / "scripts" / "windows_capture_deadman.ps1"
+
+    def test_the_check_only_reads_and_pings_its_own_url_file(self) -> None:
+        text = self.SCRIPT.read_text(encoding="utf-8")
+        for forbidden in ("Start-Process", "Stop-Process", "Remove-Item", "Set-Content", "Out-File",
+                          "http://", "https://"):
+            self.assertNotIn(forbidden, text, forbidden)
+        # The Scheduled Task command is printed for the owner, never executed.
+        self.assertNotIn("\n    Register-ScheduledTask", text)
+        self.assertNotIn("\nRegister-ScheduledTask", text)
+        self.assertIn("'.trade_platform\\deadman-ping-url'", text)
+        self.assertIn("capture_offsite.py'", text)
+        self.assertIn("ping $outcome --url-file $UrlFile", text)
+        self.assertIn("[double]$MinFreeGB = 20", text)
+        self.assertEqual(CLI.DEFAULT_MIN_FREE_GIB, 20)
+
+    def test_the_printed_task_keeps_pinging_on_battery(self) -> None:
+        # Windows' task defaults skip and stop a task on battery: on a laptop the
+        # dead-man would fall silent (a false "down") while the recorders still run.
+        text = self.SCRIPT.read_text(encoding="utf-8")
+        for setting in ("-AllowStartIfOnBatteries", "-DontStopIfGoingOnBatteries",
+                        "-MultipleInstances IgnoreNew", "-ExecutionTimeLimit"):
+            self.assertIn(setting, text)
+        self.assertNotIn("-Execute 'pwsh.exe'", text)  # absolute interpreter path, no PATH lookup
+
+    @unittest.skipUnless(shutil.which("pwsh"), "pwsh not available")
+    def test_empty_roots_report_attention_without_pinging(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            url_file = Path(directory) / "deadman-ping-url"
+            url_file.write_text("https://hc-ping.example/never-used", encoding="utf-8")
+            result = subprocess.run(
+                ["pwsh", "-NoProfile", "-File", str(self.SCRIPT), "-NoPing", "-Python", sys.executable,
+                 "-UrlFile", str(url_file), "-R0Root", str(Path(directory) / "r0"),
+                 "-U2Root", str(Path(directory) / "u2")],
+                capture_output=True, text=True, check=False, timeout=120,
+            )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("NOT RUNNING", result.stdout)
+        self.assertIn("manifest_r0    none in the last two UTC days", result.stdout)
+        self.assertIn("service        ATTENTION", result.stdout)
+        self.assertNotIn("alert_ping", result.stdout)
 
 
 @unittest.skipUnless(shutil.which("systemd-analyze"), "systemd-analyze not available")
