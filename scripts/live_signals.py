@@ -37,6 +37,10 @@ from trade_platform.live_signals_v1 import (
     watched_from_rerun_v1,
 )
 from trade_platform.persistence import PostgresDatabase
+from trade_platform.runner_liveness_v1 import (
+    PostgresRunnerLivenessStoreV1,
+    RunnerProgressRecorderV1,
+)
 
 
 def main() -> None:
@@ -95,19 +99,28 @@ def main() -> None:
         raise SystemExit("no_candidates_to_watch")
     gate = LiveHoldoutGateV1.for_cycle(CURRENT_CYCLE_V1, registry.opening(CURRENT_CYCLE_V1.cycle_id))
     root = args.capture_root or default_archive_root().parent / "capture-universe-r1b"
-    feed = LiveBarFeedV1(root, first_party_bybit_universe_contract_v1(args.symbol))
+    contract = first_party_bybit_universe_contract_v1(args.symbol)
+    feed = LiveBarFeedV1(root, contract)
     runner = LiveStrategyRunnerV1(candidates, holdout_gate=gate)
+    # Liveness evidence (runner_liveness_v1): a fresh runner session per process.
+    progress = RunnerProgressRecorderV1(PostgresRunnerLivenessStoreV1(database), runner="live_signals",
+                                        symbol=args.symbol, capture_source_id=contract.source_id,
+                                        candidates=candidates, holdout_gate=gate)
+    progress.start()
     print(json.dumps({"watching": [c.trial_id for c in candidates], "authority": candidates[0].authority,
-                      "holdout": gate.payload(), "capture_root": str(root)}), flush=True)
+                      "holdout": gate.payload(), "capture_root": str(root),
+                      "runner_session_id": str(progress.runner_session_id)}), flush=True)
     if gate.holdout_end_exclusive is None:
         print(json.dumps({"note": "holdout not opened (OR-7): no forward bar of this cycle is evaluated"}),
               flush=True)
     while True:
-        for signal in runner.on_bars(feed.poll()):
+        bars = feed.poll()
+        for signal in runner.on_bars(bars):
             store.record(signal)
             print(json.dumps({"signal_id": str(signal.signal_id), "decided_at": signal.decided_at.isoformat(),
                               "symbol": signal.identity["symbol"], "from": signal.identity["target_from"],
                               "to": signal.identity["target_to"], "claim": signal.identity["claim"]}), flush=True)
+        progress.on_poll(bars, feed=feed)  # after the signals are stored
         time.sleep(args.poll_seconds)
 
 
