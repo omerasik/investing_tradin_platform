@@ -434,6 +434,27 @@ class ReconstructionTests(unittest.TestCase):
         self.assertEqual(BOUNDS["max_progress_gap_nanos"], result.payload["bounds"]["max_progress_gap_nanos"])
         self.assertEqual("PROVEN_FORWARD_PROCESSING_LOWER_BOUND_NOT_VALIDATED", result.payload["claim"])
 
+    def test_hourly_segment_boundary_minute_stays_unproven(self) -> None:
+        store = MemoryStore()
+        # The new hourly segment proves no bar for its first minute, live or sealed.
+        run_session(store, start_minute=0, minutes=range(120), bars_for=lambda m: [] if m == 60 else [bar(m)])
+        result = derive(store, seals=[FULL_SEALS[0], sealed(1, range(61, 120))])
+        self.assertEqual(UnprovenReasonV1.NOT_SEALED.value, reason_at(result, 60))
+        self.assertEqual(119 * MINUTE, result.proven_micros)
+
+    def test_malformed_binding_is_refused(self) -> None:
+        store = MemoryStore()
+        recorder = run_session(store, start_minute=0, minutes=range(5))
+        key = f"runner-liveness:{recorder.runner_session_id}:0"
+        identity = dict(store.rows[key]["identity"])
+        identity["binding"] = {"symbol": SYMBOL}
+        identity["binding_hash"] = identity_hash_v1(identity["binding"])
+        forged = RunnerProgressV1.build(identity)
+        store.rows[key] = {"content_hash": forged.content_hash, "identity": dict(forged.identity)}
+        result = derive(store, end=5)
+        self.assertEqual(0, result.proven_micros)
+        self.assertEqual(1, len(result.payload["refused_sessions"]))
+
     def test_two_concurrent_runners_disagreeing_prove_nothing_there(self) -> None:
         store = MemoryStore()
         run_session(store, start_minute=0, minutes=range(60), session=uuid5(NS, "a"))

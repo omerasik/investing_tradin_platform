@@ -63,7 +63,17 @@ warm-up), so historical coverage is never claimed. A session whose records do
 not re-derive, skip their start, repeat a sequence, break the hash chain or
 change binding is refused as a whole and listed. The three bounds are
 engineering tolerances with no default: the caller states them and the result
-records them. The result is a lower bound and never a validation.
+records them. The result is a lower bound and never a validation: the first
+minute of each hourly capture segment has no bar in either the live feed or the
+seal (no earlier trade in that segment), so it stays ``NOT_SEALED`` and a long
+window loses about one minute per hour.
+
+Consumers (incubation, readiness) call
+:meth:`PostgresRunnerLivenessStoreV1.for_candidate` and pass the rows, the
+capture source's hourly acceptance and the sealed datasets
+(:meth:`SealedBarsEvidenceV1.from_forward_dataset`) to
+:func:`derive_runner_liveness_v1`; :attr:`RunnerLivenessV1.proven_intervals`
+is the answer.
 """
 
 from __future__ import annotations
@@ -355,7 +365,7 @@ class RunnerLivenessV1:
 
     @property
     def proven_intervals(self) -> list[tuple[int, int]]:
-        """Merged ``[start, end)`` micros of proven minutes (adjacent runner sessions stay adjacent, not merged)."""
+        """``[start, end)`` micros of each proven interval (one per runner and capture session run)."""
         return [(item.start_micros, item.end_micros) for item in self.intervals if item.status == STATUS_PROVEN]
 
     @property
@@ -574,13 +584,14 @@ def derive_runner_liveness_v1(records: Sequence[Mapping[str, Any]], *, study_id:
     for session_id, items in sorted(by_session.items()):
         try:
             ordered = _session_records(items)
+            relevant = _relevant(ordered[0][1]["binding"], study_id, trial_id, symbol)
         except _Refused as refused:
             walk.refusals.append({"runner_session_id": session_id, "reason": refused.reason.value})
             continue
         except (KeyError, TypeError, AttributeError):
             walk.refusals.append({"runner_session_id": session_id, "reason": SessionRefusalV1.MALFORMED_RECORD.value})
             continue
-        if not _relevant(ordered[0][1]["binding"], study_id, trial_id, symbol):
+        if not relevant:
             continue
         try:
             _walk_session(walk, ordered, max_gap=max_progress_gap_nanos, max_divergence=max_clock_divergence_nanos,
@@ -684,7 +695,7 @@ def derive_runner_liveness_v1(records: Sequence[Mapping[str, Any]], *, study_id:
         group.append(entry)
     flush()
 
-    relevant = sorted(walk.sessions, key=lambda item: (item["started_host_wall_micros"], item["runner_session_id"]))
+    sessions = sorted(walk.sessions, key=lambda item: (item["started_host_wall_micros"], item["runner_session_id"]))
     payload = {
         "schema_version": RUNNER_LIVENESS_SCHEMA_VERSION_V1,
         "claim": LIVENESS_CLAIM_V1,
@@ -694,8 +705,8 @@ def derive_runner_liveness_v1(records: Sequence[Mapping[str, Any]], *, study_id:
                    "max_clock_divergence_nanos": max_clock_divergence_nanos,
                    "max_processing_lag_nanos": max_processing_lag_nanos,
                    "capture_max_unproven_nanos": acceptance.max_unproven_nanos},
-        "runner_sessions": relevant,
-        "restarts": max(0, len(relevant) - 1),
+        "runner_sessions": sessions,
+        "restarts": max(0, len(sessions) - 1),
         "refused_sessions": sorted(walk.refusals, key=lambda item: (item["runner_session_id"], item["reason"])),
         "intervals": [item.payload() for item in intervals],
         "proven_micros": sum(item.end_micros - item.start_micros for item in intervals
