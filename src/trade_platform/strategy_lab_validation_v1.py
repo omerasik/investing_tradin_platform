@@ -24,8 +24,10 @@ Binds the study, its Decimal authority rerun (selection ``ESTABLISHED``), the
 selected candidates, the cycle, the holdout symbol and span (whole UTC days),
 the OR-5 lag schedule, and the owner's OR-6/OR-7 inputs: acceptance criteria,
 minimum trades, incubation length, and an OR-6 cost policy that must rebuild
-exactly through :class:`~trade_platform.strategy_lab_policies_v1.CostPolicyV1`
-with a verified fee schedule and a non-empty stress envelope. The identity is
+exactly as an ``or6-cost-policy-v2`` payload
+(:class:`~trade_platform.strategy_lab_policies_v1.CostPolicyV2`, whose funding
+rule is this validator's) with a verified fee schedule and a non-empty stress
+envelope; a v1 cost payload (funding "not modelled") is unresolved. The identity is
 deep-frozen at construction (canonical JSON); validation reads only that
 frozen identity. Every gap is an ``UNRESOLVED_*`` reason and the packet stays
 ``DRAFT``.
@@ -89,10 +91,10 @@ from .strategy_lab_authority_rerun_v1 import (
 )
 from .strategy_lab_policies_v1 import (
     CostPolicyV1,
-    FeeScheduleV1,
-    SlippageScenarioV1,
+    CostPolicyV2,
     StrategyLabPolicyError,
     or5_lags_v1,
+    rebuild_cost_policy_v1,
 )
 from .strategy_lab_study_v1 import UNTOUCHED_HOLDOUT_BOUNDARY_V1, StudySpecV1, identity_hash_v1
 from .strategy_sdk_v1 import FAMILIES_V1, BarsV1, held_positions_v1
@@ -229,19 +231,22 @@ class CriterionV1:
 
 
 def _verified_cost_policy(raw: Mapping[str, Any] | None) -> tuple[CostPolicyV1 | None, str | None]:
-    """Rebuild an OR-6 payload through the policy classes; ``(policy, None)`` or ``(None, reason)``."""
+    """Rebuild an OR-6 payload through the policy classes; ``(policy, None)`` or ``(None, reason)``.
+
+    Only an ``or6-cost-policy-v2`` payload whose holdout funding rule is the one
+    this validator applies is admitted. A v1 payload states funding as not
+    modelled, which contradicts the packet's ``funding_rule``; it is refused,
+    never upgraded.
+    """
     if raw is None:
         return None, UNRESOLVED_COST_BASIS
     try:
-        fees = raw.get("venue_fees")
-        policy = CostPolicyV1(
-            fee_schedule=None if fees is None else FeeScheduleV1(**fees),
-            slippage_scenarios=tuple(SlippageScenarioV1(**item) for item in raw.get("slippage_scenarios", [])),
-            fill_liquidity=str(raw.get("fill_liquidity", "")),
-        )
+        policy = rebuild_cost_policy_v1(dict(raw))
     except (StrategyLabPolicyError, TypeError, ValueError):
         return None, UNRESOLVED_COST_BASIS
-    if policy.policy().payload != dict(raw) or not policy.promotable_cost_basis:
+    payload = policy.policy().payload
+    if (not isinstance(policy, CostPolicyV2) or payload["funding"]["holdout_validation"] != FUNDING_RULE_V1
+            or not policy.promotable_cost_basis):
         return None, UNRESOLVED_COST_BASIS
     return policy, None
 
