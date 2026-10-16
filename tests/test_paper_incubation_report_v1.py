@@ -20,10 +20,8 @@ from trade_platform.paper_incubation_report_v1 import (
     WINDOW_INCOMPLETE,
     WINDOW_UNRESOLVED,
     IncubationBindingV1,
-    IncubationResolutionV1,
     PaperIncubationError,
-    _bind_stored_chain_v1,
-    _issue_resolution_v1,
+    bind_incubation_v1,
     evidenced_segments_v1,
     incubation_report_v1,
 )
@@ -101,7 +99,7 @@ def bind(packet_identity: dict[str, Any] | None = None, *, trial: str = TRIAL,
     packet_hash = identity_hash_v1(packet_identity)
     validation_identity = validation_of(packet_hash, **(validation_overrides or {}))
     validation_hash = identity_hash_v1(validation_identity)
-    return _bind_stored_chain_v1(packet_identity=packet_identity, packet_hash=packet_hash,
+    return bind_incubation_v1(packet_identity=packet_identity, packet_hash=packet_hash,
                               validation_identity=validation_identity, validation_hash=validation_hash,
                               states=states_of(validation_hash) if states is None else states, trial_id=trial)
 
@@ -128,16 +126,11 @@ def run(start_minute: int, minutes: list[int]) -> list[dict[str, Any]]:
     return out
 
 
-def resolved(*bindings: IncubationBindingV1) -> IncubationResolutionV1:
-    """What the registry resolver issues for these chain-checked bindings (its own tests cover the rows)."""
-    return _issue_resolution_v1("cycle-2026-08-20", "TEST", bindings, () if bindings else ("NOT_OPENED",))
-
-
 def report(fills: list[dict[str, Any]], *, as_of: datetime | None = None,
            bindings: tuple[IncubationBindingV1, ...] | None = None) -> dict[str, Any]:
     as_of = SINCE + timedelta(days=60) if as_of is None else as_of
-    (candidate,) = incubation_report_v1(
-        fills, GROSS, as_of=as_of, resolution=resolved(*((bind(),) if bindings is None else bindings)))["candidates"]
+    (candidate,) = incubation_report_v1(fills, GROSS, as_of=as_of,
+                                        bindings=(bind(),) if bindings is None else bindings)["candidates"]
     return candidate
 
 
@@ -198,13 +191,11 @@ class RequirementTests(unittest.TestCase):
     def test_without_a_binding_the_requirement_is_unresolved(self) -> None:
         candidate = report(run(1, [60]), bindings=())
         self.assertEqual(UNRESOLVED_OR7_INCUBATION_DAYS, candidate["required_days"])
-        self.assertEqual(["NOT_OPENED"], candidate["incubation"]["unresolved"])  # the registry's cycle-level gap
+        self.assertEqual([UNRESOLVED_NO_BINDING], candidate["incubation"]["unresolved"])
         self.assertIsNone(candidate["incubation"]["binding"])
-        (bare,) = incubation_report_v1(run(1, [60]), GROSS, as_of=SINCE + timedelta(days=1))["candidates"]
-        self.assertEqual([UNRESOLVED_NO_BINDING], bare["incubation"]["unresolved"])
-        for stated in ({"incubation_days": 28}, {"bindings": (bind(),)}):
-            with self.subTest(stated=stated), self.assertRaises(TypeError):
-                incubation_report_v1(run(1, [60]), GROSS, as_of=SINCE + timedelta(days=1), **stated)
+        with self.assertRaises(TypeError):
+            incubation_report_v1(run(1, [60]), GROSS, as_of=SINCE + timedelta(days=1),
+                                 incubation_days=28)  # type: ignore[call-arg]
 
 
 class IdentityTests(unittest.TestCase):
@@ -212,7 +203,7 @@ class IdentityTests(unittest.TestCase):
         identity = packet()
         validation_identity = validation_of("d" * 64)
         with self.assertRaises(PaperIncubationError):
-            _bind_stored_chain_v1(packet_identity=identity, packet_hash="d" * 64,
+            bind_incubation_v1(packet_identity=identity, packet_hash="d" * 64,
                                validation_identity=validation_identity,
                                validation_hash=identity_hash_v1(validation_identity),
                                states=states_of(identity_hash_v1(validation_identity)), trial_id=TRIAL)
@@ -249,7 +240,7 @@ class IdentityTests(unittest.TestCase):
         ]
         for states in variants:
             with self.subTest(states=states), self.assertRaises(PaperIncubationError):
-                _bind_stored_chain_v1(packet_identity=identity, packet_hash=packet_hash,
+                bind_incubation_v1(packet_identity=identity, packet_hash=packet_hash,
                                    validation_identity=validation_identity, validation_hash=validation_hash,
                                    states=states, trial_id=TRIAL)
 
@@ -265,18 +256,6 @@ class IdentityTests(unittest.TestCase):
             report(run(1, [60]), bindings=(dataclasses.replace(binding, required_days=1),))
         with self.assertRaises(PaperIncubationError):
             report(run(1, [60]), bindings=(binding, bind()))
-        resolution = resolved(binding)
-        for forged in (dataclasses.replace(resolution, unresolved=("X",)),
-                       dataclasses.replace(resolution, bindings=(dataclasses.replace(binding, required_days=1),))):
-            with self.subTest(forged=forged), self.assertRaises(PaperIncubationError):
-                incubation_report_v1(run(1, [60]), GROSS, as_of=SINCE + timedelta(days=1), resolution=forged)
-        with self.assertRaises(PaperIncubationError):
-            IncubationResolutionV1("cycle-2026-08-20", "TEST", (binding,), ())
-        with self.assertRaises(PaperIncubationError):
-            incubation_report_v1(run(1, [60]), GROSS, as_of=SINCE + timedelta(days=1),
-                                 resolution=(binding,))  # type: ignore[arg-type]
-        with self.assertRaises(PaperIncubationError):  # a binding of another cycle
-            _issue_resolution_v1("cycle-2026-12-01", "TEST", (binding,), ())
 
 
 class ElapsedTests(unittest.TestCase):
@@ -310,7 +289,7 @@ class ElapsedTests(unittest.TestCase):
         self.assertEqual(WINDOW_ELAPSED, whole["incubation"]["window"])
         self.assertEqual(INCUBATING, whole["state"])
         full = incubation_report_v1(run(1, [28 * 24 * 60 + 1]), GROSS, as_of=SINCE + timedelta(days=60),
-                                    resolution=resolved(bind()))
+                                    bindings=(bind(),))
         self.assertEqual(INCUBATING, full["state"])
         self.assertNotIn(STATE_PROFESSIONALLY_VALIDATED_RESERVED, repr(full))
 
@@ -358,11 +337,67 @@ class DeterminismTests(unittest.TestCase):
         fills = run(1, [60, 120]) + run(500, [560])
         binding = bind()
         as_of = SINCE + timedelta(days=2)
-        expected = incubation_report_v1(fills, GROSS, as_of=as_of, resolution=resolved(binding))
+        expected = incubation_report_v1(fills, GROSS, as_of=as_of, bindings=(binding,))
         shuffled = list(fills)
         random.Random(7).shuffle(shuffled)
-        self.assertEqual(expected, incubation_report_v1(shuffled, GROSS, as_of=as_of, resolution=resolved(binding)))
-        self.assertEqual(expected, incubation_report_v1(fills, GROSS, as_of=as_of, resolution=resolved(bind())))
+        self.assertEqual(expected, incubation_report_v1(shuffled, GROSS, as_of=as_of, bindings=(binding,)))
+        self.assertEqual(expected, incubation_report_v1(fills, GROSS, as_of=as_of, bindings=(bind(),)))
+
+
+class BindingSourceTests(unittest.TestCase):
+    """bind_incubation_v1 stays for compatibility, labelled; the registry resolution is the authoritative path."""
+
+    def test_a_caller_supplied_binding_is_labelled_as_such(self) -> None:
+        from trade_platform.paper_incubation_report_v1 import BINDING_SOURCE_CALLER_SUPPLIED_V1
+
+        binding = bind()
+        self.assertEqual(BINDING_SOURCE_CALLER_SUPPLIED_V1, binding.source)
+        self.assertEqual(BINDING_SOURCE_CALLER_SUPPLIED_V1, report(run(1, [60]))["incubation"]["binding"]["source"])
+        full = incubation_report_v1(run(1, [60]), GROSS, as_of=SINCE + timedelta(days=1), bindings=(binding,))
+        self.assertIsNone(full["preregistration_registry"])
+
+    def test_a_resolution_admits_only_registry_sourced_bindings(self) -> None:
+        from trade_platform.paper_incubation_report_v1 import (
+            BINDING_SOURCE_REGISTRY_V1,
+            IncubationResolutionV1,
+            _bind_stored_chain_v1,
+            _issue_resolution_v1,
+        )
+
+        identity = packet()
+        packet_hash = identity_hash_v1(identity)
+        validation_identity = validation_of(packet_hash)
+        validation_hash = identity_hash_v1(validation_identity)
+        registry_bound = _bind_stored_chain_v1(
+            packet_identity=identity, packet_hash=packet_hash, validation_identity=validation_identity,
+            validation_hash=validation_hash, states=states_of(validation_hash), trial_id=TRIAL,
+            source=BINDING_SOURCE_REGISTRY_V1)
+        resolution = _issue_resolution_v1("cycle-2026-08-20", BINDING_SOURCE_REGISTRY_V1, (registry_bound,), ())
+        as_of = SINCE + timedelta(days=1)
+        (candidate,) = incubation_report_v1(run(1, [60]), GROSS, as_of=as_of, resolution=resolution)["candidates"]
+        self.assertEqual(BINDING_SOURCE_REGISTRY_V1, candidate["incubation"]["binding"]["source"])
+        self.assertEqual(28, candidate["required_days"])
+        with self.assertRaises(PaperIncubationError):  # a caller-supplied binding never enters a resolution
+            _issue_resolution_v1("cycle-2026-08-20", BINDING_SOURCE_REGISTRY_V1, (bind(),), ())
+        with self.assertRaises(PaperIncubationError):
+            _issue_resolution_v1("cycle-2026-08-20", "SELF_DECLARED", (registry_bound,), ())
+        with self.assertRaises(PaperIncubationError):  # a binding of another cycle
+            _issue_resolution_v1("cycle-2026-12-01", BINDING_SOURCE_REGISTRY_V1, (registry_bound,), ())
+        with self.assertRaises(PaperIncubationError):
+            incubation_report_v1(run(1, [60]), GROSS, as_of=as_of, resolution=resolution, bindings=(bind(),))
+        for forged in (dataclasses.replace(resolution, unresolved=("X",)),
+                       dataclasses.replace(resolution, bindings=(dataclasses.replace(registry_bound,
+                                                                                     required_days=1),))):
+            with self.subTest(forged=forged), self.assertRaises(PaperIncubationError):
+                incubation_report_v1(run(1, [60]), GROSS, as_of=as_of, resolution=forged)
+        with self.assertRaises(PaperIncubationError):
+            IncubationResolutionV1("cycle-2026-08-20", BINDING_SOURCE_REGISTRY_V1, (registry_bound,), ())
+        with self.assertRaises(PaperIncubationError):
+            dataclasses.replace(registry_bound, source="SELF_DECLARED")
+        empty = _issue_resolution_v1("cycle-2026-08-20", BINDING_SOURCE_REGISTRY_V1, (), ("HOLDOUT_NOT_OPENED",))
+        (unbound,) = incubation_report_v1(run(1, [60]), GROSS, as_of=as_of, resolution=empty)["candidates"]
+        self.assertEqual((UNRESOLVED_OR7_INCUBATION_DAYS, ["HOLDOUT_NOT_OPENED"]),
+                         (unbound["required_days"], unbound["incubation"]["unresolved"]))
 
 
 if __name__ == "__main__":

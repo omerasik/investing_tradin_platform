@@ -45,6 +45,7 @@ from datetime import UTC, datetime
 from typing import Any, Final, Protocol
 
 from .paper_incubation_report_v1 import (
+    BINDING_SOURCE_REGISTRY_V1,
     PACKET_STATUS_AUTHORIZED,
     STATE_INCUBATING,
     IncubationResolutionV1,
@@ -54,7 +55,7 @@ from .paper_incubation_report_v1 import (
 )
 from .strategy_lab_study_v1 import identity_hash_v1
 
-REGISTRY_SOURCE_V1: Final = "PERSISTED_PREREGISTRATION_REGISTRY_V1"
+REGISTRY_SOURCE_V1: Final = BINDING_SOURCE_REGISTRY_V1
 UNRESOLVED_HOLDOUT_NOT_OPENED: Final = "HOLDOUT_NOT_OPENED_FOR_CYCLE_OR_7"
 UNRESOLVED_HOLDOUT_NOT_VALIDATED: Final = "HOLDOUT_OPENED_NOT_VALIDATED"
 UNRESOLVED_NO_INCUBATING_CANDIDATE: Final = "NO_CANDIDATE_JUDGED_INCUBATING"
@@ -175,7 +176,8 @@ def resolve_incubation_bindings_v1(cursor: _Cursor, *, cycle_id: str) -> Incubat
     study_states = [state for state in states if state["study_id"] == packet["study_id"]]
     bindings = [
         _bind_stored_chain_v1(packet_identity=packet, packet_hash=packet_hash, validation_identity=validation,
-                              validation_hash=validation_hash, states=study_states, trial_id=trial_id)
+                              validation_hash=validation_hash, states=study_states, trial_id=trial_id,
+                              source=BINDING_SOURCE_REGISTRY_V1)
         for trial_id in packet["candidates"] if judged[trial_id] == STATE_INCUBATING
     ]
     return _issue_resolution_v1(cycle_id, REGISTRY_SOURCE_V1, bindings,
