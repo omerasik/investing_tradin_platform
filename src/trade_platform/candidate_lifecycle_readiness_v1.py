@@ -63,6 +63,7 @@ from typing import Any, Final
 
 from .activation_readiness_v1 import OR6, OR7, OR11, gate_of
 from .paper_incubation_report_v1 import (
+    BINDING_SOURCE_REGISTRY_V1,
     FILL_STATUS_FILLED,
     PACKET_STATUS_AUTHORIZED,
     PACKET_STATUS_DRAFT,
@@ -116,6 +117,9 @@ NEED_ACCOUNT_POLICY: Final = f"{OR11}:NO_ACCOUNT_POLICY_RECORDED"
 NEED_EXIT_CRITERIA: Final = f"{OR7}:MISSING_OWNER_FORWARD_INCUBATION_EXIT_CRITERIA"
 NEED_LIVENESS: Final = "MISSING_PERSISTED_RUNNER_LIVENESS_EVIDENCE"
 NEED_PARITY: Final = "MISSING_LIVE_REPLAY_FILL_PARITY_EVIDENCE"
+#: A binding from caller-supplied identities (``bind_incubation_v1``) is never authority for
+#: eligibility; only one resolved from the persisted registry (``paper_incubation_registry_v1``) is.
+NEED_REGISTRY_BINDING: Final = "INCUBATION_BINDING_NOT_REGISTRY_RESOLVED"
 
 #: R6 preregistration gaps -> owner gate. An unknown reason stays an engineering finding.
 _PACKET_GATES: Final[dict[str, str]] = {
@@ -391,11 +395,12 @@ def _assess(evidence: CandidateEvidenceV1, cost_policy: CostPolicyV1, as_of: dat
     except PaperIncubationError as error:
         raise _Inconsistent(f"INCUBATION_BINDING_REFUSED:{error}") from error
     facts.update({"symbol": binding.symbol, "required_days": binding.required_days,
-                  "incubating_since_micros": binding.incubating_since_micros})
+                  "incubating_since_micros": binding.incubating_since_micros, "binding_source": binding.source})
+    provenance = [] if binding.source == BINDING_SOURCE_REGISTRY_V1 else [NEED_REGISTRY_BINDING]
     if not ev.fills:
         return _result(ev, STAGE_INCUBATION_INCOMPLETE, state,
                        [NEED_FORWARD_FILLS, NEED_INCUBATION_WINDOW,
-                        *_later(cost_policy, ev.account_policy, forward_started=False)], facts)
+                        *_later(cost_policy, ev.account_policy, forward_started=False), *provenance], facts)
     try:
         report = incubation_report_v1(ev.fills, cost_policy, as_of=as_of, bindings=(binding,))
     except PaperIncubationError as error:
@@ -425,7 +430,7 @@ def _assess(evidence: CandidateEvidenceV1, cost_policy: CostPolicyV1, as_of: dat
         forward.append(NEED_SIZING)
     forward += _account_blockers(ev.account_policy)
     # Neither is persisted by any authority yet; listed until one exists, never assumed.
-    forward += [NEED_EXIT_CRITERIA, NEED_LIVENESS]
+    forward += [NEED_EXIT_CRITERIA, NEED_LIVENESS, *provenance]
 
     if incubation["window"] != WINDOW_ELAPSED:
         window = ([f"INCUBATION_WINDOW_INCOMPLETE:{candidate['elapsed_days']}/{binding.required_days}_DAYS"]

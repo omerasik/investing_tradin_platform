@@ -37,6 +37,7 @@ from trade_platform.candidate_lifecycle_readiness_v1 import (
     assess_candidate_readiness_v1,
 )
 from trade_platform.paper_incubation_report_v1 import (
+    BINDING_SOURCE_CALLER_SUPPLIED_V1,
     FILL_STATUS_BAR_NOT_OBSERVED,
     FILL_STATUS_FILLED,
     STATE_PROFESSIONALLY_VALIDATED_RESERVED,
@@ -240,11 +241,20 @@ class PathTests(unittest.TestCase):
         self.assertEqual(STAGE_FORWARD_EVIDENCE_INCOMPLETE, result.stage)
         self.assertNotIn(NEED_PARITY, result.blockers)
         self.assertEqual((NEED_FEE_SCHEDULE, NEED_FORWARD_FUNDING, "FORWARD_EVIDENCE_NOT_COST_COMPLETE", NEED_SIZING,
-                          NEED_EXIT_CRITERIA, NEED_LIVENESS), result.blockers)
+                          NEED_EXIT_CRITERIA, NEED_LIVENESS, readiness.NEED_REGISTRY_BINDING), result.blockers)
         self.assertEqual("INCUBATING", result.canonical_state)
         self.assertNotEqual(STAGE_ELIGIBLE, result.stage)
         self.assertNotIn(STATE_PROFESSIONALLY_VALIDATED_RESERVED, repr(result.payload()).replace(
             readiness.PROMOTION_V1, ""))
+
+    def test_a_caller_supplied_binding_is_never_authority_for_eligibility(self) -> None:
+        # Readiness binds from identities the caller passed in (bind_incubation_v1); after #228 that
+        # binding is labelled caller-supplied, so it must block eligibility in every incubation stage.
+        for evidence in (chain(), chain(fills=run(1, [28 * 24 * 60 + 1]))):
+            result = assess(evidence)
+            self.assertIn(readiness.NEED_REGISTRY_BINDING, result.blockers)
+            self.assertEqual(BINDING_SOURCE_CALLER_SUPPLIED_V1, result.evidence["binding_source"])
+            self.assertNotEqual(STAGE_ELIGIBLE, result.stage)
 
     def test_an_unconfigured_account_policy_lists_its_or11_values(self) -> None:
         unconfigured = {"status": "UNCONFIGURED", "unresolved": ["MISSING_OWNER_PAPER_STARTING_CAPITAL_OR_11"]}
