@@ -344,5 +344,61 @@ class DeterminismTests(unittest.TestCase):
         self.assertEqual(expected, incubation_report_v1(fills, GROSS, as_of=as_of, bindings=(bind(),)))
 
 
+class BindingSourceTests(unittest.TestCase):
+    """bind_incubation_v1 stays for compatibility, labelled; the registry resolution is the authoritative path."""
+
+    def test_a_caller_supplied_binding_is_labelled_as_such(self) -> None:
+        from trade_platform.paper_incubation_report_v1 import BINDING_SOURCE_CALLER_SUPPLIED_V1
+
+        binding = bind()
+        self.assertEqual(BINDING_SOURCE_CALLER_SUPPLIED_V1, binding.source)
+        self.assertEqual(BINDING_SOURCE_CALLER_SUPPLIED_V1, report(run(1, [60]))["incubation"]["binding"]["source"])
+        full = incubation_report_v1(run(1, [60]), GROSS, as_of=SINCE + timedelta(days=1), bindings=(binding,))
+        self.assertIsNone(full["preregistration_registry"])
+
+    def test_a_resolution_admits_only_registry_sourced_bindings(self) -> None:
+        from trade_platform.paper_incubation_report_v1 import (
+            BINDING_SOURCE_REGISTRY_V1,
+            IncubationResolutionV1,
+            _bind_stored_chain_v1,
+            _issue_resolution_v1,
+        )
+
+        identity = packet()
+        packet_hash = identity_hash_v1(identity)
+        validation_identity = validation_of(packet_hash)
+        validation_hash = identity_hash_v1(validation_identity)
+        registry_bound = _bind_stored_chain_v1(
+            packet_identity=identity, packet_hash=packet_hash, validation_identity=validation_identity,
+            validation_hash=validation_hash, states=states_of(validation_hash), trial_id=TRIAL,
+            source=BINDING_SOURCE_REGISTRY_V1)
+        resolution = _issue_resolution_v1("cycle-2026-08-20", BINDING_SOURCE_REGISTRY_V1, (registry_bound,), ())
+        as_of = SINCE + timedelta(days=1)
+        (candidate,) = incubation_report_v1(run(1, [60]), GROSS, as_of=as_of, resolution=resolution)["candidates"]
+        self.assertEqual(BINDING_SOURCE_REGISTRY_V1, candidate["incubation"]["binding"]["source"])
+        self.assertEqual(28, candidate["required_days"])
+        with self.assertRaises(PaperIncubationError):  # a caller-supplied binding never enters a resolution
+            _issue_resolution_v1("cycle-2026-08-20", BINDING_SOURCE_REGISTRY_V1, (bind(),), ())
+        with self.assertRaises(PaperIncubationError):
+            _issue_resolution_v1("cycle-2026-08-20", "SELF_DECLARED", (registry_bound,), ())
+        with self.assertRaises(PaperIncubationError):  # a binding of another cycle
+            _issue_resolution_v1("cycle-2026-12-01", BINDING_SOURCE_REGISTRY_V1, (registry_bound,), ())
+        with self.assertRaises(PaperIncubationError):
+            incubation_report_v1(run(1, [60]), GROSS, as_of=as_of, resolution=resolution, bindings=(bind(),))
+        for forged in (dataclasses.replace(resolution, unresolved=("X",)),
+                       dataclasses.replace(resolution, bindings=(dataclasses.replace(registry_bound,
+                                                                                     required_days=1),))):
+            with self.subTest(forged=forged), self.assertRaises(PaperIncubationError):
+                incubation_report_v1(run(1, [60]), GROSS, as_of=as_of, resolution=forged)
+        with self.assertRaises(PaperIncubationError):
+            IncubationResolutionV1("cycle-2026-08-20", BINDING_SOURCE_REGISTRY_V1, (registry_bound,), ())
+        with self.assertRaises(PaperIncubationError):
+            dataclasses.replace(registry_bound, source="SELF_DECLARED")
+        empty = _issue_resolution_v1("cycle-2026-08-20", BINDING_SOURCE_REGISTRY_V1, (), ("HOLDOUT_NOT_OPENED",))
+        (unbound,) = incubation_report_v1(run(1, [60]), GROSS, as_of=as_of, resolution=empty)["candidates"]
+        self.assertEqual((UNRESOLVED_OR7_INCUBATION_DAYS, ["HOLDOUT_NOT_OPENED"]),
+                         (unbound["required_days"], unbound["incubation"]["unresolved"]))
+
+
 if __name__ == "__main__":
     unittest.main()
