@@ -619,6 +619,9 @@ def _complete_hour(
     first = acceptance.first_hour_start_utc_nanos
     if first is None or not first <= hour_start < first + acceptance.hours_judged * HOUR_NANOS:
         raise T4PriceReferenceRefusalV1("hour_not_judged")
+    # One segment per judged hour, or the acceptance is not the evaluator's output.
+    if len(symbols[0].segments) != acceptance.hours_judged:
+        raise T4PriceReferenceRefusalV1("hourly_acceptance_malformed")
     segment: HourlySegmentV1 = symbols[0].segments[(hour_start - first) // HOUR_NANOS]
     if segment.hour_start_utc_nanos != hour_start:
         raise T4PriceReferenceRefusalV1("hourly_acceptance_malformed")

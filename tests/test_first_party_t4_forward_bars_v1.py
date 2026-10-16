@@ -263,6 +263,20 @@ class PriceReferenceTests(_ForwardFixture):
                 self.resolve(dataset, _venue_minute(2), CLOSE, acceptance=acceptance)
             self.assertEqual(caught.exception.code, code)
 
+    def test_a_malformed_hourly_acceptance_is_refused_not_an_index_error(self) -> None:
+        dataset = self.dataset()
+        complete = _acceptance(self.session_id)
+        segment = complete.symbols[0].segments[0]
+        cases = (
+            replace(complete, symbols=(SymbolHoursV1("BTCUSDT", ()),)),             # hour judged, no segment
+            replace(complete, symbols=(SymbolHoursV1("BTCUSDT", (segment, segment)),)),  # extra segment
+            replace(complete, symbols=(SymbolHoursV1("BTCUSDT", (replace(segment, hour_start_utc_nanos=0),)),)),
+        )
+        for acceptance in cases:
+            with self.assertRaises(T4PriceReferenceRefusalV1) as caught:
+                self.resolve(dataset, _venue_minute(2), CLOSE, acceptance=acceptance)
+            self.assertEqual(caught.exception.code, "hourly_acceptance_malformed")
+
     def test_a_reference_not_yet_knowable_is_refused(self) -> None:
         dataset = self.dataset()
         reference = self.resolve(dataset, _venue_minute(2), CLOSE)
