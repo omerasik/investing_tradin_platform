@@ -120,13 +120,16 @@ jobs:
           artifact_output="$GITHUB_WORKSPACE/container-artifact"
           mkdir -p "$scan_input" "$scan_cache" "$scan_output" "$artifact_output"
           docker save --output "$scan_input/research-api.tar" "$image_ref"
+          # Trivy stages the downloaded vulnerability DB archive in /tmp (OCI copy + getter copy)
+          # before unpacking it into the cache volume; 256m stopped fitting once trivy-db grew
+          # ("no space left on device"). Only this scratch space changes; the scan does not.
           scanner() {
             docker run --rm \
               --user "$(id -u):$(id -g)" \
               --read-only \
               --cap-drop=ALL \
               --security-opt=no-new-privileges:true \
-              --tmpfs /tmp:rw,noexec,nosuid,size=256m \
+              --tmpfs /tmp:rw,noexec,nosuid,size=1g \
               --volume "$scan_input:/input:ro" \
               --volume "$scan_cache:/cache:rw" \
               --volume "$scan_output:/output:rw" \

@@ -15,6 +15,12 @@ const instrumentDetailPath = /^\/operator-dashboard\/instruments\/(?:[A-Za-z0-9_
 const chartSeriesPath = /^\/operator-dashboard\/chart-series\/[0-9a-f]{64}$/;
 const chartCandlesPath = /^\/operator-dashboard\/chart-series\/[0-9a-f]{64}\/candles$/;
 
+const studyUuid = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+const studyDetailPath = new RegExp(`^/operator-dashboard/strategy-lab/studies/${studyUuid}$`);
+const studyTrialPath = new RegExp(`^/operator-dashboard/strategy-lab/studies/${studyUuid}/trials/${studyUuid}$`);
+const studyTrialsPath = new RegExp(`^/operator-dashboard/strategy-lab/studies/${studyUuid}/trials$`);
+const studyTrialsKeys = new Set(["limit", "offset", "sort", "direction", "outcome", "frozen_only"]);
+
 const parameterlessTargets = new Set([
   "/operator-dashboard/workspace-references",
   "/operator-dashboard/evidence-catalog",
@@ -65,7 +71,7 @@ const queryTargets: Record<string, { allowed: string[]; required?: string[] }> =
     allowed: ["instrument", "entity", "category", "start", "end", "correction_state", "limit", "offset"],
   },
   "/operator-dashboard/sre-overview": { allowed: ["service_version_id"] },
-  "/operator-dashboard/strategy-lab/studies": { allowed: ["limit", "offset"] },
+  "/operator-dashboard/strategy-lab/studies": { allowed: ["limit", "offset", "strategy_family", "instrument"] },
   "/operator-dashboard/research-terminal/reruns": { allowed: ["limit"] },
   "/operator-dashboard/research-terminal/validation": { allowed: ["limit"] },
   "/operator-dashboard/research-terminal/signals": { allowed: ["limit"] },
@@ -81,6 +87,10 @@ export function allowedAuthorityTarget(target: string): boolean {
   if (bare && exactUuidPath.test(parsed.pathname)) return true;
   if (bare && paperAccountReconciliationPath.test(parsed.pathname)) return true;
   if (bare && instrumentDetailPath.test(parsed.pathname)) return true;
+  if (bare && (studyDetailPath.test(parsed.pathname) || studyTrialPath.test(parsed.pathname))) return true;
+  if (studyTrialsPath.test(parsed.pathname)) {
+    return [...parsed.searchParams.keys()].every((key) => studyTrialsKeys.has(key));
+  }
   if (chartSeriesPath.test(parsed.pathname)) {
     return [...parsed.searchParams.keys()].every((key) => key === "instrument" || key === "max_points");
   }
