@@ -86,6 +86,25 @@ A result is knowable at the latest market knowledge of every row it cites
 could know that the set at the instant was closed). ``known_by`` is a query
 parameter, not identity: the same sealed inputs give the same
 :attr:`T4SettlementMarkPriceV1.resolution_hash` whenever they are resolved.
+
+Relation to the forward funding/price bridge
+--------------------------------------------
+:mod:`trade_platform.forward_funding_price_bridge_v1` binds each settlement to a
+T4 *trade* price and types it ``TRADE_PRICE_PROXY``; its contract records
+``NO_PROVEN_FORWARD_MARK_PRICE_RESOLVER_V1``. That statement still holds after
+this module: what it resolves is ticker-mark evidence *around* the instant,
+never a proven settlement mark, so the bridge is deliberately left unchanged
+(its contract hash with it) and has no mark evidence path. A consumer that
+wants both kinds side by side calls :func:`resolve_settlement_mark_price_v1`
+per settlement of the bridge's COMPLETE funding window with the bridge's
+symbol, the settlement's ``settled_at_ms``, the same
+:class:`HourlyAcceptanceV1` and ``known_by`` = the bridge's ``as_of``, and
+records the result under :data:`VENUE_PUBLISHED_MARK_PRICE` (the bridge's own
+constant of that name) next to -- never instead of -- the trade proxy, with its
+``resolution_hash``, status, refusal code and ``unresolved_decisions``. Neither
+status lets the bridge reach ``CONFIRMED`` or compute a charge: both carry
+:data:`UNRESOLVED_OWNER_DECISION_SETTLEMENT_MARK_IDENTITY`, and the bridge's
+price-convention approval stays unresolved.
 """
 
 from __future__ import annotations
