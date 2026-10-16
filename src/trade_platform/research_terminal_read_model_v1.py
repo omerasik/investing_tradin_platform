@@ -256,8 +256,13 @@ def read_accounts_v1(cursor: _Cursor) -> list[AccountView]:
 
 
 def read_incubation_v1(cursor: _Cursor, *, now: datetime | None = None) -> IncubationView:
-    """The R10 report over the current cycle's recorded fills, under its OR-6 policy (gross until opened)."""
+    """The R10 report over the current cycle's recorded fills, under its OR-6 policy (gross until opened).
+
+    The OR-7 incubation bindings are resolved from the persisted registry rows of
+    the same cycle; no caller-supplied packet or length reaches the report.
+    """
     from .paper_account_v1 import cycle_cost_policy_v1, cycle_fill_rows_v1
+    from .paper_incubation_registry_v1 import resolve_incubation_bindings_v1
 
     cycle_id = current_cycle_id_v1()
     fills = []
@@ -267,7 +272,8 @@ def read_incubation_v1(cursor: _Cursor, *, now: datetime | None = None) -> Incub
             raise ValueError("stored_fill_identity_does_not_rederive")
         fills.append(identity)
     cost = cycle_cost_policy_v1(cursor, cycle_id)
-    report = incubation_report_v1(fills, cost, as_of=now or datetime.now(UTC))
+    resolution = resolve_incubation_bindings_v1(cursor, cycle_id=cycle_id)
+    report = incubation_report_v1(fills, cost, as_of=now or datetime.now(UTC), resolution=resolution)
     return IncubationView(state="AVAILABLE" if fills else "NO_FILLS", report=report)
 
 
