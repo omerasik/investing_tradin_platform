@@ -100,7 +100,11 @@ test.describe("Module 2B-1 Professional Market & Data Workspaces", () => {
     await expect(page).toHaveURL(/\/dashboard/);
 
     await page.goto("/chart");
-    await expect(page.getByRole("heading", { name: "Instrument Chart", level: 1 })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Market Chart", level: 1 })).toBeVisible();
+    // B.1.3a: the workflow strip marks this step and labels its data as historical, never live.
+    const workflow = page.getByRole("navigation", { name: "Research workflow", exact: true });
+    await expect(workflow.getByRole("link", { name: /Market Chart/ })).toHaveAttribute("aria-current", "page");
+    await expect(workflow).toContainText("not live prices");
     const series = page.getByRole("article", { name: "Chart Series" });
     await expect(series).toBeVisible();
     // Either a series with its claim ceiling, or an honest empty catalogue -- never a bare chart.
@@ -132,6 +136,8 @@ test.describe("Module 2B-1 Professional Market & Data Workspaces", () => {
 
     await page.goto("/strategy-lab");
     await expect(page.getByRole("heading", { name: "Strategy Lab Explorer", level: 1 })).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "Research workflow", exact: true }).getByRole("link", { name: /Strategy Lab/ }))
+      .toHaveAttribute("aria-current", "page");
     await expect(page.getByRole("article", { name: "Studies" })).toBeVisible();
     // Either registered studies (each with its economics restated) or an honest empty state.
     await expect(page.getByText(/Registered studies|No study registered/i).first()).toBeVisible();
@@ -176,6 +182,15 @@ test.describe("Module 2B-1 Professional Market & Data Workspaces", () => {
 
     await page.goto("/terminal");
     await expect(page.getByRole("heading", { name: "Research Terminal", level: 1 })).toBeVisible();
+    // B.1.3a: the chart and Strategy Lab are one click away from the terminal and the sidebar.
+    const workflow = page.getByRole("navigation", { name: "Research workflow", exact: true });
+    await expect(workflow.getByRole("link", { name: /Research Terminal/ })).toHaveAttribute("aria-current", "page");
+    await expect(workflow.getByRole("link", { name: /Market Chart/ })).toHaveAttribute("href", "/chart");
+    await expect(workflow.getByRole("link", { name: /Strategy Lab/ })).toHaveAttribute("href", "/strategy-lab");
+    const sidebar = page.locator(".app-sidebar");
+    await expect(sidebar.getByRole("link", { name: /Market Chart/ })).toHaveAttribute("href", "/chart");
+    await expect(sidebar.getByRole("link", { name: /Strategy Lab/ })).toHaveAttribute("href", "/strategy-lab");
+    await expect(page.getByRole("article", { name: "Market Scan", exact: true }).getByRole("link", { name: "Market Chart" })).toHaveAttribute("href", "/chart");
     const steps = ["Command Center", "Market Scan", "Opportunities", "Strategy Lab", "Compare", "Validation",
       "Risk Preview", "Paper", "Monitoring"];
     const nav = page.getByRole("navigation", { name: "Research workflow steps" });

@@ -16,6 +16,7 @@ import { KeyValueGrid } from "../../components/key-value-grid";
 import { ProvenancePanel } from "../../components/provenance-panel";
 import { MarketChart, type MarketChartPoint } from "../../components/market-chart";
 import { decimalText } from "../../lib/decimal-text";
+import { ResearchWorkflowNav } from "../../components/research-workflow-nav";
 
 export const dynamic = "force-dynamic";
 
@@ -24,6 +25,18 @@ const CEILING_MEANING: Record<string, string> = {
   T4_FIRST_PARTY_CAPTURE: "Our own recorder's arrival times. Professional eligibility is still decided per sealed dataset, not by this chart.",
   NO_TIMING_AUTHORITY: "No timing contract: T2 event-time bars stay unconditional until a publication lag is declared (owner decision OR-5).",
 };
+
+/** Which kind of data a frame holds, from its published frame kind: never inferred from a label. */
+const FRAME_SOURCE: Record<string, string> = {
+  T2_ARCHIVE_OHLCV_1M: "HISTORICAL · T2 public trade archive",
+  OHLCV: "HISTORICAL · T1 REST composite (retrospective)",
+  T4_OHLCV_1M: "FORWARD CAPTURE · T4 first-party recorder (recorded, not streamed)",
+};
+
+function frameSource(item: ChartSeriesRef): string {
+  const source = FRAME_SOURCE[item.frame_kind] ?? "UNRECOGNISED frame kind";
+  return item.window ? `${source} (catalogued research window)` : source;
+}
 
 /** The terminal's research universe; a symbol without a catalogued window is shown as unavailable. */
 const UNIVERSE = ["BTCUSDT", "ETHUSDT", "SOLUSDT"] as const;
@@ -87,12 +100,14 @@ export default async function ChartPage({
   return (
     <div className="workspace-container">
       <WorkspaceToolbar
-        title="Instrument Chart"
+        title="Market Chart"
         subtitle="Historical research bars from one exact catalogued frame, with the claim those bars can support. Never live prices."
         status={selected ? "AVAILABLE" : catalogResult.state === "AVAILABLE" ? "UNAVAILABLE" : catalogResult.state}
         statusLabel={selected ? `CLAIM CEILING: ${selected.tier_ceiling}` : undefined}
         asOf={ctx.evidenceTime}
       />
+
+      <ResearchWorkflowNav current="chart" />
 
       <article className="panel margin-bottom-24" aria-label="Market Chart">
         <h2>
@@ -147,6 +162,22 @@ export default async function ChartPage({
           </p>
         )}
         {selected && <p>{CEILING_MEANING[selected.tier_ceiling] ?? "Unrecognised ceiling: treat as no timing authority."}</p>}
+        {selected && (
+          <ul className="context-links" aria-label="Related research">
+            <li>Data: <strong data-frame-source={selected.frame_kind}>{frameSource(selected)}</strong></li>
+            {selected.window && selected.instrument ? (
+              <li>
+                <Link href={`/strategy-lab?${new URLSearchParams({ instrument: selected.instrument }).toString()}`}>
+                  Strategy Lab studies on {selected.instrument}
+                </Link>{" "}
+                (search-tier, gross)
+              </li>
+            ) : (
+              <li className="chart-option-unavailable">Strategy Lab studies: only T2 research windows are searched</li>
+            )}
+            <li><Link href="/terminal#market-scan">Forward capture status (Research Terminal)</Link></li>
+          </ul>
+        )}
         {selected && !timeframe && (
           <p className="empty-notice">
             Timeframes UNAVAILABLE: this frame declares no bar interval, so it is shown as consecutive-bar buckets
@@ -283,7 +314,7 @@ export default async function ChartPage({
                   href={chartHref(item.manifest_hash)}
                   aria-current={item.manifest_hash === selected?.manifest_hash ? "page" : undefined}
                 >
-                  {item.label} &middot; <code>CLAIM CEILING: {item.tier_ceiling}</code>
+                  {item.label} &middot; {frameSource(item)} &middot; <code>CLAIM CEILING: {item.tier_ceiling}</code>
                 </Link>
               </li>
             ))}

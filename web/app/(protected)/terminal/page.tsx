@@ -23,6 +23,7 @@ import { CommandConsole } from "./command-console";
 import { WorkspaceToolbar } from "../../components/workspace-toolbar";
 import { QualityStateBadge } from "../../components/quality-state-badge";
 import { DataTable } from "../../components/data-table";
+import { ResearchWorkflowNav } from "../../components/research-workflow-nav";
 
 export const dynamic = "force-dynamic";
 
@@ -50,6 +51,12 @@ function counts(record: Record<string, number> | undefined): string {
 
 function target(value: number): string {
   return value === 1 ? "LONG" : value === -1 ? "SHORT" : "FLAT";
+}
+
+/** The trial's detail in the Strategy Lab Explorer, with its study kept. */
+function TrialLink({ studyId, trialId }: { studyId: string; trialId: string }) {
+  const query = new URLSearchParams({ study: studyId, trial: trialId });
+  return <a href={`/strategy-lab?${query.toString()}#trial-detail`}><code title={trialId}>{trialId.slice(0, 8)}…</code></a>;
 }
 
 function Claim({ label }: { label: string }) {
@@ -212,6 +219,8 @@ export default async function ResearchTerminalPage() {
         asOf={ctx.evidenceTime}
       />
 
+      <ResearchWorkflowNav current="terminal" />
+
       <nav aria-label="Research workflow steps" className="margin-bottom-24">
         <ol className="workflow-steps">
           {STEPS.map(([id, label], index) => (
@@ -269,6 +278,10 @@ export default async function ResearchTerminalPage() {
 
       <Step id="market-scan" title="Market Scan" claim="T4 FORWARD CAPTURE">
         <p>What first-party capture has proven per source. Gaps are shown as gaps, never bridged.</p>
+        <p>
+          This is forward capture from our own recorder, not the historical research data studies are searched on. To inspect the
+          historical bars, open the <a href="/chart">Market Chart</a> (historical research bars, never live prices).
+        </p>
         {capture ? (
           <DataTable caption="First-party capture by source" ariaLabel="Capture by source">
             <thead><tr><th scope="col">Symbol</th><th scope="col">Purpose</th><th scope="col">Archive</th><th scope="col">Proven</th><th scope="col">Finalized windows</th><th scope="col">Gaps</th><th scope="col">Partitions proving nothing</th></tr></thead>
@@ -332,7 +345,7 @@ export default async function ResearchTerminalPage() {
             <tbody>
               {rerun.selected.length ? rerun.selected.map((item) => (
                 <tr key={item.trial_id}>
-                  <td className="tabular-num">{item.rank}</td><td><code title={item.trial_id}>{item.trial_id.slice(0, 8)}…</code></td>
+                  <td className="tabular-num">{item.rank}</td><td><TrialLink studyId={rerun.study_id} trialId={item.trial_id} /></td>
                   <td className="tabular-num">{item.metric_value}</td><td><Claim label={rerun.claim} /></td>
                 </tr>
               )) : <tr><td colSpan={4}><Claim label={rerun.claim} /> no selection</td></tr>}
@@ -342,6 +355,10 @@ export default async function ResearchTerminalPage() {
       </Step>
 
       <Step id="validation" title="Validation" claim="NONE VALIDATED">
+        <p>
+          What still blocks the holdout, watching and paper incubation, and the owner gate each waits on, is answered in the{" "}
+          <a href="#command-center">Command Center readiness table</a>. Trial links open the recorded trial in the Strategy Lab Explorer.
+        </p>
         {validation ? (
           <>
             <CycleSummary cycle={validation.cycle} />
@@ -351,7 +368,7 @@ export default async function ResearchTerminalPage() {
                 <tbody>
                   {validation.candidates.map((item) => (
                     <tr key={`${item.study_id}-${item.trial_id}-${item.recorded_at}`}>
-                      <td>{item.study_label}</td><td><code title={item.trial_id}>{item.trial_id.slice(0, 8)}…</code></td>
+                      <td>{item.study_label}</td><td><TrialLink studyId={item.study_id} trialId={item.trial_id} /></td>
                       <td><Claim label={item.label} /></td><td>{item.reasons.join(", ")}</td>
                     </tr>
                   ))}
@@ -380,13 +397,14 @@ export default async function ResearchTerminalPage() {
       </Step>
 
       <Step id="paper" title="Paper" claim="INCUBATING · UNIT EXPOSURE · GROSS">
+        <p>Recorded simulation status, never execution authority. Incubation starts only through the gated command above, once readiness allows it; blockers are listed in the <a href="#command-center">Command Center readiness table</a>.</p>
         {incubation && incubation.state === "AVAILABLE" ? (
           <DataTable caption="Paper incubation by candidate" ariaLabel="Paper incubation">
             <thead><tr><th scope="col">Symbol</th><th scope="col">Trial</th><th scope="col">Fills</th><th scope="col">Round trips</th><th scope="col">Gross sum</th><th scope="col">Break-even bps/side</th><th scope="col">Chain breaks</th><th scope="col">Days / required</th></tr></thead>
             <tbody>
               {incubation.report.candidates.map((item) => (
                 <tr key={`${item.study_id}-${item.trial_id}-${item.symbol}`}>
-                  <td>{item.symbol}</td><td><code title={item.trial_id}>{item.trial_id.slice(0, 8)}…</code></td>
+                  <td>{item.symbol}</td><td><TrialLink studyId={item.study_id} trialId={item.trial_id} /></td>
                   <td className="tabular-num">{counts(item.fills_by_status)}</td><td className="tabular-num">{item.round_trips.length}</td>
                   <td className="tabular-num">{item.gross_return_sum}</td><td className="tabular-num">{item.break_even_cost_bps_per_side ?? "—"}</td>
                   <td className="tabular-num">{item.chain_breaks}</td><td>{item.elapsed_days} / {String(item.required_days)}</td>

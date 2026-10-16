@@ -1,6 +1,7 @@
 import React from "react";
 import Link from "next/link";
 import {
+  getChartSeriesCatalog,
   getStrategyLabBreakEvenDistribution,
   getStrategyLabHeatmap,
   getStrategyLabStudies,
@@ -10,7 +11,9 @@ import {
   getWorkspaceContext,
   stateText,
   utc,
+  type ChartSeriesRef,
   type StrategyLabBreakEvenDistribution,
+  type StrategyLabDatasetRef,
   type StrategyLabEconomics,
   type StrategyLabHeatmap,
   type StrategyLabStudyDetail,
@@ -26,6 +29,7 @@ import { DataTable } from "../../components/data-table";
 import { KeyValueGrid } from "../../components/key-value-grid";
 import { Pagination } from "../../components/pagination";
 import { ProvenancePanel } from "../../components/provenance-panel";
+import { ResearchWorkflowNav } from "../../components/research-workflow-nav";
 
 export const dynamic = "force-dynamic";
 
@@ -140,6 +144,31 @@ function href(params: Params, overrides: Partial<Params>): string {
   for (const [key, value] of Object.entries(merged)) if (value) query.set(key, value);
   const text = query.toString();
   return text ? `/strategy-lab?${text}` : "/strategy-lab";
+}
+
+/**
+ * Market Chart links for the research windows a study is bound to. A window is linked only
+ * when the chart catalogue carries the exact same ``dataset_version_id`` and window identity;
+ * anything else is named as not charted rather than pointed at a different series.
+ */
+function StudyDataLinks({ datasets, charts }: { datasets: StrategyLabDatasetRef[]; charts: ChartSeriesRef[] | undefined }) {
+  const windows = datasets.filter((ref) => ref.resolution === "RESEARCH_WINDOW_CATALOGUE");
+  return (
+    <ul className="context-links" aria-label="Study data on the Market Chart">
+      {windows.length ? windows.map((ref) => {
+        const series = charts?.find((item) => item.window && item.dataset_version_id === ref.dataset_version_id && item.window.content_hash === ref.content_hash);
+        const name = `${ref.symbol ?? "UNRESOLVED"} ${ref.first_utc_day}..${ref.last_utc_day}`;
+        return (
+          <li key={`${ref.dataset_version_id}:${ref.content_hash}`}>
+            {series
+              ? <><Link href={`/chart?${new URLSearchParams({ series: series.manifest_hash }).toString()}`}>Historical bars for {name} on the Market Chart</Link> (not live prices)</>
+              : <span className="chart-option-unavailable">{name}: not charted{charts ? " (no exact catalogue match)" : " (chart catalogue unavailable)"}</span>}
+          </li>
+        );
+      }) : <li className="chart-option-unavailable">No research window resolved for this study: nothing to chart.</li>}
+      <li><a href="/terminal#validation">Recorded validation status and blockers (Research Terminal)</a></li>
+    </ul>
+  );
 }
 
 function EconomicsTable({ economics }: { economics: StrategyLabEconomics }) {
@@ -495,14 +524,17 @@ export default async function StrategyLabExplorerPage({ searchParams }: { search
 
   // The heatmap is read only once all three choices are made; fixed values are the server's to check.
   const wantsHeatmap = Boolean(studyId && heatX && heatY && heatMetric);
-  const [detailResult, trialsResult, heatmapResult, breakEvenResult] = studyId
+  const [detailResult, trialsResult, heatmapResult, breakEvenResult, chartsResult] = studyId
     ? await Promise.all([
       getStrategyLabStudy(ctx, studyId), getStrategyLabTrials(ctx, studyId, query),
       wantsHeatmap ? getStrategyLabHeatmap(ctx, studyId, { x: heatX, y: heatY, metric: heatMetric, fixed: heatFixed }) : Promise.resolve(undefined),
       getStrategyLabBreakEvenDistribution(ctx, studyId),
+      // Navigation only: lets the study link to its exact research window on the Market Chart.
+      getChartSeriesCatalog(ctx),
     ])
-    : [undefined, undefined, undefined, undefined];
+    : [undefined, undefined, undefined, undefined, undefined];
   const detail = detailResult?.state === "AVAILABLE" ? detailResult.value : undefined;
+  const charts = chartsResult?.state === "AVAILABLE" ? chartsResult.value.items : undefined;
   const trials = trialsResult?.state === "AVAILABLE" ? trialsResult.value : undefined;
   const metricKeys = (trials?.metric_keys ?? []).filter((key) => !DESCRIPTIVE_KEYS.has(key));
   // Both visualizations bind to the study as displayed, and to each other: any disagreement withholds both.
@@ -528,6 +560,8 @@ export default async function StrategyLabExplorerPage({ searchParams }: { search
         statusLabel="SEARCH_NON_AUTHORITATIVE · GROSS"
         asOf={ctx.evidenceTime}
       />
+
+      <ResearchWorkflowNav current="strategy-lab" />
 
       <article className="panel margin-bottom-24" aria-label="Studies">
         <h2><span>Studies</span><QualityStateBadge status={studies ? studies.state : studiesResult.state} /></h2>
@@ -621,6 +655,7 @@ export default async function StrategyLabExplorerPage({ searchParams }: { search
                   { key: "search", label: "Search", value: `${String(detail.search.mode ?? "UNAVAILABLE")} · max ${String(detail.search.max_trials ?? "UNAVAILABLE")}` },
                 ]}
               />
+              <StudyDataLinks datasets={summary.datasets} charts={charts} />
               {detail.economics ? <EconomicsTable economics={detail.economics} /> : <p className="empty-notice">Economics UNAVAILABLE for this study.</p>}
               <section aria-label="Frozen candidates and Decimal rerun" className="margin-bottom-24">
                 <h3>Frozen candidates and Decimal rerun reconciliation</h3>
