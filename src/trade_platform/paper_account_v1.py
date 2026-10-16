@@ -394,23 +394,16 @@ def summarize_ledger_v1(ledger: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def cost_policy_from_payload_v1(payload: Mapping[str, Any] | None) -> CostPolicyV1:
-    """Rebuild a stored OR-6 payload exactly, or fail closed (gross never stands in for a corrupt one)."""
-    from .strategy_lab_policies_v1 import FeeScheduleV1, SlippageScenarioV1, gross_cost_policy_v1
+    """Rebuild a stored OR-6 payload (v1 or v2) exactly, or fail closed (gross never stands in for a corrupt one)."""
+    from .strategy_lab_policies_v1 import gross_cost_policy_v1, rebuild_cost_policy_v1
 
     if payload is None:
         return gross_cost_policy_v1()
     try:
         # Every field is read as stored: no default stands in for a missing one.
-        fees = payload["venue_fees"]
-        policy = CostPolicyV1(
-            fee_schedule=None if fees is None else FeeScheduleV1(**fees),
-            slippage_scenarios=tuple(SlippageScenarioV1(**s) for s in payload["slippage_scenarios"]),
-            fill_liquidity=str(payload["fill_liquidity"]))
+        return rebuild_cost_policy_v1(dict(payload))
     except (KeyError, TypeError, ValueError) as error:
         raise PaperAccountError("stored_cost_policy_does_not_rebuild_exactly") from error
-    if policy.policy().payload != dict(payload):
-        raise PaperAccountError("stored_cost_policy_does_not_rebuild_exactly")
-    return policy
 
 
 def cycle_cost_policy_v1(cursor: Any, cycle_id: str) -> CostPolicyV1:
