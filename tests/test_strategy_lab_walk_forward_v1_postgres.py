@@ -39,7 +39,7 @@ class WalkForwardPostgresTests(unittest.TestCase):
 
         from tests.test_strategy_lab_e2e_fixture import build_window_and_study
         from tests.test_strategy_lab_walk_forward_v1 import RULE, SPACE, _plan
-        from trade_platform.persistence import PostgresDatabase
+        from trade_platform.persistence import PersistenceError, PostgresDatabase
         from trade_platform.strategy_lab_ledger_v1 import PostgresStrategyLabLedgerV1
         from trade_platform.strategy_lab_walk_forward_v1 import (
             PostgresWalkForwardStoreV1,
@@ -61,9 +61,13 @@ class WalkForwardPostgresTests(unittest.TestCase):
             store.record(report)
             self.assertFalse(store.record(report))  # idempotent by hash
             self.assertIn(report.report_hash, {item.report_hash for item in store.reports(str(study.study_id))})
-            with self.assertRaises(psycopg.Error), database.transaction() as connection, connection.cursor() as cursor:
+            # PostgresDatabase.transaction re-raises driver errors as PersistenceError; the cause is the trigger's.
+            with self.assertRaises(PersistenceError) as refused, database.transaction() as connection, \
+                    connection.cursor() as cursor:
                 cursor.execute("UPDATE strategy_lab_walk_forward_reports SET fold_count=1 WHERE report_hash=%s",
                                (report.report_hash,))
+            self.assertIsInstance(refused.exception.__cause__, psycopg.errors.RaiseException)
+            self.assertIn("immutable", str(refused.exception.__cause__))
             # The table itself refuses non-development classes and a holdout-crossing end.
             for column, value in (("evaluation_class", "HOLDOUT_VALIDATION"), ("numeric_tier", "DECIMAL_AUTHORITATIVE"),
                                   ("cost_mode", "NET"), ("evaluation_end_exclusive",
@@ -71,18 +75,23 @@ class WalkForwardPostgresTests(unittest.TestCase):
                 values = {"evaluation_class": "WALK_FORWARD_DEVELOPMENT", "numeric_tier": "SEARCH_NON_AUTHORITATIVE",
                           "cost_mode": "GROSS_NON_PROMOTABLE",
                           "evaluation_end_exclusive": datetime(2026, 6, 3, tzinfo=UTC), column: value}
-                with self.subTest(column=column), self.assertRaises(psycopg.errors.CheckViolation), \
-                        database.transaction() as connection, connection.cursor() as cursor:
-                    cursor.execute(
-                        "INSERT INTO strategy_lab_walk_forward_reports (report_hash, study_id, split_hash, fold_count, "
-                        "evaluation_class, numeric_tier, cost_mode, evaluation_end_exclusive, identity, recorded_at) "
-                        "VALUES (%s,%s,%s,1,%s,%s,%s,%s,'{}'::jsonb,%s)",
-                        ("f" * 64, study.study_id, "e" * 64, values["evaluation_class"], values["numeric_tier"],
-                         values["cost_mode"], values["evaluation_end_exclusive"],
-                         datetime(2026, 9, 1, tzinfo=UTC) - timedelta(days=1)),
-                    )
+                with self.subTest(column=column), self.assertRaises(PersistenceError) as violated:
+                    self._insert_raw(database, study.study_id, values)
+                self.assertIsInstance(violated.exception.__cause__, psycopg.errors.CheckViolation)
         finally:
             database.close()
+
+    @staticmethod
+    def _insert_raw(database, study_id, values) -> None:  # type: ignore[no-untyped-def]
+        with database.transaction() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO strategy_lab_walk_forward_reports (report_hash, study_id, split_hash, fold_count, "
+                "evaluation_class, numeric_tier, cost_mode, evaluation_end_exclusive, identity, recorded_at) "
+                "VALUES (%s,%s,%s,1,%s,%s,%s,%s,'{}'::jsonb,%s)",
+                ("f" * 64, study_id, "e" * 64, values["evaluation_class"], values["numeric_tier"],
+                 values["cost_mode"], values["evaluation_end_exclusive"],
+                 datetime(2026, 9, 1, tzinfo=UTC) - timedelta(days=1)),
+            )
 
 
 if __name__ == "__main__":
