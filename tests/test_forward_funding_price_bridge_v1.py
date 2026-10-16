@@ -12,19 +12,25 @@ from __future__ import annotations
 import ast
 import inspect
 import json
+import shutil
+import tempfile
 import unittest
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from tests.test_first_party_t4_forward_bars_v1 import _acceptance as t4_acceptance
+from tests.test_first_party_t4_forward_bars_v1 import _ForwardFixture, _venue_minute
 from trade_platform import forward_funding_price_bridge_v1 as bridge
 from trade_platform import strategy_lab_validation_v1 as validation
 from trade_platform.bybit_forward_settled_funding_v1 import (
     ForwardFundingError,
     ForwardFundingObservationV1,
+    ForwardSettledFundingStoreV1,
     ObservationClockBoundV1,
     PublishedFundingIntervalV1,
     observe_forward_settled_funding_v1,
@@ -43,6 +49,7 @@ from trade_platform.first_party_t4_forward_bars_v1 import (
     T4ForwardBarV1,
     T4ForwardDatasetBarsV1,
     T4PriceConventionV1,
+    resolve_t4_price_reference_v1,
 )
 from trade_platform.forward_funding_price_bridge_v1 import (
     CONFIRMED,
@@ -88,9 +95,31 @@ def _observe(rates: Mapping[int, str], *, received_ms: int = RECEIVED,
             for at, rate in sorted(rates.items(), reverse=True)]
     body = json.dumps({"retCode": 0, "retMsg": "OK", "result": {"category": "linear", "list": rows},
                        "retExtInfo": {}, "time": received_ms}).encode()
-    return observe_forward_settled_funding_v1(
+    observation = observe_forward_settled_funding_v1(
         body, symbol="BTCUSDT", start_ms=D0, end_ms=END - 1,
         observed_at_host_utc_nanos=received_ms * 1_000_000, clock_bound=bound)
+    _BODIES[observation.idempotency_key] = body  # the bridge only reads observations back from a store
+    return observation
+
+
+_BODIES: dict[str, bytes] = {}
+
+
+def _store(observations: Sequence[ForwardFundingObservationV1]) -> ForwardSettledFundingStoreV1:
+    root = Path(tempfile.mkdtemp(prefix="funding-price-bridge-"))
+    _ROOTS.append(root)
+    store = ForwardSettledFundingStoreV1(root)
+    for observation in observations:
+        store.append(observation, _BODIES[observation.idempotency_key])
+    return store
+
+
+_ROOTS: list[Path] = []
+
+
+def tearDownModule() -> None:
+    for root in _ROOTS:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def _bar(open_micros: int, *, open_price: str = "65000.5", close_price: str = "65001",
@@ -147,7 +176,7 @@ def _run(observations: Sequence[ForwardFundingObservationV1] | None = None, *,
          acceptance: HourlyAcceptanceV1 | None = None, symbol: str = "BTCUSDT",
          approval: object = None) -> ForwardFundingPriceBridgeV1:
     return bridge_forward_funding_prices_v1(
-        [_observe(RATES)] if observations is None else observations, symbol=symbol, start_ms=D0, end_ms=END,
+        _store([_observe(RATES)] if observations is None else observations), symbol=symbol, start_ms=D0, end_ms=END,
         as_of=as_of, published_interval=interval,
         datasets=[_dataset(_close_bars())] if datasets is None else datasets,
         acceptance=_acceptance() if acceptance is None else acceptance, convention=convention, approval=approval)
@@ -316,6 +345,84 @@ class PriceRefusalTests(unittest.TestCase):
         self.assertEqual(result.status, REFUSED_PRICE_EVIDENCE)
         self.assertEqual({s["price_refusal"] for s in result.settlements},
                          {"datasets_must_name_exactly_one_exchange_symbol"})
+
+
+    def test_a_malformed_hourly_acceptance_refuses_the_price(self) -> None:
+        good = _acceptance()
+        short = replace(good, symbols=(replace(good.symbols[0], segments=good.symbols[0].segments[:-1]),))
+        result = _run(acceptance=short)
+        self.assertEqual(result.status, REFUSED_PRICE_EVIDENCE)
+        self.assertEqual({s["price_refusal"] for s in result.settlements}, {"hourly_acceptance_malformed"})
+
+
+class FundingStoreTests(unittest.TestCase):
+    def test_only_the_forward_store_is_accepted_as_funding_evidence(self) -> None:
+        with self.assertRaisesRegex(ForwardFundingPriceBridgeError, "must_come_from_the_forward_funding_store"):
+            bridge_forward_funding_prices_v1(
+                [_observe(RATES)], symbol="BTCUSDT", start_ms=D0, end_ms=END, as_of=AS_OF,  # type: ignore[arg-type]
+                published_interval=INTERVAL_8H, datasets=[_dataset(_close_bars())], acceptance=_acceptance(),
+                convention=CLOSE)
+
+    def test_a_stored_record_that_no_longer_reproduces_refuses_the_bridge(self) -> None:
+        store = _store([_observe(RATES)])
+        root = _ROOTS[-1] / "forward-settled-funding" / "bybit-v5" / "symbol=BTCUSDT" / "observations"
+        record = next(root.glob("*.json"))
+        stored = json.loads(record.read_text(encoding="utf-8"))
+        stored["provenance"]["knowledge_at_micros"] -= 3_600_000_000  # back-date the knowledge claim
+        record.write_text(json.dumps(stored, sort_keys=True, indent=1), encoding="utf-8")
+        with self.assertRaisesRegex(ForwardFundingError, "does_not_reproduce"):
+            bridge_forward_funding_prices_v1(
+                store, symbol="BTCUSDT", start_ms=D0, end_ms=END, as_of=AS_OF, published_interval=INTERVAL_8H,
+                datasets=[_dataset(_close_bars())], acceptance=_acceptance(), convention=CLOSE)
+
+
+class SealedPriceEvidenceTests(_ForwardFixture):
+    """The real path: prices from a sealed, raw-replayed fixture segment via ``forward_bars_from_seal_v1``."""
+
+    def _bridge(self, dataset: T4ForwardDatasetBarsV1, convention: T4PriceConventionV1,
+                funding_root: str) -> ForwardFundingPriceBridgeV1:
+        settled = _venue_minute(2)  # a fixture minute, standing in for a settlement instant
+        first = (settled - _EPOCH) // timedelta(milliseconds=1)
+        rates = {first: "0.0001", first + 8 * _H: "0"}
+        start, end = first - 4 * _H, first + 12 * _H
+        received = end + 5_000
+        rows = [{"symbol": "BTCUSDT", "fundingRate": r, "fundingRateTimestamp": str(at)} for at, r in rates.items()]
+        body = json.dumps({"retCode": 0, "retMsg": "OK", "result": {"category": "linear", "list": rows},
+                           "retExtInfo": {}, "time": received}).encode()
+        observation = observe_forward_settled_funding_v1(
+            body, symbol="BTCUSDT", start_ms=start, end_ms=end - 1, observed_at_host_utc_nanos=received * 1_000_000,
+            clock_bound=BOUND)
+        store = ForwardSettledFundingStoreV1(self.temp / funding_root)
+        store.append(observation, body)
+        return bridge_forward_funding_prices_v1(
+            store, symbol="BTCUSDT", start_ms=start, end_ms=end, as_of=_EPOCH + timedelta(milliseconds=received + 60_000),
+            published_interval=PublishedFundingIntervalV1(8, "t4-funding:fixture", start * 1000),
+            datasets=[dataset], acceptance=t4_acceptance(dataset.session_id), convention=convention)
+
+    def test_sealed_prices_bind_and_missing_bars_refuse(self) -> None:
+        dataset = self.dataset()
+        for convention, relation in (
+            (CLOSE, "DIFFERS_FROM_THE_HISTORICAL_POSITION_VALUE_REFERENCE"),
+            (OPEN, "SAME_SELECTION_AS_THE_HISTORICAL_POSITION_VALUE_REFERENCE"),
+        ):
+            result = self._bridge(dataset, convention, f"funding-{convention.value}")
+            self.assertEqual(result.identity["funding_window"]["status"], "COMPLETE")
+            self.assertEqual(result.status, REFUSED_PRICE_EVIDENCE)  # the segment ends minutes later
+            bound, missing = result.settlements
+            self.assertEqual(bound["status"], EVIDENCE_BOUND_TRADE_PROXY_UNAPPROVED)
+            self.assertEqual(bound["price"]["relation_to_historical_charge_rule"], relation)
+            self.assertEqual(bound["price"]["session_id"], str(self.session_id))
+            self.assertEqual(missing["price_refusal"], "no_proven_bar_for_the_minute")
+            self.assertEqual(missing["payer_direction"], ZERO_RATE_NO_TRANSFER)
+            self.assertIsNone(missing["structural_note"])  # 08:12 is not an hour head
+            reference = resolve_t4_price_reference_v1(
+                [dataset], instant=_venue_minute(2), convention=convention,
+                acceptance=t4_acceptance(dataset.session_id), known_by=_venue_minute(60))
+            self.assertEqual(bound["price"]["price"], str(reference.price))
+            self.assertEqual(bound["price"]["reference_hash"], reference.reference_hash)
+            # A second, independently written store of the same evidence gives the same hash.
+            again = self._bridge(dataset, convention, f"again-{convention.value}")
+            self.assertEqual(result.content_hash, again.content_hash)
 
 
 class CallerErrorTests(unittest.TestCase):

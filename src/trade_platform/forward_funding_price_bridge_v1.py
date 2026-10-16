@@ -8,8 +8,10 @@ pair goes toward a forward funding charge -- and, in v1, why it stops short.
 Inputs and their relationships
 ------------------------------
 * Funding: :mod:`~trade_platform.bybit_forward_settled_funding_v1` observations,
-  judged by its own :func:`forward_funding_window_as_of_v1` over ``[start, end)``
-  as of one decision instant. Event time is the venue settlement instant
+  loaded only from its append-only :class:`ForwardSettledFundingStoreV1` (every
+  record re-derived from its raw body; any drift refuses the load) and judged
+  here by its own :func:`forward_funding_window_as_of_v1` over ``[start, end)``
+  as of one decision instant -- never a caller-built observation or window. Event time is the venue settlement instant
   (``fundingRateTimestamp``, ms); knowledge time is each observation's own
   bounded knowledge instant. Indicative ticker funding never gets here.
 * Price: :mod:`~trade_platform.first_party_t4_forward_bars_v1` sealed datasets
@@ -75,7 +77,7 @@ an approval is refused by name.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -84,6 +86,7 @@ from typing import Any, Final
 from .bybit_forward_settled_funding_v1 import (
     COMPLETE,
     ForwardFundingObservationV1,
+    ForwardSettledFundingStoreV1,
     PublishedFundingIntervalV1,
     canonical_symbol_identity_v1,
     forward_funding_window_as_of_v1,
@@ -301,7 +304,7 @@ def _settlement(
 
 
 def bridge_forward_funding_prices_v1(
-    observations: Iterable[ForwardFundingObservationV1],
+    funding_store: ForwardSettledFundingStoreV1,
     *,
     symbol: str,
     start_ms: int,
@@ -315,6 +318,8 @@ def bridge_forward_funding_prices_v1(
 ) -> ForwardFundingPriceBridgeV1:
     """Bind each settlement in ``[start_ms, end_ms)`` known as of ``as_of`` to its proven T4 price, or refuse."""
     canonical = canonical_symbol_identity_v1(symbol)
+    if not isinstance(funding_store, ForwardSettledFundingStoreV1):
+        raise ForwardFundingPriceBridgeError("funding_evidence_must_come_from_the_forward_funding_store")
     if not isinstance(convention, T4PriceConventionV1):
         raise ForwardFundingPriceBridgeError("price_convention_must_be_declared")
     if not isinstance(as_of, datetime) or as_of.tzinfo is None:
@@ -323,7 +328,7 @@ def bridge_forward_funding_prices_v1(
         raise ForwardFundingPriceBridgeError("price_dataset_symbol_differs_from_the_funding_symbol")
     resolved_approval = _approval(approval)
     as_of_micros = (as_of.astimezone(UTC) - _EPOCH) // timedelta(microseconds=1)
-    observations = list(observations)
+    observations = funding_store.load(symbol)  # re-derived from raw bodies; drift refuses
     window = forward_funding_window_as_of_v1(
         observations, symbol=symbol, start_ms=start_ms, end_ms=end_ms, as_of_micros=as_of_micros,
         published_interval=published_interval)
