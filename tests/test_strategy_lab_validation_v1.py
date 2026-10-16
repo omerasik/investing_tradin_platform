@@ -31,7 +31,12 @@ from trade_platform.public_archive_research_bars_v1 import (
 )
 from trade_platform.research_data_plane_v1 import ResearchFrameStoreV1
 from trade_platform.strategy_lab_authority_rerun_v1 import AuthorityRerunV1, decimal_metrics_v1
-from trade_platform.strategy_lab_policies_v1 import CostPolicyV1, FeeScheduleV1, SlippageScenarioV1
+from trade_platform.strategy_lab_policies_v1 import (
+    CostPolicyV1,
+    CostPolicyV2,
+    FeeScheduleV1,
+    SlippageScenarioV1,
+)
 from trade_platform.strategy_lab_validation_v1 import (
     CURRENT_CYCLE_V1,
     STATUS_AUTHORIZED,
@@ -58,7 +63,7 @@ def fixture_cost_policy(**fee_overrides: Any) -> dict[str, Any]:
             "taker_fee_bps": "5", "verified_by": "test", "verified_on": "2026-10-08",
             "source_reference": "test fixture, not a real schedule", **fee_overrides}
     scenarios = (SlippageScenarioV1("fixture-low", "1", "fixture"), SlippageScenarioV1("fixture-high", "4", "fixture"))
-    return CostPolicyV1(fee_schedule=FeeScheduleV1(**fees), slippage_scenarios=scenarios).policy().payload
+    return CostPolicyV2(fee_schedule=FeeScheduleV1(**fees), slippage_scenarios=scenarios).policy().payload
 
 
 def established_rerun(study: Any, trial_ids: list[str], status: str = "ESTABLISHED") -> AuthorityRerunV1:
@@ -134,9 +139,28 @@ class PreregistrationTests(_Study):
             with self.subTest(cost=cost.get("venue_fees")):
                 self.assertIn("MISSING_VERIFIED_FEE_SCHEDULE_AND_STRESS_ENVELOPE_OR_6",
                               authorized_packet(self.study, self.trials, cycle, cost_policy=cost).unresolved)
+        for cost in (CostPolicyV2().policy().payload,
+                     {**fixture_cost_policy(), "funding": {**fixture_cost_policy()["funding"],
+                                                           "holdout_validation": "NOT_MODELLED"}}):
+            with self.subTest(cost=cost["mode"]):
+                self.assertIn("MISSING_VERIFIED_FEE_SCHEDULE_AND_STRESS_ENVELOPE_OR_6",
+                              authorized_packet(self.study, self.trials, cycle, cost_policy=cost).unresolved)
         failed = established_rerun(self.study, self.trials, status="FAIL_CLOSED_AUTHORITY_NOT_ESTABLISHED")
         self.assertIn("AUTHORITY_RERUN_SELECTION_NOT_ESTABLISHED",
                       authorized_packet(self.study, self.trials, cycle, rerun=failed).unresolved)
+
+    def test_a_v1_cost_policy_contradicts_the_funding_rule_and_is_refused_not_upgraded(self) -> None:
+        cycle = test_cycle()
+        v2 = fixture_cost_policy()
+        self.assertEqual(validation.FUNDING_RULE_V1, v2["funding"]["holdout_validation"])
+        # The very same verified inputs as a v1 payload: its funding says "not modelled".
+        v1 = CostPolicyV1(fee_schedule=FeeScheduleV1(**v2["venue_fees"]), slippage_scenarios=tuple(
+            SlippageScenarioV1(**item) for item in v2["slippage_scenarios"])).policy().payload
+        packet = authorized_packet(self.study, self.trials, cycle, cost_policy=v1)
+        self.assertEqual(STATUS_DRAFT, packet.status)
+        self.assertEqual(["MISSING_VERIFIED_FEE_SCHEDULE_AND_STRESS_ENVELOPE_OR_6"], list(packet.unresolved))
+        self.assertEqual(v1, packet.frozen["cost_policy"])  # recorded as given, never rewritten to v2
+        self.assertEqual(STATUS_AUTHORIZED, authorized_packet(self.study, self.trials, cycle, cost_policy=v2).status)
 
     def test_the_identity_is_frozen_against_later_mutation(self) -> None:
         cost = fixture_cost_policy()
