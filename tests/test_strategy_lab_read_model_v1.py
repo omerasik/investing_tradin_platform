@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import unittest
 from datetime import UTC, datetime
 from unittest.mock import Mock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
 
@@ -20,6 +21,7 @@ from trade_platform.strategy_lab_read_model_v1 import (
     StrategyLabStudyPage,
     StrategyLabStudySummaryView,
     StrategyLabTrialPage,
+    _TrialContext,
     economics_v1,
 )
 
@@ -121,6 +123,57 @@ class StrategyLabReadApiTests(unittest.TestCase):
             StrategyLabAuthorityView(authority_status="AUTHORITATIVE", reasons=[])  # type: ignore[arg-type]
         with self.assertRaises(ValueError):
             StrategyLabAuthorityView(promotable=True, reasons=[])  # type: ignore[arg-type]
+
+
+class _StubCursor:
+    """Answers the three _TrialContext reads by table name."""
+
+    def __init__(self, rows: dict[str, list[tuple[object, ...]]]) -> None:
+        self.rows = rows
+        self.pending: list[tuple[object, ...]] = []
+
+    def execute(self, query: str, params: tuple[object, ...] = ()) -> None:
+        self.pending = next(rows for table, rows in self.rows.items() if f"FROM {table}" in query)
+
+    def fetchall(self) -> list[tuple[object, ...]]:
+        return self.pending
+
+    def fetchone(self) -> tuple[object, ...] | None:
+        return self.pending[0] if self.pending else None
+
+
+class StrategyLabTrialRerunBindingTests(unittest.TestCase):
+    def _set(self, set_hash: str, trial: str, at: datetime) -> tuple[object, ...]:
+        payload = {"rule": {"metric": "m"}, "candidates": [{"rank": 1, "trial_id": trial, "trial_content_hash": "a" * 64,
+                                                             "result_content_hash": "b" * 64, "metric_value": "1"}],
+                   "eligible_count": 1, "ineligible_count": 0, "cutoff_tie": False, "multiple_testing_trial_count": 1,
+                   "numeric_tier": "SEARCH_NON_AUTHORITATIVE", "authoritative_rerun": "REQUIRED_DECIMAL_RERUN_OR_3"}
+        return (set_hash, "c" * 64, json.dumps(payload), at)
+
+    def _rerun(self, rerun_hash: str, set_hash: str, status: str, trial: str, at: datetime) -> tuple[object, ...]:
+        identity = {"results": [{"trial_id": trial, "lag_micros": 2000000, "reconciliation": "RECONCILED"}],
+                    "authoritative_selection": {"selected": [{"rank": 1, "trial_id": trial, "metric_value": "1.0"}]}}
+        return (rerun_hash, set_hash, status, 1, json.dumps(identity), at)
+
+    def test_trial_reruns_bind_to_the_displayed_set_and_fail_closed(self) -> None:
+        trial = str(uuid4())
+        old, new = "1" * 64, "2" * 64
+        cursor = _StubCursor({
+            "strategy_lab_candidate_sets": [self._set(old, trial, NOW), self._set(new, trial, NOW.replace(day=4))],
+            # The newest rerun is of the OLD set; it must not be joined onto the latest set's trials.
+            "strategy_lab_authority_reruns": [
+                self._rerun("e" * 64, new, "FAIL_CLOSED_AUTHORITY_NOT_ESTABLISHED", trial, NOW.replace(day=5)),
+                self._rerun("f" * 64, old, "ESTABLISHED", trial, NOW.replace(day=6)),
+            ],
+            "strategy_lab_candidate_states": [],
+        })
+        rerun = _TrialContext(cursor, uuid4()).rerun(UUID(trial))
+        assert rerun is not None
+        self.assertEqual(rerun.rerun_hash, "e" * 64)
+        self.assertEqual(rerun.selection_status, "FAIL_CLOSED_AUTHORITY_NOT_ESTABLISHED")
+        # An unestablished selection never yields a Decimal rank, even if the record lists one.
+        self.assertIsNone(rerun.decimal_rank)
+        self.assertIsNone(rerun.decimal_metric_value)
 
 
 class StrategyLabEconomicsTests(unittest.TestCase):

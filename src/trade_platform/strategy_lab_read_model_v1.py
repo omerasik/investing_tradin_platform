@@ -256,6 +256,8 @@ class StrategyLabTrialRerunView(BaseModel):
     """A trial's Decimal rerun state, restated from the stored rerun record."""
 
     rerun_hash: str
+    #: ``ESTABLISHED`` or ``FAIL_CLOSED_AUTHORITY_NOT_ESTABLISHED``; a Decimal rank exists only when established.
+    selection_status: str
     reasons: list[str]
     #: Reconciliation per lag (micros, as text), e.g. ``{"2000000": "RECONCILED"}``.
     reconciliation_by_lag: dict[str, str]
@@ -443,10 +445,13 @@ _SUMMARY_SQL = (
     "(SELECT count(*) FROM strategy_lab_trial_results r WHERE r.study_id=s.study_id) "
     "FROM strategy_lab_studies s"
 )
-#: Binds a study to catalogued windows by exact ``dataset_version_id:content_hash`` pairs.
-_BINDS_ANY_SQL = (
-    "EXISTS (SELECT 1 FROM jsonb_array_elements(s.identity->'datasets') b "
-    "WHERE (b->>'dataset_version_id') || ':' || (b->>'content_hash') = ANY(%s))"
+#: A study is an instrument's study only when it has bindings and *every* binding is one of that
+#: instrument's catalogued windows by exact ``dataset_version_id:content_hash`` (as ``_instrument``
+#: resolves it for display); a missing key or an unmatched binding excludes the study.
+_BINDS_ONLY_SQL = (
+    "jsonb_array_length(s.identity->'datasets') > 0 AND NOT EXISTS ("
+    "SELECT 1 FROM jsonb_array_elements(s.identity->'datasets') b "
+    "WHERE COALESCE((b->>'dataset_version_id') || ':' || (b->>'content_hash') = ANY(%s), FALSE) = FALSE)"
 )
 
 
@@ -472,8 +477,9 @@ def read_strategy_lab_studies_v1(
 ) -> StrategyLabStudyPage:
     """Studies newest first, filtered server-side.
 
-    ``instrument`` matches only studies bound to a catalogued window of that
-    symbol by exact identity; with no catalogue (``windows is None``) an
+    ``instrument`` matches only studies whose every binding is a catalogued
+    window of that symbol by exact identity -- exactly the studies displayed
+    with that instrument; with no catalogue (``windows is None``) an
     instrument filter matches nothing rather than guessing from labels.
     """
     index = window_index_v1(windows)
@@ -484,7 +490,7 @@ def read_strategy_lab_studies_v1(
         params.append(strategy_family)
     if instrument is not None:
         pairs = [f"{key[0]}:{key[1]}" for key, w in (index or {}).items() if str(w["symbol"]) == instrument]
-        clauses.append(_BINDS_ANY_SQL)
+        clauses.append(_BINDS_ONLY_SQL)
         params.append(pairs)
     where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
     cursor.execute(f"SELECT count(*) FROM strategy_lab_studies s{where}", tuple(params))  # nosec B608
@@ -636,9 +642,11 @@ class _TrialContext:
 
     def __init__(self, cursor: _Cursor, study_id: UUID) -> None:
         sets = _candidate_sets(cursor, study_id)
-        # The latest frozen set is the one the reruns and validation bind to.
+        # The latest frozen set is the one shown; only reruns *of that set* are joined onto trials,
+        # so a frozen rank and a Decimal rank never come from different sets.
         self.frozen: dict[UUID, int] = {c.trial_id: c.rank for c in sets[-1].candidates} if sets else {}
-        self.reruns = _rerun_rows(cursor, study_id)
+        latest_set = sets[-1].candidate_set_hash if sets else None
+        self.reruns = [row for row in _rerun_rows(cursor, study_id) if row[1] == latest_set]
         self.states: dict[UUID, str] = {}
         for state in _candidate_states(cursor, study_id):
             self.states[state.trial_id] = state.state  # recorded order: the latest wins
@@ -653,7 +661,7 @@ class _TrialContext:
             chosen = selected.get(str(trial_id)) if status == "ESTABLISHED" else None
             reasons = list(dict.fromkeys(str(x) for r in results for x in r.get("reasons", [])))
             return StrategyLabTrialRerunView(
-                rerun_hash=rerun_hash, reasons=reasons,
+                rerun_hash=rerun_hash, selection_status=status, reasons=reasons,
                 reconciliation_by_lag={str(r.get("lag_micros")): str(r.get("reconciliation")) for r in results},
                 decimal_rank=int(chosen["rank"]) if chosen else None,
                 decimal_metric_value=str(chosen["metric_value"]) if chosen else None,

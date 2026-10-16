@@ -844,7 +844,7 @@ export type StrategyLabTrial = {
   metrics: Record<string, string | null>;
   produced_at: string | null;
   frozen_rank: number | null;
-  rerun: { rerun_hash: string; reasons: string[]; reconciliation_by_lag: Record<string, string>; decimal_rank: number | null; decimal_metric_value: string | null } | null;
+  rerun: { rerun_hash: string; selection_status: string; reasons: string[]; reconciliation_by_lag: Record<string, string>; decimal_rank: number | null; decimal_metric_value: string | null } | null;
   candidate_state: string | null;
 };
 

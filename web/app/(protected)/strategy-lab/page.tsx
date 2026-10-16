@@ -222,7 +222,9 @@ function TrialRow({ trial, columns, params }: { trial: StrategyLabTrial; columns
       <td className="tabular-num">{trial.frozen_rank ?? "—"}</td>
       <td>
         {trial.rerun
-          ? <>{trial.rerun.decimal_rank !== null ? `Decimal #${trial.rerun.decimal_rank}` : "rerun, not selected"} · {[...new Set(Object.values(trial.rerun.reconciliation_by_lag))].join("/")}</>
+          ? <>{trial.rerun.selection_status !== "ESTABLISHED"
+            ? "selection NOT ESTABLISHED (fail closed)"
+            : trial.rerun.decimal_rank !== null ? `Decimal #${trial.rerun.decimal_rank}` : "rerun, not selected"} · {[...new Set(Object.values(trial.rerun.reconciliation_by_lag))].join("/")}</>
           : "—"}
       </td>
     </tr>
