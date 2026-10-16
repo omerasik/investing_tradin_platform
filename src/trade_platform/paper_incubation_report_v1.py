@@ -8,9 +8,15 @@ modelled, a restart-safe position chain.
 
 Incubation length is bound to the preregistration packet (OR-7)
 ---------------------------------------------------------------
-The caller never states how long a candidate must incubate. The only source is
-an :class:`IncubationBindingV1`, issued by :func:`bind_incubation_v1` from the
-*stored* evidence chain of one candidate:
+The caller never states how long a candidate must incubate. The authoritative
+source is an :class:`IncubationResolutionV1`, issued by
+:func:`trade_platform.paper_incubation_registry_v1.resolve_incubation_bindings_v1`
+from the *persisted* R6 registry rows of one research cycle (the terminal and
+the operator CLI use it). :func:`bind_incubation_v1` remains for callers that
+read the stored identities themselves; its bindings are labelled
+``CALLER_SUPPLIED_IDENTITIES_NOT_REGISTRY_RESOLVED`` in every report. Either way
+each :class:`IncubationBindingV1` is checked here against the stored evidence
+chain:
 
 * the frozen preregistration packet identity, whose hash must re-derive;
 * the holdout validation identity, whose hash must re-derive and which must
@@ -91,6 +97,9 @@ UNRESOLVED_PACKET_AUTHORIZATION: Final = "MISSING_OWNER_AUTHORIZATION"
 #: Reserved; this module can never produce it.
 STATE_PROFESSIONALLY_VALIDATED_RESERVED: Final = "PROFESSIONALLY_VALIDATED"
 UNRESOLVED_NO_BINDING: Final = "NO_AUTHORIZED_PREREGISTRATION_BINDING"
+BINDING_SOURCE_REGISTRY_V1: Final = "PERSISTED_PREREGISTRATION_REGISTRY_V1"
+BINDING_SOURCE_CALLER_SUPPLIED_V1: Final = "CALLER_SUPPLIED_IDENTITIES_NOT_REGISTRY_RESOLVED"
+BINDING_SOURCES_V1: Final = (BINDING_SOURCE_REGISTRY_V1, BINDING_SOURCE_CALLER_SUPPLIED_V1)
 WINDOW_UNRESOLVED: Final = "UNRESOLVED"
 WINDOW_INCOMPLETE: Final = "INCOMPLETE"
 WINDOW_ELAPSED: Final = "ELAPSED_EXIT_CRITERIA_OWNER_UNDECIDED"
@@ -121,8 +130,11 @@ def _micros(value: datetime) -> int:
 class IncubationBindingV1:
     """One candidate's incubation requirement and start, bound to its preregistration packet.
 
-    Issued only by :func:`bind_incubation_v1`. ``required_days`` is ``None`` exactly
-    when ``unresolved`` is non-empty.
+    Issued only by the chain check: through the registry resolver (``source`` =
+    :data:`BINDING_SOURCE_REGISTRY_V1`), or through :func:`bind_incubation_v1` from
+    identities a caller read (:data:`BINDING_SOURCE_CALLER_SUPPLIED_V1`; kept for
+    compatibility, and labelled as such in every report). ``required_days`` is
+    ``None`` exactly when ``unresolved`` is non-empty.
     """
 
     study_id: str
@@ -134,16 +146,20 @@ class IncubationBindingV1:
     incubating_since_micros: int
     required_days: int | None
     unresolved: tuple[str, ...]
+    source: str = ""
     _issuer: object = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self._issuer is not _BINDING_ISSUER:
             raise PaperIncubationError("incubation_binding_is_issued_only_by_bind_incubation_v1")
+        if self.source not in BINDING_SOURCES_V1:
+            raise PaperIncubationError("incubation_binding_source_unknown")
 
     @property
     def key(self) -> tuple[Any, ...]:
         return (self.study_id, self.trial_id, self.symbol, self.cycle_id, self.preregistration_hash,
-                self.validation_hash, self.incubating_since_micros, self.required_days, self.unresolved)
+                self.validation_hash, self.incubating_since_micros, self.required_days, self.unresolved,
+                self.source)
 
     @property
     def issued(self) -> bool:
@@ -152,7 +168,8 @@ class IncubationBindingV1:
 
     def payload(self) -> dict[str, Any]:
         return {"preregistration_hash": self.preregistration_hash, "cycle_id": self.cycle_id,
-                "validation_hash": self.validation_hash, "incubating_since_micros": self.incubating_since_micros}
+                "validation_hash": self.validation_hash, "incubating_since_micros": self.incubating_since_micros,
+                "source": self.source}
 
 
 _ISSUED_BINDINGS: set[tuple[Any, ...]] = set()
@@ -193,13 +210,26 @@ def _required_days(packet: Mapping[str, Any]) -> tuple[int | None, tuple[str, ..
 def bind_incubation_v1(*, packet_identity: Mapping[str, Any], packet_hash: str,
                        validation_identity: Mapping[str, Any], validation_hash: str,
                        states: Sequence[Mapping[str, Any]], trial_id: str) -> IncubationBindingV1:
-    """Bind one candidate's incubation to its stored packet, validation and state events.
+    """Bind one candidate's incubation to stored identities the *caller* read.
 
     ``packet_identity`` / ``validation_identity`` are the stored identities
     (``strategy_lab_preregistrations.identity``, ``strategy_lab_holdout_validations.identity``);
     ``states`` are the candidate state rows of the packet's study. Every hash must
     re-derive and every cross-reference must agree, or the binding is refused.
+    The chain is self-consistent but not proven to be the persisted one, so the
+    binding is labelled :data:`BINDING_SOURCE_CALLER_SUPPLIED_V1` in every report;
+    the authoritative path is the registry resolver
+    (:mod:`trade_platform.paper_incubation_registry_v1`).
     """
+    return _bind_stored_chain_v1(packet_identity=packet_identity, packet_hash=packet_hash,
+                                 validation_identity=validation_identity, validation_hash=validation_hash,
+                                 states=states, trial_id=trial_id, source=BINDING_SOURCE_CALLER_SUPPLIED_V1)
+
+
+def _bind_stored_chain_v1(*, packet_identity: Mapping[str, Any], packet_hash: str,
+                          validation_identity: Mapping[str, Any], validation_hash: str,
+                          states: Sequence[Mapping[str, Any]], trial_id: str, source: str) -> IncubationBindingV1:
+    """The chain check behind both binding paths (see :func:`bind_incubation_v1`)."""
     if identity_hash_v1(dict(packet_identity)) != packet_hash:
         raise PaperIncubationError("preregistration_identity_does_not_rederive")
     if identity_hash_v1(dict(validation_identity)) != validation_hash:
@@ -231,9 +261,65 @@ def bind_incubation_v1(*, packet_identity: Mapping[str, Any], packet_hash: str,
         raise PaperIncubationError("incubating_state_instant_must_be_a_persisted_datetime")
     required, unresolved = _required_days(packet_identity)
     binding = IncubationBindingV1(study_id, trial_id, str(packet_identity["symbol"]), cycle_id, packet_hash,
-                                  validation_hash, _micros(recorded_at), required, unresolved, _BINDING_ISSUER)
+                                  validation_hash, _micros(recorded_at), required, unresolved, source=source,
+                                  _issuer=_BINDING_ISSUER)
     _ISSUED_BINDINGS.add(binding.key)
     return binding
+
+
+@dataclass(frozen=True, slots=True)
+class IncubationResolutionV1:
+    """One research cycle's incubation bindings, as resolved from the persisted registry.
+
+    Issued only by the registry resolver. ``unresolved`` holds the cycle-level
+    reasons a candidate without a binding is ``UNRESOLVED`` (e.g. the holdout is
+    not opened); it is never a default requirement.
+    """
+
+    cycle_id: str
+    source: str
+    bindings: tuple[IncubationBindingV1, ...]
+    unresolved: tuple[str, ...]
+    _issuer: object = field(default=None, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self._issuer is not _BINDING_ISSUER:
+            raise PaperIncubationError("incubation_resolution_is_issued_only_by_the_registry")
+
+    @property
+    def key(self) -> tuple[Any, ...]:
+        return (self.cycle_id, self.source, tuple(binding.key for binding in self.bindings), self.unresolved)
+
+    @property
+    def issued(self) -> bool:
+        return self.key in _ISSUED_RESOLUTIONS and all(binding.issued for binding in self.bindings)
+
+    def payload(self) -> dict[str, Any]:
+        return {"cycle_id": self.cycle_id, "source": self.source, "bound_candidates": len(self.bindings),
+                "unresolved": list(self.unresolved)}
+
+
+_ISSUED_RESOLUTIONS: set[tuple[Any, ...]] = set()
+
+
+def _issue_resolution_v1(cycle_id: str, source: str, bindings: Sequence[IncubationBindingV1],
+                         unresolved: Sequence[str]) -> IncubationResolutionV1:
+    """Called only by the registry resolver, with bindings it issued from rows it read."""
+    if source != BINDING_SOURCE_REGISTRY_V1:
+        raise PaperIncubationError("incubation_resolution_is_issued_only_by_the_registry")
+    if any(not isinstance(binding, IncubationBindingV1) or not binding.issued
+           or binding.source != BINDING_SOURCE_REGISTRY_V1 for binding in bindings):
+        raise PaperIncubationError("incubation_binding_is_issued_only_by_the_registry")
+    if any(binding.cycle_id != cycle_id for binding in bindings):
+        raise PaperIncubationError("binding_is_of_another_cycle")
+    if bindings and unresolved:
+        raise PaperIncubationError("a_resolution_with_bindings_has_no_cycle_level_gap")
+    ordered = tuple(sorted(bindings, key=lambda binding: (binding.study_id, binding.trial_id)))
+    if len({(binding.study_id, binding.trial_id) for binding in ordered}) != len(ordered):
+        raise PaperIncubationError("one_binding_per_candidate")
+    resolution = IncubationResolutionV1(cycle_id, source, ordered, tuple(sorted(set(unresolved))), _BINDING_ISSUER)
+    _ISSUED_RESOLUTIONS.add(resolution.key)
+    return resolution
 
 
 # ---------------------------------------------------------------------------
@@ -270,7 +356,7 @@ def evidenced_segments_v1(items: Sequence[Mapping[str, Any]]) -> list[tuple[int,
 
 
 def _incubation(items: Sequence[Mapping[str, Any]], binding: IncubationBindingV1 | None,
-                as_of_micros: int) -> dict[str, Any]:
+                as_of_micros: int, unbound: Sequence[str]) -> dict[str, Any]:
     for item in items:
         observed = [int(item["decided_at_micros"])]
         if item["status"] != FILL_STATUS_BAR_NOT_OBSERVED:
@@ -282,7 +368,7 @@ def _incubation(items: Sequence[Mapping[str, Any]], binding: IncubationBindingV1
     segments = evidenced_segments_v1(items)
     elapsed = sum(end - start for start, end in segments)
     required = None if binding is None else binding.required_days
-    unresolved = [UNRESOLVED_NO_BINDING] if binding is None else list(binding.unresolved)
+    unresolved = list(unbound) if binding is None else list(binding.unresolved)
     if required is None:
         window = WINDOW_UNRESOLVED
     else:
@@ -302,23 +388,34 @@ def _incubation(items: Sequence[Mapping[str, Any]], binding: IncubationBindingV1
 
 
 def incubation_report_v1(fills: Sequence[Mapping[str, Any]], cost_policy: CostPolicyV1, *,
-                         as_of: datetime, bindings: Sequence[IncubationBindingV1] = ()) -> dict[str, Any]:
+                         as_of: datetime, bindings: Sequence[IncubationBindingV1] = (),
+                         resolution: IncubationResolutionV1 | None = None) -> dict[str, Any]:
     """Per candidate and symbol: unit-exposure round trips on the fills' own evidence.
 
-    ``fills`` are fill identities. ``bindings`` carry each candidate's OR-7 packet;
-    a candidate without one has an ``UNRESOLVED`` requirement. ``as_of`` is a reading
-    instant only. Never promotes.
+    ``fills`` are fill identities. ``resolution`` is the cycle's registry-resolved
+    OR-7 bindings (the authoritative path); ``bindings`` are bindings from
+    :func:`bind_incubation_v1` (caller-supplied identities, labelled so in each
+    candidate's ``incubation.binding.source``). At most one of the two. A candidate
+    without a binding has an ``UNRESOLVED`` requirement (the resolution's
+    cycle-level reasons, else :data:`UNRESOLVED_NO_BINDING`). ``as_of`` is a
+    reading instant only. Never promotes.
     """
     policy_hash = cost_policy.policy().content_hash
     as_of_micros = _micros(as_of)
+    if resolution is not None and bindings:
+        raise PaperIncubationError("pass_a_registry_resolution_or_bindings_not_both")
+    if resolution is not None and (not isinstance(resolution, IncubationResolutionV1) or not resolution.issued):
+        raise PaperIncubationError("incubation_resolution_is_issued_only_by_the_registry")
     by_candidate: dict[tuple[str, str], IncubationBindingV1] = {}
-    for binding in bindings:
+    for binding in (bindings if resolution is None else resolution.bindings):
         if not isinstance(binding, IncubationBindingV1) or not binding.issued:
             raise PaperIncubationError("incubation_binding_is_issued_only_by_bind_incubation_v1")
         key = (binding.study_id, binding.trial_id)
         if key in by_candidate:
             raise PaperIncubationError("one_binding_per_candidate")
         by_candidate[key] = binding
+    unbound = list(resolution.unresolved) if resolution is not None and resolution.unresolved else [
+        UNRESOLVED_NO_BINDING]
     groups: dict[tuple[str, str, str], list[Mapping[str, Any]]] = {}
     seen: set[str] = set()
     for fill in fills:
@@ -334,10 +431,12 @@ def incubation_report_v1(fills: Sequence[Mapping[str, Any]], cost_policy: CostPo
         bound = by_candidate.get((study_id, trial_id))
         if bound is not None and bound.symbol != symbol:
             raise PaperIncubationError("fill_symbol_is_not_the_preregistered_symbol")
-        candidates.append(_candidate_report(study_id, trial_id, symbol, items, cost_policy, as_of_micros, bound))
+        candidates.append(_candidate_report(study_id, trial_id, symbol, items, cost_policy, as_of_micros, bound,
+                                            unbound))
     return {
         "schema_version": "paper-incubation-report-v1",
         "as_of": as_of.astimezone(UTC).isoformat(),
+        "preregistration_registry": None if resolution is None else resolution.payload(),
         "sizing": SIZING_UNIT_EXPOSURE_PENDING_OR_11,
         "cost_mode": cost_policy.mode,
         "cost_policy_hash": policy_hash,
@@ -352,8 +451,8 @@ def incubation_report_v1(fills: Sequence[Mapping[str, Any]], cost_policy: CostPo
 
 def _candidate_report(study_id: str, trial_id: str, symbol: str, items: Sequence[Mapping[str, Any]],
                       cost_policy: CostPolicyV1, as_of_micros: int,
-                      binding: IncubationBindingV1 | None) -> dict[str, Any]:
-    incubation = _incubation(items, binding, as_of_micros)
+                      binding: IncubationBindingV1 | None, unbound: Sequence[str]) -> dict[str, Any]:
+    incubation = _incubation(items, binding, as_of_micros, unbound)
     # The paper ledger starts flat. The chain of known positions holds only while every
     # fill's signal names the previous one (one runner, no restart in between) and every
     # fill was taken; after a break it resumes only at a fill from flat.
@@ -431,6 +530,9 @@ def _candidate_report(study_id: str, trial_id: str, symbol: str, items: Sequence
 
 
 __all__ = [
+    "BINDING_SOURCES_V1",
+    "BINDING_SOURCE_CALLER_SUPPLIED_V1",
+    "BINDING_SOURCE_REGISTRY_V1",
     "ELAPSED_CLOCK_V1",
     "FILL_STATUSES",
     "FILL_STATUS_BAR_NOT_OBSERVED",
@@ -445,6 +547,7 @@ __all__ = [
     "WINDOW_INCOMPLETE",
     "WINDOW_UNRESOLVED",
     "IncubationBindingV1",
+    "IncubationResolutionV1",
     "PaperIncubationError",
     "bind_incubation_v1",
     "evidenced_segments_v1",
