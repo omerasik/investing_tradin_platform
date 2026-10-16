@@ -303,8 +303,8 @@ class LedgerTests(unittest.TestCase):
         scenarios = (SlippageScenarioV1("fixture-low", "1", "fixture"),)
         fills = [fill("a", 0, 0, 1, "100"), fill("b", 10, 1, 0, "110")]
         # The frozen v1 gross identity the ledger has always carried.
-        self.assertEqual("53233636d27380f758606c94fee33ebd68783999568fb6a6cdfea7acf1112244",
-                         ledger(fills)["cost_policy_hash"])
+        frozen_v1_gross = "53233636d27380f758606c94fee33ebd68783999568fb6a6cdfea7acf1112244"  # pragma: allowlist secret
+        self.assertEqual(frozen_v1_gross, ledger(fills)["cost_policy_hash"])
         for original in (gross_cost_policy_v1(), CostPolicyV1(fees, scenarios), CostPolicyV2(), CostPolicyV2(fees, scenarios)):
             with self.subTest(policy=original.policy().slot):
                 stored = json.loads(json.dumps(original.policy().payload))
