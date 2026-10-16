@@ -27,12 +27,12 @@ from trade_platform.candidate_lifecycle_readiness_v1 import (
     NEED_EXIT_CRITERIA,
     NEED_FORWARD_FUNDING,
     NEED_LIVENESS,
+    NEED_REGISTRY_BINDING,
     CandidateEvidenceV1,
 )
 from trade_platform.incubation_exit_criteria_v1 import (
     CRITERIA_AFTER_INCUBATION,
     NEED_NET_FORWARD_METRICS,
-    NEED_REGISTRY_BINDING,
     NEED_RUNNER_CONTRACT,
     STAGE_EVIDENCE_INCOMPLETE,
     STAGE_REFUSED,
@@ -324,6 +324,9 @@ class ExitReadinessTests(unittest.TestCase):
                           exits.EVIDENCE_RISK: exits.INPUT_MISSING}, result.evidence_inputs)
         self.assertNotIn(CRITERIA_AFTER_INCUBATION, result.blockers)
         self.assertTrue(result.facts["registry_bound"])
+        # The readiness module's own binding is caller-supplied; its provenance blocker is kept, never cleared.
+        self.assertEqual("INCUBATION_BINDING_NOT_REGISTRY_RESOLVED", NEED_REGISTRY_BINDING)
+        self.assertIn(NEED_REGISTRY_BINDING, result.blockers)
         payload = result.payload()
         self.assertEqual((readiness.PROMOTION_V1, exits.ACCOUNT_ACTIVATION_V1),
                          (payload["promotion"], payload["account_activation"]))
