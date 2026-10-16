@@ -18,7 +18,8 @@ import {
   type StrategyLabTrialQuery,
 } from "../../lib/data-access";
 import type { EvidenceResult as Evidence } from "../../operator-contracts";
-import { BreakEvenView, EvidenceLine, HeatmapView, evidenceMismatch } from "./visual-analytics";
+import { BreakEvenView, EvidenceLine, HeatmapView } from "./visual-analytics";
+import { crossViewMismatch, evidenceMismatch, type StudyOnScreen } from "./evidence-consistency";
 import { WorkspaceToolbar } from "../../components/workspace-toolbar";
 import { QualityStateBadge } from "../../components/quality-state-badge";
 import { DataTable } from "../../components/data-table";
@@ -263,14 +264,14 @@ function TrialRow({ trial, columns, params }: { trial: StrategyLabTrial; columns
   );
 }
 
-function HeatmapPanel({ detail, studyId, metricKeys, params, fixed, result }: {
-  detail: StrategyLabStudyDetail | undefined; studyId: string; metricKeys: string[]; params: Params;
-  fixed: [string, string][]; result: Evidence<StrategyLabHeatmap> | undefined;
+function HeatmapPanel({ detail, study, metricKeys, params, fixed, result, crossMismatch }: {
+  detail: StrategyLabStudyDetail | undefined; study: StudyOnScreen; metricKeys: string[]; params: Params;
+  fixed: [string, string][]; result: Evidence<StrategyLabHeatmap> | undefined; crossMismatch: string | null;
 }) {
   const dimensions = detail?.parameter_space.map((dim) => ({ name: String(dim.name), values: (dim.values ?? []).map(String) })) ?? [];
   const fixedByName = new Map(fixed);
   const heatmap = result?.state === "AVAILABLE" ? result.value : undefined;
-  const mismatch = heatmap ? evidenceMismatch(heatmap.evidence, studyId, detail?.summary.content_hash) : null;
+  const mismatch = heatmap ? evidenceMismatch(heatmap.evidence, study) : null;
   return (
     <article className="panel margin-bottom-24" aria-label="Parameter heatmap" id="heatmap">
       <h2><span>Parameter heatmap</span><Claim label="SEARCH_NON_AUTHORITATIVE · GROSS" /></h2>
@@ -327,6 +328,8 @@ function HeatmapPanel({ detail, studyId, metricKeys, params, fixed, result }: {
         <p className="empty-notice">{stateText(result)}</p>
       ) : mismatch ? (
         <p className="empty-notice" data-evidence="MISMATCH">EVIDENCE MISMATCH: {mismatch}; the heatmap is not shown.</p>
+      ) : crossMismatch ? (
+        <p className="empty-notice" data-evidence="RESULTS_CHANGED">RESULTS CHANGED: {crossMismatch}; neither view is shown. Reload the page.</p>
       ) : (
         <>
           <EvidenceLine evidence={heatmap.evidence} />
@@ -345,12 +348,11 @@ function HeatmapPanel({ detail, studyId, metricKeys, params, fixed, result }: {
   );
 }
 
-function BreakEvenPanel({ detail, studyId, result, heatmapDigest }: {
-  detail: StrategyLabStudyDetail | undefined; studyId: string;
-  result: Evidence<StrategyLabBreakEvenDistribution> | undefined; heatmapDigest: string | undefined;
+function BreakEvenPanel({ study, result, crossMismatch }: {
+  study: StudyOnScreen; result: Evidence<StrategyLabBreakEvenDistribution> | undefined; crossMismatch: string | null;
 }) {
   const distribution = result?.state === "AVAILABLE" ? result.value : undefined;
-  const mismatch = distribution ? evidenceMismatch(distribution.evidence, studyId, detail?.summary.content_hash) : null;
+  const mismatch = distribution ? evidenceMismatch(distribution.evidence, study) : null;
   return (
     <article className="panel margin-bottom-24" aria-label="Break-even cost distribution" id="break-even">
       <h2>
@@ -366,12 +368,11 @@ function BreakEvenPanel({ detail, studyId, result, heatmapDigest }: {
         <p className="empty-notice">{stateText(result)}</p>
       ) : mismatch ? (
         <p className="empty-notice" data-evidence="MISMATCH">EVIDENCE MISMATCH: {mismatch}; the distribution is not shown.</p>
+      ) : crossMismatch ? (
+        <p className="empty-notice" data-evidence="RESULTS_CHANGED">RESULTS CHANGED: {crossMismatch}; neither view is shown. Reload the page.</p>
       ) : (
         <>
           <EvidenceLine evidence={distribution.evidence} />
-          {heatmapDigest && heatmapDigest !== distribution.evidence.results_digest ? (
-            <p className="empty-notice" data-evidence="RESULTS_CHANGED">The stored results changed between the heatmap and this read (digests differ); reload before comparing them.</p>
-          ) : null}
           {distribution.state === "AVAILABLE" ? <BreakEvenView distribution={distribution} /> : (
             <p className="empty-notice">UNAVAILABLE: {distribution.reasons.join(", ")}. Recorded outcomes: {counts(distribution.trial_outcomes)}.</p>
           )}
@@ -504,6 +505,16 @@ export default async function StrategyLabExplorerPage({ searchParams }: { search
   const detail = detailResult?.state === "AVAILABLE" ? detailResult.value : undefined;
   const trials = trialsResult?.state === "AVAILABLE" ? trialsResult.value : undefined;
   const metricKeys = (trials?.metric_keys ?? []).filter((key) => !DESCRIPTIVE_KEYS.has(key));
+  // Both visualizations bind to the study as displayed, and to each other: any disagreement withholds both.
+  const latestManifest = detail?.manifests[detail.manifests.length - 1];
+  const studyOnScreen: StudyOnScreen = {
+    studyId: studyId ?? "", contentHash: detail?.summary.content_hash,
+    latestManifestHash: detail ? (latestManifest?.manifest_hash ?? null) : undefined, resultCount: detail?.summary.result_count,
+  };
+  const analyticsMismatch = crossViewMismatch(
+    heatmapResult?.state === "AVAILABLE" ? heatmapResult.value.evidence : undefined,
+    breakEvenResult?.state === "AVAILABLE" ? breakEvenResult.value.evidence : undefined,
+  );
   const preferred = PREFERRED_METRICS.filter((key) => metricKeys.includes(key));
   const columns: string[] = preferred.length ? [...preferred] : metricKeys;
   const summary = detail?.summary;
@@ -637,12 +648,12 @@ export default async function StrategyLabExplorerPage({ searchParams }: { search
       ) : null}
 
       {studyId ? (
-        <HeatmapPanel detail={detail} studyId={studyId} metricKeys={metricKeys} params={params} fixed={heatFixed} result={heatmapResult} />
+        <HeatmapPanel detail={detail} study={studyOnScreen} metricKeys={metricKeys} params={params} fixed={heatFixed}
+          result={heatmapResult} crossMismatch={analyticsMismatch} />
       ) : null}
 
       {studyId ? (
-        <BreakEvenPanel detail={detail} studyId={studyId} result={breakEvenResult}
-          heatmapDigest={heatmapResult?.state === "AVAILABLE" ? heatmapResult.value.evidence.results_digest : undefined} />
+        <BreakEvenPanel study={studyOnScreen} result={breakEvenResult} crossMismatch={analyticsMismatch} />
       ) : null}
 
       {studyId ? (

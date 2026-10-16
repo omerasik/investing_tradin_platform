@@ -22,13 +22,6 @@ function Claim({ label }: { label: string }) {
   return <span className="badge" data-claim={label}>{label}</span>;
 }
 
-/** The evidence a visualization was computed from must be the study on screen. */
-export function evidenceMismatch(evidence: StrategyLabEvidenceIdentity, studyId: string, contentHash: string | undefined): string | null {
-  if (evidence.study_id !== studyId) return "the response is for a different study";
-  if (contentHash !== undefined && evidence.study_content_hash !== contentHash) return "the study content hash differs from the study shown";
-  return null;
-}
-
 function heatBucket(cell: StrategyLabHeatmapCell, distinct: number): number {
   if (cell.rank === null || distinct <= 1) return 0;
   return Math.round(((cell.rank - 1) * (HEAT_BUCKETS - 1)) / (distinct - 1));
