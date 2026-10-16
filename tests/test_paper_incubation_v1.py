@@ -38,6 +38,8 @@ from trade_platform.strategy_lab_policies_v1 import (
 
 GROSS = gross_cost_policy_v1()
 MINUTE = 60_000_000
+#: A reading instant after every report fixture's fills (fill evidence after ``as_of`` is look-ahead).
+LATER = DAY0 + timedelta(days=2)
 
 
 def incubating_signals(temp: Path, bars: list[LiveBarV1], authority: str = "INCUBATING") -> tuple[Any, list[Any]]:
@@ -183,7 +185,7 @@ class ReportTests(unittest.TestCase):
         fills = _chain(_identity(FILL_STATUS_FILLED, 0, 1, 10, "100", policy),
                        _identity(FILL_STATUS_FILLED, 1, 0, 20, "110", policy),
                        _identity(FILL_STATUS_FILLED, 0, 1, 30, "120", policy))  # still open: no cost charged
-        (candidate,) = incubation_report_v1(fills, policy, as_of=DAY0)["candidates"]
+        (candidate,) = incubation_report_v1(fills, policy, as_of=LATER)["candidates"]
         self.assertEqual({"mild": "0.098700000000", "harsh": "0.096900000000"}, candidate["net"])
         self.assertEqual(1, candidate["open_position"])
 
@@ -193,7 +195,7 @@ class ReportTests(unittest.TestCase):
                        _identity(FILL_STATUS_BAR_NOT_OBSERVED, 1, 0, 20, None),
                        _identity(FILL_STATUS_FILLED, 0, -1, 30, "120"),
                        _identity(FILL_STATUS_FILLED, -1, 0, 40, "110"))
-        (candidate,) = incubation_report_v1(fills, GROSS, as_of=DAY0)["candidates"]
+        (candidate,) = incubation_report_v1(fills, GROSS, as_of=LATER)["candidates"]
         self.assertEqual(1, candidate["chain_breaks"])
         self.assertEqual(1, candidate["fills_skipped_unknown_position"])
         self.assertEqual(["0.083333333333"], [t["gross_return"] for t in candidate["round_trips"]])
@@ -203,25 +205,25 @@ class ReportTests(unittest.TestCase):
         # must not be booked as one long trade from 10:00.
         fills = _chain(_identity(FILL_STATUS_FILLED, 0, 1, 600, "100"),
                        _identity(FILL_STATUS_FILLED, 1, 0, 780, "130"), restart_before=(1,))
-        (candidate,) = incubation_report_v1(fills, GROSS, as_of=DAY0)["candidates"]
+        (candidate,) = incubation_report_v1(fills, GROSS, as_of=LATER)["candidates"]
         self.assertEqual([], candidate["round_trips"])
         self.assertEqual((1, 1), (candidate["chain_breaks"], candidate["fills_skipped_unknown_position"]))
         # A position mismatch inside a linked chain is counted, never raised or booked.
         odd = _chain(_identity(FILL_STATUS_FILLED, 0, 1, 10, "100"), _identity(FILL_STATUS_FILLED, -1, 0, 20, "90"))
-        (candidate,) = incubation_report_v1(odd, GROSS, as_of=DAY0)["candidates"]
+        (candidate,) = incubation_report_v1(odd, GROSS, as_of=LATER)["candidates"]
         self.assertEqual((1, []), (candidate["chain_inconsistencies"], candidate["round_trips"]))
 
     def test_holding_time_is_reported_and_funding_is_never_assumed(self) -> None:
         fills = _chain(_identity(FILL_STATUS_FILLED, 0, 1, 10, "100"),
                        _identity(FILL_STATUS_FILLED, 1, 0, 10 + 17 * 60, "100"))
-        (candidate,) = incubation_report_v1(fills, GROSS, as_of=DAY0)["candidates"]
+        (candidate,) = incubation_report_v1(fills, GROSS, as_of=LATER)["candidates"]
         self.assertEqual(17 * 60, candidate["holding_minutes"])
         self.assertEqual(("NOT_MODELLED", False), (candidate["funding"], candidate["cost_complete"]))
 
     def test_fills_under_another_cost_policy_are_refused(self) -> None:
         other = CostPolicyV1(slippage_scenarios=(SlippageScenarioV1("mild", "1", "fixture"),))
         with self.assertRaises(PaperIncubationError):
-            incubation_report_v1([_identity(FILL_STATUS_FILLED, 0, 1, 10, "100", other)], GROSS, as_of=DAY0)
+            incubation_report_v1([_identity(FILL_STATUS_FILLED, 0, 1, 10, "100", other)], GROSS, as_of=LATER)
 
 
 if __name__ == "__main__":
