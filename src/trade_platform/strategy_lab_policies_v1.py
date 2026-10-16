@@ -36,6 +36,29 @@ OR-6 -- research costs (:class:`CostPolicyV1`)
     picks one. Funding is not modelled for pre-holdout T2 research: holding
     across funding windows is reported, and a cost-complete promotion of such a
     strategy fails closed until admissible funding evidence exists.
+
+    OR-6 is *not* fully approved. The owner set the methodology above on
+    2026-10-08 and the funding source (F3) on 2026-10-09; the verified fee
+    schedule and the slippage stress envelope remain owner-gated inputs, and
+    their approval is recorded only by an authorized preregistration
+    (``authorized_by`` / ``authorized_on``), never by a cost payload.
+
+OR-6 successor -- ``or6-cost-policy-v2`` (:class:`CostPolicyV2`, 2026-10-16)
+    The v1 payload (``or6-cost-policy-v1``) froze two statements that are no
+    longer true of the holdout path: ``"decision": "OR-6 approved by the owner
+    2026-10-08"`` (only the methodology was decided) and ``"funding":``
+    :data:`FUNDING_NOT_MODELLED_T2` (since F3, holdout validation *charges*
+    Bybit-published settled funding under ``bybit-funding-charge-v1`` and fails
+    closed on missing or irregular funding). A preregistration therefore carried
+    a cost policy saying "not modelled" next to a ``funding_rule`` saying
+    "charged". v1 is kept byte-identical -- every study already binds its slot,
+    and its "not modelled" is still accurate for gross *search* -- and is
+    superseded, not rewritten, by v2: same inputs, same fail-closed defaults
+    (no fee schedule, no scenario: gross, non-promotable), a funding block that
+    states the search and holdout rules separately (the holdout rule equals the
+    validator's ``FUNDING_RULE_V1``), and an explicit statement that the
+    payload asserts no owner approval of its fee or slippage inputs.
+    :func:`rebuild_cost_policy_v1` rebuilds either version exactly.
 """
 
 from __future__ import annotations
@@ -51,6 +74,7 @@ from .strategy_lab_study_v1 import identity_hash_v1
 OR3_SCHEMA_VERSION_V1: Final = "or3-numeric-policy-v1"
 OR5_SCHEMA_VERSION_V1: Final = "or5-t2-timing-policy-v1"
 OR6_SCHEMA_VERSION_V1: Final = "or6-cost-policy-v1"
+OR6_SCHEMA_VERSION_V2: Final = "or6-cost-policy-v2"
 
 NUMERIC_TIER_SEARCH: Final = "SEARCH_NON_AUTHORITATIVE"
 NUMERIC_TIER_AUTHORITATIVE: Final = "DECIMAL_AUTHORITATIVE"
@@ -84,6 +108,13 @@ COST_MODE_GROSS: Final = "GROSS_NON_PROMOTABLE"
 COST_MODE_FEE_SCHEDULED: Final = "FEE_SCHEDULED"
 FUNDING_NOT_MODELLED_T2: Final = "NOT_MODELLED_REPORT_EXPOSURE_FAIL_CLOSED_FOR_COST_COMPLETE_PROMOTION"
 SPREAD_DIAGNOSTIC_ONLY: Final = "T4_OBSERVED_SPREAD_DIAGNOSTIC_ONLY_NEVER_A_SLIPPAGE_MODEL"
+#: v2 funding rules. The holdout text equals ``strategy_lab_validation_v1.FUNDING_RULE_V1``
+#: (the charge rule id is ``bybit_funding_history_v1.FUNDING_CHARGE_RULE_V1``); it is spelled
+#: out here so this import-light module never pulls in the bar/funding stack.
+FUNDING_SEARCH_RULE_V2: Final = "NOT_CHARGED_GROSS_SEARCH_FUNDING_WINDOW_EXPOSURE_REPORTED"
+FUNDING_HOLDOUT_RULE_V2: Final = "CHARGED_FROM_BYBIT_PUBLISHED_SETTLED_FUNDING:bybit-funding-charge-v1"
+OR6_V2_DECISION: Final = ("OR-6 methodology set by the owner 2026-10-08 and funding source F3 2026-10-09; "
+                          "OR-6 fee schedule and slippage envelope are owner-gated, not approved by this payload")
 
 _SLUG: Final = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 
@@ -216,7 +247,12 @@ class SlippageScenarioV1:
 
 @dataclass(frozen=True, slots=True)
 class CostPolicyV1:
-    """OR-6 research cost policy. ``fee_schedule=None`` means gross and non-promotable."""
+    """OR-6 research cost policy. ``fee_schedule=None`` means gross and non-promotable.
+
+    Historical identity: :meth:`policy` is frozen byte-for-byte (studies bind its
+    slot). Its ``decision`` and ``funding`` texts are superseded by
+    :class:`CostPolicyV2`; do not edit them.
+    """
 
     fee_schedule: FeeScheduleV1 | None = None
     slippage_scenarios: tuple[SlippageScenarioV1, ...] = ()
@@ -265,29 +301,107 @@ class CostPolicyV1:
         raise StrategyLabPolicyError(f"slippage_scenario_not_declared:{scenario}")
 
 
+@dataclass(frozen=True, slots=True)
+class CostPolicyV2(CostPolicyV1):
+    """The ``or6-cost-policy-v2`` successor: v1's inputs and checks, a truthful payload.
+
+    No new input and no new default: without a verified fee schedule it is gross
+    and non-promotable, and it ships no slippage scenario.
+    """
+
+    def policy(self) -> PolicyV1:
+        return PolicyV1({
+            "schema_version": OR6_SCHEMA_VERSION_V2,
+            "supersedes": OR6_SCHEMA_VERSION_V1,
+            "decision": OR6_V2_DECISION,
+            "owner_approval_of_inputs": "NOT_ASSERTED_RECORDED_ONLY_BY_AN_AUTHORIZED_PREREGISTRATION",
+            "mode": self.mode,
+            "components": ["VENUE_FEES", "OBSERVED_SPREAD", "SLIPPAGE", "FUNDING"],
+            "venue_fees": None if self.fee_schedule is None else self.fee_schedule.payload(),
+            "fill_liquidity": self.fill_liquidity,
+            "observed_spread": SPREAD_DIAGNOSTIC_ONLY,
+            "slippage_scenarios": [scenario.payload() for scenario in self.slippage_scenarios],
+            "funding": {
+                "search": FUNDING_SEARCH_RULE_V2,
+                "holdout_validation": FUNDING_HOLDOUT_RULE_V2,
+                "source": "BYBIT_V5_MARKET_FUNDING_HISTORY_PUBLISHED_SETTLED_RATES",
+                "missing_or_irregular_history": "FAIL_CLOSED_VALIDATION_REFUSED",
+                "held_at_a_missing_funding_bar": "NOT_COSTABLE_CANDIDATE_REJECTED",
+                "evidence_role": "T2_EVENT_TIME_REALIZED_OUTCOME_NEVER_A_DECISION_INPUT",
+            },
+            "gross_search_reports": "BREAK_EVEN_COST_BPS_PER_SIDE",
+            "edge_vanishing_under_the_approved_envelope": "NOT_PROMOTABLE",
+            "l2_slippage_model": "DEFERRED_UNTIL_DEPTH_CAPTURE_IS_JUSTIFIED",
+        })
+
+
 def gross_cost_policy_v1() -> CostPolicyV1:
     """The OR-6 policy until the owner supplies a verified fee schedule."""
     return CostPolicyV1()
+
+
+def gross_cost_policy_v2() -> CostPolicyV2:
+    """The v2 successor with no owner input: gross and non-promotable."""
+    return CostPolicyV2()
+
+
+_COST_POLICY_CLASSES: Final = {OR6_SCHEMA_VERSION_V1: CostPolicyV1, OR6_SCHEMA_VERSION_V2: CostPolicyV2}
+
+
+def rebuild_cost_policy_v1(raw: Any) -> CostPolicyV1:
+    """Rebuild a stored OR-6 payload of either version exactly, or raise.
+
+    Every field is read as stored (no default stands in for a missing one) and
+    the rebuilt payload must equal ``raw`` byte-for-byte in canonical form.
+    """
+    if not isinstance(raw, dict):
+        raise StrategyLabPolicyError("cost_policy_payload_must_be_an_object")
+    cls = _COST_POLICY_CLASSES.get(str(raw.get("schema_version")))
+    if cls is None:
+        raise StrategyLabPolicyError("cost_policy_schema_version_unknown")
+    try:
+        fees = raw["venue_fees"]
+        policy = cls(
+            fee_schedule=None if fees is None else FeeScheduleV1(**fees),
+            slippage_scenarios=tuple(SlippageScenarioV1(**item) for item in raw["slippage_scenarios"]),
+            fill_liquidity=str(raw["fill_liquidity"]),
+        )
+        exact = identity_hash_v1(policy.policy().payload) == identity_hash_v1(raw)
+    except StrategyLabPolicyError:
+        raise
+    except (KeyError, TypeError, ValueError) as error:
+        raise StrategyLabPolicyError("cost_policy_payload_does_not_rebuild_exactly") from error
+    if not exact:
+        raise StrategyLabPolicyError("cost_policy_payload_does_not_rebuild_exactly")
+    return policy
 
 
 __all__ = [
     "AUTHORITATIVE_DECIMAL_PRECISION_V1",
     "COST_MODE_FEE_SCHEDULED",
     "COST_MODE_GROSS",
+    "FUNDING_HOLDOUT_RULE_V2",
+    "FUNDING_SEARCH_RULE_V2",
     "NEAR_TIE_RELATIVE_TOLERANCE_V1",
     "NUMERIC_TIER_AUTHORITATIVE",
     "NUMERIC_TIER_SEARCH",
     "OR3_RERUN_SCOPE_V1",
     "OR5_BASELINE_LAG_V1",
     "OR5_SWEEP_LAGS_V1",
+    "OR6_SCHEMA_VERSION_V1",
+    "OR6_SCHEMA_VERSION_V2",
+    "OR6_V2_DECISION",
     "SELECTION_CUTOFF_ERROR_BAND_RELATIVE_V1",
     "CostPolicyV1",
+    "CostPolicyV2",
     "FeeScheduleV1",
     "PolicyV1",
     "SlippageScenarioV1",
     "StrategyLabPolicyError",
     "gross_cost_policy_v1",
+    "gross_cost_policy_v2",
     "or3_numeric_policy_v1",
     "or5_lags_v1",
     "or5_t2_timing_policy_v1",
+    "rebuild_cost_policy_v1",
 ]

@@ -2,7 +2,7 @@
 # This is NOT a second roadmap: requirements stay in MASTER_ROADMAP.md, design
 # stays in module docstrings, history stays in git.
 
-updated: 2026-10-13
+updated: 2026-10-16
 
 # Phase naming. Since 2026-09-24 the owner-approved canonical roadmap uses an
 # "R" series (R0-R15, owner review points OR-1..OR-14). It is distinct from the
@@ -19,8 +19,10 @@ phase:
   base_commit: 7bb9cf3       # T2 research bars + OR-1 retention (#187)
   owner_decisions_2026_10_08: >-
     OR-1 hybrid retention; OR-3 float64 search / Decimal authority; OR-5 T2 lag
-    2 s with mandatory 5/30/60 s sweep (CONDITIONAL); OR-6 fees/spread/slippage/
-    funding separated, no verified fee schedule yet -> gross, non-promotable.
+    2 s with mandatory 5/30/60 s sweep (CONDITIONAL); OR-6 methodology only
+    (fees/spread/slippage/funding separated, nothing invented; funding source F3
+    followed 2026-10-09). OR-6 is NOT fully approved: fee schedule and slippage
+    stress envelope stay owner-gated -> gross, non-promotable.
     Holdout 2026-08-20 immutable; T4 after 2026-09-24 forward-only this cycle.
   order: >-
     R4.6 SDK + search -> R4.7 Decimal rerun -> R6 preregistration/holdout registry
@@ -65,7 +67,8 @@ t2_research_bars:             # PR #187; acquisition runs in the background from
 r6_validation: >-
   strategy_lab_validation_v1 + migration 0057: research cycles (current
   cycle-2026-08-20 immutable; new cycles prospective only), preregistration
-  packets (DRAFT with one UNRESOLVED_* reason per OR-6/OR-7 gap), one-shot
+  packets (DRAFT with one UNRESOLVED_* reason per OR-6/OR-7 gap; the cost
+  policy must be or6-cost-policy-v2, a v1 payload is unresolved, PR #222), one-shot
   holdout openings per cycle (registry-issued token; research bars refuse
   holdout days without it), Decimal holdout validation under every OR-5 lag
   and approved cost scenario, append-only candidate states ending INCUBATING
@@ -119,10 +122,11 @@ activation_pass_2026_10_09: >-
   commit 30.4/31.1 GiB with the research DB up beside capture; 2025-11-27 stays
   REJECTED_STRICT_PARSE. Research DB was at 0058 (dev.py only migrated the
   fixture DB): upgraded to 0062; 'scripts/dev.py --research' now serves it.
-  Funding finding: validation rejects any holdout funding-window crossing
-  (FUNDING_EXPOSURE_NOT_MODELLED_FAIL_CLOSED) and every candidate crosses in
-  development (24..1,091 per year), so no candidate can reach INCUBATING
-  until OR-6 decides funding. Gross break-even per side: mean_reversion_z
+  Funding: every candidate crosses funding windows in development (24..1,091
+  per year); the pre-F3 reject-any-crossing rule is superseded -- holdout
+  validation now charges Bybit-published settled funding (F3) and rejects only
+  a candidate held at a missing funding bar (FUNDING_NOT_COSTABLE_FAIL_CLOSED).
+  Gross break-even per side: mean_reversion_z
   0.20-1.05 bps, trend_ma_cross 0.38-6.33, ETH breakout 0.69-6.54, SOL
   breakout <= 0.37 (gross-negative). Universe L1 (11.15 h): 1 tick 99.9 % of
   time, BTC 0.01 / ETH 0.04 / SOL 0.91 bps full spread; max 2.82/3.62/2.71.
@@ -182,7 +186,7 @@ r4_foundation:                # owner-independent; every study stays NON_AUTHORI
   r4_3: "PR #175 strategy_lab_splits_v1: decision/label-time purged walk-forward with embargo and censoring"
   r4_4: "PR #178 migration 0054 + strategy_lab_manifest_v1: study manifests, frozen candidate sets (rerun PENDING_OWNER_DECISION_OR_3)"
   r4_5: "PR #179 strategy_lab_read_model_v1: GET /operator-dashboard/strategy-lab/studies[/{id}], authority restated NON_AUTHORITATIVE"
-  unblocked_2026_10_08: OR-3/OR-5/OR-6 decided; see r4_6_sdk.
+  unblocked_2026_10_08: OR-3/OR-5 decided, OR-6 methodology set (fee schedule and slippage envelope owner-gated); see r4_6_sdk.
 
 r3b3_completed: >-
   PR #159 merged. Real run 2026-10-03 on archive day 2026-10-02 (sha256
