@@ -141,6 +141,14 @@ test.describe("Module 2B-1 Professional Market & Data Workspaces", () => {
       await expect(economics.locator('[data-economics="net"]')).toContainText("UNAVAILABLE");
       await expect(economics.locator('[data-economics="verified"]')).toContainText("UNAVAILABLE");
     }
+    // B.1.2b: the break-even view is a gross sensitivity, never a cost or a profit, and no heatmap is chosen for the operator.
+    const breakEven = page.getByRole("article", { name: "Break-even cost distribution" });
+    if (await breakEven.count()) {
+      await expect(breakEven).toContainText("GROSS-RESULT COST SENSITIVITY");
+      await expect(breakEven).toContainText("not a verified cost");
+      await expect(page.getByRole("article", { name: "Parameter heatmap" })).not.toContainText(/best trial:|profitable|validated/i);
+      await expect(page.getByRole("region", { name: "Parameter heatmap" })).toHaveCount(0);
+    }
     await expect(page.getByRole("button", { name: /execute|trade|buy|sell|open holdout|promote|run search/i })).toHaveCount(0);
 
     const a11yResults = await new AxeBuilder({ page })

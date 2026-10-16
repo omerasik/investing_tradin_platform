@@ -881,6 +881,77 @@ export type StrategyLabTrialQuery = {
   frozenOnly: boolean;
 };
 
+/** What a Stage B.1.2b visualization was computed from; compare with the study shown before trusting it. */
+export type StrategyLabEvidenceIdentity = {
+  study_id: string;
+  study_content_hash: string;
+  manifest_hash: string | null;
+  results_digest: string;
+  result_count: number;
+  trial_count: number;
+};
+
+export type StrategyLabHeatmapCellState =
+  | "VALUE" | "METRIC_UNAVAILABLE" | "INADMISSIBLE_PARAMETERS" | "FAILED" | "CANCELLED" | "PENDING" | "NO_TRIAL" | "AMBIGUOUS";
+
+export type StrategyLabHeatmapCell = {
+  x: string;
+  y: string;
+  state: StrategyLabHeatmapCellState;
+  trial_ids: string[];
+  ordinal: number | null;
+  /** Stored metric text, verbatim. Never parsed in the browser. */
+  value: string | null;
+  /** Server-side ``Decimal`` sign and dense rank (1 = lowest); order only, never a quality verdict. */
+  sign: -1 | 0 | 1 | null;
+  rank: number | null;
+  reason: string | null;
+  frozen_rank: number | null;
+  decimal_rerun_status: string | null;
+};
+
+export type StrategyLabHeatmap = {
+  state: "AVAILABLE" | "SELECTION_REQUIRED" | "SELECTION_INVALID" | "UNAVAILABLE";
+  numeric_tier: "SEARCH_NON_AUTHORITATIVE";
+  economics: "GROSS_NON_PROMOTABLE";
+  evidence: StrategyLabEvidenceIdentity;
+  dimensions: { name: string; kind: string; values: string[] }[];
+  x: string | null;
+  y: string | null;
+  metric: string | null;
+  fixed: Record<string, string>;
+  required_fixed: string[];
+  reasons: string[];
+  x_values: string[];
+  y_values: string[];
+  cells: StrategyLabHeatmapCell[];
+  counts: Record<string, number>;
+  distinct_values: number;
+  selection: string[];
+};
+
+export type StrategyLabHeatmapQuery = { x?: string; y?: string; metric?: string; fixed: [string, string][] };
+
+export type StrategyLabBreakEvenDistribution = {
+  state: "AVAILABLE" | "UNAVAILABLE";
+  numeric_tier: "SEARCH_NON_AUTHORITATIVE";
+  claim: "GROSS_RESULT_COST_SENSITIVITY";
+  verified_costs: "UNAVAILABLE";
+  net_profitability: "UNAVAILABLE";
+  metric: "break_even_bps_per_side";
+  evidence: StrategyLabEvidenceIdentity;
+  reasons: string[];
+  trial_outcomes: Record<string, number>;
+  eligible_count: number;
+  positive: number;
+  zero: number;
+  negative: number;
+  unavailable: number;
+  bins: { side: "NEGATIVE" | "POSITIVE"; lower: string; upper: string; lower_inclusive: boolean; upper_inclusive: boolean; count: number }[];
+  order_statistics: Record<string, string>;
+  selection: string[];
+};
+
 /** ``url`` is already an ``authorityUrl(...)``; wrapping it again made the proxy refuse every terminal read. */
 function terminal<T>(ctx: WorkspaceContext, url: string, unavailable: string): Promise<EvidenceResult<T>> {
   return readEvidence<T>(url, ctx.protectedApi, unavailable);
@@ -937,6 +1008,22 @@ export function getStrategyLabTrials(
 
 export function getStrategyLabTrial(ctx: WorkspaceContext, studyId: string, trialId: string): Promise<EvidenceResult<StrategyLabTrialDetail>> {
   return terminal(ctx, authorityUrl(ctx.origin, `/operator-dashboard/strategy-lab/studies/${encodeURIComponent(studyId)}/trials/${encodeURIComponent(trialId)}`), "Strategy Lab trial is unavailable.");
+}
+
+export function getStrategyLabHeatmap(
+  ctx: WorkspaceContext, studyId: string, params: StrategyLabHeatmapQuery,
+): Promise<EvidenceResult<StrategyLabHeatmap>> {
+  const query = new URLSearchParams();
+  if (params.x) query.set("x", params.x);
+  if (params.y) query.set("y", params.y);
+  if (params.metric) query.set("metric", params.metric);
+  for (const [name, value] of params.fixed) query.append("fixed", `${name}:${value}`);
+  const text = query.toString();
+  return terminal(ctx, authorityUrl(ctx.origin, `/operator-dashboard/strategy-lab/studies/${encodeURIComponent(studyId)}/heatmap${text ? `?${text}` : ""}`), "Strategy Lab heatmap is unavailable.");
+}
+
+export function getStrategyLabBreakEvenDistribution(ctx: WorkspaceContext, studyId: string): Promise<EvidenceResult<StrategyLabBreakEvenDistribution>> {
+  return terminal(ctx, authorityUrl(ctx.origin, `/operator-dashboard/strategy-lab/studies/${encodeURIComponent(studyId)}/break-even-distribution`), "Break-even distribution is unavailable.");
 }
 
 export async function getChartSeriesCatalog(ctx: WorkspaceContext): Promise<EvidenceResult<ChartSeriesRefPage>> {

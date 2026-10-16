@@ -26,14 +26,32 @@ Stage B.1.2a explorer reads (still read-only, still bounded):
   to the study, verified costs and net profitability. Its types cannot express
   verified costs or net profitability as available: no verified fee schedule
   exists (OR-6) and nothing here invents one.
+
+Stage B.1.2b visual analytics (still read-only, still search tier and gross):
+
+* the parameter heatmap places one stored metric per ``(x, y)`` combination of
+  two recorded parameters. Every other recorded parameter must be fixed
+  explicitly to one of its recorded values (exact text, never coerced); until it
+  is the view is ``SELECTION_REQUIRED`` and has no cells. A cell holds at most
+  one trial: more than one is ``AMBIGUOUS`` and shows no value, so unrelated
+  configurations are never aggregated and no best trial is ever chosen. Values
+  are the stored text; their order (``rank``) is computed with ``Decimal``.
+* the break-even distribution counts the stored ``break_even_bps_per_side`` of
+  *every* evaluated trial of the study (never a page), split by sign with
+  ``Decimal``, into equal-width bins per sign whose edges divide by ten exactly.
+  It is a gross-result cost sensitivity, never a verified cost or a net result.
+* both carry the study's content hash, its latest manifest hash and a digest of
+  its stored result set, so a consumer can bind them to the evidence displayed.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime
+from decimal import Decimal, Inexact, localcontext
 from typing import Any, Literal, Protocol
 from uuid import UUID
 
@@ -775,18 +793,387 @@ def read_strategy_lab_trial_v1(cursor: _Cursor, study_id: UUID, trial_id: UUID) 
     )
 
 
+# --- Stage B.1.2b: visual analytics ------------------------------------------------------------
+
+#: Cell states of the parameter heatmap. Only ``VALUE`` carries a metric value.
+HeatmapCellState = Literal["VALUE", "METRIC_UNAVAILABLE", "INADMISSIBLE_PARAMETERS", "FAILED", "CANCELLED",
+                           "PENDING", "NO_TRIAL", "AMBIGUOUS"]
+_HEATMAP_CELL_STATES: tuple[str, ...] = ("VALUE", "METRIC_UNAVAILABLE", "INADMISSIBLE_PARAMETERS", "FAILED",
+                                         "CANCELLED", "PENDING", "NO_TRIAL", "AMBIGUOUS")
+BREAK_EVEN_METRIC_V1 = "break_even_bps_per_side"
+#: Bins per sign. Ten keeps every edge exact: ``extreme / 10`` never rounds in ``Decimal``.
+BREAK_EVEN_BINS_PER_SIDE_V1 = 10
+_PARAMETER_NAME = r"^[a-z][a-z0-9_]{0,63}$"
+
+
+class StrategyLabEvidenceIdentityView(BaseModel):
+    """What a visualization was computed from, so a consumer can bind it to the study displayed."""
+
+    study_id: UUID
+    study_content_hash: str
+    #: The latest recorded manifest, or ``None`` when no manifest is recorded yet.
+    manifest_hash: str | None
+    #: SHA-256 over the sorted ``trial_id:result_content_hash`` lines of every stored result.
+    results_digest: str
+    result_count: int
+    trial_count: int
+
+
+class StrategyLabParameterDimensionView(BaseModel):
+    name: str
+    kind: str
+    values: list[str]
+
+
+class StrategyLabHeatmapCellView(BaseModel):
+    x: str
+    y: str
+    state: HeatmapCellState
+    #: Every trial matching the cell's full parameter selection (two or more -> ``AMBIGUOUS``).
+    trial_ids: list[UUID]
+    ordinal: int | None = None
+    #: The stored metric text, verbatim; only for ``VALUE``.
+    value: str | None = None
+    #: ``Decimal`` sign of the stored value (-1, 0, 1); only for ``VALUE``.
+    sign: Literal[-1, 0, 1] | None = None
+    #: Dense rank of the exact value among this heatmap's ``VALUE`` cells, 1 = lowest. Order, not quality.
+    rank: int | None = None
+    #: The recorded inadmissibility reason, verbatim.
+    reason: str | None = None
+    frozen_rank: int | None = None
+    #: Selection status of a Decimal rerun of the displayed frozen set covering this trial, if any.
+    decimal_rerun_status: str | None = None
+
+
+class StrategyLabHeatmapView(BaseModel):
+    state: Literal["AVAILABLE", "SELECTION_REQUIRED", "SELECTION_INVALID", "UNAVAILABLE"]
+    numeric_tier: Literal["SEARCH_NON_AUTHORITATIVE"] = "SEARCH_NON_AUTHORITATIVE"
+    economics: Literal["GROSS_NON_PROMOTABLE"] = "GROSS_NON_PROMOTABLE"
+    evidence: StrategyLabEvidenceIdentityView
+    dimensions: list[StrategyLabParameterDimensionView]
+    x: str | None
+    y: str | None
+    metric: str | None
+    fixed: dict[str, str]
+    #: Recorded parameters other than x and y; each must be fixed for the heatmap to render.
+    required_fixed: list[str]
+    reasons: list[str]
+    x_values: list[str] = []
+    y_values: list[str] = []
+    #: Row-major: every recorded y value, then every recorded x value, in recorded order.
+    cells: list[StrategyLabHeatmapCellView] = []
+    counts: dict[str, int] = {}
+    #: Distinct exact values among ``VALUE`` cells (the highest ``rank``).
+    distinct_values: int = 0
+    selection: list[str] = []
+
+
+class StrategyLabBreakEvenBinView(BaseModel):
+    side: Literal["NEGATIVE", "POSITIVE"]
+    lower: str
+    upper: str
+    lower_inclusive: bool
+    upper_inclusive: bool
+    count: int
+
+
+class StrategyLabBreakEvenDistributionView(BaseModel):
+    """Recorded break-even costs of a study's evaluated trials: a gross sensitivity, never a cost."""
+
+    state: Literal["AVAILABLE", "UNAVAILABLE"]
+    numeric_tier: Literal["SEARCH_NON_AUTHORITATIVE"] = "SEARCH_NON_AUTHORITATIVE"
+    claim: Literal["GROSS_RESULT_COST_SENSITIVITY"] = "GROSS_RESULT_COST_SENSITIVITY"
+    verified_costs: Literal["UNAVAILABLE"] = "UNAVAILABLE"
+    net_profitability: Literal["UNAVAILABLE"] = "UNAVAILABLE"
+    metric: Literal["break_even_bps_per_side"] = "break_even_bps_per_side"
+    evidence: StrategyLabEvidenceIdentityView
+    reasons: list[str]
+    #: Every trial of the study by recorded state: EVALUATED, INADMISSIBLE_PARAMETERS, FAILED, CANCELLED, PENDING.
+    trial_outcomes: dict[str, int]
+    eligible_count: int
+    positive: int
+    zero: int
+    negative: int
+    #: Evaluated trials whose stored value is absent, null or not plain numeric text.
+    unavailable: int
+    bins: list[StrategyLabBreakEvenBinView]
+    #: Nearest-rank order statistics of the numeric values, as stored text (no interpolation).
+    order_statistics: dict[str, str]
+    selection: list[str]
+
+
+def _decimal_or_none(text: str | None) -> Decimal | None:
+    """The exact value of plain numeric text; anything else (absent, null, NaN, prose) is ``None``."""
+    if text is None or not re.fullmatch(_NUMERIC_TEXT, text):
+        return None
+    return Decimal(text)
+
+
+def _plain(value: Decimal) -> str:
+    text = format(value.normalize(), "f")
+    return "0" if text in ("-0", "0") else text
+
+
+def _evidence(cursor: _Cursor, study_id: UUID) -> tuple[StrategyLabEvidenceIdentityView, dict[str, Any]]:
+    cursor.execute("SELECT content_hash, identity FROM strategy_lab_studies WHERE study_id=%s", (study_id,))
+    row = cursor.fetchone()
+    if row is None:
+        raise StrategyLabObjectNotFound("strategy_lab_study_not_found")
+    cursor.execute("SELECT manifest_hash FROM strategy_lab_study_manifests WHERE study_id=%s "
+                   "ORDER BY recorded_at DESC, manifest_hash DESC LIMIT 1", (study_id,))
+    manifest = cursor.fetchone()
+    cursor.execute("SELECT trial_id::text, result_content_hash FROM strategy_lab_trial_results WHERE study_id=%s "
+                   "ORDER BY trial_id", (study_id,))
+    lines = [f"{r[0]}:{str(r[1]).strip()}\n" for r in cursor.fetchall()]
+    cursor.execute("SELECT count(*) FROM strategy_lab_trials WHERE study_id=%s", (study_id,))
+    trials = int((cursor.fetchone() or (0,))[0])
+    view = StrategyLabEvidenceIdentityView(
+        study_id=study_id, study_content_hash=str(row[0]).strip(),
+        manifest_hash=str(manifest[0]).strip() if manifest else None,
+        results_digest=hashlib.sha256("".join(sorted(lines)).encode()).hexdigest(),
+        result_count=len(lines), trial_count=trials,
+    )
+    return view, _json(row[1])
+
+
+def _dimensions(identity: dict[str, Any]) -> list[StrategyLabParameterDimensionView]:
+    return [StrategyLabParameterDimensionView(name=str(d["name"]), kind=str(d.get("kind", "")),
+                                              values=[str(v) for v in d.get("values", [])])
+            for d in identity.get("parameter_space", []) if isinstance(d, dict) and "name" in d]
+
+
+def _record_state(outcome: str | None, queue_state: str | None) -> str:
+    """A trial's recorded state: its stored outcome, else its queue state (never inferred as success)."""
+    if outcome is not None:
+        return outcome
+    if queue_state in ("FAILED", "CANCELLED"):
+        return queue_state
+    return "PENDING"  # PENDING, CLAIMED, or no queue row: no stored result yet
+
+
+def read_strategy_lab_heatmap_v1(
+    cursor: _Cursor, study_id: UUID, *, x: str | None, y: str | None, metric: str | None,
+    fixed: Mapping[str, str] | None = None,
+) -> StrategyLabHeatmapView:
+    """One stored metric over two recorded parameters, every other parameter fixed explicitly.
+
+    Selection problems are reported, never repaired: unknown or repeated axes,
+    an unknown metric key, a fixed value outside the recorded domain, a fixed
+    axis or an unknown fixed parameter make the view ``SELECTION_INVALID``; an
+    unfixed remaining parameter makes it ``SELECTION_REQUIRED``. Neither has cells.
+    """
+    evidence, identity = _evidence(cursor, study_id)
+    dimensions = _dimensions(identity)
+    by_name = {d.name: d for d in dimensions}
+    chosen = dict(fixed or {})
+    base = {"evidence": evidence, "dimensions": dimensions, "x": x, "y": y, "metric": metric, "fixed": chosen}
+    reasons: list[str] = []
+    if len(dimensions) < 2:
+        return StrategyLabHeatmapView(state="UNAVAILABLE", required_fixed=[],
+                                      reasons=["FEWER_THAN_TWO_RECORDED_PARAMETERS"], **base)  # type: ignore[arg-type]
+    for axis, name in (("x", x), ("y", y)):
+        if name is None:
+            reasons.append(f"{axis.upper()}_PARAMETER_REQUIRED")
+        elif name not in by_name:
+            reasons.append(f"{axis.upper()}_PARAMETER_NOT_RECORDED")
+    if x is not None and x == y:
+        reasons.append("X_AND_Y_MUST_DIFFER")
+    if metric is None:
+        reasons.append("METRIC_REQUIRED")
+    elif not re.fullmatch(_METRIC_KEY, metric):
+        reasons.append("METRIC_KEY_MALFORMED")
+    for name, value in sorted(chosen.items()):
+        if name not in by_name:
+            reasons.append(f"FIXED_PARAMETER_NOT_RECORDED:{name}")
+        elif name in (x, y):
+            reasons.append(f"FIXED_PARAMETER_IS_AN_AXIS:{name}")
+        elif value not in by_name[name].values:
+            reasons.append(f"FIXED_VALUE_NOT_RECORDED:{name}")
+    required = [d.name for d in dimensions if d.name not in (x, y)]
+    invalid = [r for r in reasons if not r.endswith("_REQUIRED")]
+    if invalid:
+        return StrategyLabHeatmapView(state="SELECTION_INVALID", required_fixed=required, reasons=reasons,
+                                      **base)  # type: ignore[arg-type]
+    missing = [f"FIXED_VALUE_REQUIRED:{name}" for name in required if name not in chosen]
+    if reasons or missing:
+        return StrategyLabHeatmapView(state="SELECTION_REQUIRED", required_fixed=required, reasons=reasons + missing,
+                                      **base)  # type: ignore[arg-type]
+    if x is None or y is None or metric is None:  # unreachable: each is reported as required above
+        raise ValueError("heatmap_selection_incomplete")
+    context = _TrialContext(cursor, study_id)
+    clauses = ["t.study_id = %s"] + ["t.parameters->>%s = %s"] * len(required)
+    params: list[Any] = [study_id]
+    for name in required:
+        params += [name, chosen[name]]
+    cursor.execute(
+        "SELECT t.trial_id, t.ordinal, t.parameters->>%s, t.parameters->>%s, r.outcome, r.metrics->>%s, "  # nosec B608
+        "r.metrics->>'reason', q.state FROM strategy_lab_trials t "
+        "LEFT JOIN strategy_lab_trial_results r ON r.trial_id = t.trial_id "
+        "LEFT JOIN strategy_lab_trial_queue q ON q.trial_id = t.trial_id "
+        "WHERE " + " AND ".join(clauses) + " ORDER BY t.ordinal",
+        (x, y, metric, *params),
+    )
+    grouped: dict[tuple[str, str], list[tuple[Any, ...]]] = {}
+    for row in cursor.fetchall():
+        grouped.setdefault((str(row[2]), str(row[3])), []).append(row)
+    exact: dict[tuple[str, str], Decimal] = {}
+    cells: list[StrategyLabHeatmapCellView] = []
+    for y_value in by_name[y].values:
+        for x_value in by_name[x].values:
+            rows = grouped.get((x_value, y_value), [])
+            if not rows:
+                cells.append(StrategyLabHeatmapCellView(x=x_value, y=y_value, state="NO_TRIAL", trial_ids=[]))
+                continue
+            if len(rows) > 1:
+                cells.append(StrategyLabHeatmapCellView(x=x_value, y=y_value, state="AMBIGUOUS",
+                                                        trial_ids=[r[0] for r in rows]))
+                continue
+            trial_id, ordinal, _, _, outcome, metric_text, reason, queue_state = rows[0]
+            record = _record_state(outcome, queue_state)
+            rerun = context.rerun(trial_id)
+            common: dict[str, Any] = {"x": x_value, "y": y_value, "trial_ids": [trial_id], "ordinal": int(ordinal),
+                      "frozen_rank": context.frozen.get(trial_id),
+                      "decimal_rerun_status": rerun.selection_status if rerun else None}
+            if record == "EVALUATED":
+                exact_value = _decimal_or_none(metric_text)
+                if exact_value is None:
+                    cells.append(StrategyLabHeatmapCellView(state="METRIC_UNAVAILABLE", **common))
+                    continue
+                exact[(x_value, y_value)] = exact_value
+                sign: Literal[-1, 0, 1] = 1 if exact_value > 0 else -1 if exact_value < 0 else 0
+                cells.append(StrategyLabHeatmapCellView(state="VALUE", value=str(metric_text), sign=sign,
+                                                        **common))
+            else:
+                cells.append(StrategyLabHeatmapCellView(
+                    state=record,  # type: ignore[arg-type]  # _record_state yields only cell states
+                    reason=_text(reason) if record == "INADMISSIBLE_PARAMETERS" else None, **common))
+    ranks = {value: index + 1 for index, value in enumerate(sorted(set(exact.values())))}
+    for cell in cells:
+        if cell.state == "VALUE":
+            cell.rank = ranks[exact[(cell.x, cell.y)]]
+    counts = {state: sum(1 for c in cells if c.state == state) for state in _HEATMAP_CELL_STATES}
+    selection = [
+        f"Study {study_id}, every stored trial whose recorded parameters match exactly (text equality, no coercion).",
+        f"X = {x} over its {len(by_name[x].values)} recorded values; Y = {y} over its {len(by_name[y].values)}.",
+        *(f"Fixed {name} = {chosen[name]}." for name in required),
+        f"Cell value: stored search-tier metrics.{metric}, verbatim; colour is its exact rank among these cells.",
+    ]
+    return StrategyLabHeatmapView(
+        state="AVAILABLE", required_fixed=required, reasons=[], x_values=list(by_name[x].values),
+        y_values=list(by_name[y].values), cells=cells, counts={k: v for k, v in counts.items() if v},
+        distinct_values=len(ranks), selection=selection, **base,  # type: ignore[arg-type]
+    )
+
+
+def _nearest_rank(ordered: list[tuple[Decimal, str]], numerator: int, denominator: int) -> str:
+    """The stored text at nearest rank ``ceil(n * p)`` (integer arithmetic, no interpolation)."""
+    n = len(ordered)
+    index = max(0, -(-n * numerator // denominator) - 1)
+    return ordered[index][1]
+
+
+def _break_even_bins(values: list[Decimal]) -> list[StrategyLabBreakEvenBinView]:
+    bins: list[StrategyLabBreakEvenBinView] = []
+    steps = BREAK_EVEN_BINS_PER_SIDE_V1
+    with localcontext() as ctx:
+        ctx.prec = 80
+        ctx.traps[Inexact] = True  # an edge that would round is a defect, never silently accepted
+        negatives = [v for v in values if v < 0]
+        if negatives:
+            low = min(negatives)
+            width = -low / steps
+            edges = [low + width * k for k in range(steps)] + [Decimal(0)]
+            for k in range(steps):
+                count = sum(1 for v in negatives if edges[k] <= v < edges[k + 1])
+                bins.append(StrategyLabBreakEvenBinView(side="NEGATIVE", lower=_plain(edges[k]),
+                                                        upper=_plain(edges[k + 1]), lower_inclusive=True,
+                                                        upper_inclusive=False, count=count))
+        positives = [v for v in values if v > 0]
+        if positives:
+            high = max(positives)
+            width = high / steps
+            edges = [width * k for k in range(steps)] + [high]
+            for k in range(steps):
+                count = sum(1 for v in positives if edges[k] < v <= edges[k + 1])
+                bins.append(StrategyLabBreakEvenBinView(side="POSITIVE", lower=_plain(edges[k]),
+                                                        upper=_plain(edges[k + 1]), lower_inclusive=False,
+                                                        upper_inclusive=True, count=count))
+    return bins
+
+
+def read_strategy_lab_break_even_distribution_v1(cursor: _Cursor, study_id: UUID,
+                                                  ) -> StrategyLabBreakEvenDistributionView:
+    """Every evaluated trial's stored ``break_even_bps_per_side``, counted exactly by sign and bin.
+
+    The selection is the whole study, read in one statement -- never the page a
+    consumer is showing. The view is ``UNAVAILABLE`` (with no counts invented)
+    when the study's cost policy does not declare break-even reporting.
+    """
+    evidence, identity = _evidence(cursor, study_id)
+    cursor.execute(
+        "SELECT r.outcome, q.state, r.metrics->>%s FROM strategy_lab_trials t "
+        "LEFT JOIN strategy_lab_trial_results r ON r.trial_id = t.trial_id "
+        "LEFT JOIN strategy_lab_trial_queue q ON q.trial_id = t.trial_id "
+        "WHERE t.study_id = %s ORDER BY t.ordinal", (BREAK_EVEN_METRIC_V1, study_id))
+    outcomes: dict[str, int] = {}
+    stored: list[str | None] = []
+    for outcome, queue_state, text in cursor.fetchall():
+        record = _record_state(outcome, queue_state)
+        outcomes[record] = outcomes.get(record, 0) + 1
+        if record == "EVALUATED":
+            stored.append(text)
+    exact = [(value, str(text)) for text in stored if (value := _decimal_or_none(text)) is not None]
+    ordered = sorted(exact, key=lambda item: item[0])
+    values = [value for value, _ in ordered]
+    reasons: list[str] = []
+    if economics_v1(identity).break_even_metric != BREAK_EVEN_METRIC_V1:
+        reasons.append("STUDY_COST_POLICY_DOES_NOT_REPORT_BREAK_EVEN")
+    if not stored:
+        reasons.append("NO_EVALUATED_TRIAL")
+    available = not reasons
+    statistics = {} if not (available and ordered) else {
+        "min": ordered[0][1], "p25": _nearest_rank(ordered, 1, 4), "median": _nearest_rank(ordered, 1, 2),
+        "p75": _nearest_rank(ordered, 3, 4), "max": ordered[-1][1]}
+    selection = [
+        f"Study {study_id}: all {evidence.trial_count} trials, read in full server-side (not the displayed page).",
+        (f"Eligible: trials with a stored outcome EVALUATED ({len(stored)}). Inadmissible, failed, cancelled and "
+         "pending trials have no break-even value and are counted separately."),
+        (f"Value: stored search-tier metrics.{BREAK_EVEN_METRIC_V1} as exact numeric text; absent, null or "
+         "non-numeric values are UNAVAILABLE, never zero."),
+        (f"Bins: {BREAK_EVEN_BINS_PER_SIDE_V1} equal-width bins per sign; negative [lower, upper) from the minimum "
+         "to 0, positive (lower, upper] from 0 to the maximum; exactly 0 is its own count."),
+    ]
+    return StrategyLabBreakEvenDistributionView(
+        state="AVAILABLE" if available else "UNAVAILABLE", evidence=evidence, reasons=reasons,
+        trial_outcomes=dict(sorted(outcomes.items())), eligible_count=len(stored) if available else 0,
+        positive=sum(1 for v in values if v > 0) if available else 0,
+        zero=sum(1 for v in values if v == 0) if available else 0,
+        negative=sum(1 for v in values if v < 0) if available else 0,
+        unavailable=len(stored) - len(values) if available else 0,
+        bins=_break_even_bins(values) if available else [], order_statistics=statistics, selection=selection,
+    )
+
+
 __all__ = [
+    "BREAK_EVEN_BINS_PER_SIDE_V1",
+    "BREAK_EVEN_METRIC_V1",
     "TRIAL_OUTCOME_FILTERS_V1",
     "StrategyLabAuthorityView",
+    "StrategyLabBreakEvenBinView",
+    "StrategyLabBreakEvenDistributionView",
     "StrategyLabCandidateSetView",
     "StrategyLabCandidateStateView",
     "StrategyLabCandidateView",
     "StrategyLabDatasetRefView",
     "StrategyLabEconomicsView",
+    "StrategyLabEvidenceIdentityView",
+    "StrategyLabHeatmapCellView",
+    "StrategyLabHeatmapView",
     "StrategyLabHoldoutView",
     "StrategyLabManifestView",
     "StrategyLabObjectNotFound",
     "StrategyLabPageInfo",
+    "StrategyLabParameterDimensionView",
     "StrategyLabRerunView",
     "StrategyLabStudyDetailView",
     "StrategyLabStudyFacets",
@@ -797,6 +1184,8 @@ __all__ = [
     "StrategyLabTrialRerunView",
     "StrategyLabTrialView",
     "economics_v1",
+    "read_strategy_lab_break_even_distribution_v1",
+    "read_strategy_lab_heatmap_v1",
     "read_strategy_lab_studies_v1",
     "read_strategy_lab_study_v1",
     "read_strategy_lab_trial_v1",

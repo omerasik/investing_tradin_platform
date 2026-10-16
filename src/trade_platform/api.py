@@ -1,6 +1,7 @@
 """Local-only API exposing system state and audit events, never execution controls."""
 
 import json
+import re
 from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -128,6 +129,8 @@ from .security import (
 )
 from .signal_engine import DetailedSignalStatus
 from .strategy_lab_read_model_v1 import (
+    StrategyLabBreakEvenDistributionView,
+    StrategyLabHeatmapView,
     StrategyLabStudyDetailView,
     StrategyLabStudyPage,
     StrategyLabTrialDetailView,
@@ -599,6 +602,37 @@ def build_app(
     ) -> object:
         """Stage B.1.2a: one trial's stored search metrics and every recorded Decimal rerun lag."""
         return read_dashboard(lambda: queries.strategy_lab_trial(study_id, trial_id))
+
+    @app.get("/operator-dashboard/strategy-lab/studies/{study_id}/heatmap", response_model=StrategyLabHeatmapView)
+    def dashboard_strategy_lab_heatmap(
+        study_id: UUID,
+        x: str | None = Query(default=None, min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]{0,63}$"),
+        y: str | None = Query(default=None, min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]{0,63}$"),
+        metric: str | None = Query(default=None, min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]{0,63}$"),
+        fixed: list[str] = Query(default=[], max_length=16),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """Stage B.1.2b: a stored metric over two recorded parameters; the rest fixed as ``fixed=name:value``.
+
+        Never picks a best trial and never aggregates: an unfixed parameter is
+        ``SELECTION_REQUIRED``, a cell with several matching trials is ``AMBIGUOUS``.
+        """
+        chosen: dict[str, str] = {}
+        for item in fixed:
+            match = re.fullmatch(r"([a-z][a-z0-9_]{0,63}):([A-Za-z0-9_.\-]{1,64})", item)
+            if match is None or match.group(1) in chosen:
+                raise HTTPException(status_code=422, detail="Fixed parameters must be unique name:value pairs.")
+            chosen[match.group(1)] = match.group(2)
+        return read_dashboard(lambda: queries.strategy_lab_heatmap(study_id, x=x, y=y, metric=metric, fixed=chosen))
+
+    @app.get("/operator-dashboard/strategy-lab/studies/{study_id}/break-even-distribution",
+             response_model=StrategyLabBreakEvenDistributionView)
+    def dashboard_strategy_lab_break_even_distribution(
+        study_id: UUID, _: None = Depends(protected_operator),
+        queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """Stage B.1.2b: every evaluated trial's recorded break-even cost, counted by sign and bin (gross)."""
+        return read_dashboard(lambda: queries.strategy_lab_break_even_distribution(study_id))
 
     @app.get("/operator-dashboard/research-terminal/overview", response_model=TerminalOverview)
     def dashboard_terminal_overview(
