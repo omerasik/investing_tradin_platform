@@ -146,7 +146,7 @@ def interval_observations_v1(bars: BarsV1, lag_us: int) -> list[ObservationSpanV
     if bars.size < 2:
         raise StrategyLabWalkForwardError("fewer_than_two_bars")
     exec_index = execution_indices_v1(bars, lag_us)
-    filled_by = np.full(bars.size, -1, dtype=np.int64)
+    filled_by: np.ndarray = np.full(bars.size, -1, dtype=np.int64)
     for i in range(bars.size):
         j = int(exec_index[i])
         if j >= 0:
@@ -178,14 +178,14 @@ def interval_metrics_f64(bars: BarsV1, held: Sequence[int], indices: Sequence[in
     """
     if not indices:
         raise StrategyLabWalkForwardError("no_intervals_to_measure")
-    idx = np.asarray(indices, dtype=np.int64)
-    h = np.asarray(held, dtype=float)
+    idx: np.ndarray = np.asarray(indices, dtype=np.int64)
+    h: np.ndarray = np.asarray(held, dtype=float)
     r = bars.open_f[idx + 1] / bars.open_f[idx] - 1.0
     s = h[idx] * r
     previous = np.where(idx > 0, h[np.maximum(idx - 1, 0)], 0.0)
     changes = np.abs(h[idx] - previous)
     turnover = float(changes.sum())
-    equity = np.cumprod(1.0 + s)
+    equity: np.ndarray = np.cumprod(1.0 + s)
     peak = np.maximum.accumulate(np.concatenate(([1.0], equity)))[1:]
     gross_sum = float(s.sum())
     start, end = bars.open_us[idx], bars.open_us[idx + 1]
