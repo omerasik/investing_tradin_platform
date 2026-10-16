@@ -1,0 +1,364 @@
+"""OR-6 F3 forward -- the settled-funding / proven-T4-price evidence bridge.
+
+Offline. Funding bodies are synthetic fixtures shaped like the public endpoint's
+response (no rate is a real observation). Bars are hand-built
+:class:`T4ForwardBarV1` objects: the sealing and re-derivation rules have their
+own tests in ``test_first_party_t4_forward_bars_v1``; here only the binding is
+under test, and every price still goes through ``resolve_t4_price_reference_v1``.
+"""
+
+from __future__ import annotations
+
+import ast
+import inspect
+import json
+import unittest
+from collections.abc import Mapping, Sequence
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from typing import Any
+from uuid import UUID
+
+from trade_platform import forward_funding_price_bridge_v1 as bridge
+from trade_platform import strategy_lab_validation_v1 as validation
+from trade_platform.bybit_forward_settled_funding_v1 import (
+    ForwardFundingError,
+    ForwardFundingObservationV1,
+    ObservationClockBoundV1,
+    PublishedFundingIntervalV1,
+    observe_forward_settled_funding_v1,
+)
+from trade_platform.bybit_funding_history_v1 import FUNDING_CHARGE_RULE_V1
+from trade_platform.first_party_capture_hourly_acceptance_v1 import (
+    HOUR_NANOS,
+    HourlyAcceptanceV1,
+    HourlySegmentV1,
+    HourVerdictV1,
+    SymbolHoursV1,
+)
+from trade_platform.first_party_t4_forward_bars_v1 import (
+    PRICE_QUANTUM_V1,
+    T4BarClockEvidenceV1,
+    T4ForwardBarV1,
+    T4ForwardDatasetBarsV1,
+    T4PriceConventionV1,
+)
+from trade_platform.forward_funding_price_bridge_v1 import (
+    CONFIRMED,
+    EVIDENCE_BOUND_NOT_COSTABLE_PRICE_CONVENTION_UNAPPROVED,
+    EVIDENCE_BOUND_TRADE_PROXY_UNAPPROVED,
+    FIRST_MINUTE_OF_AN_HOURLY_SEGMENT_IS_NOT_PROVABLE,
+    LONGS_PAY_SHORTS,
+    PRICE_EVIDENCE_REFUSED,
+    REFUSED_FUNDING_EVIDENCE,
+    REFUSED_PRICE_EVIDENCE,
+    SHORTS_PAY_LONGS,
+    TRADE_PRICE_PROXY,
+    UNRESOLVED_OWNER_DECISION_FUNDING_PRICE_CONVENTION,
+    ZERO_RATE_NO_TRANSFER,
+    ForwardFundingPriceBridgeError,
+    ForwardFundingPriceBridgeV1,
+    FundingPriceConventionApprovalV1,
+    bridge_forward_funding_prices_v1,
+    payer_direction_v1,
+    resolve_funding_price_convention_approval_v1,
+)
+
+OPEN = T4PriceConventionV1.FIRST_TRADE_OF_MINUTE_STARTING_AT_INSTANT
+CLOSE = T4PriceConventionV1.LAST_TRADE_OF_MINUTE_ENDING_AT_INSTANT
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_H = 3_600_000
+_MINUTE_US = 60_000_000
+DAY0 = datetime(2026, 6, 1, tzinfo=UTC)
+D0 = (DAY0 - _EPOCH) // timedelta(milliseconds=1)
+END = D0 + 24 * _H
+BOUND = ObservationClockBoundV1(9_470_000_000, "clock-bound-v1:prior=fixture:next=fixture")
+INTERVAL_8H = PublishedFundingIntervalV1(8, "t4-funding:fixture:fundingIntervalHour", D0 * 1000 - 1)
+RATES = {D0: "0.0001", D0 + 8 * _H: "-0.00005", D0 + 16 * _H: "0.000125"}
+RECEIVED = END + 5_000  # received 5 s after the window closes
+AS_OF = DAY0 + timedelta(hours=25)
+SESSION = UUID(int=11)
+
+
+def _observe(rates: Mapping[int, str], *, received_ms: int = RECEIVED,
+             bound: ObservationClockBoundV1 | None = BOUND) -> ForwardFundingObservationV1:
+    rows = [{"symbol": "BTCUSDT", "fundingRate": rate, "fundingRateTimestamp": str(at)}
+            for at, rate in sorted(rates.items(), reverse=True)]
+    body = json.dumps({"retCode": 0, "retMsg": "OK", "result": {"category": "linear", "list": rows},
+                       "retExtInfo": {}, "time": received_ms}).encode()
+    return observe_forward_settled_funding_v1(
+        body, symbol="BTCUSDT", start_ms=D0, end_ms=END - 1,
+        observed_at_host_utc_nanos=received_ms * 1_000_000, clock_bound=bound)
+
+
+def _bar(open_micros: int, *, open_price: str = "65000.5", close_price: str = "65001",
+         knowledge_lag_micros: int = 2_000_000, close_ambiguous: bool = False) -> T4ForwardBarV1:
+    prices = sorted(Decimal(p).quantize(PRICE_QUANTUM_V1) for p in (open_price, close_price))
+    return T4ForwardBarV1(
+        exchange_symbol="BTCUSDT", bar_open_micros=open_micros,
+        open_price=Decimal(open_price).quantize(PRICE_QUANTUM_V1), high_price=prices[1],
+        low_price=prices[0], close_price=Decimal(close_price).quantize(PRICE_QUANTUM_V1), trade_count=3,
+        first_trade_reference=f"first:{open_micros}", last_trade_reference=f"last:{open_micros}",
+        open_market_knowledge_micros=open_micros + 1_000_000,
+        complete_market_knowledge_micros=open_micros + _MINUTE_US + knowledge_lag_micros,
+        open_is_sequence_ambiguous=False, close_is_sequence_ambiguous=close_ambiguous,
+        trade_manifest_hash="m" * 64,
+        clock=T4BarClockEvidenceV1("o" * 64, "c" * 64, "CLOSE_BOUNDARY", 300_000_000, 350_000_000,
+                                   ("session-rtt-sample-bracket-max-upper-v1:fixture",), 2))
+
+
+def _dataset(bars: Sequence[T4ForwardBarV1], *, number: int = 1, symbol: str = "BTCUSDT") -> T4ForwardDatasetBarsV1:
+    return T4ForwardDatasetBarsV1(
+        dataset_version_id=UUID(int=number), dataset_content_hash=f"{number:064x}", source_id=UUID(int=99),
+        session_id=SESSION, instrument="BTCUSDT-PERP", exchange_symbol=symbol,
+        segment_clock_evidence_hash="e" * 64, bars=tuple(bars))
+
+
+def _close_bars(**kwargs: Any) -> list[T4ForwardBarV1]:
+    """The last minute before each settlement: what CLOSE reads."""
+    return [_bar(at * 1000 - _MINUTE_US, **kwargs) for at in sorted(RATES)]
+
+
+def _open_bars() -> list[T4ForwardBarV1]:
+    """The minute starting at each settlement: what OPEN reads (absent in hourly segments)."""
+    return [_bar(at * 1000) for at in sorted(RATES)]
+
+
+def _acceptance(verdicts: Mapping[int, HourVerdictV1] | None = None) -> HourlyAcceptanceV1:
+    first = (D0 - _H) * 1_000_000
+    segments = []
+    for index in range(26):
+        start = first + index * HOUR_NANOS
+        verdict = (verdicts or {}).get(start, HourVerdictV1.COMPLETE)
+        complete = verdict is HourVerdictV1.COMPLETE
+        segments.append(HourlySegmentV1(start, verdict, session_id=SESSION if complete else None,
+                                        unproven_nanos=0 if complete else None))
+    return HourlyAcceptanceV1(
+        required_consecutive_hours=24, max_unproven_nanos=10_000_000_000, first_hour_start_utc_nanos=first,
+        hours_judged=26, symbols=(SymbolHoursV1("BTCUSDT", tuple(segments)),),
+        joint_complete=tuple(s.verdict is HourVerdictV1.COMPLETE for s in segments), runs=())
+
+
+def _run(observations: Sequence[ForwardFundingObservationV1] | None = None, *,
+         datasets: Sequence[T4ForwardDatasetBarsV1] | None = None, convention: Any = CLOSE,
+         as_of: datetime = AS_OF, interval: PublishedFundingIntervalV1 | None = INTERVAL_8H,
+         acceptance: HourlyAcceptanceV1 | None = None, symbol: str = "BTCUSDT",
+         approval: object = None) -> ForwardFundingPriceBridgeV1:
+    return bridge_forward_funding_prices_v1(
+        [_observe(RATES)] if observations is None else observations, symbol=symbol, start_ms=D0, end_ms=END,
+        as_of=as_of, published_interval=interval,
+        datasets=[_dataset(_close_bars())] if datasets is None else datasets,
+        acceptance=_acceptance() if acceptance is None else acceptance, convention=convention, approval=approval)
+
+
+class EvidenceBindingTests(unittest.TestCase):
+    def test_complete_funding_and_proven_close_prices_bind_but_stay_not_costable(self) -> None:
+        observation = _observe(RATES)
+        result = _run([observation])
+        self.assertEqual(result.status, EVIDENCE_BOUND_NOT_COSTABLE_PRICE_CONVENTION_UNAPPROVED)
+        self.assertEqual(result.identity["funding_window"]["status"], "COMPLETE")
+        self.assertEqual([s["settled_at_ms"] for s in result.settlements], sorted(RATES))
+        self.assertEqual([s["payer_direction"] for s in result.settlements],
+                         [LONGS_PAY_SHORTS, SHORTS_PAY_LONGS, LONGS_PAY_SHORTS])
+        for settlement in result.settlements:
+            self.assertEqual(settlement["status"], EVIDENCE_BOUND_TRADE_PROXY_UNAPPROVED)
+            self.assertEqual(settlement["rate"], RATES[settlement["settled_at_ms"]])  # verbatim text
+            price = settlement["price"]
+            self.assertEqual(price["evidence_kind"], TRADE_PRICE_PROXY)
+            self.assertEqual(price["relation_to_historical_charge_rule"],
+                             "DIFFERS_FROM_THE_HISTORICAL_POSITION_VALUE_REFERENCE")
+            self.assertEqual(price["bar_open_micros"], settlement["settled_at_ms"] * 1000 - _MINUTE_US)
+            self.assertEqual(price["price"], str(Decimal("65001").quantize(PRICE_QUANTUM_V1)))
+            self.assertEqual(price["max_clock_bound_nanos"], 350_000_000)
+            # The hour holding the minute before the settlement is the previous UTC hour.
+            self.assertEqual(price["hour"]["hour_start_utc_nanos"], (settlement["settled_at_ms"] - _H) * 1_000_000)
+            # Funding is known the next day; the price seconds after the instant: funding decides.
+            self.assertEqual(settlement["funding_knowledge_at_micros"], observation.knowledge_at_micros)
+            self.assertEqual(settlement["funding_observation_id"], str(observation.observation_id))
+            self.assertEqual(settlement["evidence_knowable_at_micros"], observation.knowledge_at_micros)
+            self.assertNotIn("charge", settlement)
+        self.assertIn("PRICE_IS_A_TRADE_PROXY_NOT_THE_VENUE_MARK_PRICE", result.reasons)
+        self.assertIn(UNRESOLVED_OWNER_DECISION_FUNDING_PRICE_CONVENTION, result.unresolved_decisions)
+        self.assertIn("NO_PROVEN_FORWARD_MARK_PRICE_RESOLVER_V1", result.unresolved_decisions)
+        self.assertIn("FORWARD_FUNDING_ACQUISITION:UNRESOLVED_OWNER_AUTHORIZATION", result.unresolved_decisions)
+
+    def test_the_open_convention_matches_the_historical_rule_but_is_still_unapproved(self) -> None:
+        result = _run(datasets=[_dataset(_open_bars())], convention=OPEN)
+        self.assertEqual(result.status, EVIDENCE_BOUND_NOT_COSTABLE_PRICE_CONVENTION_UNAPPROVED)
+        for settlement in result.settlements:
+            self.assertEqual(settlement["price"]["relation_to_historical_charge_rule"],
+                             "SAME_SELECTION_AS_THE_HISTORICAL_POSITION_VALUE_REFERENCE")
+            self.assertEqual(settlement["price"]["bar_open_micros"], settlement["settled_at_ms"] * 1000)
+
+    def test_hourly_segments_cannot_prove_the_open_at_a_settlement_hour(self) -> None:
+        # Hourly segments prove the previous hour's last minute, never the new hour's first.
+        result = _run(datasets=[_dataset(_close_bars())], convention=OPEN)
+        self.assertEqual(result.status, REFUSED_PRICE_EVIDENCE)
+        for settlement in result.settlements:
+            self.assertEqual(settlement["status"], PRICE_EVIDENCE_REFUSED)
+            self.assertEqual(settlement["price_refusal"], "no_proven_bar_for_the_minute")
+            self.assertEqual(settlement["structural_note"], FIRST_MINUTE_OF_AN_HOURLY_SEGMENT_IS_NOT_PROVABLE)
+            self.assertIsNone(settlement["price"])
+            self.assertIsNone(settlement["evidence_knowable_at_micros"])
+        missing_close = _run(datasets=[_dataset(_open_bars())], convention=CLOSE)
+        self.assertEqual(missing_close.status, REFUSED_PRICE_EVIDENCE)
+        self.assertTrue(all(s["structural_note"] is None for s in missing_close.settlements))
+
+    def test_identical_inputs_give_identical_hashes_in_any_order(self) -> None:
+        early, late = _observe(RATES), _observe(RATES, received_ms=RECEIVED + 60_000)
+        one = _run([early, late], datasets=[_dataset(_close_bars()[:2], number=1),
+                                            _dataset(_close_bars()[2:], number=2)])
+        two = _run([late, early], datasets=[_dataset(_close_bars()[2:], number=2),
+                                            _dataset(_close_bars()[:2], number=1)])
+        self.assertEqual(one.content_hash, two.content_hash)
+        self.assertEqual(one.identity, two.identity)
+        self.assertNotEqual(one.content_hash, _run([early, late], convention=CLOSE,
+                                                   as_of=AS_OF + timedelta(hours=1)).content_hash)
+        # The earliest observation that published a record decides its funding knowledge.
+        for settlement in one.settlements:
+            self.assertEqual(settlement["funding_knowledge_at_micros"], early.knowledge_at_micros)
+
+    def test_price_knowledge_decides_when_it_is_later(self) -> None:
+        lag = (RECEIVED - D0) * 1000 + 3_600_000_000  # complete an hour after funding is known
+        result = _run(datasets=[_dataset(_close_bars(knowledge_lag_micros=lag))], as_of=AS_OF + timedelta(hours=24))
+        first = result.settlements[0]
+        self.assertEqual(first["evidence_knowable_at_micros"], first["price"]["knowable_at_micros"])
+        self.assertGreater(first["price"]["knowable_at_micros"], first["funding_knowledge_at_micros"])
+
+    def test_the_bridge_never_confirms(self) -> None:
+        results = [
+            _run(),
+            _run(datasets=[_dataset(_open_bars())], convention=OPEN),
+            _run(datasets=[_dataset(_close_bars()), _dataset(_open_bars(), number=2)]),
+        ]
+        for result in results:
+            self.assertNotEqual(result.status, CONFIRMED)
+            self.assertTrue(all(s["status"] != CONFIRMED for s in result.settlements))
+            self.assertTrue(all(s["price"] is None or s["price"]["evidence_kind"] == TRADE_PRICE_PROXY
+                                for s in result.settlements))
+
+    def test_payer_direction_is_the_published_rule_on_the_exact_rate_text(self) -> None:
+        self.assertEqual(payer_direction_v1("0.0001"), LONGS_PAY_SHORTS)
+        self.assertEqual(payer_direction_v1("-0.00005"), SHORTS_PAY_LONGS)
+        self.assertEqual(payer_direction_v1("0"), ZERO_RATE_NO_TRANSFER)
+        self.assertEqual(payer_direction_v1("-0.0000"), ZERO_RATE_NO_TRANSFER)
+
+    def test_the_contract_names_the_historical_rule_and_the_proxy(self) -> None:
+        self.assertEqual(bridge.BRIDGE_CONTRACT_V1["historical_charge_rule"], FUNDING_CHARGE_RULE_V1)
+        self.assertEqual(bridge.BRIDGE_CONTRACT_V1["price_evidence_kind"], TRADE_PRICE_PROXY)
+        self.assertEqual(bridge.BRIDGE_CONTRACT_V1["charge"], "NOT_CALCULATED_PRICE_CONVENTION_UNAPPROVED")
+        self.assertEqual(set(bridge.RELATION_TO_HISTORICAL_CHARGE_RULE_V1), {c.value for c in T4PriceConventionV1})
+
+
+class FundingRefusalTests(unittest.TestCase):
+    def test_a_missing_settlement_refuses_the_window_never_fills_it(self) -> None:
+        rates = {at: rate for at, rate in RATES.items() if at != D0 + 8 * _H}
+        result = _run([_observe(rates)])
+        self.assertEqual(result.status, REFUSED_FUNDING_EVIDENCE)
+        self.assertTrue(any(r.startswith("FUNDING_WINDOW:SPACING:") for r in result.reasons))
+        self.assertEqual([s["settled_at_ms"] for s in result.settlements], [D0, D0 + 16 * _H])
+
+    def test_an_observation_without_a_clock_bound_is_never_available(self) -> None:
+        result = _run([_observe(RATES, bound=None)])
+        self.assertEqual(result.status, REFUSED_FUNDING_EVIDENCE)
+        self.assertTrue(any(r.startswith("FUNDING_WINDOW:NOT_COVERED:") for r in result.reasons))
+        self.assertIn("FUNDING_WINDOW:NO_RECORD_IN_WINDOW", result.reasons)
+        self.assertEqual(result.settlements, [])
+
+    def test_funding_not_yet_known_or_window_not_closed_is_refused(self) -> None:
+        observation = _observe(RATES)
+        known = _EPOCH + timedelta(microseconds=int(observation.knowledge_at_micros or 0))
+        self.assertEqual(_run([observation], as_of=known).status,
+                         EVIDENCE_BOUND_NOT_COSTABLE_PRICE_CONVENTION_UNAPPROVED)
+        before = _run([observation], as_of=known - timedelta(microseconds=1))
+        self.assertEqual(before.status, REFUSED_FUNDING_EVIDENCE)
+        self.assertEqual(before.identity["funding_window"]["irregularities"][-1], "NO_RECORD_IN_WINDOW")
+        open_window = _run([observation], as_of=DAY0 + timedelta(hours=12))
+        self.assertIn("FUNDING_WINDOW:WINDOW_NOT_CLOSED_AS_OF", open_window.reasons)
+
+    def test_missing_interval_evidence_and_rate_conflicts_are_refused(self) -> None:
+        self.assertIn("FUNDING_WINDOW:PUBLISHED_INTERVAL_EVIDENCE_MISSING", _run(interval=None).reasons)
+        conflicting = dict(RATES)
+        conflicting[D0 + 8 * _H] = "-0.00006"
+        result = _run([_observe(RATES), _observe(conflicting, received_ms=RECEIVED + 1_000)])
+        self.assertEqual(result.status, REFUSED_FUNDING_EVIDENCE)
+        self.assertTrue(any(r.startswith("FUNDING_WINDOW:SETTLED_RATE_CONFLICT:") for r in result.reasons))
+        self.assertNotIn(D0 + 8 * _H, [s["settled_at_ms"] for s in result.settlements])
+
+
+class PriceRefusalTests(unittest.TestCase):
+    def test_an_ambiguous_boundary_price_is_refused(self) -> None:
+        bars = _close_bars()
+        bars[1] = replace(bars[1], close_is_sequence_ambiguous=True)
+        result = _run(datasets=[_dataset(bars)])
+        self.assertEqual(result.status, REFUSED_PRICE_EVIDENCE)
+        refused = [s for s in result.settlements if s["status"] == PRICE_EVIDENCE_REFUSED]
+        self.assertEqual([s["settled_at_ms"] for s in refused], [D0 + 8 * _H])
+        self.assertEqual(refused[0]["price_refusal"], "close_price_is_sequence_ambiguous")
+        self.assertIn(f"PRICE_REFUSED:{refused[0]['settled_at']}:close_price_is_sequence_ambiguous", result.reasons)
+
+    def test_a_coverage_gap_hour_refuses_its_settlement_price(self) -> None:
+        gap_hour = (D0 + 7 * _H) * 1_000_000
+        result = _run(acceptance=_acceptance({gap_hour: HourVerdictV1.UNPROVEN_GAP_EXCEEDS_BOUND}))
+        refused = [s for s in result.settlements if s["status"] == PRICE_EVIDENCE_REFUSED]
+        self.assertEqual([s["price_refusal"] for s in refused], ["hour_not_complete:UNPROVEN_GAP_EXCEEDS_BOUND"])
+        self.assertEqual(result.status, REFUSED_PRICE_EVIDENCE)
+
+    def test_a_price_not_knowable_at_the_decision_instant_is_refused(self) -> None:
+        lag = (AS_OF - DAY0) // timedelta(microseconds=1) + 1  # the first price is knowable 1 us after as_of
+        result = _run(datasets=[_dataset(_close_bars(knowledge_lag_micros=lag))])
+        self.assertEqual({s["price_refusal"] for s in result.settlements}, {"reference_not_yet_knowable_at_known_by"})
+
+    def test_no_price_dataset_refuses_every_settlement(self) -> None:
+        result = _run(datasets=[])
+        self.assertEqual(result.status, REFUSED_PRICE_EVIDENCE)
+        self.assertEqual({s["price_refusal"] for s in result.settlements},
+                         {"datasets_must_name_exactly_one_exchange_symbol"})
+
+
+class CallerErrorTests(unittest.TestCase):
+    def test_symbols_must_agree_and_stay_in_the_universe(self) -> None:
+        with self.assertRaisesRegex(ForwardFundingPriceBridgeError, "differs_from_the_funding_symbol"):
+            _run(datasets=[_dataset(_close_bars(), symbol="ETHUSDT")])
+        with self.assertRaisesRegex(ForwardFundingError, "outside_the_universe"):
+            _run(symbol="DOGEUSDT")
+
+    def test_convention_and_decision_instant_must_be_explicit(self) -> None:
+        for convention in (None, CLOSE.value):
+            with self.assertRaisesRegex(ForwardFundingPriceBridgeError, "price_convention_must_be_declared"):
+                _run(convention=convention)
+        with self.assertRaisesRegex(ForwardFundingPriceBridgeError, "as_of_must_be_an_aware_utc_instant"):
+            _run(as_of=AS_OF.replace(tzinfo=None))
+
+    def test_only_the_unresolved_approval_exists_and_a_holdout_opening_is_not_one(self) -> None:
+        approval = resolve_funding_price_convention_approval_v1()
+        self.assertEqual(approval.state, UNRESOLVED_OWNER_DECISION_FUNDING_PRICE_CONVENTION)
+        self.assertEqual(_run(approval=approval).content_hash, _run().content_hash)
+        for state in ("APPROVED", CONFIRMED, ""):
+            with self.assertRaisesRegex(ForwardFundingPriceBridgeError, "not_defined_in_v1"):
+                FundingPriceConventionApprovalV1(state, ())
+        opening = validation.HoldoutOpeningV1("cycle-2026-08-20", datetime(2026, 8, 20, tzinfo=UTC),
+                                              datetime(2026, 9, 1, tzinfo=UTC), "q" * 64, "test",
+                                              validation._REGISTRY_ISSUER)
+        with self.assertRaisesRegex(ForwardFundingPriceBridgeError, "holdout_opening_is_not"):
+            _run(approval=opening)
+        with self.assertRaisesRegex(ForwardFundingPriceBridgeError, "must_be_the_resolved_approval"):
+            _run(approval="APPROVED")
+
+    def test_the_module_has_no_network_or_historical_acquisition_path(self) -> None:
+        tree = ast.parse(inspect.getsource(bridge))
+        imported = {alias.name for node in ast.walk(tree) if isinstance(node, ast.ImportFrom | ast.Import)
+                    for alias in node.names}
+        modules = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
+        modules |= {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
+        for forbidden in ("urllib", "http", "socket", "requests"):
+            self.assertFalse(any(str(m).split(".")[0] == forbidden for m in modules), forbidden)
+        for name in ("acquire_funding_history_v1", "load_funding_history_v1", "urllib_funding_fetch_v1",
+                     "acquire_forward_settled_funding_v1"):
+            self.assertNotIn(name, imported)
+
+
+if __name__ == "__main__":
+    unittest.main()
