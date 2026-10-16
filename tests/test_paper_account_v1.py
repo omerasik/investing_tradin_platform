@@ -5,6 +5,7 @@ Every number here is a TEST FIXTURE, never an owner decision.
 
 from __future__ import annotations
 
+import json
 import random
 import unittest
 from datetime import UTC, datetime
@@ -292,6 +293,28 @@ class LedgerTests(unittest.TestCase):
         del payload["fill_liquidity"]
         with self.assertRaisesRegex(PaperAccountError, "does_not_rebuild"):
             cost_policy_from_payload_v1(payload)
+
+    def test_stored_v1_and_v2_cost_policies_rebuild_without_moving_any_ledger_identity(self) -> None:
+        from trade_platform.paper_account_v1 import cost_policy_from_payload_v1
+        from trade_platform.strategy_lab_policies_v1 import CostPolicyV2
+
+        fees = FeeScheduleV1("BYBIT", "USDT_PERPETUAL", "FIXTURE", "1", "5", "test", "2026-10-09",
+                             "test fixture, not a real schedule")
+        scenarios = (SlippageScenarioV1("fixture-low", "1", "fixture"),)
+        fills = [fill("a", 0, 0, 1, "100"), fill("b", 10, 1, 0, "110")]
+        # The frozen v1 gross identity the ledger has always carried.
+        self.assertEqual("53233636d27380f758606c94fee33ebd68783999568fb6a6cdfea7acf1112244",
+                         ledger(fills)["cost_policy_hash"])
+        for original in (gross_cost_policy_v1(), CostPolicyV1(fees, scenarios), CostPolicyV2(), CostPolicyV2(fees, scenarios)):
+            with self.subTest(policy=original.policy().slot):
+                stored = json.loads(json.dumps(original.policy().payload))
+                rebuilt = cost_policy_from_payload_v1(stored)
+                self.assertIs(type(original), type(rebuilt))
+                self.assertEqual(ledger(fills, cost=original)["content_hash"], ledger(fills, cost=rebuilt)["content_hash"])
+        # Same inputs, different version: different policy identity, identical economics.
+        v1, v2 = ledger(fills, cost=CostPolicyV1(fees, scenarios)), ledger(fills, cost=CostPolicyV2(fees, scenarios))
+        self.assertNotEqual(v1["cost_policy_hash"], v2["cost_policy_hash"])
+        self.assertEqual(v1["equity_by_scenario"], v2["equity_by_scenario"])
 
     def test_an_opened_packet_without_its_cost_policy_never_falls_back_to_gross(self) -> None:
         from trade_platform.paper_account_v1 import cycle_cost_policy_v1
