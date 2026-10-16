@@ -63,12 +63,16 @@ def main() -> None:
     fills = PostgresPaperIncubationStoreV1(database)
     # OR-6: the opened cycle's preregistered (verified) cost policy; gross while no holdout is opened.
     from trade_platform.paper_account_v1 import cycle_cost_policy_v1
+    from trade_platform.paper_incubation_registry_v1 import resolve_incubation_bindings_v1
     from trade_platform.research_terminal_read_model_v1 import current_cycle_id_v1
 
     with database.transaction() as connection, connection.cursor() as cursor:
         cost_policy = cycle_cost_policy_v1(cursor, current_cycle_id_v1())
+        # OR-7: incubation length and start come only from the persisted registry rows of the cycle.
+        resolution = resolve_incubation_bindings_v1(cursor, cycle_id=current_cycle_id_v1())
     if args.command == "report":
-        report = incubation_report_v1(fills.fills(symbol=args.symbol), cost_policy, as_of=datetime.now(UTC))
+        report = incubation_report_v1(fills.fills(symbol=args.symbol), cost_policy, as_of=datetime.now(UTC),
+                                      resolution=resolution)
         print(json.dumps(report, indent=1))
         return
     sys.path.insert(0, str(Path(__file__).resolve().parent))
