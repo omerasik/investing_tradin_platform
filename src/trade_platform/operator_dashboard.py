@@ -48,11 +48,15 @@ from .research_terminal_read_model_v1 import (
     read_validation_v1,
 )
 from .strategy_lab_read_model_v1 import (
+    StrategyLabBreakEvenDistributionView,
+    StrategyLabHeatmapView,
     StrategyLabObjectNotFound,
     StrategyLabStudyDetailView,
     StrategyLabStudyPage,
     StrategyLabTrialDetailView,
     StrategyLabTrialPage,
+    read_strategy_lab_break_even_distribution_v1,
+    read_strategy_lab_heatmap_v1,
     read_strategy_lab_studies_v1,
     read_strategy_lab_study_v1,
     read_strategy_lab_trial_v1,
@@ -1342,6 +1346,26 @@ class PostgresOperatorDashboardQueries:
         def operation(cursor: _Cursor) -> StrategyLabTrialDetailView:
             try:
                 return read_strategy_lab_trial_v1(cursor, study_id, trial_id)
+            except StrategyLabObjectNotFound as error:
+                raise DashboardObjectNotFound(str(error)) from error
+        return self._read(operation)
+
+    def strategy_lab_heatmap(
+        self, study_id: UUID, *, x: str | None, y: str | None, metric: str | None, fixed: dict[str, str],
+    ) -> StrategyLabHeatmapView:
+        """Stage B.1.2b: one stored metric over two recorded parameters, the rest fixed explicitly."""
+        def operation(cursor: _Cursor) -> StrategyLabHeatmapView:
+            try:
+                return read_strategy_lab_heatmap_v1(cursor, study_id, x=x, y=y, metric=metric, fixed=fixed)
+            except StrategyLabObjectNotFound as error:
+                raise DashboardObjectNotFound(str(error)) from error
+        return self._read(operation)
+
+    def strategy_lab_break_even_distribution(self, study_id: UUID) -> StrategyLabBreakEvenDistributionView:
+        """Stage B.1.2b: recorded break-even costs of every evaluated trial (gross sensitivity)."""
+        def operation(cursor: _Cursor) -> StrategyLabBreakEvenDistributionView:
+            try:
+                return read_strategy_lab_break_even_distribution_v1(cursor, study_id)
             except StrategyLabObjectNotFound as error:
                 raise DashboardObjectNotFound(str(error)) from error
         return self._read(operation)

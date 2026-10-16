@@ -47,6 +47,9 @@ const requested = [
   `/operator-dashboard/strategy-lab/studies/${uuid}`,
   `/operator-dashboard/strategy-lab/studies/${uuid}/trials?limit=25&offset=50&sort=total_return&direction=desc&outcome=EVALUATED&frozen_only=true`,
   `/operator-dashboard/strategy-lab/studies/${uuid}/trials/${uuid}`,
+  `/operator-dashboard/strategy-lab/studies/${uuid}/heatmap`,
+  `/operator-dashboard/strategy-lab/studies/${uuid}/heatmap?x=fast_bars&y=slow_bars&metric=total_return&fixed=band%3A0.0005&fixed=direction%3Along_only`,
+  `/operator-dashboard/strategy-lab/studies/${uuid}/break-even-distribution`,
   "/operator-dashboard/research-terminal/overview",
   "/operator-dashboard/research-terminal/reruns?limit=50",
   "/operator-dashboard/research-terminal/validation?limit=200",
@@ -99,6 +102,9 @@ const refused = [
   `/operator-dashboard/strategy-lab/studies/${uuid}/trials/${uuid}?sort=x`,
   `/operator-dashboard/strategy-lab/studies/${uuid}/trials/../reruns`,
   "/operator-dashboard/strategy-lab/studies?dsn=x",
+  `/operator-dashboard/strategy-lab/studies/${uuid}/heatmap?best=1`,
+  `/operator-dashboard/strategy-lab/studies/${uuid}/break-even-distribution?limit=10`,
+  `/operator-dashboard/strategy-lab/studies/${uuid}/heatmap/../reruns`,
 ];
 for (const target of refused) {
   assert.equal(allowedAuthorityTarget(target), false, `allowed: ${target}`);

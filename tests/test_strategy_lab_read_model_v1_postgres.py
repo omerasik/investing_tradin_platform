@@ -127,6 +127,94 @@ class StrategyLabReadModelPostgresTests(unittest.TestCase):
         finally:
             database.close()
 
+    def test_heatmap_and_break_even_distribution_match_the_stored_trials(self) -> None:
+        import hashlib
+
+        from trade_platform.evidence_tier_authority_v1 import EvidenceTierV1
+        from trade_platform.operator_dashboard import PostgresOperatorDashboardQueries
+        from trade_platform.persistence import PostgresDatabase
+        from trade_platform.strategy_lab_ledger_v1 import (
+            PostgresStrategyLabLedgerV1,
+            TrialOutcomeV1,
+        )
+        from trade_platform.strategy_lab_study_v1 import (
+            DatasetBindingV1,
+            InputRoleV1,
+            ParameterDomainV1,
+            ParameterKindV1,
+            ParameterSpaceV1,
+            SearchModeV1,
+            SearchPlanV1,
+            StrategySpecV1,
+            StudySpecV1,
+        )
+        from trade_platform.strategy_lab_worker_v1 import TrialEvaluationV1, run_trial_worker_v1
+
+        strategy = StrategySpecV1(
+            family="heatmap_fixture", version="1.0.0", implementation_sha256=hashlib.sha256(uuid4().bytes).hexdigest(),
+            execution_convention="next_bar_open",
+            input_roles=(InputRoleV1("bars", frozenset({EvidenceTierV1.T0_SYNTHETIC})),),
+            parameter_schema={"fast": ParameterKindV1.INTEGER, "slow": ParameterKindV1.INTEGER,
+                              "band": ParameterKindV1.DECIMAL},
+        )
+        spec = StudySpecV1(
+            strategy=strategy,
+            parameter_space=ParameterSpaceV1.of(
+                ParameterDomainV1.integer_values("fast", [1, 2, 3]), ParameterDomainV1.integer_values("slow", [2, 3]),
+                ParameterDomainV1.decimal_set("band", ["0", "0.5"])),
+            datasets=(DatasetBindingV1("bars", UUID(int=7), "c" * 64, EvidenceTierV1.T0_SYNTHETIC,
+                                       datetime(2026, 6, 1, tzinfo=UTC)),),
+            search=SearchPlanV1(SearchModeV1.EXHAUSTIVE, max_trials=12),
+            evaluation_upper_bound_exclusive=datetime(2026, 7, 1, tzinfo=UTC), label="heatmap fixture",
+        )
+
+        def evaluator(study, parameters):  # type: ignore[no-untyped-def]
+            fast, slow = int(parameters["fast"]), int(parameters["slow"])
+            if fast >= slow:
+                return TrialEvaluationV1(TrialOutcomeV1.INADMISSIBLE_PARAMETERS, {"reason": "fast_not_shorter_than_slow"})
+            return TrialEvaluationV1(TrialOutcomeV1.EVALUATED,
+                                     {"score": f"{fast * slow}.{str(parameters['band']).replace('.', '')}", "trades": fast})
+
+        database = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        try:
+            clock = _Clock(datetime(2026, 9, 4, 12, tzinfo=UTC))
+            run_trial_worker_v1(PostgresStrategyLabLedgerV1(database, clock=clock), spec, evaluator,
+                                worker="heatmap", clock=clock)
+            queries = PostgresOperatorDashboardQueries(database)
+            required = queries.strategy_lab_heatmap(spec.study_id, x="fast", y="slow", metric="score", fixed={})
+            self.assertEqual((required.state, required.required_fixed), ("SELECTION_REQUIRED", ["band"]))
+            view = queries.strategy_lab_heatmap(spec.study_id, x="fast", y="slow", metric="score",
+                                                fixed={"band": "0.5"})
+            self.assertEqual(view.state, "AVAILABLE")
+            self.assertEqual(view.counts, {"VALUE": 3, "INADMISSIBLE_PARAMETERS": 3})
+            # Independent check: every cell equals the one stored result with exactly these parameters.
+            with database.transaction() as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT t.trial_id, t.parameters->>'fast', t.parameters->>'slow', r.outcome, r.metrics->>'score' "
+                    "FROM strategy_lab_trials t JOIN strategy_lab_trial_results r USING (trial_id) "
+                    "WHERE t.study_id=%s AND t.parameters->>'band'='0.5'", (spec.study_id,))
+                stored = {(row[1], row[2]): row for row in cursor.fetchall()}
+            self.assertEqual(len(stored), len(view.cells))
+            for cell in view.cells:
+                row = stored[cell.x, cell.y]
+                self.assertEqual(cell.trial_ids, [row[0]])
+                self.assertEqual(cell.value, row[4] if row[3] == "EVALUATED" else None)
+            self.assertEqual([c.value for c in view.cells if c.state == "VALUE"], ["2.05", "3.05", "6.05"])
+            self.assertEqual([c.rank for c in view.cells if c.state == "VALUE"], [1, 2, 3])
+            self.assertEqual(view.evidence.study_content_hash, spec.content_hash)
+            self.assertEqual((view.evidence.result_count, view.evidence.trial_count), (12, 12))
+            invalid = queries.strategy_lab_heatmap(spec.study_id, x="fast", y="slow", metric="score",
+                                                   fixed={"band": "0.50"})
+            self.assertEqual((invalid.state, invalid.cells), ("SELECTION_INVALID", []))
+
+            # A pre-policy study declares no break-even reporting: unavailable, with outcomes still restated.
+            distribution = queries.strategy_lab_break_even_distribution(spec.study_id)
+            self.assertEqual(distribution.state, "UNAVAILABLE")
+            self.assertEqual(distribution.trial_outcomes, {"EVALUATED": 6, "INADMISSIBLE_PARAMETERS": 6})
+            self.assertEqual(distribution.evidence.results_digest, view.evidence.results_digest)
+        finally:
+            database.close()
+
 
 if __name__ == "__main__":
     unittest.main()

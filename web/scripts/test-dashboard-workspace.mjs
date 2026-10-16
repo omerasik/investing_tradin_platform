@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 import { resolveDashboardWorkspaceReferences } from "../app/dashboard-workspace.ts";
+import { crossViewMismatch, evidenceMismatch } from "../app/(protected)/strategy-lab/evidence-consistency.ts";
 
 const discovered = {
   state: "AVAILABLE",
@@ -42,3 +43,28 @@ assert.equal(empty.scorecardId, undefined);
 assert.equal(empty.paperOrderIntentId, undefined);
 
 console.log("PASS: dashboard discovery resolver preserves explicit configuration and empty availability.");
+
+// Stage B.1.2b: a visualization is withheld unless its evidence is the study shown and both views share one result set.
+const studyId = "33333333-3333-3333-3333-333333333333";
+const evidence = {
+  study_id: studyId, study_content_hash: "c".repeat(64), manifest_hash: "m".repeat(64),
+  results_digest: "d".repeat(64), result_count: 4, trial_count: 6,
+};
+const shown = { studyId, contentHash: evidence.study_content_hash, latestManifestHash: evidence.manifest_hash, resultCount: 4 };
+assert.equal(evidenceMismatch(evidence, shown), null);
+assert.equal(evidenceMismatch(evidence, { studyId }), null, "detail unavailable: only the study id is bound");
+assert.match(evidenceMismatch({ ...evidence, study_id: "44444444-4444-4444-4444-444444444444" }, shown), /different study/);
+assert.match(evidenceMismatch({ ...evidence, study_content_hash: "x".repeat(64) }, shown), /content hash/);
+assert.match(evidenceMismatch({ ...evidence, manifest_hash: "n".repeat(64) }, shown), /manifest/);
+assert.match(evidenceMismatch({ ...evidence, manifest_hash: null }, shown), /manifest/);
+assert.equal(evidenceMismatch({ ...evidence, manifest_hash: null }, { ...shown, latestManifestHash: null }), null);
+assert.match(evidenceMismatch({ ...evidence, result_count: 5 }, shown), /result count/);
+
+assert.equal(crossViewMismatch(evidence, { ...evidence }), null);
+assert.equal(crossViewMismatch(undefined, evidence), null, "no heatmap read: nothing to compare");
+assert.equal(crossViewMismatch(evidence, undefined), null);
+assert.match(crossViewMismatch(evidence, { ...evidence, results_digest: "e".repeat(64) }), /digests differ/);
+assert.match(crossViewMismatch(evidence, { ...evidence, manifest_hash: "n".repeat(64) }), /digests differ/);
+assert.match(crossViewMismatch(evidence, { ...evidence, study_content_hash: "x".repeat(64) }), /different studies/);
+
+console.log("PASS: Strategy Lab visual analytics fail closed on any evidence mismatch.");

@@ -1,6 +1,8 @@
 import React from "react";
 import Link from "next/link";
 import {
+  getStrategyLabBreakEvenDistribution,
+  getStrategyLabHeatmap,
   getStrategyLabStudies,
   getStrategyLabStudy,
   getStrategyLabTrial,
@@ -8,11 +10,16 @@ import {
   getWorkspaceContext,
   stateText,
   utc,
+  type StrategyLabBreakEvenDistribution,
   type StrategyLabEconomics,
+  type StrategyLabHeatmap,
   type StrategyLabStudyDetail,
   type StrategyLabTrial,
   type StrategyLabTrialQuery,
 } from "../../lib/data-access";
+import type { EvidenceResult as Evidence } from "../../operator-contracts";
+import { BreakEvenView, EvidenceLine, HeatmapView } from "./visual-analytics";
+import { crossViewMismatch, evidenceMismatch, type StudyOnScreen } from "./evidence-consistency";
 import { WorkspaceToolbar } from "../../components/workspace-toolbar";
 import { QualityStateBadge } from "../../components/quality-state-badge";
 import { DataTable } from "../../components/data-table";
@@ -63,10 +70,36 @@ const METRIC_LABELS: Record<string, string> = {
 type Params = {
   study?: string; family?: string; instrument?: string; study_offset?: string;
   sort?: string; dir?: string; outcome?: string; frozen?: string; offset?: string; limit?: string; trial?: string;
+  /** Heatmap: x and y parameters, metric, and fixed values as comma-joined ``name:value`` pairs. */
+  hx?: string; hy?: string; hm?: string; hf?: string;
 };
+type RawParams = Omit<Params, "hf"> & { hf?: string | string[] };
+
+const PARAMETER = /^[a-z][a-z0-9_]{0,63}$/;
+const FIXED_PAIR = /^([a-z][a-z0-9_]{0,63}):([A-Za-z0-9_.-]{1,64})$/;
 
 function pick(value: string | undefined, pattern: RegExp): string | undefined {
   return value && pattern.test(value) ? value : undefined;
+}
+
+/**
+ * Fixed heatmap values from the URL, exactly as given. Malformed pairs and pairs naming a
+ * current axis are dropped (an axis cannot also be fixed); nothing is defaulted, and a
+ * repeated name is passed on so the server refuses it rather than this page choosing one.
+ */
+function fixedPairs(raw: string | string[] | undefined, axes: (string | undefined)[]): [string, string][] {
+  const items = (Array.isArray(raw) ? raw : raw ? [raw] : []).flatMap((value) => value.split(","));
+  const pairs: [string, string][] = [];
+  for (const item of items) {
+    const match = FIXED_PAIR.exec(item);
+    if (match && !axes.includes(match[1])) pairs.push([match[1], match[2]]);
+  }
+  return pairs;
+}
+
+/** Hidden inputs carrying the page state a form does not itself edit. */
+function Carry({ params, keys }: { params: Params; keys: (keyof Params)[] }) {
+  return <>{keys.map((key) => (params[key] ? <input key={key} type="hidden" name={key} value={params[key]} /> : null))}</>;
 }
 
 function boundedInt(value: string | undefined, max: number): number {
@@ -231,6 +264,124 @@ function TrialRow({ trial, columns, params }: { trial: StrategyLabTrial; columns
   );
 }
 
+function HeatmapPanel({ detail, study, metricKeys, params, fixed, result, crossMismatch }: {
+  detail: StrategyLabStudyDetail | undefined; study: StudyOnScreen; metricKeys: string[]; params: Params;
+  fixed: [string, string][]; result: Evidence<StrategyLabHeatmap> | undefined; crossMismatch: string | null;
+}) {
+  const dimensions = detail?.parameter_space.map((dim) => ({ name: String(dim.name), values: (dim.values ?? []).map(String) })) ?? [];
+  const fixedByName = new Map(fixed);
+  const heatmap = result?.state === "AVAILABLE" ? result.value : undefined;
+  const mismatch = heatmap ? evidenceMismatch(heatmap.evidence, study) : null;
+  return (
+    <article className="panel margin-bottom-24" aria-label="Parameter heatmap" id="heatmap">
+      <h2><span>Parameter heatmap</span><Claim label="SEARCH_NON_AUTHORITATIVE · GROSS" /></h2>
+      {dimensions.length < 2 ? (
+        <p className="empty-notice">UNAVAILABLE: this study records {dimensions.length} parameter{dimensions.length === 1 ? "" : "s"}; a heatmap needs two.</p>
+      ) : (
+        <form method="GET" action="/strategy-lab#heatmap" className="filter-bar" aria-label="Heatmap selection">
+          <Carry params={params} keys={["study", "family", "instrument", "study_offset", "sort", "dir", "outcome", "frozen", "offset", "limit"]} />
+          <div className="filter-groups">
+            <div className="filter-item">
+              <label htmlFor="heatmap-x" className="filter-label">X parameter</label>
+              <select id="heatmap-x" name="hx" defaultValue={params.hx ?? ""} className="filter-select">
+                <option value="">— choose —</option>
+                {dimensions.map((dim) => <option key={dim.name} value={dim.name}>{dim.name}</option>)}
+              </select>
+            </div>
+            <div className="filter-item">
+              <label htmlFor="heatmap-y" className="filter-label">Y parameter</label>
+              <select id="heatmap-y" name="hy" defaultValue={params.hy ?? ""} className="filter-select">
+                <option value="">— choose —</option>
+                {dimensions.map((dim) => <option key={dim.name} value={dim.name}>{dim.name}</option>)}
+              </select>
+            </div>
+            <div className="filter-item">
+              <label htmlFor="heatmap-metric" className="filter-label">Stored metric</label>
+              <select id="heatmap-metric" name="hm" defaultValue={params.hm ?? ""} className="filter-select">
+                <option value="">— choose —</option>
+                {metricKeys.map((key) => <option key={key} value={key}>{metricLabel(key)}</option>)}
+              </select>
+            </div>
+            {dimensions.filter((dim) => dim.name !== params.hx && dim.name !== params.hy).map((dim) => (
+              <div className="filter-item" key={dim.name}>
+                <label htmlFor={`heatmap-fixed-${dim.name}`} className="filter-label">Fixed {dim.name}</label>
+                <select id={`heatmap-fixed-${dim.name}`} name="hf" defaultValue={fixedByName.has(dim.name) ? `${dim.name}:${fixedByName.get(dim.name)}` : ""} className="filter-select">
+                  <option value="">— choose —</option>
+                  {dim.values.map((value) => <option key={value} value={`${dim.name}:${value}`}>{value}</option>)}
+                </select>
+              </div>
+            ))}
+          </div>
+          <div className="filter-actions">
+            <button type="submit" className="filter-apply-btn">Show heatmap</button>
+          </div>
+        </form>
+      )}
+      <p>
+        Choose two recorded parameters and a stored metric. Every other parameter must be fixed to one recorded value: nothing is
+        defaulted, no best trial is picked and no configurations are averaged. After changing an axis, submit again to fix the
+        parameter it released.
+      </p>
+      {!result ? (
+        dimensions.length >= 2 ? <p className="empty-notice">No heatmap selected.</p> : null
+      ) : !heatmap ? (
+        <p className="empty-notice">{stateText(result)}</p>
+      ) : mismatch ? (
+        <p className="empty-notice" data-evidence="MISMATCH">EVIDENCE MISMATCH: {mismatch}; the heatmap is not shown.</p>
+      ) : crossMismatch ? (
+        <p className="empty-notice" data-evidence="RESULTS_CHANGED">RESULTS CHANGED: {crossMismatch}; neither view is shown. Reload the page.</p>
+      ) : (
+        <>
+          <EvidenceLine evidence={heatmap.evidence} />
+          {heatmap.state === "AVAILABLE" ? (
+            <HeatmapView heatmap={heatmap} metricLabel={metricLabel(heatmap.metric ?? "")}
+              trialHref={(trial) => `${href(params, { trial })}#trial-detail`} />
+          ) : (
+            <p className="empty-notice" data-heatmap-state={heatmap.state}>
+              {heatmap.state === "SELECTION_REQUIRED" ? "Selection incomplete" : heatmap.state === "SELECTION_INVALID" ? "Selection invalid" : "UNAVAILABLE"}:{" "}
+              {heatmap.reasons.join(", ")}.
+            </p>
+          )}
+        </>
+      )}
+    </article>
+  );
+}
+
+function BreakEvenPanel({ study, result, crossMismatch }: {
+  study: StudyOnScreen; result: Evidence<StrategyLabBreakEvenDistribution> | undefined; crossMismatch: string | null;
+}) {
+  const distribution = result?.state === "AVAILABLE" ? result.value : undefined;
+  const mismatch = distribution ? evidenceMismatch(distribution.evidence, study) : null;
+  return (
+    <article className="panel margin-bottom-24" aria-label="Break-even cost distribution" id="break-even">
+      <h2>
+        <span>Break-even cost distribution</span>
+        <Claim label="GROSS-RESULT COST SENSITIVITY" />
+      </h2>
+      <p>
+        Each evaluated trial records <code>break_even_bps_per_side</code>: the per-side cost at which its <em>gross</em> search-tier
+        result would be zero. It is a sensitivity of a gross result, not a verified cost, a fee estimate or net profitability. No fee,
+        spread, slippage or funding assumption is applied here. Verified costs: <Claim label="UNAVAILABLE" /> Net profitability: <Claim label="UNAVAILABLE" />
+      </p>
+      {!result ? <p className="empty-notice">UNAVAILABLE</p> : !distribution ? (
+        <p className="empty-notice">{stateText(result)}</p>
+      ) : mismatch ? (
+        <p className="empty-notice" data-evidence="MISMATCH">EVIDENCE MISMATCH: {mismatch}; the distribution is not shown.</p>
+      ) : crossMismatch ? (
+        <p className="empty-notice" data-evidence="RESULTS_CHANGED">RESULTS CHANGED: {crossMismatch}; neither view is shown. Reload the page.</p>
+      ) : (
+        <>
+          <EvidenceLine evidence={distribution.evidence} />
+          {distribution.state === "AVAILABLE" ? <BreakEvenView distribution={distribution} /> : (
+            <p className="empty-notice">UNAVAILABLE: {distribution.reasons.join(", ")}. Recorded outcomes: {counts(distribution.trial_outcomes)}.</p>
+          )}
+        </>
+      )}
+    </article>
+  );
+}
+
 async function TrialDetailPanel({ studyId, trialId, ctx, params }: {
   studyId: string; trialId: string; ctx: Awaited<ReturnType<typeof getWorkspaceContext>>; params: Params;
 }) {
@@ -308,7 +459,7 @@ async function TrialDetailPanel({ studyId, trialId, ctx, params }: {
   );
 }
 
-export default async function StrategyLabExplorerPage({ searchParams }: { searchParams?: Promise<Params> }) {
+export default async function StrategyLabExplorerPage({ searchParams }: { searchParams?: Promise<RawParams> }) {
   const raw = (await searchParams) ?? {};
   const family = pick(raw.family, FAMILY);
   const instrument = pick(raw.instrument, SYMBOL);
@@ -323,6 +474,10 @@ export default async function StrategyLabExplorerPage({ searchParams }: { search
     frozenOnly: raw.frozen === "1",
   };
   const trialId = pick(raw.trial, UUID);
+  const heatX = pick(raw.hx, PARAMETER);
+  const heatY = pick(raw.hy, PARAMETER);
+  const heatMetric = pick(raw.hm, PARAMETER);
+  const heatFixed = fixedPairs(raw.hf, [heatX, heatY]);
   const ctx = await getWorkspaceContext();
   const studiesResult = await getStrategyLabStudies(ctx, { strategyFamily: family, instrument, limit: 50, offset: studyOffset });
   const studies = studiesResult.state === "AVAILABLE" ? studiesResult.value : undefined;
@@ -334,14 +489,32 @@ export default async function StrategyLabExplorerPage({ searchParams }: { search
     outcome: query.outcome === "ALL" ? undefined : query.outcome, frozen: query.frozenOnly ? "1" : undefined,
     offset: query.offset ? String(query.offset) : undefined,
     limit: query.limit === DEFAULT_PAGE_SIZE ? undefined : String(query.limit), trial: trialId,
+    hx: heatX, hy: heatY, hm: heatMetric,
+    hf: heatFixed.length ? heatFixed.map(([name, value]) => `${name}:${value}`).join(",") : undefined,
   };
 
-  const [detailResult, trialsResult] = studyId
-    ? await Promise.all([getStrategyLabStudy(ctx, studyId), getStrategyLabTrials(ctx, studyId, query)])
-    : [undefined, undefined];
+  // The heatmap is read only once all three choices are made; fixed values are the server's to check.
+  const wantsHeatmap = Boolean(studyId && heatX && heatY && heatMetric);
+  const [detailResult, trialsResult, heatmapResult, breakEvenResult] = studyId
+    ? await Promise.all([
+      getStrategyLabStudy(ctx, studyId), getStrategyLabTrials(ctx, studyId, query),
+      wantsHeatmap ? getStrategyLabHeatmap(ctx, studyId, { x: heatX, y: heatY, metric: heatMetric, fixed: heatFixed }) : Promise.resolve(undefined),
+      getStrategyLabBreakEvenDistribution(ctx, studyId),
+    ])
+    : [undefined, undefined, undefined, undefined];
   const detail = detailResult?.state === "AVAILABLE" ? detailResult.value : undefined;
   const trials = trialsResult?.state === "AVAILABLE" ? trialsResult.value : undefined;
   const metricKeys = (trials?.metric_keys ?? []).filter((key) => !DESCRIPTIVE_KEYS.has(key));
+  // Both visualizations bind to the study as displayed, and to each other: any disagreement withholds both.
+  const latestManifest = detail?.manifests[detail.manifests.length - 1];
+  const studyOnScreen: StudyOnScreen = {
+    studyId: studyId ?? "", contentHash: detail?.summary.content_hash,
+    latestManifestHash: detail ? (latestManifest?.manifest_hash ?? null) : undefined, resultCount: detail?.summary.result_count,
+  };
+  const analyticsMismatch = crossViewMismatch(
+    heatmapResult?.state === "AVAILABLE" ? heatmapResult.value.evidence : undefined,
+    breakEvenResult?.state === "AVAILABLE" ? breakEvenResult.value.evidence : undefined,
+  );
   const preferred = PREFERRED_METRICS.filter((key) => metricKeys.includes(key));
   const columns: string[] = preferred.length ? [...preferred] : metricKeys;
   const summary = detail?.summary;
@@ -398,7 +571,7 @@ export default async function StrategyLabExplorerPage({ searchParams }: { search
                   const window = study.datasets.find((ref) => ref.resolution === "RESEARCH_WINDOW_CATALOGUE");
                   return (
                     <tr key={study.study_id}>
-                      <td><Link href={href(params, { study: study.study_id, offset: undefined, trial: undefined })} aria-current={study.study_id === studyId ? "page" : undefined}>{study.label}</Link></td>
+                      <td><Link href={href(params, { study: study.study_id, offset: undefined, trial: undefined, hx: undefined, hy: undefined, hm: undefined, hf: undefined })} aria-current={study.study_id === studyId ? "page" : undefined}>{study.label}</Link></td>
                       <td>{study.instrument ?? "UNRESOLVED"}</td>
                       <td>{study.strategy_family} {study.strategy_version}</td>
                       <td>{window ? `${window.first_utc_day}..${window.last_utc_day}` : "UNRESOLVED"}</td>
@@ -475,12 +648,22 @@ export default async function StrategyLabExplorerPage({ searchParams }: { search
       ) : null}
 
       {studyId ? (
+        <HeatmapPanel detail={detail} study={studyOnScreen} metricKeys={metricKeys} params={params} fixed={heatFixed}
+          result={heatmapResult} crossMismatch={analyticsMismatch} />
+      ) : null}
+
+      {studyId ? (
+        <BreakEvenPanel study={studyOnScreen} result={breakEvenResult} crossMismatch={analyticsMismatch} />
+      ) : null}
+
+      {studyId ? (
         <article className="panel margin-bottom-24" aria-label="Trials" id="trials">
           <h2><span>Trials</span><Claim label="SEARCH_NON_AUTHORITATIVE · GROSS" /></h2>
           <form method="GET" className="filter-bar" aria-label="Trial filters">
             <input type="hidden" name="study" value={studyId} />
             {family ? <input type="hidden" name="family" value={family} /> : null}
             {instrument ? <input type="hidden" name="instrument" value={instrument} /> : null}
+            <Carry params={params} keys={["hx", "hy", "hm", "hf"]} />
             <div className="filter-groups">
               <div className="filter-item">
                 <label htmlFor="trial-outcome" className="filter-label">Outcome</label>

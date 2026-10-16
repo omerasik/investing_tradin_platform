@@ -20,6 +20,9 @@ const studyDetailPath = new RegExp(`^/operator-dashboard/strategy-lab/studies/${
 const studyTrialPath = new RegExp(`^/operator-dashboard/strategy-lab/studies/${studyUuid}/trials/${studyUuid}$`);
 const studyTrialsPath = new RegExp(`^/operator-dashboard/strategy-lab/studies/${studyUuid}/trials$`);
 const studyTrialsKeys = new Set(["limit", "offset", "sort", "direction", "outcome", "frozen_only"]);
+const studyHeatmapPath = new RegExp(`^/operator-dashboard/strategy-lab/studies/${studyUuid}/heatmap$`);
+const studyHeatmapKeys = new Set(["x", "y", "metric", "fixed"]);
+const studyBreakEvenPath = new RegExp(`^/operator-dashboard/strategy-lab/studies/${studyUuid}/break-even-distribution$`);
 
 const parameterlessTargets = new Set([
   "/operator-dashboard/workspace-references",
@@ -88,8 +91,12 @@ export function allowedAuthorityTarget(target: string): boolean {
   if (bare && paperAccountReconciliationPath.test(parsed.pathname)) return true;
   if (bare && instrumentDetailPath.test(parsed.pathname)) return true;
   if (bare && (studyDetailPath.test(parsed.pathname) || studyTrialPath.test(parsed.pathname))) return true;
+  if (bare && studyBreakEvenPath.test(parsed.pathname)) return true;
   if (studyTrialsPath.test(parsed.pathname)) {
     return [...parsed.searchParams.keys()].every((key) => studyTrialsKeys.has(key));
+  }
+  if (studyHeatmapPath.test(parsed.pathname)) {
+    return [...parsed.searchParams.keys()].every((key) => studyHeatmapKeys.has(key));
   }
   if (chartSeriesPath.test(parsed.pathname)) {
     return [...parsed.searchParams.keys()].every((key) => key === "instrument" || key === "max_points");
