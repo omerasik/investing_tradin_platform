@@ -3,9 +3,17 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+/** Research workflow pages keep the names the sidebar gives them. */
+const WORKSPACE_NAMES: Record<string, string> = {
+  terminal: "Research Terminal",
+  chart: "Market Chart",
+  "strategy-lab": "Strategy Lab Explorer",
+};
+
 function formatWorkspaceName(pathname: string): string {
   if (!pathname || pathname === "/" || pathname === "/dashboard") return "Command Center";
   const segment = pathname.split("/").filter(Boolean)[0] || "";
+  if (WORKSPACE_NAMES[segment]) return WORKSPACE_NAMES[segment];
   return segment
     .split("-")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))

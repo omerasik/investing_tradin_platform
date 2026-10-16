@@ -41,8 +41,12 @@ test.describe("Module 2A App Shell & Navigation Foundation", () => {
     await expect(sidebar.getByText("Operator Workstation")).toBeVisible();
 
     // Verify Sidebar navigation groups
-    for (const group of ["Overview", "Data & Evidence", "Research", "Portfolio & Risk", "Investing", "Paper Trading", "System"]) {
-      await expect(sidebar.locator(".nav-group-title", { hasText: group })).toBeVisible();
+    for (const group of ["Research Workflow", "Overview", "Data & Evidence", "Research", "Portfolio & Risk", "Investing", "Paper Trading", "System"]) {
+      await expect(sidebar.locator(".nav-group-title").filter({ hasText: new RegExp(`^${group}$`) })).toBeVisible();
+    }
+    // B.1.3a: the research workflow is one ordered group; its pages are not repeated elsewhere.
+    for (const [index, step] of ["Research Terminal", "Market Chart", "Strategy Lab", "Validation & Paper"].entries()) {
+      await expect(sidebar.getByRole("link", { name: new RegExp(`^${index + 1}\\. ${step}`) })).toBeVisible();
     }
 
     // Verify Dashboard link is marked active
@@ -98,6 +102,17 @@ test.describe("Module 2A App Shell & Navigation Foundation", () => {
 
     // 10. Verify no browser console runtime errors
     expect(consoleErrors).toEqual([]);
+
+    // 10b. Mobile: the workflow stays visible, the other workspaces fold behind one toggle.
+    await page.setViewportSize({ width: 375, height: 812 });
+    const moreToggle = sidebar.getByRole("button", { name: "Show all workspaces" });
+    await expect(moreToggle).toBeVisible();
+    await expect(sidebar.getByRole("link", { name: /^2\. Market Chart/ })).toBeVisible();
+    await expect(sidebar.getByRole("link", { name: "Features" })).toBeHidden();
+    await moreToggle.click();
+    await expect(sidebar.getByRole("link", { name: "Features" })).toBeVisible();
+    await expect(sidebar.getByRole("button", { name: "Hide other workspaces" })).toHaveAttribute("aria-expanded", "true");
+    await page.setViewportSize({ width: 1280, height: 720 });
 
     // 11. Sign Out
     await topbar.getByRole("button", { name: "Sign Out" }).click();
