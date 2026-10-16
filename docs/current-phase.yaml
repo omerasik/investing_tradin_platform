@@ -161,6 +161,14 @@ or11_packet:                  # the owner decides every value; nothing is propos
     (0,1]; stop_gap_buffer_fraction [0,1).
   prop_only: prop_firm, prop_daily_loss_limit, prop_max_trailing_drawdown, prop_profit_target.
   approval: approved_by + approved_on; until then the policy is UNCONFIGURED and R10 stays unit-exposure.
+c1_1_walk_forward: >-
+  strategy_lab_walk_forward_v1 + migration 0063: every planned trial of a
+  registered study over one purged walk-forward split (interval observations on
+  the SDK's decision and label-availability clocks), per-fold train-side
+  selection by an explicit rule, test-side gross search metrics, recorded
+  WALK_FORWARD_DEVELOPMENT / SEARCH_NON_AUTHORITATIVE / GROSS_NON_PROMOTABLE (by
+  CHECK, end <= holdout). 'strategy_lab.py walk-forward': every duration,
+  embargo and rule explicit, no defaults. Not validation; promotes nothing.
 r4_6_sdk: >-
   strategy_lab_policies_v1 (OR-3/OR-5/OR-6 payloads), migration 0055 admitting
   their slots, strategy_sdk_v1 (convention t2-close-plus-lag-next-strictly-later-open-v1,

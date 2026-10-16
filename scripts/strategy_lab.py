@@ -4,6 +4,10 @@
     python scripts/strategy_lab.py status --dsn ... --family trend_ma_cross --dataset <window id>
     python scripts/strategy_lab.py freeze --dsn ... --family ... --dataset ... --metric sharpe_daily_annualized --top-k 10
     python scripts/strategy_lab.py rerun --dsn ... --family ... --dataset ... --metric ... --top-k 10 --workers 4
+    python scripts/strategy_lab.py walk-forward --dsn ... --family ... --dataset ... --mode ROLLING \
+        --train-duration 30d --test-duration 7d --step 7d --embargo 1d \
+        --first-test-start 2025-10-01T00:00:00Z --evaluation-end 2026-08-19T00:00:00Z \
+        --selection-metric total_return --selection-direction HIGHER_IS_BETTER
 
 A study is declared by (family, its default parameter space, the bound window,
 the OR-3/OR-5/OR-6 owner policies, the 2026-08-20 evaluation bound), so the
@@ -12,6 +16,12 @@ finished study is a no-op. Every result is SEARCH_NON_AUTHORITATIVE and gross
 (no verified fee schedule): the Decimal authority rerun is the only door to an
 authoritative number; ``rerun`` freezes (idempotently) and records it. Reports
 engineering counts and search metrics only.
+
+``walk-forward`` (Stage C.1.1) evaluates a *registered* study under an explicit
+purged walk-forward plan and selection rule and records the report
+(WALK_FORWARD_DEVELOPMENT, never validation). Every duration, the embargo and
+the selection rule are required: the example values above are syntax, not
+recommendations, and nothing here supplies a default.
 """
 
 from __future__ import annotations
@@ -19,8 +29,9 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import re
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 
@@ -48,6 +59,7 @@ from trade_platform.strategy_lab_policies_v1 import (
     or3_numeric_policy_v1,
     or5_t2_timing_policy_v1,
 )
+from trade_platform.strategy_lab_splits_v1 import SplitModeV1, WalkForwardPlanV1
 from trade_platform.strategy_lab_study_v1 import (
     UNTOUCHED_HOLDOUT_BOUNDARY_V1,
     DatasetBindingV1,
@@ -55,8 +67,48 @@ from trade_platform.strategy_lab_study_v1 import (
     SearchPlanV1,
     StudySpecV1,
 )
+from trade_platform.strategy_lab_walk_forward_v1 import (
+    PostgresWalkForwardStoreV1,
+    WalkForwardSelectionRuleV1,
+    run_walk_forward_v1,
+)
 from trade_platform.strategy_lab_worker_v1 import run_study_pool_v1
-from trade_platform.strategy_sdk_v1 import FAMILIES_V1, BarStrategyEvaluatorV1
+from trade_platform.strategy_sdk_v1 import FAMILIES_V1, BarStrategyEvaluatorV1, load_bars_v1
+
+_DURATION = re.compile(r"^(\d+)([mhd])$")
+_UNITS = {"m": timedelta(minutes=1), "h": timedelta(hours=1), "d": timedelta(days=1)}
+
+
+def parse_duration(text: str) -> timedelta:
+    """``<int>m|h|d``; ``0m`` is the only spelling of a zero embargo."""
+    match = _DURATION.match(text)
+    if match is None:
+        raise argparse.ArgumentTypeError(f"duration must be <int>m|h|d, got {text!r}")
+    return int(match.group(1)) * _UNITS[match.group(2)]
+
+
+def parse_instant(text: str) -> datetime:
+    value = datetime.fromisoformat(text)
+    if value.tzinfo is None:
+        raise argparse.ArgumentTypeError("instant must carry a UTC offset")
+    return value
+
+
+def run_walk_forward_command(
+    *, study: StudySpecV1, database: PostgresDatabase, data_root: Path | None, plan: WalkForwardPlanV1,
+    rule: WalkForwardSelectionRuleV1,
+) -> dict[str, object]:
+    """Walk-forward of a study the ledger holds; records the report idempotently."""
+    stored_hash, planned = PostgresStrategyLabLedgerV1(database).stored_study(study.study_id)
+    if stored_hash != study.content_hash or planned != study.planned_trial_count:
+        raise ValueError("study_declaration_differs_from_the_ledger")
+    (binding,) = study.datasets
+    bars = load_bars_v1(data_root, binding.dataset_version_id, expected_content_hash=binding.content_hash)
+    report = run_walk_forward_v1(study, plan, rule, bars=bars)
+    recorded = PostgresWalkForwardStoreV1(database).record(report)
+    return {"study_id": str(study.study_id), "label": study.label, "report_hash": report.report_hash,
+            "recorded_now": recorded, "evaluation_class": report.identity["evaluation_class"],
+            "authority": report.identity["authority_reasons"], "folds": report.folds}
 
 
 def build_study(family: str, dataset_id: UUID, data_root: Path | None) -> StudySpecV1:
@@ -122,7 +174,7 @@ def run_strategy_lab_command(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("search", "status", "freeze", "rerun"))
+    parser.add_argument("command", choices=("search", "status", "freeze", "rerun", "walk-forward"))
     parser.add_argument("--dsn", required=True)
     parser.add_argument("--family", required=True, choices=sorted(FAMILIES_V1))
     parser.add_argument("--dataset", required=True, type=UUID)
@@ -131,13 +183,39 @@ def main() -> None:
     parser.add_argument("--metric", default="sharpe_daily_annualized")
     parser.add_argument("--direction", choices=("HIGHER_IS_BETTER", "LOWER_IS_BETTER"), default="HIGHER_IS_BETTER")
     parser.add_argument("--top-k", type=int, default=10)
+    # walk-forward only; deliberately without defaults.
+    parser.add_argument("--mode", choices=[mode.value for mode in SplitModeV1])
+    parser.add_argument("--train-duration", type=parse_duration)
+    parser.add_argument("--train-anchor", type=parse_instant)
+    parser.add_argument("--test-duration", type=parse_duration)
+    parser.add_argument("--step", type=parse_duration)
+    parser.add_argument("--embargo", type=parse_duration)
+    parser.add_argument("--first-test-start", type=parse_instant)
+    parser.add_argument("--evaluation-end", type=parse_instant)
+    parser.add_argument("--selection-metric")
+    parser.add_argument("--selection-direction", choices=("HIGHER_IS_BETTER", "LOWER_IS_BETTER"))
     args = parser.parse_args()
+    if args.command == "walk-forward":
+        missing = [name for name in ("mode", "test_duration", "step", "embargo", "first_test_start",
+                                     "evaluation_end", "selection_metric", "selection_direction")
+                   if getattr(args, name) is None]
+        if missing:
+            parser.error(f"walk-forward requires explicit --{', --'.join(n.replace('_', '-') for n in missing)}")
     study = build_study(args.family, args.dataset, args.data_root)
     database = PostgresDatabase(args.dsn)
     try:
-        out = run_strategy_lab_command(args.command, study=study, dsn=args.dsn, database=database,
-                                       data_root=args.data_root, workers=args.workers, metric=args.metric,
-                                       direction=args.direction, top_k=args.top_k)
+        if args.command == "walk-forward":
+            plan = WalkForwardPlanV1(
+                mode=SplitModeV1(args.mode), test_duration=args.test_duration, step=args.step, embargo=args.embargo,
+                first_test_start=args.first_test_start, evaluation_end_exclusive=args.evaluation_end,
+                train_duration=args.train_duration, train_anchor=args.train_anchor)
+            rule = WalkForwardSelectionRuleV1(args.selection_metric, RankDirectionV1(args.selection_direction))
+            out = run_walk_forward_command(study=study, database=database, data_root=args.data_root,
+                                           plan=plan, rule=rule)
+        else:
+            out = run_strategy_lab_command(args.command, study=study, dsn=args.dsn, database=database,
+                                           data_root=args.data_root, workers=args.workers, metric=args.metric,
+                                           direction=args.direction, top_k=args.top_k)
         print(json.dumps(out, indent=1, default=str))
     finally:
         database.close()
