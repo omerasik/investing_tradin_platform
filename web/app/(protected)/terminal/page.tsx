@@ -305,13 +305,17 @@ export default async function ResearchTerminalPage() {
       </Step>
 
       <Step id="strategy-lab" title="Strategy Lab" claim="SEARCH_NON_AUTHORITATIVE">
+        <p>
+          Browse every persisted trial, its parameters, stored metrics and Decimal rerun reconciliation in the{" "}
+          <a href="/strategy-lab">Strategy Lab Explorer</a> (read-only).
+        </p>
         {studies && studies.items.length ? (
           <DataTable caption="Registered studies" ariaLabel="Strategy Lab studies">
             <thead><tr><th scope="col">Study</th><th scope="col">Family</th><th scope="col">Trials</th><th scope="col">Progress</th><th scope="col">Why not authoritative</th></tr></thead>
             <tbody>
               {studies.items.map((study) => (
                 <tr key={study.study_id}>
-                  <td>{study.label}</td><td>{study.strategy_family}</td><td className="tabular-num">{study.planned_trial_count}</td>
+                  <td><a href={`/strategy-lab?study=${study.study_id}`}>{study.label}</a></td><td>{study.strategy_family}</td><td className="tabular-num">{study.planned_trial_count}</td>
                   <td>{counts(study.queue_states)}</td><td>{study.authority.reasons.join(", ")}</td>
                 </tr>
               ))}

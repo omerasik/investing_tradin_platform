@@ -51,8 +51,12 @@ from .strategy_lab_read_model_v1 import (
     StrategyLabObjectNotFound,
     StrategyLabStudyDetailView,
     StrategyLabStudyPage,
+    StrategyLabTrialDetailView,
+    StrategyLabTrialPage,
     read_strategy_lab_studies_v1,
     read_strategy_lab_study_v1,
+    read_strategy_lab_trial_v1,
+    read_strategy_lab_trials_v1,
 )
 
 Availability = Literal["AVAILABLE", "UNAVAILABLE", "STALE", "BLOCKED", "ERROR", "EXTERNAL_BLOCKED"]
@@ -1301,17 +1305,45 @@ class PostgresOperatorDashboardQueries:
         """Phase R5 UI-1: sources, tier ceilings and catalogued datasets (see evidence_catalog_v1)."""
         return self._read(read_evidence_catalog_v1)
 
-    def strategy_lab_studies(self, *, limit: int = 50, offset: int = 0) -> StrategyLabStudyPage:
+    def strategy_lab_studies(
+        self, *, limit: int = 50, offset: int = 0, strategy_family: str | None = None,
+        instrument: str | None = None, windows: list[dict[str, Any]] | None = None,
+    ) -> StrategyLabStudyPage:
         """Phase R4.5: registered Strategy Lab studies, newest first; always NON_AUTHORITATIVE."""
-        return self._read(lambda cursor: read_strategy_lab_studies_v1(cursor, limit=limit, offset=offset))
+        return self._read(lambda cursor: read_strategy_lab_studies_v1(
+            cursor, limit=limit, offset=offset, strategy_family=strategy_family, instrument=instrument,
+            windows=windows))
 
-    def strategy_lab_study(self, study_id: UUID) -> StrategyLabStudyDetailView:
+    def strategy_lab_study(self, study_id: UUID, *,
+                           windows: list[dict[str, Any]] | None = None) -> StrategyLabStudyDetailView:
         """Phase R4.5: one study's identity, progress, manifests and frozen candidate sets."""
         def operation(cursor: _Cursor) -> StrategyLabStudyDetailView:
             try:
-                return read_strategy_lab_study_v1(cursor, study_id)
+                return read_strategy_lab_study_v1(cursor, study_id, windows=windows)
             except StrategyLabObjectNotFound as error:
                 raise DashboardObjectNotFound("strategy_lab_study_not_found") from error
+        return self._read(operation)
+
+    def strategy_lab_trials(
+        self, study_id: UUID, *, limit: int = 50, offset: int = 0, sort: str = "ordinal",
+        direction: Literal["asc", "desc"] = "asc", outcome: str = "ALL", frozen_only: bool = False,
+    ) -> StrategyLabTrialPage:
+        """Stage B.1.2a: one study's trials, sorted, filtered and paged server-side (search tier, gross)."""
+        def operation(cursor: _Cursor) -> StrategyLabTrialPage:
+            try:
+                return read_strategy_lab_trials_v1(cursor, study_id, limit=limit, offset=offset, sort=sort,
+                                                   direction=direction, outcome=outcome, frozen_only=frozen_only)
+            except StrategyLabObjectNotFound as error:
+                raise DashboardObjectNotFound("strategy_lab_study_not_found") from error
+        return self._read(operation)
+
+    def strategy_lab_trial(self, study_id: UUID, trial_id: UUID) -> StrategyLabTrialDetailView:
+        """Stage B.1.2a: one trial's stored metrics and recorded Decimal rerun lags."""
+        def operation(cursor: _Cursor) -> StrategyLabTrialDetailView:
+            try:
+                return read_strategy_lab_trial_v1(cursor, study_id, trial_id)
+            except StrategyLabObjectNotFound as error:
+                raise DashboardObjectNotFound(str(error)) from error
         return self._read(operation)
 
     def terminal_overview(self) -> TerminalOverview:

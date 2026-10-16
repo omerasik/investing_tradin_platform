@@ -37,6 +37,8 @@ const NAVIGATION_GROUPS: NavGroup[] = [
   {
     title: "Research",
     items: [
+      // Stage B.1.2a: persisted Strategy Lab studies and trials, read-only.
+      { href: "/strategy-lab", label: "Strategy Lab Explorer" },
       { href: "/strategies", label: "Strategies" },
       { href: "/backtests", label: "Backtests" },
       { href: "/scorecards", label: "Scorecards" },

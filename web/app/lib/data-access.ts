@@ -717,19 +717,169 @@ export function getTerminalPaperAccount(ctx: WorkspaceContext, accountId: string
   return terminal(ctx, authorityUrl(ctx.origin, `/operator-dashboard/research-terminal/paper-account?account_id=${encodeURIComponent(accountId)}`), "Paper account ledger is unavailable.");
 }
 
+export type StrategyLabDatasetRef = {
+  role: string;
+  dataset_version_id: string;
+  content_hash: string;
+  evidence_tier: string;
+  knowledge_upper_bound_exclusive: string | null;
+  resolution: "RESEARCH_WINDOW_CATALOGUE" | "UNRESOLVED";
+  symbol: string | null;
+  first_utc_day: string | null;
+  last_utc_day: string | null;
+  bars: number | null;
+  continuous: boolean | null;
+  not_published_days: string[];
+  rejected_days: string[];
+};
+
 export type StrategyLabStudySummary = {
   study_id: string;
+  content_hash: string;
   strategy_family: string;
   strategy_version: string;
   label: string;
   planned_trial_count: number;
+  evaluation_upper_bound_exclusive: string;
   registered_at: string;
   queue_states: Record<string, number>;
   result_count: number;
   authority: { authority_status: "NON_AUTHORITATIVE"; promotable: false; reasons: string[] };
+  instrument: string | null;
+  instrument_source: "RESEARCH_WINDOW_CATALOGUE" | "UNRESOLVED";
+  datasets: StrategyLabDatasetRef[];
 };
 
-export type StrategyLabStudyPage = { state: "AVAILABLE" | "UNAVAILABLE"; items: StrategyLabStudySummary[] };
+export type StrategyLabPageInfo = { limit: number; offset: number; returned: number; has_more: boolean };
+
+export type StrategyLabStudyPage = {
+  state: "AVAILABLE" | "UNAVAILABLE";
+  items: StrategyLabStudySummary[];
+  page: StrategyLabPageInfo;
+  total: number | null;
+  filters: Record<string, string>;
+  facets: { strategy_families: string[]; instruments: string[]; instrument_catalogue: boolean };
+};
+
+export type StrategyLabCandidateSet = {
+  candidate_set_hash: string;
+  manifest_hash: string;
+  rule: Record<string, unknown>;
+  candidates: { rank: number; trial_id: string; trial_content_hash: string; result_content_hash: string; metric_value: string }[];
+  eligible_count: number;
+  ineligible_count: number;
+  cutoff_tie: boolean;
+  multiple_testing_trial_count: number;
+  numeric_tier: "SEARCH_NON_AUTHORITATIVE";
+  authoritative_rerun: string;
+  recorded_at: string;
+};
+
+export type StrategyLabRerun = {
+  rerun_hash: string;
+  candidate_set_hash: string;
+  selection_status: string;
+  claim: "DECIMAL_SELECTION_ESTABLISHED" | "FAIL_CLOSED_AUTHORITY_NOT_ESTABLISHED";
+  economics: "GROSS_CONDITIONAL_NON_PROMOTABLE";
+  claim_ceiling: string | null;
+  rerun_count: number;
+  rule: Record<string, unknown>;
+  baseline_lag_micros: number | null;
+  sweep_lags_micros: number[];
+  selected: { rank: number; trial_id: string; metric_value: string }[];
+  decimal_cutoff: string | null;
+  cutoff_tie: boolean | null;
+  changed_versus_search_selection: boolean | null;
+  undefined_metric_trials: string[];
+  reason: string | null;
+  reconciliation: Record<string, number>;
+  held_divergence_bars: number;
+  trade_count_divergence: number;
+  recorded_at: string;
+};
+
+export type StrategyLabCandidateState = { trial_id: string; state: string; evidence_hash: string; reasons: string[]; recorded_at: string };
+
+export type StrategyLabEconomics = {
+  gross_results: "GROSS_SEARCH_TIER";
+  cost_mode: string;
+  cost_policy_slot: string;
+  funding: string | null;
+  fill_liquidity: string | null;
+  hypothetical_slippage_scenarios: Record<string, unknown>[];
+  hypothetical_costs: "BOUND_TO_STUDY" | "NONE_BOUND";
+  break_even_metric: string | null;
+  verified_costs: "UNAVAILABLE";
+  verified_cost_reasons: string[];
+  net_profitability: "UNAVAILABLE";
+  net_profitability_reasons: string[];
+};
+
+export type StrategyLabStudyDetail = {
+  summary: StrategyLabStudySummary;
+  strategy: Record<string, unknown>;
+  parameter_space: { kind: string; name: string; values?: string[] }[];
+  datasets: Record<string, unknown>[];
+  search: Record<string, unknown>;
+  numeric_policy_slot: string;
+  cost_policy_slot: string;
+  manifests: { manifest_hash: string; planned_trial_count: number; result_count: number; outcomes: Record<string, number>; recorded_at: string }[];
+  candidate_sets: StrategyLabCandidateSet[];
+  policies: Record<string, unknown>;
+  reruns: StrategyLabRerun[];
+  candidate_states: StrategyLabCandidateState[];
+  economics: StrategyLabEconomics | null;
+  holdout: { boundary: string; evaluation_upper_bound_exclusive: string; evaluation_before_boundary: boolean; cycle_id: string; state: "UNOPENED" | "OPENED" } | null;
+};
+
+export type StrategyLabTrial = {
+  trial_id: string;
+  ordinal: number;
+  trial_content_hash: string;
+  parameters: Record<string, string>;
+  outcome: "EVALUATED" | "INADMISSIBLE_PARAMETERS" | "PENDING";
+  numeric_tier: string | null;
+  cost_policy_slot: string | null;
+  result_content_hash: string | null;
+  metrics: Record<string, string | null>;
+  produced_at: string | null;
+  frozen_rank: number | null;
+  rerun: { rerun_hash: string; reasons: string[]; reconciliation_by_lag: Record<string, string>; decimal_rank: number | null; decimal_metric_value: string | null } | null;
+  candidate_state: string | null;
+};
+
+export type StrategyLabTrialPage = {
+  state: "AVAILABLE" | "UNAVAILABLE";
+  study_id: string;
+  numeric_tier: "SEARCH_NON_AUTHORITATIVE";
+  economics: "GROSS_NON_PROMOTABLE";
+  sort: string;
+  direction: "asc" | "desc";
+  outcome: string;
+  frozen_only: boolean;
+  metric_keys: string[];
+  items: StrategyLabTrial[];
+  page: StrategyLabPageInfo;
+  total: number;
+};
+
+export type StrategyLabTrialDetail = {
+  trial: StrategyLabTrial;
+  study_label: string;
+  strategy_family: string;
+  rerun_lags: { lag_micros: number; reconciliation: string; held_divergence_bars: number | null; trade_count_divergence: number | null; float_near_tie_decisions: number | null; metrics: Record<string, string | null> }[];
+  candidate_states: StrategyLabCandidateState[];
+  economics: StrategyLabEconomics;
+};
+
+export type StrategyLabTrialQuery = {
+  limit: number;
+  offset: number;
+  sort: string;
+  direction: "asc" | "desc";
+  outcome: "ALL" | "EVALUATED" | "INADMISSIBLE_PARAMETERS" | "PENDING";
+  frozenOnly: boolean;
+};
 
 /** ``url`` is already an ``authorityUrl(...)``; wrapping it again made the proxy refuse every terminal read. */
 function terminal<T>(ctx: WorkspaceContext, url: string, unavailable: string): Promise<EvidenceResult<T>> {
@@ -760,8 +910,33 @@ export function getTerminalIncubation(ctx: WorkspaceContext): Promise<EvidenceRe
   return terminal(ctx, authorityUrl(ctx.origin, "/operator-dashboard/research-terminal/incubation"), "Paper incubation is unavailable.");
 }
 
-export function getStrategyLabStudies(ctx: WorkspaceContext): Promise<EvidenceResult<StrategyLabStudyPage>> {
-  return terminal(ctx, authorityUrl(ctx.origin, "/operator-dashboard/strategy-lab/studies?limit=50"), "Strategy Lab studies are unavailable.");
+export function getStrategyLabStudies(
+  ctx: WorkspaceContext,
+  filters: { strategyFamily?: string; instrument?: string; limit?: number; offset?: number } = {},
+): Promise<EvidenceResult<StrategyLabStudyPage>> {
+  const query = new URLSearchParams({ limit: String(filters.limit ?? 50) });
+  if (filters.offset) query.set("offset", String(filters.offset));
+  if (filters.strategyFamily) query.set("strategy_family", filters.strategyFamily);
+  if (filters.instrument) query.set("instrument", filters.instrument);
+  return terminal(ctx, authorityUrl(ctx.origin, `/operator-dashboard/strategy-lab/studies?${query.toString()}`), "Strategy Lab studies are unavailable.");
+}
+
+export function getStrategyLabStudy(ctx: WorkspaceContext, studyId: string): Promise<EvidenceResult<StrategyLabStudyDetail>> {
+  return terminal(ctx, authorityUrl(ctx.origin, `/operator-dashboard/strategy-lab/studies/${encodeURIComponent(studyId)}`), "Strategy Lab study is unavailable.");
+}
+
+export function getStrategyLabTrials(
+  ctx: WorkspaceContext, studyId: string, params: StrategyLabTrialQuery,
+): Promise<EvidenceResult<StrategyLabTrialPage>> {
+  const query = new URLSearchParams({
+    limit: String(params.limit), offset: String(params.offset), sort: params.sort, direction: params.direction,
+    outcome: params.outcome, frozen_only: params.frozenOnly ? "true" : "false",
+  });
+  return terminal(ctx, authorityUrl(ctx.origin, `/operator-dashboard/strategy-lab/studies/${encodeURIComponent(studyId)}/trials?${query.toString()}`), "Strategy Lab trials are unavailable.");
+}
+
+export function getStrategyLabTrial(ctx: WorkspaceContext, studyId: string, trialId: string): Promise<EvidenceResult<StrategyLabTrialDetail>> {
+  return terminal(ctx, authorityUrl(ctx.origin, `/operator-dashboard/strategy-lab/studies/${encodeURIComponent(studyId)}/trials/${encodeURIComponent(trialId)}`), "Strategy Lab trial is unavailable.");
 }
 
 export async function getChartSeriesCatalog(ctx: WorkspaceContext): Promise<EvidenceResult<ChartSeriesRefPage>> {

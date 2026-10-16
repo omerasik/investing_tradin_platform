@@ -43,6 +43,10 @@ const requested = [
   `/operator-dashboard/audit-events/${uuid}`,
   "/operator-dashboard/sre-overview",
   "/operator-dashboard/strategy-lab/studies?limit=50",
+  "/operator-dashboard/strategy-lab/studies?limit=25&offset=0&strategy_family=trend_ma_cross&instrument=ETHUSDT",
+  `/operator-dashboard/strategy-lab/studies/${uuid}`,
+  `/operator-dashboard/strategy-lab/studies/${uuid}/trials?limit=25&offset=50&sort=total_return&direction=desc&outcome=EVALUATED&frozen_only=true`,
+  `/operator-dashboard/strategy-lab/studies/${uuid}/trials/${uuid}`,
   "/operator-dashboard/research-terminal/overview",
   "/operator-dashboard/research-terminal/reruns?limit=50",
   "/operator-dashboard/research-terminal/validation?limit=200",
@@ -89,7 +93,12 @@ const refused = [
   "/operator-dashboard/research-terminal/overview?limit=5",
   "/operator-dashboard/research-terminal/signals?symbol=BTCUSDT",
   "/operator-dashboard/research-terminal/holdout",
-  `/operator-dashboard/strategy-lab/studies/${uuid}`,
+  `/operator-dashboard/strategy-lab/studies/${uuid}?x=1`,
+  "/operator-dashboard/strategy-lab/studies/ABCDEF01-0000-0000-0000-000000000001",
+  `/operator-dashboard/strategy-lab/studies/${uuid}/trials?path=..`,
+  `/operator-dashboard/strategy-lab/studies/${uuid}/trials/${uuid}?sort=x`,
+  `/operator-dashboard/strategy-lab/studies/${uuid}/trials/../reruns`,
+  "/operator-dashboard/strategy-lab/studies?dsn=x",
 ];
 for (const target of refused) {
   assert.equal(allowedAuthorityTarget(target), false, `allowed: ${target}`);

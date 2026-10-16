@@ -4,6 +4,7 @@ import json
 from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -126,7 +127,12 @@ from .security import (
     risk_reviewer_operator,
 )
 from .signal_engine import DetailedSignalStatus
-from .strategy_lab_read_model_v1 import StrategyLabStudyDetailView, StrategyLabStudyPage
+from .strategy_lab_read_model_v1 import (
+    StrategyLabStudyDetailView,
+    StrategyLabStudyPage,
+    StrategyLabTrialDetailView,
+    StrategyLabTrialPage,
+)
 from .strategy_promotion import SQLitePromotionLedger
 from .strategy_validation import SQLiteStrategyRegistry, StrategyRunCard, StrategyValidationError
 
@@ -536,21 +542,63 @@ def build_app(
         """Sources, tier ceilings and catalogued datasets. Never a tier verdict."""
         return read_dashboard(queries.evidence_catalog)
 
+    def research_windows_or_none() -> list[dict[str, Any]] | None:
+        """The research window catalogue, or ``None`` when it is not configured or unreadable."""
+        try:
+            return read_window_catalogue_v1(app.state.research_data_root)
+        except (OSError, ValueError, KeyError):
+            return None
+
     @app.get("/operator-dashboard/strategy-lab/studies", response_model=StrategyLabStudyPage)
     def dashboard_strategy_lab_studies(
         limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10_000),
+        strategy_family: str | None = Query(default=None, min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"),
+        instrument: str | None = Query(default=None, min_length=1, max_length=32, pattern=r"^[A-Z0-9]+$"),
         _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
     ) -> object:
-        """R4.5: registered studies with progress; every one NON_AUTHORITATIVE and not promotable."""
-        return read_dashboard(lambda: queries.strategy_lab_studies(limit=limit, offset=offset))
+        """R4.5: registered studies with progress; every one NON_AUTHORITATIVE and not promotable.
+
+        The instrument is resolved through the research window catalogue only; filtering
+        by instrument without a readable catalogue fails closed (503), never by label.
+        """
+        windows = research_windows_or_none()
+        if instrument is not None and windows is None:
+            raise HTTPException(status_code=503, detail="Research window catalogue unavailable.")
+        return read_dashboard(lambda: queries.strategy_lab_studies(
+            limit=limit, offset=offset, strategy_family=strategy_family, instrument=instrument, windows=windows))
 
     @app.get("/operator-dashboard/strategy-lab/studies/{study_id}", response_model=StrategyLabStudyDetailView)
     def dashboard_strategy_lab_study(
         study_id: UUID, _: None = Depends(protected_operator),
         queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
     ) -> object:
-        """R4.5: study identity, manifests and frozen candidate sets (search tier, rerun pending OR-3)."""
-        return read_dashboard(lambda: queries.strategy_lab_study(study_id))
+        """R4.5: study identity, manifests, frozen sets, Decimal reruns, recorded states and economics."""
+        windows = research_windows_or_none()
+        return read_dashboard(lambda: queries.strategy_lab_study(study_id, windows=windows))
+
+    @app.get("/operator-dashboard/strategy-lab/studies/{study_id}/trials", response_model=StrategyLabTrialPage)
+    def dashboard_strategy_lab_trials(
+        study_id: UUID,
+        limit: int = Query(default=50, ge=1, le=200), offset: int = Query(default=0, ge=0, le=100_000),
+        sort: str = Query(default="ordinal", min_length=1, max_length=64, pattern=r"^(ordinal|[a-z][a-z0-9_]{0,63})$"),
+        direction: Literal["asc", "desc"] = Query(default="asc"),
+        outcome: Literal["ALL", "EVALUATED", "INADMISSIBLE_PARAMETERS", "PENDING"] = Query(default="ALL"),
+        frozen_only: bool = Query(default=False),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """Stage B.1.2a: trials sorted, filtered and paged server-side; metrics verbatim, search tier, gross."""
+        return read_dashboard(lambda: queries.strategy_lab_trials(
+            study_id, limit=limit, offset=offset, sort=sort, direction=direction, outcome=outcome,
+            frozen_only=frozen_only))
+
+    @app.get("/operator-dashboard/strategy-lab/studies/{study_id}/trials/{trial_id}",
+             response_model=StrategyLabTrialDetailView)
+    def dashboard_strategy_lab_trial(
+        study_id: UUID, trial_id: UUID, _: None = Depends(protected_operator),
+        queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """Stage B.1.2a: one trial's stored search metrics and every recorded Decimal rerun lag."""
+        return read_dashboard(lambda: queries.strategy_lab_trial(study_id, trial_id))
 
     @app.get("/operator-dashboard/research-terminal/overview", response_model=TerminalOverview)
     def dashboard_terminal_overview(

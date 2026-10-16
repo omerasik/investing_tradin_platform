@@ -115,6 +115,42 @@ test.describe("Module 2B-1 Professional Market & Data Workspaces", () => {
     await context.close();
   });
 
+  test("/strategy-lab lists studies read-only, keeps net profitability unavailable, and passes a11y", async ({
+    browser,
+  }) => {
+    const consoleErrors: string[] = [];
+    const context = await browser.newContext({ baseURL: dashboardUrl, extraHTTPHeaders: {} });
+    const page = await context.newPage();
+    page.on("console", (msg) => {
+      if (msg.type() === "error") consoleErrors.push(msg.text());
+    });
+
+    await page.goto("/login");
+    await page.getByLabel("Operator Access Credential").fill(viewToken);
+    await page.getByRole("button", { name: "Sign In" }).click();
+    await expect(page).toHaveURL(/\/dashboard/);
+
+    await page.goto("/strategy-lab");
+    await expect(page.getByRole("heading", { name: "Strategy Lab Explorer", level: 1 })).toBeVisible();
+    await expect(page.getByRole("article", { name: "Studies" })).toBeVisible();
+    // Either registered studies (each with its economics restated) or an honest empty state.
+    await expect(page.getByText(/Registered studies|No study registered/i).first()).toBeVisible();
+    const economics = page.getByRole("region", { name: "Economics" });
+    if (await economics.count()) {
+      await expect(economics).toContainText("Net profitability");
+      await expect(economics.locator('[data-economics="net"]')).toContainText("UNAVAILABLE");
+      await expect(economics.locator('[data-economics="verified"]')).toContainText("UNAVAILABLE");
+    }
+    await expect(page.getByRole("button", { name: /execute|trade|buy|sell|open holdout|promote|run search/i })).toHaveCount(0);
+
+    const a11yResults = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
+      .analyze();
+    expect(a11yResults.violations).toEqual([]);
+    expect(consoleErrors).toEqual([]);
+    await context.close();
+  });
+
   test("/terminal walks the research workflow, restates every claim, offers only gated commands, and passes a11y", async ({
     browser,
   }) => {
