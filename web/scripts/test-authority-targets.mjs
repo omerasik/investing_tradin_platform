@@ -59,6 +59,11 @@ const requested = [
   "/operator-dashboard/research-terminal/activation",
   "/operator-dashboard/research-terminal/commands?limit=30",
   "/operator-dashboard/research-terminal/paper-account?account_id=owner-paper",
+  "/operator-dashboard/research-terminal/walk-forward?limit=50",
+  `/operator-dashboard/research-terminal/walk-forward?limit=20&study_id=${uuid}`,
+  `/operator-dashboard/research-terminal/walk-forward/${"a".repeat(64)}`,
+  "/operator-dashboard/research-terminal/candidates?limit=50",
+  `/operator-dashboard/research-terminal/candidates/${uuid}/${uuid}`,
 ];
 for (const target of requested) {
   assert.equal(allowedAuthorityTarget(target), true, `refused: ${target}`);
@@ -96,6 +101,12 @@ const refused = [
   "/operator-dashboard/research-terminal/overview?limit=5",
   "/operator-dashboard/research-terminal/signals?symbol=BTCUSDT",
   "/operator-dashboard/research-terminal/holdout",
+  "/operator-dashboard/research-terminal/walk-forward?symbol=BTCUSDT",
+  `/operator-dashboard/research-terminal/walk-forward/${"A".repeat(64)}`,
+  `/operator-dashboard/research-terminal/walk-forward/${"a".repeat(64)}?limit=1`,
+  `/operator-dashboard/research-terminal/candidates/${uuid}`,
+  `/operator-dashboard/research-terminal/candidates/${uuid}/${uuid}?x=1`,
+  `/operator-dashboard/research-terminal/candidates/${uuid}/../${uuid}`,
   `/operator-dashboard/strategy-lab/studies/${uuid}?x=1`,
   "/operator-dashboard/strategy-lab/studies/ABCDEF01-0000-0000-0000-000000000001",
   `/operator-dashboard/strategy-lab/studies/${uuid}/trials?path=..`,

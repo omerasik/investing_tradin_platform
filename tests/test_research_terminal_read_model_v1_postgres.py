@@ -7,7 +7,13 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
+
+
+def _identity(raw: object) -> dict:
+    import json
+
+    return raw if isinstance(raw, dict) else json.loads(raw)  # type: ignore[arg-type]
 
 
 @unittest.skipUnless(os.environ.get("POSTGRES_TEST_DSN"), "POSTGRES_TEST_DSN not configured")
@@ -96,6 +102,133 @@ class ResearchTerminalReadModelPostgresTests(unittest.TestCase):
             self.assertTrue(all(item.label in {"INCUBATING", "REJECTED"} for item in validation.candidates))
             for rerun in queries.terminal_reruns():
                 self.assertEqual("GROSS_CONDITIONAL_NON_PROMOTABLE", rerun.economics)
+        finally:
+            database.close()
+
+    def test_candidate_lifecycle_links_the_stored_chain_and_keeps_draft_criteria_draft(self) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        from tests.test_activation_readiness_v1_postgres import recorded_established_study
+        from trade_platform.candidate_lifecycle_readiness_v1 import (
+            STAGE_DECIMAL_SELECTION_ESTABLISHED,
+            STAGE_SEARCH_ONLY,
+            CandidateEvidenceV1,
+            assess_candidate_readiness_v1,
+        )
+        from trade_platform.incubation_exit_criteria_v1 import (
+            STAGE_UNRESOLVED,
+            ExitCriteriaPacketV1,
+            PostgresExitCriteriaRegistryV1,
+            resolve_exit_criteria_v1,
+        )
+        from trade_platform.operator_dashboard import (
+            DashboardObjectNotFound,
+            PostgresOperatorDashboardQueries,
+        )
+        from trade_platform.paper_account_v1 import cycle_cost_policy_v1
+        from trade_platform.persistence import PostgresDatabase
+        from trade_platform.research_terminal_read_model_v1 import (
+            NOT_LOADED_ACCOUNT_POLICY,
+            NOT_LOADED_PARITY,
+            NOT_LOADED_RUNNER_LIVENESS,
+        )
+        from trade_platform.strategy_lab_manifest_v1 import RankDirectionV1
+        from trade_platform.strategy_lab_splits_v1 import SplitModeV1, WalkForwardPlanV1
+        from trade_platform.strategy_lab_validation_v1 import (
+            PostgresHoldoutRegistryV1,
+            PreregistrationV1,
+        )
+        from trade_platform.strategy_lab_walk_forward_v1 import (
+            PostgresWalkForwardStoreV1,
+            WalkForwardSelectionRuleV1,
+            run_walk_forward_v1,
+        )
+        from trade_platform.strategy_sdk_v1 import load_bars_v1
+
+        day0, hour = datetime(2026, 6, 1, tzinfo=UTC), timedelta(hours=1)
+        database = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        try:
+            fixture = recorded_established_study(self.temp, database)
+            study, rerun = fixture["study"], fixture["rerun"]
+            (binding,) = study.datasets
+            selected = [str(item["trial_id"]) for item in rerun.identity["authoritative_selection"]["selected"]]
+            unselected = next(str(t.trial_id) for t in study.trials() if str(t.trial_id) not in selected)
+            bars = load_bars_v1(fixture["data_root"], binding.dataset_version_id,
+                                expected_content_hash=binding.content_hash)
+            plan = WalkForwardPlanV1(mode=SplitModeV1.ROLLING, train_duration=12 * hour, test_duration=6 * hour,
+                                     step=6 * hour, embargo=timedelta(minutes=10), first_test_start=day0 + 12 * hour,
+                                     evaluation_end_exclusive=day0 + 48 * hour)
+            report = run_walk_forward_v1(
+                study, plan, WalkForwardSelectionRuleV1("total_return", RankDirectionV1.HIGHER_IS_BETTER), bars=bars)
+            PostgresWalkForwardStoreV1(database).record(report)
+            draft = PreregistrationV1(study=study, rerun=rerun, symbol="BTCUSDT")
+            PostgresHoldoutRegistryV1(database).record_preregistration(draft)
+            criteria = ExitCriteriaPacketV1(cycle_id="cycle-2026-08-20", study_id=str(study.study_id),
+                                            trial_id=selected[0], preregistration_hash=draft.content_hash,
+                                            symbol="BTCUSDT")  # no owner value: DRAFT
+            PostgresExitCriteriaRegistryV1(database).record(criteria)
+
+            queries = PostgresOperatorDashboardQueries(database)
+            walk = queries.terminal_walk_forward_report(report.report_hash)
+            self.assertEqual((study.study_id, False), (walk.study_id, walk.promotable))
+            self.assertIn(report.report_hash, {view.report_hash for view in
+                                               queries.terminal_walk_forward(study_id=study.study_id)})
+            with self.assertRaises(DashboardObjectNotFound):
+                queries.terminal_walk_forward_report("0" * 64)
+
+            view = queries.terminal_candidate(study.study_id, UUID(selected[0]))
+            # The fixture study is deterministic, so in a shared database other tests may have recorded more
+            # packets for this candidate: the view is checked against what the stored rows resolve to.
+            self.assertEqual((rerun.rerun_hash, False, None),
+                             (view.links.rerun_hash, view.links.holdout_opened_for_this_preregistration,
+                              view.links.validation_hash))
+            self.assertIn(report.report_hash, [item.report_hash for item in view.links.walk_forward])
+            self.assertEqual((STAGE_DECIMAL_SELECTION_ESTABLISHED, "DECIMAL_SELECTION_ESTABLISHED",
+                              "GROSS_NON_PROMOTABLE", "NONE_VALIDATED"),
+                             (view.readiness.stage, view.claim, view.economics, view.validated_claim))
+            with database.transaction() as connection, connection.cursor() as cursor:
+                cost = cycle_cost_policy_v1(cursor, "cycle-2026-08-20")
+                cursor.execute("SELECT identity, status FROM strategy_lab_preregistrations "
+                               "WHERE preregistration_hash=%s", (view.links.preregistration_hash,))
+                packet_identity, packet_status = cursor.fetchone()
+                registered = resolve_exit_criteria_v1(cursor, cycle_id="cycle-2026-08-20",
+                                                      study_id=str(study.study_id), trial_id=selected[0])
+                cursor.execute("SELECT count(*) FROM strategy_lab_incubation_exit_criteria WHERE criteria_hash=%s",
+                               (criteria.content_hash,))
+                self.assertEqual(1, cursor.fetchone()[0])  # the DRAFT is stored, never upgraded
+            self.assertEqual(packet_status, view.links.preregistration_status)
+            assert registered is not None
+            self.assertEqual((registered.criteria_hash, registered.packet.status),
+                             (view.exit_criteria.criteria_hash, view.exit_criteria.status))
+            self.assertEqual(view.exit_criteria.criteria_hash, view.links.criteria_hash)
+            if view.exit_criteria.status == "DRAFT":
+                self.assertEqual((None, STAGE_UNRESOLVED), (view.exit_criteria.authorized_by, view.exit_criteria.stage))
+                self.assertTrue(all(value == "UNRESOLVED" for value in view.exit_criteria.thresholds.values()))
+                self.assertIn("MISSING_OWNER_AUTHORIZATION", view.exit_criteria.unresolved)
+                # The route assesses exactly what the readiness module assesses on the same stored rows.
+                expected = assess_candidate_readiness_v1(CandidateEvidenceV1(
+                    study_id=str(study.study_id), trial_id=selected[0], rerun_identity=rerun.identity,
+                    rerun_hash=rerun.rerun_hash, packet_identity=_identity(packet_identity),
+                    packet_hash=view.links.preregistration_hash), cost_policy=cost, as_of=view.as_of)
+                self.assertEqual(list(expected.blockers), view.readiness.blockers)
+                self.assertEqual([NOT_LOADED_RUNNER_LIVENESS, NOT_LOADED_PARITY, NOT_LOADED_ACCOUNT_POLICY],
+                                 view.evidence_not_loaded)
+            else:  # another test authorized this candidate's criteria: shown as such, never as the draft
+                self.assertEqual("AUTHORIZED", view.exit_criteria.status)
+                self.assertIsNotNone(view.exit_criteria.authorized_by)
+                self.assertEqual([], view.exit_criteria.unresolved)
+                self.assertNotEqual(STAGE_UNRESOLVED, view.exit_criteria.stage)
+            self.assertTrue({"OR-6", "OR-7", "OR-11"} <= set(view.readiness.owner_gates))
+            self.assertEqual([NOT_LOADED_RUNNER_LIVENESS, NOT_LOADED_PARITY], view.evidence_not_loaded[:2])
+
+            other = queries.terminal_candidate(study.study_id, UUID(unselected))
+            self.assertEqual((STAGE_SEARCH_ONLY, "SEARCH_NON_AUTHORITATIVE", "NOT_RECORDED", None),
+                             (other.readiness.stage, other.claim, other.exit_criteria.status,
+                              other.links.preregistration_hash))
+            self.assertIn((study.study_id, UUID(selected[0])),
+                          {(item.links.study_id, item.links.trial_id) for item in queries.terminal_candidates(limit=100)})
+            with self.assertRaises(DashboardObjectNotFound):
+                queries.terminal_candidate(uuid4(), uuid4())
         finally:
             database.close()
 

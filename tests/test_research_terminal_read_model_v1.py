@@ -9,7 +9,7 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import Mock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
 
@@ -19,14 +19,19 @@ from trade_platform.config import PlatformConfig
 from trade_platform.research_terminal_read_model_v1 import (
     AUTHORITY_LEGEND_V1,
     AccountView,
+    CandidateLifecycleView,
+    CandidateLinksView,
+    CandidateReadinessSectionView,
     CandidateStateView,
     CycleView,
+    ExitCriteriaSectionView,
     IncubationView,
     LiveSignalView,
     OwnerGateView,
     RerunView,
     TerminalOverview,
     ValidationView,
+    WalkForwardView,
 )
 from trade_platform.security import InMemoryRateLimiter, OperatorAuthenticator
 
@@ -34,6 +39,33 @@ NOW = datetime(2026, 9, 3, tzinfo=UTC)
 CYCLE = CycleView(cycle_id="cycle-2026-08-20", holdout_start=datetime(2026, 8, 20, tzinfo=UTC),
                   holdout_state="UNOPENED", holdout_end_exclusive=None, opened_at=None, preregistrations={},
                   validated=False)
+def _walk(study: UUID) -> WalkForwardView:
+    return WalkForwardView(
+        report_hash="c" * 64, study_id=study, study_label="l", study_content_hash="d" * 64,
+        dataset_content_hash="e" * 64, split_hash="f" * 64, evaluation_class="WALK_FORWARD_DEVELOPMENT",
+        numeric_tier="SEARCH_NON_AUTHORITATIVE", cost_mode="GROSS_NON_PROMOTABLE", rule={}, multiple_testing_trial_count=4,
+        evaluation_end_exclusive=datetime(2026, 8, 1, tzinfo=UTC), folds=[], authority_reasons=["SEARCH_TIER"],
+        recorded_at=NOW)
+
+
+def _lifecycle(study: UUID, trial: UUID) -> CandidateLifecycleView:
+    return CandidateLifecycleView(
+        links=CandidateLinksView(study_id=study, study_label="l", trial_id=trial, cycle_id="cycle-2026-08-20",
+                                 rerun_hash="a" * 64, walk_forward=[], preregistration_hash="b" * 64,
+                                 preregistration_status="DRAFT", holdout_opened_for_this_preregistration=False,
+                                 validation_hash=None, criteria_hash=None),
+        claim="DECIMAL_SELECTION_ESTABLISHED", economics="GROSS_NON_PROMOTABLE",
+        readiness=CandidateReadinessSectionView(stage="DECIMAL_SELECTION_ESTABLISHED", canonical_state=None,
+                                                blockers=["HOLDOUT_NOT_OPENED_FOR_THIS_PREREGISTRATION"],
+                                                owner_gates=["OR-7"], evidence={}, assessment_hash="0" * 64),
+        exit_criteria=ExitCriteriaSectionView(status="DRAFT", criteria_hash="9" * 64, recorded_at=NOW,
+                                              authorized_by=None, authorized_on=None,
+                                              unresolved=["MISSING_OWNER_AUTHORIZATION"], thresholds={},
+                                              stage="EXIT_CRITERIA_UNRESOLVED", evidence_inputs={}, blockers=[],
+                                              refusals=[], owner_gates=["OR-7"]),
+        evidence_not_loaded=["RUNNER_LIVENESS_NOT_DERIVED_BY_THIS_READ"], as_of=NOW)
+
+
 PATHS = ("overview", "reruns?limit=10", "validation?limit=10", "signals?limit=10", "accounts", "incubation")
 
 
@@ -90,6 +122,49 @@ class ResearchTerminalApiTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ValidationView(cycle=CYCLE, candidates=[], validated_claim="VALIDATED")  # type: ignore[arg-type]
         self.assertNotIn("VALIDATED", [key for key in AUTHORITY_LEGEND_V1 if not key.startswith("NOT_")])
+
+    def test_walk_forward_and_candidate_routes_are_protected_bounded_and_404_when_absent(self) -> None:
+        from trade_platform.operator_dashboard import DashboardObjectNotFound
+
+        study, trial = uuid4(), uuid4()
+        self.queries.terminal_walk_forward.return_value = [_walk(study)]
+        self.queries.terminal_walk_forward_report.return_value = _walk(study)
+        self.queries.terminal_candidates.return_value = [_lifecycle(study, trial)]
+        self.queries.terminal_candidate.return_value = _lifecycle(study, trial)
+        base = "/operator-dashboard/research-terminal"
+        for path in (f"walk-forward?limit=5&study_id={study}", f"walk-forward/{'c' * 64}", "candidates?limit=5",
+                     f"candidates/{study}/{trial}"):
+            with self.subTest(path=path):
+                self.assertEqual(401, self.client.get(f"{base}/{path}").status_code)
+                response = self.client.get(f"{base}/{path}", headers=self.headers)
+                self.assertEqual(200, response.status_code, response.text)
+                self.assertEqual(405, self.client.post(f"{base}/{path.split('?')[0]}", headers=self.headers).status_code)
+        self.queries.terminal_walk_forward.assert_called_with(limit=5, study_id=study)
+        self.queries.terminal_candidate.assert_called_with(study, trial)
+        body = self.client.get(f"{base}/candidates/{study}/{trial}", headers=self.headers).json()
+        self.assertEqual(("NONE_VALIDATED", "DRAFT", "NEVER_ACTIVATES_AN_ACCOUNT"),
+                         (body["validated_claim"], body["exit_criteria"]["status"],
+                          body["exit_criteria"]["account_activation"]))
+        for bad in ("walk-forward/NOTAHASH", "walk-forward?limit=201", "candidates?limit=101", "candidates/x/y"):
+            self.assertEqual(422, self.client.get(f"{base}/{bad}", headers=self.headers).status_code, bad)
+        self.queries.terminal_candidate.side_effect = DashboardObjectNotFound("strategy_lab_study_not_found")
+        self.assertEqual(404, self.client.get(f"{base}/candidates/{study}/{trial}", headers=self.headers).status_code)
+
+    def test_lifecycle_and_walk_forward_views_cannot_express_a_higher_claim(self) -> None:
+        study, trial = uuid4(), uuid4()
+        good = _lifecycle(study, trial).model_dump()
+        for field, value in (("claim", "VALIDATED"), ("validated_claim", "VALIDATED"),
+                             ("economics", "NET_PROMOTABLE")):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                CandidateLifecycleView(**{**good, field: value})
+        with self.assertRaises(ValueError):
+            CandidateLifecycleView(**{**good, "exit_criteria": {**good["exit_criteria"], "status": "APPROVED"}})
+        with self.assertRaises(ValueError):
+            CandidateLifecycleView(**{**good, "readiness": {**good["readiness"], "promotion": "PROMOTED"}})
+        walk = _walk(study).model_dump()
+        for field, value in (("promotable", True), ("cost_mode", "NET"), ("numeric_tier", "DECIMAL_AUTHORITATIVE")):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                WalkForwardView(**{**walk, field: value})
 
     def test_the_cycle_id_is_r6s(self) -> None:
         from trade_platform.research_terminal_read_model_v1 import current_cycle_id_v1

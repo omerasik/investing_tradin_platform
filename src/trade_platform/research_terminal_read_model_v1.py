@@ -17,7 +17,13 @@ Every view states its claim and never lifts it:
   and nothing reaches a validated state;
 * live signals are ``NOT_VALIDATED_<authority>`` proposals;
 * an account policy is ``UNCONFIGURED`` until the owner completes it (OR-11);
-* paper incubation is unit-exposure, gross, never cost-complete.
+* paper incubation is unit-exposure, gross, never cost-complete;
+* a candidate lifecycle view is ``READINESS_ASSESSMENT_NOT_A_DECISION``: it links
+  the stored ids (study -> rerun -> walk-forward -> preregistration -> validation
+  -> exit criteria), restates the readiness and exit-readiness modules' blockers,
+  keeps ``DRAFT`` exit criteria distinct from ``AUTHORIZED`` ones, and lists the
+  evidence it does not derive (runner liveness, live/replay parity, an account
+  policy not bound by authorized exit criteria) in ``evidence_not_loaded``.
 
 Open owner gates are listed as gates (``OPEN``), never as defaults.
 """
@@ -221,35 +227,52 @@ def read_reruns_v1(cursor: _Cursor, *, limit: int) -> list[RerunView]:
     return out
 
 
-def read_walk_forward_v1(cursor: _Cursor, *, limit: int) -> list[WalkForwardView]:
+class TerminalObjectNotFound(LookupError):
+    """The named study, trial or report has no recorded evidence (a 404, never an empty default)."""
+
+
+_WALK_FORWARD_SELECT = (
+    "SELECT w.report_hash, w.study_id, s.label, w.identity, w.recorded_at FROM strategy_lab_walk_forward_reports w "
+    "JOIN strategy_lab_studies s ON s.study_id = w.study_id")
+
+
+def _walk_forward_view(row: tuple[Any, ...]) -> WalkForwardView:
+    identity = _json(row[3])
+    report_hash = str(row[0]).strip()
+    if identity_hash_v1(identity) != report_hash:
+        raise ValueError("stored_walk_forward_report_does_not_rederive")
+    folds = [WalkForwardFoldView(
+        fold=int(fold["fold"]), status=str(fold["status"]), test_start=fold["test_start"],
+        test_end_exclusive=fold["test_end_exclusive"],
+        selected_trial_id=None if fold["selected"] is None else UUID(str(fold["selected"]["trial_id"])),
+        train_metric_value=None if fold["selected"] is None else str(fold["selected"]["train_metric_value"]),
+        test_metrics={} if fold["selected"] is None else dict(fold["selected"]["test_metrics"]),
+        flags=[str(flag) for flag in fold["flags"]]) for fold in identity["folds"]]
+    return WalkForwardView(
+        report_hash=report_hash, study_id=row[1], study_label=str(row[2]),
+        study_content_hash=str(identity["study_content_hash"]),
+        dataset_content_hash=str(identity["dataset"]["content_hash"]), split_hash=str(identity["split_hash"]),
+        evaluation_class=identity["evaluation_class"], numeric_tier=identity["numeric_tier"],
+        cost_mode=identity["cost_mode"], promotable=identity["promotable"], rule=dict(identity["rule"]),
+        multiple_testing_trial_count=int(identity["multiple_testing_trial_count"]),
+        evaluation_end_exclusive=identity["plan"]["evaluation_end_exclusive"], folds=folds,
+        authority_reasons=[str(reason) for reason in identity["authority_reasons"]], recorded_at=row[4])
+
+
+def read_walk_forward_v1(cursor: _Cursor, *, limit: int, study_id: UUID | None = None) -> list[WalkForwardView]:
     """Recorded walk-forward reports, newest first; a stored identity that does not re-derive is refused."""
-    cursor.execute(
-        "SELECT w.report_hash, w.study_id, s.label, w.identity, w.recorded_at FROM strategy_lab_walk_forward_reports w "
-        "JOIN strategy_lab_studies s ON s.study_id = w.study_id ORDER BY w.recorded_at DESC, w.report_hash LIMIT %s",
-        (limit,))
-    out = []
-    for row in cursor.fetchall():
-        identity = _json(row[3])
-        report_hash = str(row[0]).strip()
-        if identity_hash_v1(identity) != report_hash:
-            raise ValueError("stored_walk_forward_report_does_not_rederive")
-        folds = [WalkForwardFoldView(
-            fold=int(fold["fold"]), status=str(fold["status"]), test_start=fold["test_start"],
-            test_end_exclusive=fold["test_end_exclusive"],
-            selected_trial_id=None if fold["selected"] is None else UUID(str(fold["selected"]["trial_id"])),
-            train_metric_value=None if fold["selected"] is None else str(fold["selected"]["train_metric_value"]),
-            test_metrics={} if fold["selected"] is None else dict(fold["selected"]["test_metrics"]),
-            flags=[str(flag) for flag in fold["flags"]]) for fold in identity["folds"]]
-        out.append(WalkForwardView(
-            report_hash=report_hash, study_id=row[1], study_label=str(row[2]),
-            study_content_hash=str(identity["study_content_hash"]),
-            dataset_content_hash=str(identity["dataset"]["content_hash"]), split_hash=str(identity["split_hash"]),
-            evaluation_class=identity["evaluation_class"], numeric_tier=identity["numeric_tier"],
-            cost_mode=identity["cost_mode"], promotable=identity["promotable"], rule=dict(identity["rule"]),
-            multiple_testing_trial_count=int(identity["multiple_testing_trial_count"]),
-            evaluation_end_exclusive=identity["plan"]["evaluation_end_exclusive"], folds=folds,
-            authority_reasons=[str(reason) for reason in identity["authority_reasons"]], recorded_at=row[4]))
-    return out
+    where, params = ("", (limit,)) if study_id is None else (" WHERE w.study_id = %s", (study_id, limit))
+    cursor.execute(f"{_WALK_FORWARD_SELECT}{where} ORDER BY w.recorded_at DESC, w.report_hash LIMIT %s", params)
+    return [_walk_forward_view(row) for row in cursor.fetchall()]
+
+
+def read_walk_forward_report_v1(cursor: _Cursor, report_hash: str) -> WalkForwardView:
+    """One recorded walk-forward report by its content hash (refused if it does not re-derive)."""
+    cursor.execute(f"{_WALK_FORWARD_SELECT} WHERE w.report_hash = %s", (report_hash,))
+    row = cursor.fetchone()
+    if row is None:
+        raise TerminalObjectNotFound("walk_forward_report_not_found")
+    return _walk_forward_view(row)
 
 
 def current_cycle_id_v1() -> str:
@@ -340,6 +363,275 @@ def read_incubation_v1(cursor: _Cursor, *, now: datetime | None = None) -> Incub
     resolution = resolve_incubation_bindings_v1(cursor, cycle_id=cycle_id)
     report = incubation_report_v1(fills, cost, as_of=now or datetime.now(UTC), resolution=resolution)
     return IncubationView(state="AVAILABLE" if fills else "NO_FILLS", report=report)
+
+
+#: Evidence the per-candidate read does not derive, so its blockers stay listed (never assumed satisfied).
+NOT_LOADED_RUNNER_LIVENESS = "RUNNER_LIVENESS_NOT_DERIVED_BY_THIS_READ"
+NOT_LOADED_PARITY = "LIVE_REPLAY_FILL_PARITY_NOT_LOADED_BY_THIS_READ"
+NOT_LOADED_ACCOUNT_POLICY = "ACCOUNT_POLICY_NOT_BOUND_BY_AUTHORIZED_EXIT_CRITERIA"
+
+_STAGE_CLAIM = {
+    "SEARCH_ONLY": "SEARCH_NON_AUTHORITATIVE",
+    "DECIMAL_SELECTION_ESTABLISHED": "DECIMAL_SELECTION_ESTABLISHED",
+    "HOLDOUT_REJECTED": "REJECTED",
+    "INCUBATION_INCOMPLETE": "INCUBATING",
+    "INCUBATION_EVIDENCE_FAILED": "INCUBATING",
+    "FORWARD_EVIDENCE_INCOMPLETE": "INCUBATING",
+    "ELIGIBLE_FOR_OWNER_AUTHORIZED_VALIDATION_DECISION": "INCUBATING",
+    "EVIDENCE_INCONSISTENT": "EVIDENCE_INCONSISTENT",
+}
+
+
+class WalkForwardLinkView(BaseModel):
+    report_hash: str
+    fold_count: int
+    folds_selecting_trial: int
+    recorded_at: datetime
+
+
+class CandidateLinksView(BaseModel):
+    """The identities one candidate's evidence chain carries, study -> incubation (ids only, never new ones)."""
+
+    study_id: UUID
+    study_label: str
+    trial_id: UUID
+    cycle_id: str
+    rerun_hash: str | None
+    walk_forward: list[WalkForwardLinkView]
+    preregistration_hash: str | None
+    preregistration_status: Literal["DRAFT", "AUTHORIZED"] | None
+    holdout_opened_for_this_preregistration: bool
+    validation_hash: str | None
+    criteria_hash: str | None
+
+
+class CandidateReadinessSectionView(BaseModel):
+    stage: str
+    canonical_state: str | None
+    blockers: list[str]
+    owner_gates: list[str]
+    evidence: dict[str, Any]
+    assessment_hash: str
+    claim: Literal["READINESS_ASSESSMENT_NOT_A_DECISION"] = "READINESS_ASSESSMENT_NOT_A_DECISION"
+    promotion: Literal["PROFESSIONALLY_VALIDATED_RESERVED_NEVER_PROMOTED_HERE"] = (
+        "PROFESSIONALLY_VALIDATED_RESERVED_NEVER_PROMOTED_HERE")
+
+
+class ExitCriteriaSectionView(BaseModel):
+    """The candidate's forward exit criteria (migration 0065): AUTHORIZED and DRAFT are never conflated."""
+
+    status: Literal["NOT_RECORDED", "DRAFT", "AUTHORIZED", "REFUSED"]
+    criteria_hash: str | None
+    recorded_at: datetime | None
+    authorized_by: str | None
+    authorized_on: str | None
+    unresolved: list[str]
+    thresholds: dict[str, Any]
+    stage: str
+    evidence_inputs: dict[str, str]
+    blockers: list[str]
+    refusals: list[str]
+    owner_gates: list[str]
+    claim: Literal["EXIT_READINESS_ASSESSMENT_NOT_A_DECISION"] = "EXIT_READINESS_ASSESSMENT_NOT_A_DECISION"
+    account_activation: Literal["NEVER_ACTIVATES_AN_ACCOUNT"] = "NEVER_ACTIVATES_AN_ACCOUNT"
+
+
+class CandidateLifecycleView(BaseModel):
+    """One candidate's readiness and exit criteria, read from its stored chain. Never a decision."""
+
+    links: CandidateLinksView
+    claim: Literal["SEARCH_NON_AUTHORITATIVE", "DECIMAL_SELECTION_ESTABLISHED", "INCUBATING", "REJECTED",
+                   "EVIDENCE_INCONSISTENT"]
+    economics: Literal["GROSS_NON_PROMOTABLE", "VERIFIED_FEES_NOT_COST_COMPLETE"]
+    readiness: CandidateReadinessSectionView
+    exit_criteria: ExitCriteriaSectionView
+    evidence_not_loaded: list[str]
+    validated_claim: Literal["NONE_VALIDATED"] = "NONE_VALIDATED"
+    as_of: datetime
+
+
+class _CycleContext:
+    """Cycle-wide inputs read once per request: opening, OR-6 policy, registry resolution, fills."""
+
+    def __init__(self, cursor: _Cursor, as_of: datetime) -> None:
+        from .paper_account_v1 import cycle_cost_policy_v1, cycle_fill_rows_v1
+        from .paper_incubation_registry_v1 import (
+            IncubationRegistryError,
+            resolve_incubation_bindings_v1,
+        )
+
+        self.cycle_id = current_cycle_id_v1()
+        self.as_of = as_of
+        cursor.execute("SELECT cycle_id, preregistration_hash FROM strategy_lab_holdout_openings WHERE cycle_id=%s",
+                       (self.cycle_id,))
+        row = cursor.fetchone()
+        self.opening = None if row is None else {"cycle_id": str(row[0]), "preregistration_hash": str(row[1]).strip()}
+        self.cost = cycle_cost_policy_v1(cursor, self.cycle_id)
+        self.resolution: Any = None
+        self.resolution_refusal: str | None = None
+        try:
+            self.resolution = resolve_incubation_bindings_v1(cursor, cycle_id=self.cycle_id)
+        except IncubationRegistryError as error:
+            self.resolution_refusal = f"INCUBATION_REGISTRY_REFUSED:{error}"
+        self.fills: list[dict[str, Any]] = []
+        for content_hash, raw in cycle_fill_rows_v1(cursor, self.cycle_id)[0]:
+            identity = _json(raw)
+            if identity_hash_v1(identity) != str(content_hash).strip():
+                raise ValueError("stored_fill_identity_does_not_rederive")
+            self.fills.append(identity)
+
+
+def _selected_trials(rerun_identity: dict[str, Any]) -> list[str]:
+    selection = rerun_identity.get("authoritative_selection") or {}
+    if selection.get("status") != "ESTABLISHED":
+        return []
+    return [str(item.get("trial_id")) for item in selection.get("selected", [])]
+
+
+def _candidate_lifecycle(cursor: _Cursor, context: _CycleContext, study_id: UUID,
+                         trial_id: UUID) -> CandidateLifecycleView:
+    from .candidate_lifecycle_readiness_v1 import CandidateEvidenceV1, assess_candidate_readiness_v1
+    from .incubation_exit_criteria_v1 import (
+        STAGE_REFUSED,
+        STATUS_AUTHORIZED,
+        ExitCriteriaError,
+        assess_exit_readiness_v1,
+        resolve_exit_criteria_v1,
+    )
+
+    study, trial, cycle_id = str(study_id), str(trial_id), context.cycle_id
+    cursor.execute("SELECT label FROM strategy_lab_studies WHERE study_id=%s", (study_id,))
+    label_row = cursor.fetchone()
+    if label_row is None:
+        raise TerminalObjectNotFound("strategy_lab_study_not_found")
+
+    # Preregistration: the one the cycle's holdout was opened for, else the latest naming this trial.
+    cursor.execute("SELECT preregistration_hash, identity FROM strategy_lab_preregistrations WHERE cycle_id=%s "
+                   "AND study_id=%s ORDER BY recorded_at DESC, preregistration_hash", (cycle_id, study_id))
+    packets = [(str(h).strip(), _json(raw)) for h, raw in cursor.fetchall()]
+    packets = [(h, p) for h, p in packets if trial in [str(item) for item in p.get("candidates", [])]]
+    opened = context.opening["preregistration_hash"] if context.opening else None
+    packet_hash, packet = next(((h, p) for h, p in packets if h == opened), packets[0] if packets else (None, None))
+
+    # Decimal rerun: the packet's, else the latest established one naming the trial, else the study's latest.
+    cursor.execute("SELECT rerun_hash, identity FROM strategy_lab_authority_reruns WHERE study_id=%s "
+                   "ORDER BY recorded_at DESC, rerun_hash", (study_id,))
+    reruns = [(str(h).strip(), _json(raw)) for h, raw in cursor.fetchall()]
+    if packet is not None:
+        rerun = next(((h, r) for h, r in reruns if h == packet.get("rerun_hash")), (None, None))
+    else:
+        rerun = next(((h, r) for h, r in reruns if trial in _selected_trials(r)), reruns[0] if reruns else (None, None))
+
+    validation_hash, validation = None, None
+    if packet_hash is not None and packet_hash == opened:
+        cursor.execute("SELECT validation_hash, identity FROM strategy_lab_holdout_validations WHERE cycle_id=%s "
+                       "AND preregistration_hash=%s", (cycle_id, packet_hash))
+        row = cursor.fetchone()
+        if row is not None:
+            validation_hash, validation = str(row[0]).strip(), _json(row[1])
+    cursor.execute("SELECT study_id, trial_id, state, evidence_hash, recorded_at FROM strategy_lab_candidate_states "
+                   "WHERE study_id=%s ORDER BY recorded_at, trial_id", (study_id,))
+    states = [{"study_id": str(r[0]), "trial_id": str(r[1]), "state": str(r[2]), "evidence_hash": str(r[3]).strip(),
+               "recorded_at": r[4]} for r in cursor.fetchall()]
+    fills = [item for item in context.fills if (str(item.get("study_id")), str(item.get("trial_id"))) == (study, trial)]
+
+    not_loaded = [NOT_LOADED_RUNNER_LIVENESS, NOT_LOADED_PARITY]
+    criteria, criteria_refusal = None, None
+    try:
+        criteria = resolve_exit_criteria_v1(cursor, cycle_id=cycle_id, study_id=study, trial_id=trial)
+    except ExitCriteriaError as error:
+        criteria_refusal = f"EXIT_CRITERIA_REGISTRY_REFUSED:{error}"
+    account_policy = None
+    bound_account = (criteria.packet.frozen["criteria"]["required_account_policy_hash"]
+                     if criteria is not None and criteria.packet.status == STATUS_AUTHORIZED else None)
+    if bound_account is not None:
+        cursor.execute("SELECT status, identity, content_hash FROM account_policy_versions WHERE content_hash=%s",
+                       (bound_account,))
+        row = cursor.fetchone()
+        if row is not None:
+            account_policy = {"status": str(row[0]), "unresolved": list(_json(row[1]).get("unresolved", [])),
+                              "content_hash": str(row[2]).strip()}
+    if account_policy is None:
+        not_loaded.append(NOT_LOADED_ACCOUNT_POLICY)
+
+    evidence = CandidateEvidenceV1(
+        study_id=study, trial_id=trial, rerun_identity=rerun[1], rerun_hash=rerun[0], packet_identity=packet,
+        packet_hash=packet_hash, opening=context.opening, validation_identity=validation,
+        validation_hash=validation_hash, states=states, fills=fills, account_policy=account_policy)
+    readiness = assess_candidate_readiness_v1(evidence, cost_policy=context.cost, as_of=context.as_of)
+    exit_ready = assess_exit_readiness_v1(evidence, cost_policy=context.cost, as_of=context.as_of,
+                                          resolution=context.resolution, criteria=criteria)
+    refusals = [*exit_ready.refusals, *(r for r in (context.resolution_refusal, criteria_refusal) if r)]
+    packet_obj = None if criteria is None else criteria.packet
+    frozen = None if packet_obj is None else packet_obj.frozen
+
+    cursor.execute("SELECT report_hash, identity, recorded_at FROM strategy_lab_walk_forward_reports WHERE study_id=%s "
+                   "ORDER BY recorded_at DESC, report_hash LIMIT 20", (study_id,))
+    walks = []
+    for report_hash, raw, recorded_at in cursor.fetchall():
+        identity = _json(raw)
+        if identity_hash_v1(identity) != str(report_hash).strip():
+            raise ValueError("stored_walk_forward_report_does_not_rederive")
+        picks = [fold for fold in identity["folds"]
+                 if fold["selected"] is not None and str(fold["selected"]["trial_id"]) == trial]
+        walks.append(WalkForwardLinkView(report_hash=str(report_hash).strip(), fold_count=len(identity["folds"]),
+                                         folds_selecting_trial=len(picks), recorded_at=recorded_at))
+
+    return CandidateLifecycleView(
+        links=CandidateLinksView(
+            study_id=study_id, study_label=str(label_row[0]), trial_id=trial_id, cycle_id=cycle_id,
+            rerun_hash=rerun[0], walk_forward=walks, preregistration_hash=packet_hash,
+            preregistration_status=None if packet is None else packet.get("status"),
+            holdout_opened_for_this_preregistration=packet_hash is not None and packet_hash == opened,
+            validation_hash=validation_hash, criteria_hash=None if packet_obj is None else packet_obj.content_hash),
+        claim=_STAGE_CLAIM[readiness.stage],  # type: ignore[arg-type]
+        economics="VERIFIED_FEES_NOT_COST_COMPLETE" if context.cost.promotable_cost_basis else "GROSS_NON_PROMOTABLE",
+        readiness=CandidateReadinessSectionView(
+            stage=readiness.stage, canonical_state=readiness.canonical_state, blockers=list(readiness.blockers),
+            owner_gates=list(readiness.owner_gates), evidence=dict(readiness.evidence),
+            assessment_hash=readiness.assessment_hash),
+        exit_criteria=ExitCriteriaSectionView(
+            status="REFUSED" if criteria_refusal else "NOT_RECORDED" if packet_obj is None else packet_obj.status,
+            criteria_hash=None if packet_obj is None else packet_obj.content_hash,
+            recorded_at=None if criteria is None else criteria.recorded_at,
+            authorized_by=None if frozen is None else frozen["authorized_by"],
+            authorized_on=None if frozen is None else frozen["authorized_on"],
+            unresolved=[] if packet_obj is None else list(packet_obj.unresolved),
+            thresholds=dict(exit_ready.thresholds),
+            stage=STAGE_REFUSED if refusals else exit_ready.stage, evidence_inputs=dict(exit_ready.evidence_inputs),
+            blockers=list(exit_ready.blockers), refusals=refusals, owner_gates=list(exit_ready.owner_gates)),
+        evidence_not_loaded=not_loaded, as_of=context.as_of)
+
+
+def read_candidate_lifecycle_v1(cursor: _Cursor, study_id: UUID, trial_id: UUID, *,
+                                now: datetime | None = None) -> CandidateLifecycleView:
+    """One candidate's lifecycle readiness and exit criteria in the current cycle (read-only, never a decision).
+
+    The chain is read from the stored rows (study -> Decimal rerun -> preregistration
+    -> opening -> validation -> states -> forward fills -> exit criteria) and assessed
+    by :mod:`trade_platform.candidate_lifecycle_readiness_v1` and
+    :mod:`trade_platform.incubation_exit_criteria_v1`. Runner liveness and live/replay
+    parity are not derived here; their blockers stay and ``evidence_not_loaded`` says so.
+    """
+    return _candidate_lifecycle(cursor, _CycleContext(cursor, now or datetime.now(UTC)), study_id, trial_id)
+
+
+def read_candidate_lifecycles_v1(cursor: _Cursor, *, limit: int,
+                                 now: datetime | None = None) -> list[CandidateLifecycleView]:
+    """Every candidate the stored evidence names (Decimal selections, states, exit criteria), newest first."""
+    cursor.execute(
+        "SELECT study_id, trial_id FROM ("
+        "SELECT c.study_id, c.trial_id, c.recorded_at AS at FROM strategy_lab_candidate_states c "
+        "UNION ALL SELECT e.study_id, e.trial_id, e.recorded_at FROM strategy_lab_incubation_exit_criteria e "
+        "UNION ALL SELECT r.study_id, (sel->>'trial_id')::uuid, r.recorded_at FROM strategy_lab_authority_reruns r "
+        "CROSS JOIN LATERAL jsonb_array_elements(r.identity->'authoritative_selection'->'selected') sel "
+        "WHERE r.selection_status = 'ESTABLISHED') named "
+        "GROUP BY study_id, trial_id ORDER BY max(at) DESC, study_id, trial_id LIMIT %s", (limit,))
+    pairs = [(row[0], row[1]) for row in cursor.fetchall()]
+    if not pairs:
+        return []
+    context = _CycleContext(cursor, now or datetime.now(UTC))
+    return [_candidate_lifecycle(cursor, context, study_id, trial_id) for study_id, trial_id in pairs]
 
 
 def _counts(cursor: _Cursor, query: str) -> dict[str, int]:
