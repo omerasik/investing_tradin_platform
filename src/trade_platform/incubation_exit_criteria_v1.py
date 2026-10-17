@@ -57,12 +57,21 @@ stale. With an authorized packet the readiness module's
 ``MISSING_OWNER_FORWARD_INCUBATION_EXIT_CRITERIA`` and gap-tolerance blockers
 are replaced by checks against the authorized values; every other blocker
 stays. Criteria recorded after the candidate became ``INCUBATING`` are an
-OR-7 finding (they could have seen forward evidence). Runner continuity has no
-merged contract yet, so it is always ``MISSING`` here, and the
-``EXIT_EVIDENCE_COMPLETE_FOR_OWNER_DECISION`` stage is unreachable in v1. Even
-that stage would only say the owner's decision has its evidence: nothing here
-judges pass/fail, records a state, reaches ``PROFESSIONALLY_VALIDATED`` or
-activates an account.
+OR-7 finding (they could have seen forward evidence).
+
+Runner continuity is the readiness module's runner liveness
+(:mod:`trade_platform.runner_liveness_v1`): ``MISSING`` without it, ``FAILED``
+when the report refused it (``INCUBATION_REPORT_REFUSED:runner_liveness_*``) or
+the readiness found it inconsistent, ``PRESENT`` when it was accepted. With
+liveness the evidenced clock is the proven processing time, so the authorized
+``minimum_evidence_coverage`` is the owner's tolerance for the unproven time,
+restarts and discontinuities it lists; with an authorized packet the readiness
+module's ``RUNNER_LIVENESS_GAP_TOLERANCE_UNDECIDED`` blocker is replaced by
+that coverage check, never waived. The ``EXIT_EVIDENCE_COMPLETE_FOR_OWNER_DECISION``
+stage stays unreachable in v1: net forward metrics are not produced, and forward
+funding, fees and sizing stay owner-gated. Even that stage would only say the
+owner's decision has its evidence: nothing here judges pass/fail, records a
+state, reaches ``PROFESSIONALLY_VALIDATED`` or activates an account.
 
 Import-light (no numpy/pyarrow): the protected API may serve it.
 """
@@ -80,6 +89,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from .activation_readiness_v1 import OR6, OR7, OR11, gate_of
 from .candidate_lifecycle_readiness_v1 import (
+    LIVENESS_GAP_TOLERANCE_PREFIX,
     NEED_COST_COMPLETE,
     NEED_EXIT_CRITERIA,
     NEED_FEE_SCHEDULE,
@@ -99,6 +109,7 @@ from .candidate_lifecycle_readiness_v1 import (
 )
 from .paper_incubation_report_v1 import (
     BINDING_SOURCE_REGISTRY_V1,
+    LIVENESS_REFUSAL_PREFIX,
     IncubationBindingV1,
     IncubationResolutionV1,
 )
@@ -153,7 +164,10 @@ STAGES_V1: Final = (STAGE_REFUSED, STAGE_UNRESOLVED, STAGE_EVIDENCE_INCOMPLETE, 
 
 ACCOUNT_ACTIVATION_V1: Final = "NEVER_ACTIVATES_AN_ACCOUNT"
 NEED_NET_FORWARD_METRICS: Final = "NET_FORWARD_METRICS_NOT_PRODUCED"
+#: Retired: runner liveness (``runner_liveness_v1``) is the continuity contract; kept for older readers.
 NEED_RUNNER_CONTRACT: Final = "RUNNER_CONTINUITY_CONTRACT_NOT_AVAILABLE"
+_LIVENESS_FAILURES: Final = (f"INCUBATION_REPORT_REFUSED:{LIVENESS_REFUSAL_PREFIX}",
+                             "RUNNER_LIVENESS_WATCHED_ANOTHER_STUDY_VERSION")
 CRITERIA_AFTER_INCUBATION: Final = f"{OR7}:EXIT_CRITERIA_RECORDED_AFTER_INCUBATION_BEGAN"
 _GAP_TOLERANCE_PREFIX: Final = f"{OR7}:FORWARD_EVIDENCE_GAP_TOLERANCE_UNDECIDED"
 _INCUBATION_STAGES: Final = (STAGE_INCUBATION_INCOMPLETE, STAGE_INCUBATION_EVIDENCE_FAILED,
@@ -606,7 +620,16 @@ def _criteria_refusals(packet: ExitCriteriaPacketV1, evidence: CandidateEvidence
     return out
 
 
-def _evidence_inputs(blockers: Sequence[str]) -> dict[str, str]:
+def _continuity(blockers: Sequence[str], facts: Mapping[str, Any]) -> str:
+    """Runner continuity from the readiness: failed if refused, present only if accepted, else missing."""
+    if any(item.startswith(_LIVENESS_FAILURES) for item in blockers):
+        return INPUT_FAILED
+    if NEED_LIVENESS in blockers or "runner_liveness_hash" not in facts:
+        return INPUT_MISSING
+    return INPUT_PRESENT
+
+
+def _evidence_inputs(blockers: Sequence[str], facts: Mapping[str, Any]) -> dict[str, str]:
     def missing(*needs: str) -> bool:
         return any(item in blockers for item in needs)
 
@@ -614,8 +637,7 @@ def _evidence_inputs(blockers: Sequence[str]) -> dict[str, str]:
               else INPUT_MISSING if missing(NEED_PARITY) else INPUT_PRESENT)
     return {
         EVIDENCE_FORWARD_FUNDING: INPUT_MISSING if missing(NEED_FORWARD_FUNDING) else INPUT_PRESENT,
-        # No runner liveness contract is merged: required, never inferred, always missing in v1.
-        EVIDENCE_RUNNER_CONTINUITY: INPUT_MISSING,
+        EVIDENCE_RUNNER_CONTINUITY: _continuity(blockers, facts),
         EVIDENCE_PARITY: parity,
         EVIDENCE_FEES: INPUT_MISSING if missing(NEED_FEE_SCHEDULE, NEED_COST_COMPLETE) else INPUT_PRESENT,
         EVIDENCE_RISK: INPUT_MISSING if any(gate_of(item) == "OR-11" for item in blockers) else INPUT_PRESENT,
@@ -684,21 +706,22 @@ def assess_exit_readiness_v1(evidence: CandidateEvidenceV1, *, cost_policy: Cost
         if packet.status != STATUS_AUTHORIZED:
             blockers += [f"{_UNRESOLVED_GATES[reason]}:{reason}" for reason in packet.unresolved]
         else:
+            # The authorized coverage minimum is the owner's tolerance for unproven runner time.
             inherited = [item for item in inherited
-                         if item != NEED_EXIT_CRITERIA and not item.startswith(_GAP_TOLERANCE_PREFIX)]
+                         if item != NEED_EXIT_CRITERIA and not item.startswith(_GAP_TOLERANCE_PREFIX)
+                         and not item.startswith(LIVENESS_GAP_TOLERANCE_PREFIX)]
             blockers += _authorized_checks(packet, criteria, readiness, evidence, cost_policy, binding, as_of)
-    inputs = _evidence_inputs(readiness.blockers)
+    inputs = _evidence_inputs(readiness.blockers, readiness.evidence)
     blockers += inherited
-    if NEED_LIVENESS not in blockers:  # pragma: no cover - the readiness module always lists it in v1
+    if inputs[EVIDENCE_RUNNER_CONTINUITY] == INPUT_MISSING and NEED_LIVENESS not in blockers:
         blockers.append(NEED_LIVENESS)
-    blockers.append(NEED_RUNNER_CONTRACT)
     if refusals:
         stage = STAGE_REFUSED
     elif packet is None or packet.status != STATUS_AUTHORIZED:
         stage = STAGE_UNRESOLVED
     elif blockers or readiness.stage not in _INCUBATION_STAGES or INPUT_MISSING in inputs.values():
         stage = STAGE_EVIDENCE_INCOMPLETE
-    else:  # pragma: no cover - unreachable in v1: runner continuity is always missing
+    else:  # pragma: no cover - unreachable in v1: net forward metrics are never produced
         stage = STAGE_COMPLETE
     return ExitReadinessV1(
         study_id=evidence.study_id, trial_id=evidence.trial_id, stage=stage, readiness_stage=readiness.stage,

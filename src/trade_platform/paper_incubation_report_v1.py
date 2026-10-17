@@ -46,6 +46,24 @@ A fill decided before the persisted ``INCUBATING`` instant is refused. The
 clock is therefore a deterministic *lower bound*: a quiet but running runner
 leaves no persisted evidence between signals and earns no elapsed time.
 
+Runner liveness replaces the fill clock when it is supplied
+-----------------------------------------------------------
+With a :class:`~trade_platform.runner_liveness_v1.RunnerLivenessV1` for a bound
+candidate (derive it with :func:`incubation_liveness_v1`), the elapsed clock is
+``PROVEN_FORWARD_PROCESSING_INTERVALS_LOWER_BOUND``: the union of its ``PROVEN``
+intervals -- live bars processed by one unbroken runner session, bound to
+manifest-proven capture hours and sealed bars -- clipped to
+``[INCUBATING instant, as_of]``. Heartbeats, restarts, capture gaps, clock
+discontinuities and unsealed minutes earn nothing and are listed by reason,
+together with any time the liveness window does not cover; nothing is
+bridged. A quiet minute counts only where the runner provably processed the
+feed around it. The liveness must be issued by the derivation, be of this
+candidate and symbol, have counted only sessions that watched the candidate as
+``INCUBATING`` on this binding's validation, end no later than ``as_of`` (no
+look-ahead) and have no refused session (a tampered, headless or re-chained
+session refuses the report: ``runner_liveness_session_refused:<reason>``). The
+fill-chain segments stay in the report as ``fill_segments``.
+
 Lifecycle exit requirements (identified, NOT implemented)
 ---------------------------------------------------------
 Nothing here leaves ``INCUBATING``; ``PROFESSIONALLY_VALIDATED`` is reserved and
@@ -60,8 +78,9 @@ still ``INCUBATING``. Exit needs, at least:
 3. a verified OR-6 fee schedule (net, not gross) and forward funding modelled,
    so the evidence is cost-complete;
 4. OR-11 sizing and capital;
-5. persisted runner liveness evidence (heartbeats / capture coverage), without
-   which quiet periods never count toward the window;
+5. persisted runner liveness evidence (supplied as above), without which quiet
+   periods never count toward the window, and an owner tolerance for the time
+   it leaves unproven (the exit criteria's minimum evidence coverage);
 6. an explicit, recorded owner authorization of the transition -- never an
    automatic promotion.
 """
@@ -74,6 +93,14 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from typing import Any, Final
 
+from .first_party_capture_hourly_acceptance_v1 import HourlyAcceptanceV1
+from .runner_liveness_v1 import (
+    STATUS_PROVEN,
+    STATUS_UNPROVEN,
+    RunnerLivenessV1,
+    SealedBarsEvidenceV1,
+    derive_runner_liveness_v1,
+)
 from .strategy_lab_policies_v1 import CostPolicyV1
 from .strategy_lab_study_v1 import identity_hash_v1
 
@@ -104,6 +131,13 @@ WINDOW_UNRESOLVED: Final = "UNRESOLVED"
 WINDOW_INCOMPLETE: Final = "INCOMPLETE"
 WINDOW_ELAPSED: Final = "ELAPSED_EXIT_CRITERIA_OWNER_UNDECIDED"
 ELAPSED_CLOCK_V1: Final = "EVIDENCED_FORWARD_OBSERVATION_SEGMENTS_LOWER_BOUND"
+ELAPSED_CLOCK_LIVENESS_V1: Final = "PROVEN_FORWARD_PROCESSING_INTERVALS_LOWER_BOUND"
+#: Every report refusal about runner liveness starts with this.
+LIVENESS_REFUSAL_PREFIX: Final = "runner_liveness_"
+#: Incubation time the supplied liveness window does not cover (never proven).
+UNPROVEN_OUTSIDE_LIVENESS_WINDOW: Final = "OUTSIDE_THE_LIVENESS_WINDOW"
+#: Mirror of :data:`trade_platform.live_signals_v1.AUTHORITY_INCUBATING` (a test pins it equal).
+AUTHORITY_INCUBATING: Final = "INCUBATING"
 
 _MINUTE: Final = 60_000_000
 _DAY_MICROS: Final = 86_400_000_000
@@ -355,8 +389,99 @@ def evidenced_segments_v1(items: Sequence[Mapping[str, Any]]) -> list[tuple[int,
     return merged
 
 
+def incubation_liveness_v1(records: Sequence[Mapping[str, Any]], binding: IncubationBindingV1, *,
+                           study_content_hash: str, as_of: datetime, acceptance: HourlyAcceptanceV1,
+                           sealed: Sequence[SealedBarsEvidenceV1], max_progress_gap_nanos: int,
+                           max_clock_divergence_nanos: int, max_processing_lag_nanos: int) -> RunnerLivenessV1:
+    """The runner liveness of one bound candidate over ``[its INCUBATING minute, the minute of as_of)``.
+
+    ``records`` are the stored progress rows
+    (:meth:`~trade_platform.runner_liveness_v1.PostgresRunnerLivenessStoreV1.for_candidate`);
+    only sessions that watched the candidate as ``INCUBATING`` on the binding's
+    validation and ``study_content_hash`` (the preregistered study version) count.
+    The bounds are the caller's stated engineering tolerances (no default).
+    """
+    if not isinstance(binding, IncubationBindingV1) or not binding.issued:
+        raise PaperIncubationError("incubation_binding_is_issued_only_by_bind_incubation_v1")
+    start = binding.incubating_since_micros // _MINUTE * _MINUTE
+    end = _micros(as_of) // _MINUTE * _MINUTE
+    if end <= start:
+        raise PaperIncubationError(f"{LIVENESS_REFUSAL_PREFIX}window_is_empty_before_as_of")
+    return derive_runner_liveness_v1(
+        records, study_id=binding.study_id, trial_id=binding.trial_id, symbol=binding.symbol,
+        window_start=_EPOCH + timedelta(microseconds=start), window_end=_EPOCH + timedelta(microseconds=end),
+        acceptance=acceptance, sealed=sealed, max_progress_gap_nanos=max_progress_gap_nanos,
+        max_clock_divergence_nanos=max_clock_divergence_nanos, max_processing_lag_nanos=max_processing_lag_nanos,
+        watched_as={"study_content_hash": study_content_hash, "authority": AUTHORITY_INCUBATING,
+                    "authority_evidence_hash": binding.validation_hash})
+
+
+def _clip(low: int, high: int, start: int, end: int) -> int:
+    return max(0, min(high, end) - max(low, start))
+
+
+def _liveness_section(liveness: RunnerLivenessV1, binding: IncubationBindingV1, as_of_micros: int,
+                      items: Sequence[Mapping[str, Any]]) -> tuple[list[tuple[int, int]], dict[str, Any]]:
+    """The proven processing segments inside ``[INCUBATING, as_of]`` and the liveness facts; refuses misuse."""
+    payload = liveness.payload
+    candidate = payload["candidate"]
+    if (candidate["study_id"], candidate["trial_id"], candidate["symbol"]) != (
+            binding.study_id, binding.trial_id, binding.symbol):
+        raise PaperIncubationError(f"{LIVENESS_REFUSAL_PREFIX}is_of_another_candidate")
+    watched = candidate.get("watched_as") or {}
+    if (watched.get("authority"), watched.get("authority_evidence_hash")) != (
+            AUTHORITY_INCUBATING, binding.validation_hash) or not watched.get("study_content_hash"):
+        raise PaperIncubationError(f"{LIVENESS_REFUSAL_PREFIX}not_bound_to_this_incubation_evidence")
+    window = payload["window"]
+    if int(window["end_micros"]) > as_of_micros:
+        raise PaperIncubationError(f"{LIVENESS_REFUSAL_PREFIX}window_ends_after_the_report_as_of")
+    if payload["refused_sessions"]:
+        reasons = sorted({str(item["reason"]) for item in payload["refused_sessions"]})
+        raise PaperIncubationError(f"{LIVENESS_REFUSAL_PREFIX}session_refused:{','.join(reasons)}")
+    low, high = binding.incubating_since_micros, max(binding.incubating_since_micros, as_of_micros)
+    segments: list[tuple[int, int]] = []
+    unproven: dict[str, int] = {}
+    for item in liveness.intervals:
+        start, end = max(low, item.start_micros), min(high, item.end_micros)
+        if end <= start:
+            continue
+        if item.status == STATUS_PROVEN:
+            if segments and start <= segments[-1][1]:  # adjacent capture hours: no gap, nothing bridged
+                segments[-1] = (segments[-1][0], max(segments[-1][1], end))
+            else:
+                segments.append((start, end))
+        elif item.status == STATUS_UNPROVEN and item.reason is not None:
+            unproven[item.reason] = unproven.get(item.reason, 0) + end - start
+    outside = (high - low) - _clip(low, high, int(window["start_micros"]), int(window["end_micros"]))
+    if outside:
+        unproven[UNPROVEN_OUTSIDE_LIVENESS_WINDOW] = outside
+    discontinuities: dict[str, int] = {}
+    for session in payload["runner_sessions"]:
+        for item in session["discontinuities"]:
+            discontinuities[item["kind"]] = discontinuities.get(item["kind"], 0) + 1
+    outside_fills = sum(1 for item in items if not any(
+        start <= int(item["decided_at_micros"]) < end for start, end in segments))
+    return segments, {
+        "liveness_hash": liveness.content_hash,
+        "claim": payload["claim"],
+        "window": dict(window),
+        "bounds": dict(payload["bounds"]),
+        "watched_as": dict(watched),
+        "runner_sessions": [{"runner_session_id": item["runner_session_id"],
+                             "start_progress_hash": item["start_progress_hash"],
+                             "binding_hash": item["binding_hash"]} for item in payload["runner_sessions"]],
+        "restarts": int(payload["restarts"]),
+        "excluded_sessions": [dict(item) for item in payload["excluded_sessions"]],
+        "discontinuities": dict(sorted(discontinuities.items())),
+        "proven_micros": sum(end - start for start, end in segments),
+        "unproven_micros_by_reason": dict(sorted(unproven.items())),
+        "fills_decided_outside_proven_processing": outside_fills,
+    }
+
+
 def _incubation(items: Sequence[Mapping[str, Any]], binding: IncubationBindingV1 | None,
-                as_of_micros: int, unbound: Sequence[str]) -> dict[str, Any]:
+                as_of_micros: int, unbound: Sequence[str],
+                liveness: RunnerLivenessV1 | None = None) -> dict[str, Any]:
     for item in items:
         observed = [int(item["decided_at_micros"])]
         if item["status"] != FILL_STATUS_BAR_NOT_OBSERVED:
@@ -365,7 +490,13 @@ def _incubation(items: Sequence[Mapping[str, Any]], binding: IncubationBindingV1
             raise PaperIncubationError("fill_evidence_after_the_report_as_of")
         if binding is not None and min(observed) < binding.incubating_since_micros:
             raise PaperIncubationError("fill_decided_before_the_candidate_was_incubating")
-    segments = evidenced_segments_v1(items)
+    fill_segments = evidenced_segments_v1(items)
+    segments, section, clock = fill_segments, None, ELAPSED_CLOCK_V1
+    if liveness is not None:
+        if binding is None:  # pragma: no cover - the report refuses liveness without a binding
+            raise PaperIncubationError(f"{LIVENESS_REFUSAL_PREFIX}without_an_incubation_binding")
+        segments, section = _liveness_section(liveness, binding, as_of_micros, items)
+        clock = ELAPSED_CLOCK_LIVENESS_V1
     elapsed = sum(end - start for start, end in segments)
     required = None if binding is None else binding.required_days
     unresolved = list(unbound) if binding is None else list(binding.unresolved)
@@ -373,15 +504,19 @@ def _incubation(items: Sequence[Mapping[str, Any]], binding: IncubationBindingV1
         window = WINDOW_UNRESOLVED
     else:
         window = WINDOW_ELAPSED if elapsed >= required * _DAY_MICROS else WINDOW_INCOMPLETE
-    return {
+    out: dict[str, Any] = {
         "binding": None if binding is None else binding.payload(),
         "required_days": UNRESOLVED_OR7_INCUBATION_DAYS if required is None else required,
         "unresolved": unresolved,
-        "elapsed_clock": ELAPSED_CLOCK_V1,
+        "elapsed_clock": clock,
         "evidenced_segments": [{"start_micros": start, "end_micros": end} for start, end in segments],
         "evidenced_elapsed_micros": elapsed,
         "window": window,
     }
+    if section is not None:
+        out["fill_segments"] = [{"start_micros": start, "end_micros": end} for start, end in fill_segments]
+        out["runner_liveness"] = section
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +524,8 @@ def _incubation(items: Sequence[Mapping[str, Any]], binding: IncubationBindingV1
 
 def incubation_report_v1(fills: Sequence[Mapping[str, Any]], cost_policy: CostPolicyV1, *,
                          as_of: datetime, bindings: Sequence[IncubationBindingV1] = (),
-                         resolution: IncubationResolutionV1 | None = None) -> dict[str, Any]:
+                         resolution: IncubationResolutionV1 | None = None,
+                         liveness: Sequence[RunnerLivenessV1] = ()) -> dict[str, Any]:
     """Per candidate and symbol: unit-exposure round trips on the fills' own evidence.
 
     ``fills`` are fill identities. ``resolution`` is the cycle's registry-resolved
@@ -397,8 +533,10 @@ def incubation_report_v1(fills: Sequence[Mapping[str, Any]], cost_policy: CostPo
     :func:`bind_incubation_v1` (caller-supplied identities, labelled so in each
     candidate's ``incubation.binding.source``). At most one of the two. A candidate
     without a binding has an ``UNRESOLVED`` requirement (the resolution's
-    cycle-level reasons, else :data:`UNRESOLVED_NO_BINDING`). ``as_of`` is a
-    reading instant only. Never promotes.
+    cycle-level reasons, else :data:`UNRESOLVED_NO_BINDING`). ``liveness`` holds
+    at most one issued runner liveness per bound candidate (see the module
+    docstring); a bound candidate with liveness is reported even without fills.
+    ``as_of`` is a reading instant only. Never promotes.
     """
     policy_hash = cost_policy.policy().content_hash
     as_of_micros = _micros(as_of)
@@ -416,7 +554,18 @@ def incubation_report_v1(fills: Sequence[Mapping[str, Any]], cost_policy: CostPo
         by_candidate[key] = binding
     unbound = list(resolution.unresolved) if resolution is not None and resolution.unresolved else [
         UNRESOLVED_NO_BINDING]
-    groups: dict[tuple[str, str, str], list[Mapping[str, Any]]] = {}
+    proofs: dict[tuple[str, str], RunnerLivenessV1] = {}
+    for item in liveness:
+        if not isinstance(item, RunnerLivenessV1) or not item.issued:
+            raise PaperIncubationError(f"{LIVENESS_REFUSAL_PREFIX}is_issued_only_by_derive_runner_liveness_v1")
+        key = (str(item.payload["candidate"]["study_id"]), str(item.payload["candidate"]["trial_id"]))
+        if key in proofs:
+            raise PaperIncubationError(f"{LIVENESS_REFUSAL_PREFIX}one_per_candidate")
+        if key not in by_candidate:
+            raise PaperIncubationError(f"{LIVENESS_REFUSAL_PREFIX}without_an_incubation_binding")
+        proofs[key] = item
+    groups: dict[tuple[str, str, str], list[Mapping[str, Any]]] = {
+        (study_id, trial_id, by_candidate[(study_id, trial_id)].symbol): [] for study_id, trial_id in proofs}
     seen: set[str] = set()
     for fill in fills:
         if fill["cost_policy_hash"] != policy_hash:
@@ -432,7 +581,7 @@ def incubation_report_v1(fills: Sequence[Mapping[str, Any]], cost_policy: CostPo
         if bound is not None and bound.symbol != symbol:
             raise PaperIncubationError("fill_symbol_is_not_the_preregistered_symbol")
         candidates.append(_candidate_report(study_id, trial_id, symbol, items, cost_policy, as_of_micros, bound,
-                                            unbound))
+                                            unbound, proofs.get((study_id, trial_id))))
     return {
         "schema_version": "paper-incubation-report-v1",
         "as_of": as_of.astimezone(UTC).isoformat(),
@@ -451,8 +600,9 @@ def incubation_report_v1(fills: Sequence[Mapping[str, Any]], cost_policy: CostPo
 
 def _candidate_report(study_id: str, trial_id: str, symbol: str, items: Sequence[Mapping[str, Any]],
                       cost_policy: CostPolicyV1, as_of_micros: int,
-                      binding: IncubationBindingV1 | None, unbound: Sequence[str]) -> dict[str, Any]:
-    incubation = _incubation(items, binding, as_of_micros, unbound)
+                      binding: IncubationBindingV1 | None, unbound: Sequence[str],
+                      liveness: RunnerLivenessV1 | None = None) -> dict[str, Any]:
+    incubation = _incubation(items, binding, as_of_micros, unbound, liveness)
     # The paper ledger starts flat. The chain of known positions holds only while every
     # fill's signal names the previous one (one runner, no restart in between) and every
     # fill was taken; after a break it resumes only at a fill from flat.
@@ -530,17 +680,21 @@ def _candidate_report(study_id: str, trial_id: str, symbol: str, items: Sequence
 
 
 __all__ = [
+    "AUTHORITY_INCUBATING",
     "BINDING_SOURCES_V1",
     "BINDING_SOURCE_CALLER_SUPPLIED_V1",
     "BINDING_SOURCE_REGISTRY_V1",
+    "ELAPSED_CLOCK_LIVENESS_V1",
     "ELAPSED_CLOCK_V1",
     "FILL_STATUSES",
     "FILL_STATUS_BAR_NOT_OBSERVED",
     "FILL_STATUS_FILLED",
     "FILL_STATUS_OPEN_AMBIGUOUS",
+    "LIVENESS_REFUSAL_PREFIX",
     "RETURN_QUANTUM_V1",
     "SIZING_UNIT_EXPOSURE_PENDING_OR_11",
     "STATE_PROFESSIONALLY_VALIDATED_RESERVED",
+    "UNPROVEN_OUTSIDE_LIVENESS_WINDOW",
     "UNRESOLVED_NO_BINDING",
     "UNRESOLVED_OR7_INCUBATION_DAYS",
     "WINDOW_ELAPSED",
@@ -551,5 +705,6 @@ __all__ = [
     "PaperIncubationError",
     "bind_incubation_v1",
     "evidenced_segments_v1",
+    "incubation_liveness_v1",
     "incubation_report_v1",
 ]

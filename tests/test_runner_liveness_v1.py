@@ -19,12 +19,14 @@ from trade_platform.first_party_capture_hourly_acceptance_v1 import (
 )
 from trade_platform.runner_liveness_v1 import (
     CAPTURE_HOUR_PREFIX,
+    EXCLUDED_OTHER_CANDIDATE_EVIDENCE,
     KIND_BARS,
     KIND_HEARTBEAT,
     KIND_STARTED,
     STATUS_PROVEN,
     DiscontinuityV1,
     RunnerLivenessError,
+    RunnerLivenessV1,
     RunnerProgressRecorderV1,
     RunnerProgressV1,
     SealedBarsEvidenceV1,
@@ -126,11 +128,15 @@ def run_session(store: MemoryStore, *, start_minute: float, minutes: Iterable[in
                 bars_for: Callable[[int], list[SimpleNamespace]] | None = None,
                 warmup: Iterable[int] = (), gate: Gate | None = None, trial: str = TRIAL,
                 clock_hook: Callable[[Clocks, int], None] | None = None,
-                session: UUID | None = None, heartbeat_nanos: int = 60 * SECOND_NANOS) -> RunnerProgressRecorderV1:
-    """A runner session started at ``start_minute`` (+2 s) polling once a second after each minute closes."""
+                session: UUID | None = None, heartbeat_nanos: int = 60 * SECOND_NANOS,
+                watched: SimpleNamespace | None = None) -> RunnerProgressRecorderV1:
+    """A runner session started at ``start_minute`` (+2 s) polling once a second after each minute closes.
+
+    ``watched`` replaces the default watched candidate (another study, authority or evidence).
+    """
     clocks = Clocks(at(start_minute) + timedelta(seconds=2))
     recorder = RunnerProgressRecorderV1(store, runner="paper_incubation", symbol=SYMBOL, capture_source_id=SOURCE,
-                                        candidates=[candidate(trial)], holdout_gate=gate or Gate(),
+                                        candidates=[watched or candidate(trial)], holdout_gate=gate or Gate(),
                                         heartbeat_interval_nanos=heartbeat_nanos,
                                         runner_session_id=session or uuid5(NS, f"runner-{start_minute}-{trial}"),
                                         wall_clock=lambda: clocks.wall, monotonic_clock=lambda: clocks.monotonic)
@@ -168,10 +174,12 @@ FULL_SEALS = [sealed(0, range(60)), sealed(1, range(60, 120))]
 
 
 def derive(store: MemoryStore, *, start: int = 0, end: int = 120, accept: HourlyAcceptanceV1 | None = None,
-           seals: list[SealedBarsEvidenceV1] | None = None, trial: str = TRIAL, **bounds: int):
+           seals: list[SealedBarsEvidenceV1] | None = None, trial: str = TRIAL,
+           watched_as: dict[str, str] | None = None, **bounds: int):
     return derive_runner_liveness_v1(store.all(), study_id=str(STUDY), trial_id=trial, symbol=SYMBOL,
                                      window_start=at(start), window_end=at(end), acceptance=accept or acceptance(),
-                                     sealed=FULL_SEALS if seals is None else seals, **{**BOUNDS, **bounds})
+                                     sealed=FULL_SEALS if seals is None else seals, watched_as=watched_as,
+                                     **{**BOUNDS, **bounds})
 
 
 def reason_at(result, minute: int) -> str | None:
@@ -463,6 +471,46 @@ class ReconstructionTests(unittest.TestCase):
         result = derive(store, end=60)
         self.assertEqual(UnprovenReasonV1.RUNNER_EVIDENCE_CONFLICT.value, reason_at(result, 15))
         self.assertEqual(STATUS_PROVEN, reason_at(result, 14))
+
+
+WATCHED_AS = {"study_content_hash": "c" * 64, "authority": "INCUBATING", "authority_evidence_hash": "e" * 64}
+
+
+class CandidateEvidenceTests(unittest.TestCase):
+    def test_only_sessions_watching_under_the_stated_evidence_count(self) -> None:
+        store = MemoryStore()
+        run_session(store, start_minute=0, minutes=range(60))
+        research = SimpleNamespace(**{**vars(candidate()), "authority": "RESEARCH_WATCH",
+                                      "authority_evidence_hash": "f" * 64})
+        run_session(store, start_minute=0, minutes=range(60), session=uuid5(NS, "research"), watched=research)
+        result = derive(store, end=60, watched_as=WATCHED_AS)
+        self.assertEqual(60 * MINUTE, result.proven_micros)
+        self.assertEqual([{"runner_session_id": str(uuid5(NS, "research")),
+                           "reason": EXCLUDED_OTHER_CANDIDATE_EVIDENCE}], result.payload["excluded_sessions"])
+        (session,) = result.payload["runner_sessions"]
+        self.assertEqual(WATCHED_AS, session["candidate_binding"])
+        start = next(row for row in store.all() if row["identity"]["sequence"] == 0
+                     and row["identity"]["runner_session_id"] == session["runner_session_id"])
+        self.assertEqual(start["content_hash"], session["start_progress_hash"])
+        self.assertEqual(WATCHED_AS, result.payload["candidate"]["watched_as"])
+        # Watched only under another evidence: nothing proven, never bridged from the research session.
+        other = derive(store, end=60, watched_as={**WATCHED_AS, "authority_evidence_hash": "0" * 64})
+        self.assertEqual(0, other.proven_micros)
+        self.assertEqual(2, len(other.payload["excluded_sessions"]))
+        with self.assertRaises(RunnerLivenessError):
+            derive(store, end=60, watched_as={"authority": "INCUBATING"})
+
+    def test_a_result_is_evidence_only_as_issued(self) -> None:
+        store = MemoryStore()
+        run_session(store, start_minute=0, minutes=range(5))
+        result = derive(store, end=5)
+        self.assertTrue(result.issued)
+        with self.assertRaises(RunnerLivenessError):
+            RunnerLivenessV1(result.payload, result.intervals)
+        forged = replace(result, payload={**result.payload, "proven_micros": 10 ** 12})
+        self.assertFalse(forged.issued)
+        widened = replace(result, intervals=(replace(result.intervals[0], end_micros=minute_micros(500)),))
+        self.assertFalse(widened.issued)
 
 
 
