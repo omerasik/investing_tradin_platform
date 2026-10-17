@@ -25,6 +25,7 @@ const studyHeatmapKeys = new Set(["x", "y", "metric", "fixed"]);
 const studyBreakEvenPath = new RegExp(`^/operator-dashboard/strategy-lab/studies/${studyUuid}/break-even-distribution$`);
 const terminalWalkForwardPath = /^\/operator-dashboard\/research-terminal\/walk-forward\/[0-9a-f]{64}$/;
 const terminalCandidatePath = new RegExp(`^/operator-dashboard/research-terminal/candidates/${studyUuid}/${studyUuid}$`);
+const terminalPaperEvidencePath = new RegExp(`^/operator-dashboard/research-terminal/candidates/${studyUuid}/${studyUuid}/paper-evidence$`);
 
 const parameterlessTargets = new Set([
   "/operator-dashboard/workspace-references",
@@ -81,6 +82,10 @@ const queryTargets: Record<string, { allowed: string[]; required?: string[] }> =
   "/operator-dashboard/research-terminal/validation": { allowed: ["limit"] },
   "/operator-dashboard/research-terminal/walk-forward": { allowed: ["limit", "study_id"] },
   "/operator-dashboard/research-terminal/candidates": { allowed: ["limit"] },
+  "/operator-dashboard/research-terminal/compare": {
+    allowed: ["study_id", "sort_dimension", "sort_metric", "sort_direction"],
+    required: ["study_id"],
+  },
   "/operator-dashboard/research-terminal/signals": { allowed: ["limit"] },
   "/operator-dashboard/research-terminal/commands": { allowed: ["limit"] },
   "/operator-dashboard/research-terminal/paper-account": { allowed: ["account_id"], required: ["account_id"] },
@@ -97,6 +102,7 @@ export function allowedAuthorityTarget(target: string): boolean {
   if (bare && (studyDetailPath.test(parsed.pathname) || studyTrialPath.test(parsed.pathname))) return true;
   if (bare && studyBreakEvenPath.test(parsed.pathname)) return true;
   if (bare && (terminalWalkForwardPath.test(parsed.pathname) || terminalCandidatePath.test(parsed.pathname))) return true;
+  if (bare && terminalPaperEvidencePath.test(parsed.pathname)) return true;
   if (studyTrialsPath.test(parsed.pathname)) {
     return [...parsed.searchParams.keys()].every((key) => studyTrialsKeys.has(key));
   }

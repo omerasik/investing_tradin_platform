@@ -192,7 +192,7 @@ test.describe("Module 2B-1 Professional Market & Data Workspaces", () => {
     await expect(sidebar.getByRole("link", { name: /Strategy Lab/ })).toHaveAttribute("href", "/strategy-lab");
     await expect(page.getByRole("article", { name: "Market Scan", exact: true }).getByRole("link", { name: "Market Chart" })).toHaveAttribute("href", "/chart");
     const steps = ["Command Center", "Market Scan", "Opportunities", "Strategy Lab", "Compare", "Validation",
-      "Risk Preview", "Paper", "Monitoring"];
+      "Candidate readiness", "Paper evidence", "Risk Preview", "Paper", "Monitoring"];
     const nav = page.getByRole("navigation", { name: "Research workflow steps" });
     for (const [index, step] of steps.entries()) {
       await expect(nav.getByRole("link", { name: `${index + 1}. ${step}` })).toBeVisible();
@@ -202,6 +202,32 @@ test.describe("Module 2B-1 Professional Market & Data Workspaces", () => {
     await expect(page.getByRole("article", { name: "Strategy Lab", exact: true })).toContainText("SEARCH_NON_AUTHORITATIVE");
     await expect(page.getByRole("article", { name: "Validation", exact: true })).toContainText("NONE VALIDATED");
     await expect(page.getByRole("article", { name: "Risk Preview", exact: true })).toContainText("OR-11");
+    await expect(page.getByRole("article", { name: "Paper evidence", exact: true })).toContainText("NON_COSTABLE");
+    // Compare: nothing is ranked by default; the operator selects studies, the metric and any sort explicitly.
+    const compare = page.getByRole("article", { name: "Compare", exact: true });
+    await expect(compare.getByRole("form", { name: "Candidate comparison selection" })).toBeVisible();
+    await expect(compare).toContainText("no composite score and no default ranking");
+    await expect(compare.getByLabel("Sort by")).toHaveValue("");
+    await expect(compare.getByRole("region", { name: "Candidate comparison table" })).toHaveCount(0);
+    const studyChoices = compare.getByRole("checkbox");
+    if (await studyChoices.count()) {
+      await studyChoices.first().check();
+      await compare.getByRole("button", { name: "Compare selected studies" }).click();
+      await expect(page).toHaveURL(/compare_study=/);
+      const compared = page.getByRole("article", { name: "Compare", exact: true });
+      // Either the side-by-side table with its stages kept apart, an honest empty set, or the read's own state.
+      await expect(compared.getByText(/Frozen candidates side by side|no frozen candidate recorded|unavailable/i).first()).toBeVisible();
+      const table = compared.getByRole("region", { name: "Candidate comparison table" });
+      if (await table.count()) {
+        await expect(table).toContainText("SEARCH_NON_AUTHORITATIVE");
+        await expect(table).toContainText("Walk-forward development");
+        await expect(table).toContainText("NONE_VALIDATED");
+        await expect(table).toContainText("NON_COSTABLE");
+        await expect(compared).toContainText("Composite score: NONE");
+        // Parity and funding not loaded by this read are NOT_LOADED, never INCOMPLETE.
+        await expect(page.getByRole("region", { name: "Paper evidence" })).toContainText("NOT_LOADED");
+      }
+    }
     // Activation readiness: every next action answered READY/BLOCKED with its owner gate.
     const readiness = page.getByRole("region", { name: "Activation readiness" });
     await expect(readiness).toContainText("Can the holdout open?");
