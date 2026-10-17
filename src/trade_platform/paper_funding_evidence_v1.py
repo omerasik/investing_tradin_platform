@@ -16,7 +16,8 @@ evidence beside it). Each bridge is accepted only if its identity re-derives its
 content hash, its schema and contract are the v1.1 bridge's, its canonical
 symbol is the candidate's, its settlements lie in its window, are ordered and
 unique, are internally consistent (price reference of the declared convention
-at the right bar, knowledge at or before the bridge's own ``as_of``), and the
+at the right bar, knowledge at or before the bridge's own ``as_of``), a
+``COMPLETE`` funding window has closed by that ``as_of``, and the
 bridge's ``as_of`` is at or before the report's (no evidence known after the
 report's reading instant). Two bridges for one candidate may not overlap or mix
 price conventions. Any of these is a refusal, never a downgrade.
@@ -249,6 +250,9 @@ def _accept_bridge(bridge: object, symbol: str) -> Mapping[str, Any]:
         raise PaperFundingEvidenceError("funding_bridge_window_reference_missing")
     if (window.get("status") == FUNDING_WINDOW_COMPLETE) == (identity["status"] == "REFUSED_FUNDING_EVIDENCE"):
         raise PaperFundingEvidenceError("funding_bridge_status_contradicts_its_window")
+    if window.get("status") == FUNDING_WINDOW_COMPLETE and end_ms * 1000 > as_of_micros:
+        # A window is COMPLETE only once it has closed as of the bridge's instant (the source contract).
+        raise PaperFundingEvidenceError("funding_window_complete_before_it_closed_as_of_the_bridge")
     settlements = identity.get("settlements")
     if not isinstance(settlements, Sequence) or isinstance(settlements, str | bytes):
         raise PaperFundingEvidenceError("funding_bridge_settlements_malformed")

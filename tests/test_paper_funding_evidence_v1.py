@@ -251,6 +251,44 @@ class PointInTimeTests(unittest.TestCase):
         with self.assertRaisesRegex(PaperFundingEvidenceError, "knowledge_outside"):
             attach(rehashed(_run(), late))
 
+    def test_a_complete_window_not_yet_closed_at_the_bridge_as_of_is_refused(self) -> None:
+        noon = T0 + 12 * _H * 1000  # the window runs to midnight: it cannot be complete at noon
+
+        def early(identity: dict[str, Any]) -> None:
+            identity["as_of_micros"] = noon
+            identity["settlements"] = identity["settlements"][:2]
+            for item in identity["settlements"]:
+                item["funding_knowledge_at_micros"] = noon
+                item["evidence_knowable_at_micros"] = noon
+        with self.assertRaisesRegex(PaperFundingEvidenceError, "complete_before_it_closed"):
+            attach(rehashed(_run(), early))
+
+    def test_a_settlement_at_exactly_the_report_as_of_is_never_held(self) -> None:
+        # Known exactly at the reading instant (knowledge is an upper bound, so it is available
+        # then), but an open position's end is the reading instant itself: holding is ambiguous.
+        settle_16 = T0 + 16 * _H * 1000
+
+        def at_as_of(identity: dict[str, Any]) -> None:
+            identity["as_of_micros"] = settle_16
+            identity["status"] = bridge.REFUSED_FUNDING_EVIDENCE
+            identity["funding_window"] = {**identity["funding_window"], "status": "INCOMPLETE"}
+            for item in identity["settlements"]:
+                item["funding_knowledge_at_micros"] = settle_16
+                if item["price"] is not None:
+                    item["evidence_knowable_at_micros"] = max(settle_16, item["price"]["knowable_at_micros"])
+            # The last-trade minute ending at 16:00 completes after it: never knowable at as_of.
+            identity["settlements"][2].update(status="PRICE_EVIDENCE_REFUSED", price=None,
+                                              price_refusal="price_not_knowable_at_as_of")
+        as_of = _EPOCH + timedelta(microseconds=settle_16)
+        result = section([fill_at(T0 + 1 * _H * 1000)], attach(rehashed(_run(), at_as_of)), as_of=as_of)
+        self.assertEqual(result["state"], STATE_EVIDENCE_LINKED)
+        self.assertEqual([(r["settled_at_ms"] * 1000, r["relation"]) for r in result["settlement_rates"]],
+                         [(SETTLE_8, HELD_AT_SETTLEMENT), (settle_16, AT_FILL_INSTANT_HOLDING_AMBIGUOUS)])
+        self.assertIn(SETTLEMENT_AT_FILL_INSTANT, result["completeness_blockers"])
+        late = _EPOCH + timedelta(microseconds=settle_16 - 1)
+        with self.assertRaisesRegex(PaperIncubationError, "funding_evidence_known_after_the_report_as_of"):
+            section([fill_at(T0 + 1 * _H * 1000)], attach(rehashed(_run(), at_as_of)), as_of=late)
+
 
 class FailClosedTests(unittest.TestCase):
     def test_a_tampered_bridge_does_not_rederive(self) -> None:
