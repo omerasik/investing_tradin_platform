@@ -114,7 +114,7 @@ segment ran past the hour and saw a later trade.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
@@ -243,9 +243,10 @@ class T4BarClockEvidenceV1:
     clock_bound_evidence: tuple[str, ...]
     contributing_record_count: int
     #: Host-arrival span of the same records (contributing and closing): the
-    #: domain capture coverage and hourly verdicts are judged in.
-    first_arrival_utc_nanos: int
-    last_arrival_utc_nanos: int
+    #: domain capture coverage and hourly verdicts are judged in. Required and
+    #: keyword-only: an arrival span has no honest default.
+    first_arrival_utc_nanos: int = field(kw_only=True)
+    last_arrival_utc_nanos: int = field(kw_only=True)
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -570,45 +571,20 @@ def forward_bars_from_seal_v1(
 
 
 @dataclass(frozen=True, slots=True)
-class T4ArrivalHourV1:
-    """One manifest-proven COMPLETE capture hour, in host-arrival time."""
+class T4HourEvidenceV1:
+    """One manifest-proven COMPLETE capture hour (host-arrival time) holding a bar's records."""
 
     hour_start_utc_nanos: int
-    unproven_nanos: int
-
-    def payload(self) -> dict[str, Any]:
-        return {"hour_start_utc_nanos": self.hour_start_utc_nanos, "unproven_nanos": self.unproven_nanos}
-
-
-@dataclass(frozen=True, slots=True)
-class T4HourEvidenceV1:
-    """The manifest-proven COMPLETE capture hours a referenced bar's records arrived in.
-
-    ``hours`` are every UTC hour of host-arrival time from the bar's first to its
-    last record arrival, in order -- one, or two when the arrivals straddle an
-    hour line -- each COMPLETE and proven by the same session.
-    ``hour_start_utc_nanos`` is the first of them.
-    """
-
-    hours: tuple[T4ArrivalHourV1, ...]
     session_id: UUID
+    unproven_nanos: int
     max_unproven_nanos: int
-    first_arrival_utc_nanos: int
-    last_arrival_utc_nanos: int
-
-    @property
-    def hour_start_utc_nanos(self) -> int:
-        return self.hours[0].hour_start_utc_nanos
 
     def payload(self) -> dict[str, Any]:
         return {
-            "time_domain": "HOST_ARRIVAL_UTC",
             "hour_start_utc_nanos": self.hour_start_utc_nanos,
-            "hours": [hour.payload() for hour in self.hours],
             "session_id": str(self.session_id),
+            "unproven_nanos": self.unproven_nanos,
             "max_unproven_nanos": self.max_unproven_nanos,
-            "first_arrival_utc_nanos": self.first_arrival_utc_nanos,
-            "last_arrival_utc_nanos": self.last_arrival_utc_nanos,
         }
 
 
@@ -626,7 +602,14 @@ class T4PriceReferenceV1:
     session_id: UUID
     segment_clock_evidence_hash: str
     bar: T4ForwardBarV1
-    hour: T4HourEvidenceV1
+    #: Every host-arrival hour from the bar's first to its last record arrival, in
+    #: order: one, or two when the arrivals straddle an hour line.
+    hours: tuple[T4HourEvidenceV1, ...]
+
+    @property
+    def hour(self) -> T4HourEvidenceV1:
+        """The first arrival hour (the only one unless the records straddle an hour line)."""
+        return self.hours[0]
 
     @property
     def instant(self) -> datetime:
@@ -653,6 +636,8 @@ class T4PriceReferenceV1:
             "bar_content_hash": self.bar.bar_content_hash,
             "knowable_at_micros": self.bar.complete_market_knowledge_micros,
             "hour": self.hour.payload(),
+            "hour_time_domain": "HOST_ARRIVAL_UTC",
+            "hours": [hour.payload() for hour in self.hours],
         }
 
     @property
@@ -671,7 +656,7 @@ def _instant_micros(instant: object) -> int:
 
 def _complete_arrival_hours(
     acceptance: HourlyAcceptanceV1, exchange_symbol: str, session_id: UUID, bar: T4ForwardBarV1
-) -> T4HourEvidenceV1:
+) -> tuple[T4HourEvidenceV1, ...]:
     """Every arrival hour holding ``bar``'s records, each COMPLETE for ``session_id``.
 
     Hour verdicts judge capture coverage, which is host-arrival time
@@ -689,7 +674,7 @@ def _complete_arrival_hours(
     if len(symbols) != 1:
         raise T4PriceReferenceRefusalV1("hourly_acceptance_does_not_cover_the_symbol")
     first = acceptance.first_hour_start_utc_nanos
-    hours: list[T4ArrivalHourV1] = []
+    hours: list[T4HourEvidenceV1] = []
     hour_start = first_arrival // HOUR_NANOS * HOUR_NANOS
     while hour_start <= last_arrival:
         if first is None or not first <= hour_start < first + acceptance.hours_judged * HOUR_NANOS:
@@ -706,15 +691,11 @@ def _complete_arrival_hours(
             raise T4PriceReferenceRefusalV1("hourly_acceptance_malformed")
         if segment.session_id != session_id:
             raise T4PriceReferenceRefusalV1("hour_proven_by_another_capture_session")
-        hours.append(T4ArrivalHourV1(hour_start, segment.unproven_nanos))
+        hours.append(
+            T4HourEvidenceV1(hour_start, segment.session_id, segment.unproven_nanos, acceptance.max_unproven_nanos)
+        )
         hour_start += HOUR_NANOS
-    return T4HourEvidenceV1(
-        hours=tuple(hours),
-        session_id=session_id,
-        max_unproven_nanos=acceptance.max_unproven_nanos,
-        first_arrival_utc_nanos=first_arrival,
-        last_arrival_utc_nanos=last_arrival,
-    )
+    return tuple(hours)
 
 
 def resolve_t4_price_reference_v1(
@@ -750,7 +731,7 @@ def resolve_t4_price_reference_v1(
     if len({item.dataset_version_id for item, _ in found}) != 1:
         raise T4PriceReferenceRefusalV1("minute_proven_by_more_than_one_dataset")
     dataset, bar = found[0]
-    hour = _complete_arrival_hours(acceptance, dataset.exchange_symbol, dataset.session_id, bar)
+    hours = _complete_arrival_hours(acceptance, dataset.exchange_symbol, dataset.session_id, bar)
     if convention is T4PriceConventionV1.FIRST_TRADE_OF_MINUTE_STARTING_AT_INSTANT:
         if bar.open_is_sequence_ambiguous:
             raise T4PriceReferenceRefusalV1("open_price_is_sequence_ambiguous")
@@ -772,14 +753,13 @@ def resolve_t4_price_reference_v1(
         session_id=dataset.session_id,
         segment_clock_evidence_hash=dataset.segment_clock_evidence_hash,
         bar=bar,
-        hour=hour,
+        hours=hours,
     )
 
 
 __all__ = [
     "PRICE_QUANTUM_V1",
     "T4_FORWARD_BARS_SEMANTIC_VERSION_V1",
-    "T4ArrivalHourV1",
     "T4BarClockEvidenceV1",
     "T4ForwardBarError",
     "T4ForwardBarV1",

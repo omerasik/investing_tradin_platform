@@ -409,13 +409,15 @@ class ClockDomainTests(_ForwardFixture):
         )
         reference = self.resolve(dataset, datetime(2026, 9, 20, 1, 0, tzinfo=UTC), OPEN, acceptance=acceptance)
         self.assertEqual(
-            [hour.hour_start_utc_nanos for hour in reference.hour.hours], [HOUR, NEXT_HOUR]
+            [hour.hour_start_utc_nanos for hour in reference.hours], [HOUR, NEXT_HOUR]
         )
         self.assertEqual(reference.hour.hour_start_utc_nanos, HOUR)
         clock = reference.bar.clock
         self.assertLess(clock.first_arrival_utc_nanos, NEXT_HOUR)
         self.assertGreaterEqual(clock.last_arrival_utc_nanos, NEXT_HOUR)
-        self.assertEqual(reference.hour.first_arrival_utc_nanos, clock.first_arrival_utc_nanos)
+        self.assertEqual(
+            reference.payload()["hours"], [hour.payload() for hour in reference.hours]
+        )
         # Knowledge never precedes the bounded arrival of the evidence it rests on.
         self.assertGreaterEqual(
             reference.bar.complete_market_knowledge_micros * 1_000,
@@ -428,7 +430,7 @@ class ClockDomainTests(_ForwardFixture):
         # included -- all arrived before 01:00Z host time; 01:00Z is not judged yet.
         acceptance = _two_hours((HourVerdictV1.COMPLETE, self.session_id), None)
         reference = self.resolve(dataset, datetime(2026, 9, 20, 1, 0, tzinfo=UTC), CLOSE, acceptance=acceptance)
-        self.assertEqual([hour.hour_start_utc_nanos for hour in reference.hour.hours], [HOUR])
+        self.assertEqual([hour.hour_start_utc_nanos for hour in reference.hours], [HOUR])
         # The bar after the hour cannot be judged against a single hour.
         with self.assertRaises(T4PriceReferenceRefusalV1) as caught:
             self.resolve(dataset, datetime(2026, 9, 20, 1, 0, tzinfo=UTC), OPEN, acceptance=acceptance)
