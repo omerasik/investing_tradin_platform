@@ -251,6 +251,41 @@ class FillParityTests(unittest.TestCase):
         self.assertEqual(ASSESSMENT_INCOMPLETE, report.status)
         self.assertEqual(("REPLAY_BAR_NOT_SEALED", "REPLAY_FILL_BAR_NOT_SEALED"), report.reasons)
 
+    # -- coverage edges ----------------------------------------------------------------------------
+
+    def test_a_seal_starting_after_the_live_window_is_incomplete_never_a_divergence(self) -> None:
+        signals, fills = self._live(self.bars)
+        report = self._assess(self.bars, self.bars[10:], signals, fills)  # sealed from minute 10 on
+        self.assertEqual((ASSESSMENT_INCOMPLETE, ("NO_MATCHED_FILLED_OBSERVATION", "REPLAY_BAR_NOT_SEALED",
+                                                  "REPLAY_WINDOW_NOT_SEALED")), (report.status, report.reasons))
+        self.assertNotIn(OUTCOME_DIVERGED, {o.outcome for o in report.observations})
+        coverage = self._signal_obs(report, 34).identity["facts"]["coverage"]
+        self.assertEqual((DAY0_MICROS, DAY0_MICROS + 10 * MINUTE), (coverage["live_inputs_first_bar_open_micros"],
+                                                                    coverage["first_sealed_bar_open_micros"]))
+
+    def test_decisions_after_a_segment_break_inside_the_seal_are_compared_again(self) -> None:
+        # Both sides restart their window at minute 40; the seal begins at minute 10.
+        broken = [dataclasses.replace(bar, segment=1) if bar.bar.bar_open_micros >= DAY0_MICROS + 40 * MINUTE
+                  else bar for bar in self.bars]
+        signals, fills = self._live(broken)
+        report = self._assess(broken, broken[10:], signals, fills)
+        self.assertEqual(ASSESSMENT_INCOMPLETE, report.status)
+        self.assertEqual(OUTCOME_UNAVAILABLE, self._signal_obs(report, 34).outcome)
+        self.assertEqual({OUTCOME_MATCH}, {self._signal_obs(report, m).outcome for m in (73, 83)})
+        # A genuine divergence on the comparable side still fails.
+        moved = _edit(broken, 75, open_price=broken[75].bar.open_price + Decimal("1e-8"))  # fill bar of 73
+        report = self._assess(broken, moved[10:], signals, fills)
+        self.assertEqual(ASSESSMENT_FAIL, report.status)
+        self.assertEqual(("BAR_DIVERGED", "PRICE_DIVERGED"), report.reasons)
+
+    def test_a_live_window_starting_inside_the_seal_compares_like_for_like(self) -> None:
+        late = self.bars[10:]  # the live feed (and its runner's history) began at minute 10
+        signals, fills = self._live(late, [(len(self.bars), DAY0)])
+        report = self._assess(late, self.bars, signals, fills)
+        self.assertEqual((ASSESSMENT_PASS, ()), (report.status, report.reasons))
+        window = self._signal_obs(report, 56).identity["facts"]["dimensions"]["signal"]
+        self.assertEqual(DAY0_MICROS + 10 * MINUTE, window["replay"]["evidence"]["window_first_bar_open_micros"])
+
     # -- FAIL: price and sequence ----------------------------------------------------------------
 
     def test_a_different_live_fill_price_fails_exactly(self) -> None:

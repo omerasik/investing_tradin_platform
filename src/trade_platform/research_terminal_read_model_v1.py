@@ -23,7 +23,15 @@ Every view states its claim and never lifts it:
   -> exit criteria), restates the readiness and exit-readiness modules' blockers,
   keeps ``DRAFT`` exit criteria distinct from ``AUTHORIZED`` ones, and lists the
   evidence it does not derive (runner liveness, live/replay parity, an account
-  policy not bound by authorized exit criteria) in ``evidence_not_loaded``.
+  policy not bound by authorized exit criteria) in ``evidence_not_loaded``;
+* a comparison restates :mod:`trade_platform.research_candidate_comparison_v1`
+  verbatim (no composite score, no default ranking, holdout ``NOT_READ``) with
+  the search / Decimal rerun / walk-forward / validation stages kept apart
+  (:data:`EVIDENCE_STAGES_V1`);
+* per-candidate paper evidence restates the live/replay fill parity status and
+  the forward funding section verbatim; evidence this read does not load is
+  ``NOT_LOADED`` (never ``INCOMPLETE``, which is a loaded assessment's own
+  verdict), and funding is always ``NON_COSTABLE``.
 
 Open owner gates are listed as gates (``OPEN``), never as defaults.
 """
@@ -35,7 +43,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from .paper_incubation_report_v1 import incubation_report_v1
 from .strategy_lab_study_v1 import UNTOUCHED_HOLDOUT_BOUNDARY_V1, identity_hash_v1
@@ -634,6 +642,246 @@ def read_candidate_lifecycles_v1(cursor: _Cursor, *, limit: int,
     return [_candidate_lifecycle(cursor, context, study_id, trial_id) for study_id, trial_id in pairs]
 
 
+# --- Compare and per-candidate paper evidence -------------------------------------------------
+
+#: The evidence stages a comparison keeps apart, in workflow order. None of them is a validation.
+EVIDENCE_STAGES_V1: list[dict[str, str]] = [
+    {"stage": "SEARCH", "label": "Search tier", "claim": "SEARCH_NON_AUTHORITATIVE",
+     "meaning": "float64 in-sample search over every planned trial; ranks only, never a decision"},
+    {"stage": "DECIMAL_RERUN", "label": "Decimal rerun", "claim": "DECIMAL_SELECTION_ESTABLISHED",
+     "meaning": "the frozen set recomputed in Decimal reproduces the selection; economics stay gross and T2-conditional"},
+    {"stage": "WALK_FORWARD", "label": "Walk-forward development", "claim": "WALK_FORWARD_DEVELOPMENT",
+     "meaning": "purged out-of-sample folds before the holdout; development evidence, never validation"},
+    {"stage": "VALIDATION", "label": "Holdout validation", "claim": "NONE_VALIDATED",
+     "meaning": "the one-shot preregistered holdout (OR-7): INCUBATING or REJECTED at most; "
+                "PROFESSIONALLY_VALIDATED is reserved and never produced here"},
+]
+
+#: No evidence was loaded by this read (distinct from a loaded assessment that is ``INCOMPLETE``).
+NOT_LOADED = "NOT_LOADED"
+PARITY_REPORT_NOT_PERSISTED = "NO_PERSISTED_PARITY_REPORT_REPLAY_NOT_RECONSTRUCTED_BY_THIS_READ"
+FUNDING_BRIDGES_NOT_LOADED = "FORWARD_FUNDING_BRIDGES_NOT_PERSISTED_NOT_LOADED_BY_THIS_READ"
+NO_PAPER_FILL_IN_CYCLE = "CANDIDATE_HAS_NO_PAPER_FILL_IN_THE_CURRENT_CYCLE"
+INCUBATION_REPORT_REFUSED_PREFIX = "INCUBATION_REPORT_REFUSED:"
+
+
+class ParityEvidenceView(BaseModel):
+    """Live/replay paper-fill parity for one candidate: the report's own status verbatim, or ``NOT_LOADED``."""
+
+    status: str
+    loaded: bool
+    reasons: list[str]
+    report_hash: str | None
+    summary: dict[str, Any]
+    live_side: dict[str, Any]
+    claim: Literal["READ_ONLY_PARITY_EVIDENCE_NOT_A_PROMOTION_DECISION"] = (
+        "READ_ONLY_PARITY_EVIDENCE_NOT_A_PROMOTION_DECISION")
+
+    @model_validator(mode="after")
+    def loaded_is_never_conflated(self) -> ParityEvidenceView:
+        if self.loaded == (self.status == NOT_LOADED) or (not self.loaded and self.report_hash is not None):
+            raise ValueError("parity_not_loaded_must_be_stated_as_not_loaded")
+        return self
+
+
+class FundingEvidenceView(BaseModel):
+    """Forward funding evidence for one candidate: the section's state verbatim, or ``NOT_LOADED``. Never a cost."""
+
+    status: str
+    loaded: bool
+    costable: Literal[False] = False
+    cost_status: Literal["NON_COSTABLE"] = "NON_COSTABLE"
+    charge: Literal["NOT_CALCULATED"] = "NOT_CALCULATED"
+    reasons: list[str]
+    completeness_blockers: list[str]
+    economic_blockers: list[str]
+    evidence_hash: str | None
+    section: dict[str, Any] | None
+
+    @model_validator(mode="after")
+    def loaded_is_never_conflated(self) -> FundingEvidenceView:
+        if self.loaded == (self.status == NOT_LOADED):
+            raise ValueError("funding_not_loaded_must_be_stated_as_not_loaded")
+        return self
+
+
+class CandidatePaperEvidenceView(BaseModel):
+    """One candidate's paper evidence: incubation facts, live/replay parity and forward funding. Never a decision."""
+
+    study_id: UUID
+    study_content_hash: str
+    trial_id: UUID
+    trial_content_hash: str
+    cycle_id: str
+    symbol: str | None
+    incubation: dict[str, Any] | None
+    parity: ParityEvidenceView
+    funding: FundingEvidenceView
+    claim: Literal["PAPER_EVIDENCE_NOT_A_PROMOTION_DECISION"] = "PAPER_EVIDENCE_NOT_A_PROMOTION_DECISION"
+    execution_authority: Literal["NONE"] = "NONE"
+    validated_claim: Literal["NONE_VALIDATED"] = "NONE_VALIDATED"
+    as_of: datetime
+
+
+class ComparisonView(BaseModel):
+    """The research candidate comparison verbatim, with the stage legend, cycle state and paper evidence per row."""
+
+    claim: Literal["RESEARCH_COMPARISON_NON_AUTHORITATIVE"]
+    composite_score: Literal["NONE"]
+    holdout: Literal["NOT_READ"]
+    validated_claim: Literal["NONE_VALIDATED"] = "NONE_VALIDATED"
+    evidence_stages: list[dict[str, str]]
+    cycle: CycleView
+    comparison: dict[str, Any]
+    paper_evidence: list[CandidatePaperEvidenceView]
+    as_of: datetime
+
+
+def parity_evidence_view_v1(report: Any, *, trial_id: str, live_side: dict[str, Any],
+                            not_loaded_reasons: list[str] | None = None) -> ParityEvidenceView:
+    """A :class:`~trade_platform.paper_fill_parity_v1.FillParityReportV1` (or ``None``) as a terminal view.
+
+    The status is the report's own assessment, rendered generically (whatever value
+    the parity module produces); a report that does not re-derive its hash or does
+    not name the candidate is refused. ``None`` is ``NOT_LOADED``, never ``INCOMPLETE``.
+    """
+    if report is None:
+        return ParityEvidenceView(status=NOT_LOADED, loaded=False,
+                                  reasons=sorted(set(not_loaded_reasons or [PARITY_REPORT_NOT_PERSISTED])),
+                                  report_hash=None, summary={}, live_side=live_side)
+    identity = dict(report.identity)
+    if identity_hash_v1(identity) != str(report.content_hash):
+        raise ValueError("stored_parity_report_does_not_rederive")
+    if trial_id not in [str(item.get("trial_id")) for item in identity.get("inputs", {}).get("candidates", [])]:
+        raise ValueError("parity_report_is_not_of_this_candidate")
+    assessment = identity["assessment"]
+    return ParityEvidenceView(status=str(assessment["status"]), loaded=True,
+                              reasons=[str(reason) for reason in assessment["reasons"]],
+                              report_hash=str(report.content_hash), summary=dict(identity.get("summary", {})),
+                              live_side=live_side)
+
+
+def funding_evidence_view_v1(section: dict[str, Any] | None, *, bridges_loaded: bool,
+                             not_loaded_reasons: list[str]) -> FundingEvidenceView:
+    """A candidate's ``funding_evidence`` report section as a terminal view; always ``NON_COSTABLE``.
+
+    The section must re-derive its ``evidence_hash`` and must not claim to be costable
+    (v1 never is; a claim otherwise is refused, not shown). Without loaded bridges the
+    status is ``NOT_LOADED`` and the section is kept beside it for its blockers.
+    """
+    if section is not None:
+        body = {key: value for key, value in section.items() if key != "evidence_hash"}
+        if identity_hash_v1(body) != section.get("evidence_hash"):
+            raise ValueError("funding_evidence_section_does_not_rederive")
+        if section.get("costable") is not False:
+            raise ValueError("funding_evidence_section_claims_to_be_costable")
+    loaded = section is not None and bridges_loaded
+    return FundingEvidenceView(
+        status=str(section["state"]) if loaded and section is not None else NOT_LOADED, loaded=loaded,
+        reasons=[] if loaded else sorted(set(not_loaded_reasons)),
+        completeness_blockers=[] if section is None else [str(item) for item in section["completeness_blockers"]],
+        economic_blockers=[] if section is None else [str(item) for item in section["economic_blockers"]],
+        evidence_hash=None if section is None else str(section["evidence_hash"]), section=section)
+
+
+class _PaperContext:
+    """The cycle's incubation report, built once per request from the stored fills (no caller input)."""
+
+    def __init__(self, cursor: _Cursor, as_of: datetime) -> None:
+        from .paper_incubation_report_v1 import PaperIncubationError
+
+        self.cycle = _CycleContext(cursor, as_of)
+        self.report: dict[str, Any] | None = None
+        self.refusal: str | None = None
+        try:
+            self.report = incubation_report_v1(self.cycle.fills, self.cycle.cost, as_of=as_of,
+                                               resolution=self.cycle.resolution)
+        except PaperIncubationError as error:
+            self.refusal = f"{INCUBATION_REPORT_REFUSED_PREFIX}{error}"
+
+
+def _candidate_paper_evidence(cursor: _Cursor, context: _PaperContext, study_id: UUID,
+                              trial_id: UUID) -> CandidatePaperEvidenceView:
+    cursor.execute("SELECT content_hash, identity FROM strategy_lab_studies WHERE study_id=%s", (study_id,))
+    study = cursor.fetchone()
+    if study is None:
+        raise TerminalObjectNotFound("strategy_lab_study_not_found")
+    if identity_hash_v1(_json(study[1])) != str(study[0]).strip():
+        raise ValueError("stored_study_identity_does_not_rederive")
+    cursor.execute("SELECT content_hash FROM strategy_lab_trials WHERE study_id=%s AND trial_id=%s",
+                   (study_id, trial_id))
+    trial = cursor.fetchone()
+    if trial is None:
+        raise TerminalObjectNotFound("strategy_lab_trial_not_found_in_study")
+    cursor.execute("SELECT count(*) FROM live_strategy_signals WHERE study_id=%s AND trial_id=%s",
+                   (study_id, trial_id))
+    signals = int((cursor.fetchone() or (0,))[0])
+    study_text, trial_text = str(study_id), str(trial_id)
+    fills = [item for item in context.cycle.fills
+             if (str(item.get("study_id")), str(item.get("trial_id"))) == (study_text, trial_text)]
+    statuses: dict[str, int] = {}
+    for item in fills:
+        statuses[str(item.get("status"))] = statuses.get(str(item.get("status")), 0) + 1
+    live_side = {"live_signals_recorded": signals, "paper_fills_in_cycle": len(fills), "fills_by_status": statuses}
+    entry = next((item for item in (context.report or {}).get("candidates", [])
+                  if (str(item["study_id"]), str(item["trial_id"])) == (study_text, trial_text)), None)
+    funding_reasons = [FUNDING_BRIDGES_NOT_LOADED]
+    if context.refusal is not None:
+        funding_reasons.append(context.refusal)
+    elif entry is None:
+        funding_reasons.append(NO_PAPER_FILL_IN_CYCLE)
+    incubation = None if entry is None else {
+        key: entry[key] for key in ("fills", "fills_by_status", "chain_breaks", "fills_skipped_unknown_position",
+                                    "chain_inconsistencies", "open_position", "gross_return_sum", "closed_sides",
+                                    "elapsed_days", "required_days", "funding", "cost_complete", "net", "state")
+        if key in entry}
+    return CandidatePaperEvidenceView(
+        study_id=study_id, study_content_hash=str(study[0]).strip(), trial_id=trial_id,
+        trial_content_hash=str(trial[0]).strip(), cycle_id=context.cycle.cycle_id,
+        symbol=None if entry is None else str(entry["symbol"]), incubation=incubation,
+        # No parity report is persisted and the replay is not reconstructed from sealed T4 by a read.
+        parity=parity_evidence_view_v1(None, trial_id=trial_text, live_side=live_side),
+        funding=funding_evidence_view_v1(None if entry is None else entry.get("funding_evidence"),
+                                         bridges_loaded=False, not_loaded_reasons=funding_reasons),
+        as_of=context.cycle.as_of)
+
+
+def read_candidate_paper_evidence_v1(cursor: _Cursor, study_id: UUID, trial_id: UUID, *,
+                                     now: datetime | None = None) -> CandidatePaperEvidenceView:
+    """One candidate's paper evidence in the current cycle, resolved from stored rows only (read-only)."""
+    return _candidate_paper_evidence(cursor, _PaperContext(cursor, now or datetime.now(UTC)), study_id, trial_id)
+
+
+def read_terminal_comparison_v1(cursor: _Cursor, *, study_ids: list[UUID], sort: Any,
+                                now: datetime | None = None) -> ComparisonView:
+    """The recorded comparison of the selected studies' frozen sets plus each row's paper evidence.
+
+    Identities are resolved server-side: each study's latest recorded frozen set,
+    its reruns and walk-forward reports, every one re-derived by
+    :mod:`trade_platform.research_candidate_comparison_v1`. ``sort`` is ``None`` or
+    an explicit operator choice; no default ranking exists. The holdout is not read.
+    """
+    from .research_candidate_comparison_v1 import (
+        CandidateComparisonNotFound,
+        StudySelectionV1,
+        read_candidate_comparison_v1,
+    )
+
+    try:
+        result = read_candidate_comparison_v1(cursor, studies=[StudySelectionV1(study) for study in study_ids],
+                                              sort=sort)
+    except CandidateComparisonNotFound as error:
+        raise TerminalObjectNotFound(str(error)) from error
+    payload = result.payload()
+    as_of = now or datetime.now(UTC)
+    context = _PaperContext(cursor, as_of)
+    paper = [_candidate_paper_evidence(cursor, context, UUID(row["identity"]["study_id"]),
+                                       UUID(row["identity"]["trial_id"])) for row in payload["rows"]]
+    return ComparisonView(claim=payload["claim"], composite_score=payload["composite_score"],
+                          holdout=payload["holdout"], evidence_stages=[dict(item) for item in EVIDENCE_STAGES_V1],
+                          cycle=read_cycle_v1(cursor), comparison=payload, paper_evidence=paper, as_of=as_of)
+
+
 def _counts(cursor: _Cursor, query: str) -> dict[str, int]:
     cursor.execute(query)
     return {str(key): int(count) for key, count in cursor.fetchall()}
@@ -682,21 +930,31 @@ def read_terminal_overview_v1(cursor: _Cursor, *, now: datetime | None = None) -
 
 __all__ = [
     "AUTHORITY_LEGEND_V1",
+    "EVIDENCE_STAGES_V1",
+    "NOT_LOADED",
     "AccountView",
+    "CandidatePaperEvidenceView",
     "CandidateStateView",
+    "ComparisonView",
     "CycleView",
+    "FundingEvidenceView",
     "IncubationView",
     "LiveSignalView",
+    "ParityEvidenceView",
     "RerunView",
     "TerminalOverview",
     "ValidationView",
     "WalkForwardFoldView",
     "WalkForwardView",
+    "funding_evidence_view_v1",
+    "parity_evidence_view_v1",
     "read_accounts_v1",
+    "read_candidate_paper_evidence_v1",
     "read_cycle_v1",
     "read_incubation_v1",
     "read_live_signals_v1",
     "read_reruns_v1",
+    "read_terminal_comparison_v1",
     "read_terminal_overview_v1",
     "read_validation_v1",
     "read_walk_forward_v1",
