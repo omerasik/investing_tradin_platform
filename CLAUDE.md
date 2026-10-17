@@ -106,6 +106,11 @@ change. A shared database makes some tests assert global invariants — new fixt
 must use past timestamps, persist no `REJECTED` rows, and not duplicate
 feature-definition names.
 
+CI runs the suite as parallel `core`/`heavy` shards, each on its own database
+(`scripts/ci_test_shard.py`); the required `verify` job fails unless the shards ran
+every discovered test exactly once with no unexpected skip. A new runtime-dominant
+test module belongs in its `HEAVY_MODULES`.
+
 **Leave to CI** (`.github/workflows/verify.yml`) — do not run these in the
 implementation loop: Docker build and hardened-container checks, Trivy scan and
 SBOM, image attestations, `pip-audit`, `pg_dump`/`pg_restore` reconciliation
