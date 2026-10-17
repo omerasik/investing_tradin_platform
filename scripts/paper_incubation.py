@@ -43,6 +43,10 @@ from trade_platform.paper_incubation_v1 import (
     incubation_report_v1,
 )
 from trade_platform.persistence import PostgresDatabase
+from trade_platform.runner_liveness_v1 import (
+    PostgresRunnerLivenessStoreV1,
+    RunnerProgressRecorderV1,
+)
 
 
 def main() -> None:
@@ -90,15 +94,23 @@ def main() -> None:
         raise SystemExit("no_incubating_candidates")
     gate = LiveHoldoutGateV1.for_cycle(CURRENT_CYCLE_V1, registry.opening(CURRENT_CYCLE_V1.cycle_id))
     root = args.capture_root or default_archive_root().parent / "capture-universe-r1b"
-    feed = LiveBarFeedV1(root, first_party_bybit_universe_contract_v1(args.symbol))
+    contract = first_party_bybit_universe_contract_v1(args.symbol)
+    feed = LiveBarFeedV1(root, contract)
     runner = LiveStrategyRunnerV1(candidates, holdout_gate=gate)
     signals = PostgresLiveSignalStoreV1(database)
     engine = PaperIncubationEngineV1(cost_policy)
     engine.add(fills.pending_signals(args.symbol))
+    # Liveness evidence (runner_liveness_v1): a fresh runner session per process.
+    progress = RunnerProgressRecorderV1(PostgresRunnerLivenessStoreV1(database), runner="paper_incubation",
+                                        symbol=args.symbol, capture_source_id=contract.source_id,
+                                        candidates=candidates, holdout_gate=gate)
+    progress.start()
     print(json.dumps({"incubating": [c.trial_id for c in candidates], "holdout": gate.payload(),
-                      "pending_fills": engine.pending, "capture_root": str(root)}), flush=True)
+                      "pending_fills": engine.pending, "capture_root": str(root),
+                      "runner_session_id": str(progress.runner_session_id)}), flush=True)
     while True:
-        for bar in feed.poll():
+        bars = feed.poll()
+        for bar in bars:
             for fill in engine.on_bars([bar]):  # earlier decisions fill before this bar's own signals
                 fills.record(fill)
                 print(json.dumps({"fill": fill.identity["signal_id"], "status": fill.status,
@@ -108,6 +120,7 @@ def main() -> None:
                 signals.record(signal)
             if new:  # fill from the stored signals: their decision instant is the recorded one
                 engine.add(fills.pending_signals(args.symbol))
+        progress.on_poll(bars, feed=feed)  # after the poll's signals and fills are stored
         time.sleep(args.poll_seconds)
 
 
