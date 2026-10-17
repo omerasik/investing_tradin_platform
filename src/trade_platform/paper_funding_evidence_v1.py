@@ -118,7 +118,10 @@ MISSING_VERIFIED_FEE_SCHEDULE: Final = "MISSING_VERIFIED_FEE_SCHEDULE_OR_6"
 # Mirrors of :mod:`trade_platform.forward_funding_price_bridge_v1` and its inputs (not imported:
 # that module pulls the numerical stack). A test pins every one equal.
 BRIDGE_SCHEMA_VERSION_V1: Final = "forward-funding-price-bridge-v1.1"
-BRIDGE_CONTRACT_HASH_V1: Final = "c0388508d52e71f58ce431235f6c90e0b783a8be9264e40c2aa3c55a9827bdf4"
+#: The bridge contract's public identity hash (not a credential; pinned equal to the source by a test).
+BRIDGE_CONTRACT_HASH_V1: Final = (
+    "c0388508d52e71f58ce431235f6c90e0b783a8be9264e40c2aa3c55a9827bdf4"  # pragma: allowlist secret
+)
 FUNDING_WINDOW_COMPLETE: Final = "COMPLETE"
 SETTLEMENT_EVIDENCE_BOUND: Final = "EVIDENCE_BOUND_TRADE_PROXY_UNAPPROVED"
 SETTLEMENT_PRICE_EVIDENCE_REFUSED: Final = "PRICE_EVIDENCE_REFUSED"
