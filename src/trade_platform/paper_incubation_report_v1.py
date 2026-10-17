@@ -76,7 +76,10 @@ still ``INCUBATING``. Exit needs, at least:
    closed round trips, tolerated chain breaks and unfilled signals) and a
    forward-failure terminal state -- both undecided;
 3. a verified OR-6 fee schedule (net, not gross) and forward funding modelled,
-   so the evidence is cost-complete;
+   so the evidence is cost-complete (each candidate's ``funding_evidence``
+   section, :mod:`trade_platform.paper_funding_evidence_v1`, binds forward
+   funding evidence to its holding intervals but is never a cost: at best
+   ``EVIDENCE_COMPLETE``, ``ECONOMICALLY_COSTABLE`` is reserved);
 4. OR-11 sizing and capital;
 5. persisted runner liveness evidence (supplied as above), without which quiet
    periods never count toward the window, and an owner tolerance for the time
@@ -94,6 +97,16 @@ from decimal import ROUND_DOWN, Decimal
 from typing import Any, Final
 
 from .first_party_capture_hourly_acceptance_v1 import HourlyAcceptanceV1
+from .paper_funding_evidence_v1 import (
+    FUNDING_EVIDENCE_STATES_V1,
+    HOLDING_CHAIN_BROKEN,
+    HOLDING_CLOSED_BY_FILL,
+    HOLDING_OPEN_AT_AS_OF,
+    PAPER_FUNDING_EVIDENCE_SCHEMA_VERSION_V1,
+    CandidateFundingEvidenceV1,
+    PaperFundingEvidenceError,
+    funding_evidence_section_v1,
+)
 from .runner_liveness_v1 import (
     STATUS_PROVEN,
     STATUS_UNPROVEN,
@@ -525,7 +538,8 @@ def _incubation(items: Sequence[Mapping[str, Any]], binding: IncubationBindingV1
 def incubation_report_v1(fills: Sequence[Mapping[str, Any]], cost_policy: CostPolicyV1, *,
                          as_of: datetime, bindings: Sequence[IncubationBindingV1] = (),
                          resolution: IncubationResolutionV1 | None = None,
-                         liveness: Sequence[RunnerLivenessV1] = ()) -> dict[str, Any]:
+                         liveness: Sequence[RunnerLivenessV1] = (),
+                         funding: Sequence[CandidateFundingEvidenceV1] = ()) -> dict[str, Any]:
     """Per candidate and symbol: unit-exposure round trips on the fills' own evidence.
 
     ``fills`` are fill identities. ``resolution`` is the cycle's registry-resolved
@@ -536,7 +550,11 @@ def incubation_report_v1(fills: Sequence[Mapping[str, Any]], cost_policy: CostPo
     cycle-level reasons, else :data:`UNRESOLVED_NO_BINDING`). ``liveness`` holds
     at most one issued runner liveness per bound candidate (see the module
     docstring); a bound candidate with liveness is reported even without fills.
-    ``as_of`` is a reading instant only. Never promotes.
+    ``as_of`` is a reading instant only. Never promotes. ``funding`` holds at most
+    one :class:`~trade_platform.paper_funding_evidence_v1.CandidateFundingEvidenceV1`
+    per reported candidate; each candidate's ``funding_evidence`` section lists it
+    against the candidate's holding intervals and never changes a return or cost
+    (``funding`` stays ``NOT_MODELLED``).
     """
     policy_hash = cost_policy.policy().content_hash
     as_of_micros = _micros(as_of)
@@ -574,14 +592,28 @@ def incubation_report_v1(fills: Sequence[Mapping[str, Any]], cost_policy: CostPo
             raise PaperIncubationError("one_fill_per_signal")
         seen.add(str(fill["signal_id"]))
         groups.setdefault((str(fill["study_id"]), str(fill["trial_id"]), str(fill["symbol"])), []).append(fill)
+    evidence: dict[tuple[str, str], CandidateFundingEvidenceV1] = {}
+    for entry in funding:
+        if not isinstance(entry, CandidateFundingEvidenceV1):
+            raise PaperIncubationError("funding_evidence_is_issued_only_by_candidate_funding_evidence_v1")
+        if entry.key in evidence:
+            raise PaperIncubationError("funding_evidence_one_per_candidate")
+        evidence[entry.key] = entry
+    reported = {(study_id, trial_id) for study_id, trial_id, _ in groups}
+    if set(evidence) - reported:
+        raise PaperIncubationError("funding_evidence_for_a_candidate_not_in_the_report")
     candidates = []
     for (study_id, trial_id, symbol), items in sorted(groups.items()):
         items = sorted(items, key=lambda item: (int(item["decided_at_micros"]), str(item["signal_id"])))
         bound = by_candidate.get((study_id, trial_id))
         if bound is not None and bound.symbol != symbol:
             raise PaperIncubationError("fill_symbol_is_not_the_preregistered_symbol")
-        candidates.append(_candidate_report(study_id, trial_id, symbol, items, cost_policy, as_of_micros, bound,
-                                            unbound, proofs.get((study_id, trial_id))))
+        try:
+            candidates.append(_candidate_report(study_id, trial_id, symbol, items, cost_policy, as_of_micros, bound,
+                                                unbound, proofs.get((study_id, trial_id)),
+                                                evidence.get((study_id, trial_id))))
+        except PaperFundingEvidenceError as error:
+            raise PaperIncubationError(str(error)) from error
     return {
         "schema_version": "paper-incubation-report-v1",
         "as_of": as_of.astimezone(UTC).isoformat(),
@@ -590,6 +622,9 @@ def incubation_report_v1(fills: Sequence[Mapping[str, Any]], cost_policy: CostPo
         "cost_mode": cost_policy.mode,
         "cost_policy_hash": policy_hash,
         "funding": "NOT_MODELLED",
+        "funding_evidence": {"schema_version": PAPER_FUNDING_EVIDENCE_SCHEMA_VERSION_V1,
+                             "states": list(FUNDING_EVIDENCE_STATES_V1), "costable": False,
+                             "charge": "NOT_CALCULATED", "changes_returns": False},
         "cost_complete": False,
         "candidates": candidates,
         "state": STATE_INCUBATING,
@@ -601,7 +636,8 @@ def incubation_report_v1(fills: Sequence[Mapping[str, Any]], cost_policy: CostPo
 def _candidate_report(study_id: str, trial_id: str, symbol: str, items: Sequence[Mapping[str, Any]],
                       cost_policy: CostPolicyV1, as_of_micros: int,
                       binding: IncubationBindingV1 | None, unbound: Sequence[str],
-                      liveness: RunnerLivenessV1 | None = None) -> dict[str, Any]:
+                      liveness: RunnerLivenessV1 | None = None,
+                      funding: CandidateFundingEvidenceV1 | None = None) -> dict[str, Any]:
     incubation = _incubation(items, binding, as_of_micros, unbound, liveness)
     # The paper ledger starts flat. The chain of known positions holds only while every
     # fill's signal names the previous one (one runner, no restart in between) and every
@@ -611,11 +647,20 @@ def _candidate_report(study_id: str, trial_id: str, symbol: str, items: Sequence
     last_signal: str | None = None
     breaks = skipped = inconsistent = 0
     round_trips: list[dict[str, Any]] = []
+    # Holding intervals for the funding evidence section only; they change no figure.
+    holdings: list[dict[str, Any]] = []
+
+    def broken_off(until: int) -> None:
+        if position != 0:
+            holdings.append({"direction": position, "start_micros": entry_micros,
+                             "end_micros": max(entry_micros, until), "end_kind": HOLDING_CHAIN_BROKEN})
+
     for item in items:
         linked = item.get("previous_signal_id") is not None and item["previous_signal_id"] == last_signal
         last_signal = str(item["signal_id"])
         if chain_intact and (not linked or item["status"] != FILL_STATUS_FILLED):
             breaks += 1
+            broken_off(int(item["decided_at_micros"]))
             chain_intact, position = False, 0
         if item["status"] != FILL_STATUS_FILLED:
             continue
@@ -627,6 +672,7 @@ def _candidate_report(study_id: str, trial_id: str, symbol: str, items: Sequence
         if int(item["target_from"]) != position:
             # Impossible on a linked chain of one runner; counted, never booked.
             inconsistent += 1
+            broken_off(int(item["decided_at_micros"]))
             chain_intact, position = False, 0
             continue
         price = Decimal(str(item["fill_price"]))
@@ -636,8 +682,13 @@ def _candidate_report(study_id: str, trial_id: str, symbol: str, items: Sequence
             round_trips.append({"direction": position, "entry_bar_open_micros": entry_micros,
                                 "exit_bar_open_micros": at, "holding_minutes": (at - entry_micros) // _MINUTE,
                                 "gross_return": format(gross, "f")})
+            holdings.append({"direction": position, "start_micros": entry_micros, "end_micros": at,
+                             "end_kind": HOLDING_CLOSED_BY_FILL})
         position = int(item["target_to"])
         entry_price, entry_micros = price, at
+    if chain_intact and position != 0:
+        holdings.append({"direction": position, "start_micros": entry_micros, "end_micros": as_of_micros,
+                         "end_kind": HOLDING_OPEN_AT_AS_OF})
     gross_total = sum((Decimal(trip["gross_return"]) for trip in round_trips), Decimal(0))
     # Costs are charged on the sides of closed round trips (entry and exit, one unit each);
     # an open or broken-off entry has earned no return and is not counted.
@@ -662,6 +713,12 @@ def _candidate_report(study_id: str, trial_id: str, symbol: str, items: Sequence
         "elapsed_days": format(elapsed_days, "f"),
         "required_days": incubation["required_days"],
         "incubation": incubation,
+        # Auditable forward funding evidence, never a cost: no figure above depends on it.
+        "funding_evidence": funding_evidence_section_v1(
+            funding, study_id=study_id, trial_id=trial_id, symbol=symbol, holdings=holdings,
+            fills_skipped=skipped + inconsistent, as_of_micros=as_of_micros,
+            binding_validation_hash=None if binding is None else binding.validation_hash,
+            fee_schedule_verified=cost_policy.fee_schedule is not None),
         "state": STATE_INCUBATING,
     }
     if sides:
