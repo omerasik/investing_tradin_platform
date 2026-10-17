@@ -169,12 +169,13 @@ class MarkEvidenceTests(_MarkFixture):
         with self.assertRaisesRegex(T4MarkEvidenceError, "not_at_frame_scale"):
             T4MarkObservationV1(mark.clock, Decimal("84000.1"))
 
-    def test_the_bridge_names_the_same_evidence_kind_and_still_has_no_mark_path(self) -> None:
+    def test_the_bridge_records_this_evidence_kind_beside_its_trade_proxy(self) -> None:
         from trade_platform import forward_funding_price_bridge_v1 as bridge
 
         self.assertEqual(bridge.VENUE_PUBLISHED_MARK_PRICE, VENUE_PUBLISHED_MARK_PRICE)
         self.assertEqual(bridge.BRIDGE_CONTRACT_V1["price_evidence_kind"], bridge.TRADE_PRICE_PROXY)
-        self.assertEqual(bridge.BRIDGE_CONTRACT_V1["mark_price_evidence"], "NO_PROVEN_FORWARD_MARK_PRICE_RESOLVER_V1")
+        self.assertEqual(bridge.BRIDGE_CONTRACT_V1["mark_price_evidence_kind"], VENUE_PUBLISHED_MARK_PRICE)
+        self.assertNotEqual(bridge.TRADE_PRICE_PROXY, VENUE_PUBLISHED_MARK_PRICE)
 
     def test_trade_price_evidence_is_refused_by_the_resolver(self) -> None:
         session = self.session()

@@ -7,6 +7,7 @@ import dataclasses
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from tests.test_paper_incubation_registry_v1 import (
@@ -18,6 +19,14 @@ from tests.test_paper_incubation_registry_v1 import (
     Registry,
     fill,
     resolve,
+)
+from tests.test_runner_liveness_v1 import (
+    BOUNDS,
+    DAY0,
+    FULL_SEALS,
+    MemoryStore,
+    acceptance,
+    run_session,
 )
 from trade_platform import candidate_lifecycle_readiness_v1 as readiness
 from trade_platform import incubation_exit_criteria_v1 as exits
@@ -51,6 +60,7 @@ from trade_platform.paper_incubation_report_v1 import (
     FILL_STATUS_BAR_NOT_OBSERVED,
     STATE_PROFESSIONALLY_VALIDATED_RESERVED,
     bind_incubation_v1,
+    incubation_liveness_v1,
 )
 from trade_platform.strategy_lab_study_v1 import identity_hash_v1
 
@@ -145,6 +155,36 @@ def assess(registry: Registry, criteria: Any, *, fills: list[dict[str, Any]] | N
                  {"status": "ACTIVE", "content_hash": ACCOUNT} if account is None else account),
         cost_policy=GROSS, as_of=as_of, resolution=resolve(registry) if resolution == "registry" else resolution,
         criteria=criteria)
+
+
+LIVE_AS_OF = DAY0 + timedelta(minutes=120)
+
+
+def live_world() -> Registry:
+    """``world()`` on the liveness fixtures' symbol, its candidate INCUBATING since their DAY0."""
+    registry = world()
+    registry.packet["symbol"] = "BTCUSDT"
+    registry.refresh()
+    registry.validation["holdout"]["symbol"] = "BTCUSDT"
+    registry.state_rows = [(*row[:3], registry.validation_hash, DAY0) for row in registry.state_rows]
+    return registry
+
+
+def watched_by_runner(registry: Registry) -> SimpleNamespace:
+    return SimpleNamespace(study=SimpleNamespace(study_id=STUDY, content_hash=registry.packet["study_content_hash"]),
+                           trial_id=TRIAL, symbol="BTCUSDT", authority="INCUBATING",
+                           authority_evidence_hash=registry.validation_hash)
+
+
+def live_exit(registry: Registry, store: MemoryStore, criteria: Any) -> exits.ExitReadinessV1:
+    resolution = resolve(registry)
+    (binding,) = resolution.bindings
+    liveness = incubation_liveness_v1(store.all(), binding, study_content_hash=registry.packet["study_content_hash"],
+                                      as_of=LIVE_AS_OF, acceptance=acceptance(), sealed=FULL_SEALS, **BOUNDS)
+    ev = dataclasses.replace(evidence(registry, [], {"status": "ACTIVE", "content_hash": ACCOUNT}),
+                             runner_liveness=liveness)
+    return assess_exit_readiness_v1(ev, cost_policy=GROSS, as_of=LIVE_AS_OF, resolution=resolution,
+                                    criteria=criteria)
 
 
 class MirrorTests(unittest.TestCase):
@@ -314,10 +354,12 @@ class ExitReadinessTests(unittest.TestCase):
         self.assertEqual(readiness.STAGE_INCUBATION_INCOMPLETE, result.readiness_stage)
         self.assertEqual((), result.refusals)
         self.assertNotIn(NEED_EXIT_CRITERIA, result.blockers)
-        for blocker in (NEED_FORWARD_FUNDING, NEED_LIVENESS, NEED_RUNNER_CONTRACT, NEED_NET_FORWARD_METRICS,
+        for blocker in (NEED_FORWARD_FUNDING, NEED_LIVENESS, NEED_NET_FORWARD_METRICS,
                         readiness.NEED_PARITY, readiness.NEED_FEE_SCHEDULE, readiness.NEED_COST_COMPLETE,
                         readiness.NEED_SIZING):
             self.assertIn(blocker, result.blockers)
+        # Runner liveness is the continuity contract now: missing evidence, not a missing contract.
+        self.assertNotIn(NEED_RUNNER_CONTRACT, result.blockers)
         self.assertEqual({exits.EVIDENCE_FORWARD_FUNDING: exits.INPUT_MISSING,
                           exits.EVIDENCE_RUNNER_CONTINUITY: exits.INPUT_MISSING,
                           exits.EVIDENCE_PARITY: exits.INPUT_MISSING, exits.EVIDENCE_FEES: exits.INPUT_MISSING,
@@ -446,6 +488,50 @@ class ExitReadinessTests(unittest.TestCase):
                                           criteria=registered(packet(registry)))
         self.assertEqual(STAGE_REFUSED, result.stage)
         self.assertTrue(any(item.startswith("READINESS:") for item in result.refusals))
+
+    def test_runner_continuity_follows_the_persisted_liveness(self) -> None:
+        registry = live_world()
+        store = MemoryStore()
+        run_session(store, start_minute=0, minutes=range(120), watched=watched_by_runner(registry))
+        authorized = registered(packet(registry, symbol="BTCUSDT", minimum_evidence_coverage="0.9"))
+        present = live_exit(registry, store, authorized)
+        self.assertEqual(exits.INPUT_PRESENT, present.evidence_inputs[exits.EVIDENCE_RUNNER_CONTINUITY])
+        self.assertNotIn(NEED_LIVENESS, present.blockers)
+        self.assertNotIn(NEED_RUNNER_CONTRACT, present.blockers)
+        self.assertFalse(any("COVERAGE_BELOW" in item for item in present.blockers))
+        # Every other gate stays: nothing is complete, promoted or activated.
+        self.assertEqual(STAGE_EVIDENCE_INCOMPLETE, present.stage)
+        for blocker in (NEED_FORWARD_FUNDING, NEED_NET_FORWARD_METRICS, readiness.NEED_FEE_SCHEDULE,
+                        readiness.NEED_SIZING, readiness.NEED_PARITY):
+            self.assertIn(blocker, present.blockers)
+        self.assertEqual(exits.ACCOUNT_ACTIVATION_V1, present.payload()["account_activation"])
+
+    def test_unproven_runner_time_is_judged_by_the_authorized_coverage_only(self) -> None:
+        registry = live_world()
+        store = MemoryStore()
+        run_session(store, start_minute=0, minutes=range(60), watched=watched_by_runner(registry))  # stops at 60
+        gap = readiness.LIVENESS_GAP_TOLERANCE_PREFIX
+        undecided = live_exit(registry, store, None)
+        self.assertTrue(any(item.startswith(gap) for item in undecided.blockers))
+        strict = live_exit(registry, store, registered(packet(registry, symbol="BTCUSDT",
+                                                               minimum_evidence_coverage="0.9")))
+        self.assertFalse(any(item.startswith(gap) for item in strict.blockers))
+        self.assertIn("FORWARD_EVIDENCE_COVERAGE_BELOW_AUTHORIZED_MINIMUM:0.5<0.9", strict.blockers)
+        lenient = live_exit(registry, store, registered(packet(registry, symbol="BTCUSDT",
+                                                                minimum_evidence_coverage="0.5")))
+        self.assertFalse(any("COVERAGE_BELOW" in item or item.startswith(gap) for item in lenient.blockers))
+
+    def test_a_tampered_runner_chain_fails_continuity(self) -> None:
+        registry = live_world()
+        store = MemoryStore()
+        recorder = run_session(store, start_minute=0, minutes=range(120), watched=watched_by_runner(registry))
+        key = f"runner-liveness:{recorder.runner_session_id}:3"
+        store.rows[key] = {"content_hash": store.rows[key]["content_hash"],
+                           "identity": {**store.rows[key]["identity"], "sequence": 99}}
+        result = live_exit(registry, store, registered(packet(registry, symbol="BTCUSDT")))
+        self.assertEqual(exits.INPUT_FAILED, result.evidence_inputs[exits.EVIDENCE_RUNNER_CONTINUITY])
+        self.assertEqual(readiness.STAGE_INCUBATION_EVIDENCE_FAILED, result.readiness_stage)
+        self.assertNotEqual(exits.STAGE_COMPLETE, result.stage)
 
     def test_the_assessment_never_reaches_a_validated_or_complete_stage(self) -> None:
         registry = world()

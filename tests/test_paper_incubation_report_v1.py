@@ -6,11 +6,22 @@ import dataclasses
 import random
 import unittest
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
+from tests.test_runner_liveness_v1 import (
+    BOUNDS,
+    DAY0,
+    FULL_SEALS,
+    MemoryStore,
+    acceptance,
+    run_session,
+)
 from trade_platform import strategy_lab_validation_v1 as validation
 from trade_platform.paper_incubation_report_v1 import (
+    AUTHORITY_INCUBATING,
+    ELAPSED_CLOCK_LIVENESS_V1,
     FILL_STATUS_BAR_NOT_OBSERVED,
     FILL_STATUS_FILLED,
     STATE_PROFESSIONALLY_VALIDATED_RESERVED,
@@ -23,6 +34,7 @@ from trade_platform.paper_incubation_report_v1 import (
     PaperIncubationError,
     bind_incubation_v1,
     evidenced_segments_v1,
+    incubation_liveness_v1,
     incubation_report_v1,
 )
 from trade_platform.paper_incubation_report_v1 import PACKET_STATUS_AUTHORIZED as AUTHORIZED
@@ -35,6 +47,7 @@ from trade_platform.paper_incubation_report_v1 import (
 from trade_platform.paper_incubation_report_v1 import (
     UNRESOLVED_PACKET_INCUBATION as MISSING_INCUBATION,
 )
+from trade_platform.runner_liveness_v1 import RunnerLivenessV1
 from trade_platform.strategy_lab_policies_v1 import gross_cost_policy_v1
 from trade_platform.strategy_lab_study_v1 import identity_hash_v1
 
@@ -134,7 +147,95 @@ def report(fills: list[dict[str, Any]], *, as_of: datetime | None = None,
     return candidate
 
 
+def live_binding() -> IncubationBindingV1:
+    """The authorized candidate, INCUBATING since the liveness fixtures' DAY0."""
+    validation_hash = identity_hash_v1(validation_of(identity_hash_v1(packet())))
+    return bind(states=states_of(validation_hash, at=DAY0))
+
+
+def live_store(binding: IncubationBindingV1, minutes: Any = range(120)) -> MemoryStore:
+    store = MemoryStore()
+    watched = SimpleNamespace(study=SimpleNamespace(study_id=STUDY, content_hash="a" * 64), trial_id=TRIAL,
+                              symbol="BTCUSDT", authority=INCUBATING, authority_evidence_hash=binding.validation_hash)
+    run_session(store, start_minute=0, minutes=minutes, watched=watched)
+    return store
+
+
+def live_of(binding: IncubationBindingV1, store: MemoryStore, *, as_of: datetime) -> RunnerLivenessV1:
+    return incubation_liveness_v1(store.all(), binding, study_content_hash="a" * 64, as_of=as_of,
+                                  acceptance=acceptance(), sealed=FULL_SEALS, **BOUNDS)
+
+
+class RunnerLivenessClockTests(unittest.TestCase):
+    AS_OF = DAY0 + timedelta(minutes=120)
+
+    def test_the_liveness_clock_replaces_the_fill_clock(self) -> None:
+        binding = live_binding()
+        liveness = live_of(binding, live_store(binding), as_of=self.AS_OF)
+        day0 = int(DAY0.timestamp()) * 1_000_000
+        first = {**fill(0), "decided_at_micros": day0 + 10 * MINUTE, "fill_bar_open_micros": day0 + 11 * MINUTE}
+        second = {**fill(0, previous=first, target_from=1, target_to=0),
+                  "decided_at_micros": day0 + 30 * MINUTE, "fill_bar_open_micros": day0 + 31 * MINUTE}
+        (candidate,) = incubation_report_v1([first, second], GROSS, as_of=self.AS_OF, bindings=(binding,),
+                                            liveness=(liveness,))["candidates"]
+        incubation = candidate["incubation"]
+        self.assertEqual(ELAPSED_CLOCK_LIVENESS_V1, incubation["elapsed_clock"])
+        self.assertEqual(120 * MINUTE, incubation["evidenced_elapsed_micros"])
+        self.assertEqual([{"start_micros": day0, "end_micros": day0 + 120 * MINUTE}],
+                         incubation["evidenced_segments"])  # adjacent capture hours: one segment, no gap
+        self.assertEqual([{"start_micros": day0 + 10 * MINUTE, "end_micros": day0 + 31 * MINUTE}],
+                         incubation["fill_segments"])
+        section = incubation["runner_liveness"]
+        self.assertEqual(liveness.content_hash, section["liveness_hash"])
+        self.assertEqual({}, section["unproven_micros_by_reason"])
+        self.assertEqual(0, section["fills_decided_outside_proven_processing"])
+        self.assertEqual(1, len(section["runner_sessions"]))
+        self.assertEqual(INCUBATING, candidate["state"])
+
+    def test_a_quiet_bound_candidate_is_reported_without_fills(self) -> None:
+        binding = live_binding()
+        liveness = live_of(binding, live_store(binding, range(60)), as_of=self.AS_OF)
+        (candidate,) = incubation_report_v1([], GROSS, as_of=self.AS_OF, bindings=(binding,),
+                                            liveness=(liveness,))["candidates"]
+        self.assertEqual(0, candidate["fills"])
+        self.assertEqual(60 * MINUTE, candidate["incubation"]["evidenced_elapsed_micros"])
+        self.assertEqual(WINDOW_INCOMPLETE, candidate["incubation"]["window"])
+        unproven = candidate["incubation"]["runner_liveness"]["unproven_micros_by_reason"]
+        self.assertEqual(60 * MINUTE, sum(unproven.values()))  # the stopped runner's hour, never bridged
+        self.assertIn("NO_RUNNER_PROGRESS", unproven)
+
+    def test_liveness_misuse_is_refused(self) -> None:
+        binding = live_binding()
+        liveness = live_of(binding, live_store(binding), as_of=self.AS_OF)
+        cases = {
+            "without_an_incubation_binding": {"bindings": ()},
+            "one_per_candidate": {"liveness": (liveness, liveness)},
+            "window_ends_after_the_report_as_of": {"as_of": self.AS_OF - timedelta(minutes=1)},
+            "is_issued_only_by_derive_runner_liveness_v1": {
+                "liveness": (dataclasses.replace(liveness, payload={**liveness.payload, "restarts": 0,
+                                                                  "proven_micros": 0}),)},
+        }
+        for reason, overrides in cases.items():
+            kwargs: dict[str, Any] = {"as_of": self.AS_OF, "bindings": (binding,), "liveness": (liveness,),
+                                      **overrides}
+            with self.subTest(reason=reason), self.assertRaisesRegex(PaperIncubationError, reason):
+                incubation_report_v1([], GROSS, **kwargs)
+        # Derived for the candidate's own evidence only: another validation's binding refuses it.
+        other = bind(validation_overrides={"claim_ceiling": "other"},
+                     states=states_of(identity_hash_v1(validation_of(identity_hash_v1(packet()),
+                                                                     claim_ceiling="other")), at=DAY0))
+        with self.assertRaisesRegex(PaperIncubationError, "not_bound_to_this_incubation_evidence"):
+            incubation_report_v1([], GROSS, as_of=self.AS_OF, bindings=(other,), liveness=(liveness,))
+        with self.assertRaisesRegex(PaperIncubationError, "window_is_empty"):
+            live_of(binding, MemoryStore(), as_of=DAY0)
+
+
 class MirrorTests(unittest.TestCase):
+    def test_the_watched_authority_mirrors_live_signals(self) -> None:
+        from trade_platform.live_signals_v1 import AUTHORITY_INCUBATING as LIVE_INCUBATING
+
+        self.assertEqual(LIVE_INCUBATING, AUTHORITY_INCUBATING)
+
     def test_mirrored_names_equal_the_validation_module(self) -> None:
         self.assertEqual(INCUBATING, validation.CandidateStateV1.INCUBATING.value)
         self.assertEqual(REJECTED, validation.CandidateStateV1.HOLDOUT_FAILED_REJECTED.value)
