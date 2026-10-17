@@ -27,6 +27,6 @@ tzdata==2026.3
 uvicorn==0.52.0
 alembic==1.19.1
 greenlet==3.5.5
-mako==1.4.1
+mako==1.4.2
 markupsafe==3.0.2
 sqlalchemy==2.0.52
