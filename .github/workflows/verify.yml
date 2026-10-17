@@ -71,7 +71,9 @@ jobs:
         if: matrix.shard == 'core'
         run: |
           python scripts/verify_module1b_demo.py
+      # The drill reconciles a restore that must carry OMS state, which the core shard's tests persist.
       - name: PostgreSQL backup, fresh restore and reconciliation drill
+        if: matrix.shard == 'core'
         env:
           RESTORED_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:5432/trade_platform_restore
         run: |
