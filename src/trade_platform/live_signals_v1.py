@@ -292,6 +292,7 @@ class WatchedCandidateV1:
     symbol: str
     authority: str
     authority_evidence_hash: str
+    _point: Mapping[str, Any] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.authority not in _AUTHORITIES:
@@ -299,13 +300,16 @@ class WatchedCandidateV1:
         family = FAMILIES_V1.get(self.study.strategy.family)
         if family is None or family.spec() != self.study.strategy:
             raise LiveSignalsError("watched_candidate_strategy_is_not_this_sdk_version")
-        if self.trial_id not in {str(t.trial_id) for t in self.study.trials()}:
+        trial = next((t for t in self.study.trials() if str(t.trial_id) == self.trial_id), None)
+        if trial is None:
             raise LiveSignalsError("watched_candidate_trial_not_in_its_study")
+        # Resolved once: the study is immutable, and re-enumerating its trials re-hashes the
+        # whole study per trial -- on every bar this dominated the live runner's cost.
+        object.__setattr__(self, "_point", self.study.parameter_space.typed_point(trial.parameters))
 
     @property
     def parameters(self) -> dict[str, Any]:
-        trial = next(t for t in self.study.trials() if str(t.trial_id) == self.trial_id)
-        return self.study.parameter_space.typed_point(trial.parameters)
+        return dict(self._point)
 
 
 def watched_from_rerun_v1(study: StudySpecV1, rerun: Any, *, states: Sequence[Mapping[str, Any]],
