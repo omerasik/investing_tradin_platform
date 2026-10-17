@@ -6,9 +6,20 @@ import dataclasses
 import random
 import unittest
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
-from uuid import uuid4
+from uuid import uuid4, uuid5
 
+from tests.test_runner_liveness_v1 import (
+    BOUNDS,
+    DAY0,
+    FULL_SEALS,
+    NS,
+    Clocks,
+    MemoryStore,
+    acceptance,
+    run_session,
+)
 from trade_platform import account_policy_v1, strategy_lab_authority_rerun_v1
 from trade_platform import candidate_lifecycle_readiness_v1 as readiness
 from trade_platform import strategy_lab_validation_v1 as validation
@@ -36,11 +47,24 @@ from trade_platform.candidate_lifecycle_readiness_v1 import (
     CandidateReadinessV1,
     assess_candidate_readiness_v1,
 )
+from trade_platform.first_party_capture_hourly_acceptance_v1 import HourVerdictV1
 from trade_platform.paper_incubation_report_v1 import (
     BINDING_SOURCE_CALLER_SUPPLIED_V1,
+    ELAPSED_CLOCK_LIVENESS_V1,
     FILL_STATUS_BAR_NOT_OBSERVED,
     FILL_STATUS_FILLED,
     STATE_PROFESSIONALLY_VALIDATED_RESERVED,
+    UNPROVEN_OUTSIDE_LIVENESS_WINDOW,
+    bind_incubation_v1,
+    incubation_liveness_v1,
+)
+from trade_platform.runner_liveness_v1 import (
+    CAPTURE_HOUR_PREFIX,
+    DiscontinuityV1,
+    RunnerLivenessV1,
+    RunnerProgressV1,
+    SessionRefusalV1,
+    UnprovenReasonV1,
 )
 from trade_platform.strategy_lab_policies_v1 import gross_cost_policy_v1
 from trade_platform.strategy_lab_study_v1 import identity_hash_v1
@@ -387,6 +411,198 @@ class IdentityTests(unittest.TestCase):
                               states=states_of(identity_hash_v1(foreign))))
         self.assertEqual(("VALIDATION_IS_OF_ANOTHER_PREREGISTRATION",), result.blockers)
         self.assertNotEqual(full.validation_hash, identity_hash_v1(foreign))
+
+
+LIVE_AS_OF = DAY0 + timedelta(minutes=120)
+LIVE_MICROS = int(DAY0.timestamp()) * 1_000_000
+
+
+def incubating_at_day0(**overrides: Any) -> CandidateEvidenceV1:
+    """The validated chain, its INCUBATING state recorded at the liveness fixtures' DAY0."""
+    base = chain(upto="validation", **overrides)
+    return dataclasses.replace(base, states=[{**event, "recorded_at": DAY0} for event in base.states])
+
+
+def watching(evidence: CandidateEvidenceV1, **changes: Any) -> SimpleNamespace:
+    """The candidate as a runner watches it: INCUBATING on its validation, the preregistered study version."""
+    assert evidence.packet_identity is not None
+    fields: dict[str, Any] = {
+        "study": SimpleNamespace(study_id=STUDY, content_hash=evidence.packet_identity["study_content_hash"]),
+        "trial_id": TRIAL, "symbol": "BTCUSDT", "authority": "INCUBATING",
+        "authority_evidence_hash": evidence.validation_hash}
+    fields.update(changes)
+    return SimpleNamespace(**fields)
+
+
+def liveness_of(evidence: CandidateEvidenceV1, store: MemoryStore, *, as_of: datetime = LIVE_AS_OF,
+                accept: Any = None, study_content_hash: str | None = None) -> RunnerLivenessV1:
+    assert evidence.packet_identity is not None and evidence.validation_identity is not None
+    binding = bind_incubation_v1(packet_identity=evidence.packet_identity, packet_hash=str(evidence.packet_hash),
+                                 validation_identity=evidence.validation_identity,
+                                 validation_hash=str(evidence.validation_hash), states=evidence.states,
+                                 trial_id=TRIAL)
+    return incubation_liveness_v1(
+        store.all(), binding, study_content_hash=study_content_hash or evidence.packet_identity["study_content_hash"],
+        as_of=as_of, acceptance=accept or acceptance(), sealed=FULL_SEALS, **BOUNDS)
+
+
+def day0_fill(minute: int, *, previous: dict[str, Any] | None = None, target_from: int = 0,
+              target_to: int = 1) -> dict[str, Any]:
+    item = fill(0, previous=previous, target_from=target_from, target_to=target_to)
+    opened = LIVE_MICROS + minute * MINUTE
+    return {**item, "decided_at_micros": opened - MINUTE // 2, "fill_bar_open_micros": opened}
+
+
+def live_assess(store: MemoryStore, *, as_of: datetime = LIVE_AS_OF, fills: list[dict[str, Any]] | None = None,
+                **liveness: Any) -> CandidateReadinessV1:
+    evidence = incubating_at_day0()
+    return assess(dataclasses.replace(evidence, fills=fills or [],
+                                      runner_liveness=liveness_of(evidence, store, **liveness)), as_of=as_of)
+
+
+def gap_blocker(result: CandidateReadinessV1) -> str:
+    (found,) = [item for item in result.blockers if item.startswith(readiness.LIVENESS_GAP_TOLERANCE_PREFIX)]
+    return found
+
+
+class RunnerLivenessTests(unittest.TestCase):
+    """The persisted runner liveness replaces the fill clock and the liveness blocker -- only as evidenced."""
+
+    def setUp(self) -> None:
+        self.evidence = incubating_at_day0()
+        self.store = MemoryStore()
+
+    def run_live(self, minutes: Any, **kwargs: Any) -> None:
+        run_session(self.store, minutes=minutes, watched=watching(self.evidence), **kwargs)
+
+    def test_valid_continuity_clears_only_the_liveness_blocker(self) -> None:
+        self.run_live(range(120), start_minute=0)
+        result = live_assess(self.store)
+        self.assertEqual(STAGE_INCUBATION_INCOMPLETE, result.stage)
+        self.assertNotIn(NEED_LIVENESS, result.blockers)
+        self.assertFalse(any(item.startswith(readiness.LIVENESS_GAP_TOLERANCE_PREFIX) for item in result.blockers))
+        self.assertEqual(120 * MINUTE, result.evidence["evidenced_elapsed_micros"])
+        self.assertEqual(ELAPSED_CLOCK_LIVENESS_V1, result.evidence["elapsed_clock"])
+        self.assertEqual(1, len(result.evidence["runner_sessions"]))
+        # A quiet runner earns proven time, but every other requirement and owner gate stays.
+        self.assertEqual("NO_FORWARD_PAPER_FILL_EVIDENCE", result.blockers[0])
+        self.assertTrue(result.blockers[1].startswith("INCUBATION_WINDOW_INCOMPLETE:0.083/28_DAYS"))
+        for item in (NEED_PARITY, NEED_FEE_SCHEDULE, NEED_FORWARD_FUNDING, NEED_SIZING, NEED_EXIT_CRITERIA,
+                     f"{OR11}:NO_ACCOUNT_POLICY_RECORDED", readiness.NEED_REGISTRY_BINDING):
+            self.assertIn(item, result.blockers)
+        self.assertEqual(("OR-11", "OR-6", "OR-7"), result.owner_gates)
+        self.assertEqual("INCUBATING", result.canonical_state)
+
+    def test_fills_inside_proven_processing_keep_the_liveness_clock(self) -> None:
+        self.run_live(range(120), start_minute=0)
+        first = day0_fill(10)
+        fills = [first, day0_fill(70, previous=first, target_from=1, target_to=0)]
+        result = live_assess(self.store, fills=fills)
+        self.assertEqual(STAGE_INCUBATION_INCOMPLETE, result.stage)
+        self.assertEqual(120 * MINUTE, result.evidence["evidenced_elapsed_micros"])  # not the 60-minute fill run
+        self.assertEqual(1, result.evidence["round_trips"])
+        self.assertNotIn(NEED_LIVENESS, result.blockers)
+        self.assertFalse(any(item.startswith(readiness.LIVENESS_GAP_TOLERANCE_PREFIX) for item in result.blockers))
+
+    def test_a_restart_gap_is_counted_out_and_named(self) -> None:
+        self.run_live(range(30), start_minute=0)
+        self.run_live(range(40, 120), start_minute=40, warmup=range(39), session=uuid5(NS, "restarted"))
+        result = live_assess(self.store)
+        self.assertEqual(110 * MINUTE, result.evidence["evidenced_elapsed_micros"])  # minutes 30..39 never bridged
+        self.assertEqual(1, result.evidence["runner_liveness_restarts"])
+        blocker = gap_blocker(result)
+        self.assertIn(f"{UnprovenReasonV1.NO_RUNNER_PROGRESS.value}=", blocker)
+        self.assertIn("RESTARTS=1", blocker)
+        self.assertNotIn(NEED_LIVENESS, result.blockers)
+
+    def test_missing_progress_proves_nothing(self) -> None:
+        empty = live_assess(self.store)
+        self.assertEqual(0, empty.evidence["evidenced_elapsed_micros"])
+        self.assertIn(f"{UnprovenReasonV1.NO_RUNNER_PROGRESS.value}={120 * MINUTE}", gap_blocker(empty))
+        # Heartbeats say the process was alive; they prove no market-data processing.
+        self.run_live(range(120), start_minute=0, bars_for=lambda minute: [])
+        alive = live_assess(self.store)
+        self.assertEqual(0, alive.evidence["evidenced_elapsed_micros"])
+        self.assertIn(UnprovenReasonV1.ALIVE_WITHOUT_DATA_PROOF.value, gap_blocker(alive))
+
+    def test_time_outside_the_liveness_window_is_unproven(self) -> None:
+        self.run_live(range(120), start_minute=0)
+        short = live_assess(self.store, as_of=LIVE_AS_OF)
+        self.assertNotIn(UNPROVEN_OUTSIDE_LIVENESS_WINDOW, " ".join(short.blockers))
+        evidence = incubating_at_day0()
+        stale = assess(dataclasses.replace(evidence, runner_liveness=liveness_of(
+            evidence, self.store, as_of=DAY0 + timedelta(minutes=60))), as_of=LIVE_AS_OF)
+        self.assertEqual(60 * MINUTE, stale.evidence["evidenced_elapsed_micros"])
+        self.assertIn(f"{UNPROVEN_OUTSIDE_LIVENESS_WINDOW}={60 * MINUTE}", gap_blocker(stale))
+
+    def test_a_capture_gap_is_never_counted(self) -> None:
+        self.run_live(range(120), start_minute=0)
+        result = live_assess(self.store, accept=acceptance([HourVerdictV1.COMPLETE,
+                                                            HourVerdictV1.NO_PROVEN_COVERAGE]))
+        self.assertEqual(60 * MINUTE, result.evidence["evidenced_elapsed_micros"])
+        self.assertIn(f"{CAPTURE_HOUR_PREFIX}NO_PROVEN_COVERAGE={60 * MINUTE}", gap_blocker(result))
+
+    def test_a_clock_discontinuity_breaks_the_proof(self) -> None:
+        def jump(clocks: Clocks, minute: int) -> None:
+            if minute == 20:
+                clocks.offset = timedelta(minutes=10)
+
+        self.run_live(range(120), start_minute=0, clock_hook=jump)
+        result = live_assess(self.store)
+        self.assertLess(result.evidence["evidenced_elapsed_micros"], 120 * MINUTE)
+        self.assertIn(f"{DiscontinuityV1.HOST_CLOCK_JUMP.value}=1", gap_blocker(result))
+
+    def test_a_tampered_or_rechained_session_fails_the_evidence(self) -> None:
+        recorder = run_session(self.store, start_minute=0, minutes=range(120), watched=watching(self.evidence))
+        key = f"runner-liveness:{recorder.runner_session_id}:5"
+        held = self.store.rows[key]
+        self.store.rows[key] = {"content_hash": held["content_hash"],
+                                "identity": {**held["identity"], "warmup_bars_total": 7}}
+        tampered = live_assess(self.store)
+        self.assertEqual(STAGE_INCUBATION_EVIDENCE_FAILED, tampered.stage)
+        self.assertEqual((("INCUBATION_REPORT_REFUSED:runner_liveness_session_refused:"
+                          f"{SessionRefusalV1.CONTENT_HASH_DOES_NOT_REDERIVE.value}"),), tampered.blockers)
+        rechained = RunnerProgressV1.build({**held["identity"], "previous_progress_hash": "0" * 64})
+        self.store.rows[key] = {"content_hash": rechained.content_hash, "identity": dict(rechained.identity)}
+        self.assertIn(SessionRefusalV1.HASH_CHAIN_BROKEN.value, live_assess(self.store).blockers[0])
+
+    def test_a_forged_or_misbound_liveness_is_refused(self) -> None:
+        self.run_live(range(120), start_minute=0)
+        genuine = liveness_of(self.evidence, self.store)
+        forged = dataclasses.replace(genuine, payload={**genuine.payload, "restarts": 0, "proven_micros": 1})
+        result = assess(dataclasses.replace(self.evidence, runner_liveness=forged), as_of=LIVE_AS_OF)
+        self.assertEqual(("INCUBATION_REPORT_REFUSED:runner_liveness_is_issued_only_by_derive_runner_liveness_v1",),
+                         result.blockers)
+        # Derived for another reading instant: evidence after this one is look-ahead.
+        early = assess(dataclasses.replace(self.evidence, runner_liveness=genuine),
+                       as_of=LIVE_AS_OF - timedelta(minutes=30))
+        self.assertEqual(("INCUBATION_REPORT_REFUSED:runner_liveness_window_ends_after_the_report_as_of",),
+                         early.blockers)
+        # Liveness with no validation behind it is inconsistent, never evidence.
+        self.assertEqual(STAGE_EVIDENCE_INCONSISTENT,
+                         assess(chain(upto="opening", runner_liveness=genuine), as_of=LIVE_AS_OF).stage)
+
+    def test_sessions_watching_under_other_evidence_prove_nothing(self) -> None:
+        research = watching(self.evidence, authority="RESEARCH_WATCH", authority_evidence_hash="9" * 64)
+        run_session(self.store, start_minute=0, minutes=range(120), watched=research)
+        result = live_assess(self.store)
+        self.assertEqual(0, result.evidence["evidenced_elapsed_micros"])
+        self.assertIn("EXCLUDED_SESSIONS=1", gap_blocker(result))
+        # A runner of another study version than the preregistered one is an inconsistent chain.
+        other = watching(self.evidence, study=SimpleNamespace(study_id=STUDY, content_hash="f" * 64))
+        store = MemoryStore()
+        run_session(store, start_minute=0, minutes=range(120), watched=other)
+        foreign = assess(dataclasses.replace(self.evidence, runner_liveness=liveness_of(
+            self.evidence, store, study_content_hash="f" * 64)), as_of=LIVE_AS_OF)
+        self.assertEqual(("RUNNER_LIVENESS_WATCHED_ANOTHER_STUDY_VERSION_THAN_THE_PREREGISTERED_ONE",),
+                         foreign.blockers)
+
+    def test_the_liveness_assessment_is_deterministic(self) -> None:
+        self.run_live(range(120), start_minute=0)
+        first, again = live_assess(self.store), live_assess(self.store)
+        self.assertEqual(first.assessment_hash, again.assessment_hash)
+        self.assertNotIn(STATE_PROFESSIONALLY_VALIDATED_RESERVED, repr(first.payload()).replace(
+            readiness.PROMOTION_V1, ""))
 
 
 class DeterminismTests(unittest.TestCase):

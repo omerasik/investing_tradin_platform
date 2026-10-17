@@ -47,11 +47,28 @@ owner (OR-6 fees and stress envelope, OR-7 holdout/acceptance/incubation and the
 forward exit criteria, OR-11 account and risk), else an engineering or evidence
 code. ``blockers`` lists the current stage's own blockers first, then every
 later requirement along the path that is not evidenced yet. In this version the
-eligible stage is unreachable by construction: no authority persists the owner's
-forward exit criteria or runner liveness, and the R10 report models neither
+eligible stage is unreachable by construction: the owner's forward exit criteria
+are judged only on top of this assessment, and the R10 report models neither
 forward funding nor sizing -- each is listed, never assumed. The owner's exit
 criteria are evaluated on top of this assessment by
 :mod:`trade_platform.incubation_exit_criteria_v1`, which never changes a stage here.
+
+Runner liveness
+---------------
+``runner_liveness`` is the candidate's issued
+:class:`~trade_platform.runner_liveness_v1.RunnerLivenessV1`, derived by
+:func:`~trade_platform.paper_incubation_report_v1.incubation_liveness_v1` from
+the persisted progress records. Without it the blocker
+``MISSING_PERSISTED_RUNNER_LIVENESS_EVIDENCE`` stays. With it the R10 report's
+elapsed clock becomes the proven processing intervals, and the blocker is
+replaced by what the evidence actually shows: nothing when every instant since
+``INCUBATING`` is proven with no restart, discontinuity or excluded session,
+else ``BLOCKED_OWNER_DECISION_OR_7:RUNNER_LIVENESS_GAP_TOLERANCE_UNDECIDED:...``
+naming the unproven time by reason, the restarts and the discontinuities (the
+owner's minimum evidence coverage decides it, never this module). A liveness
+the report refuses (forged, of another candidate or evidence, look-ahead, a
+refused session) fails the incubation evidence with its reason; one that
+watched another study version than the preregistered one is inconsistent.
 
 Import-light (no numpy/pyarrow): the protected API may serve it.
 """
@@ -75,10 +92,12 @@ from .paper_incubation_report_v1 import (
     STATE_PROFESSIONALLY_VALIDATED_RESERVED,
     WINDOW_ELAPSED,
     WINDOW_INCOMPLETE,
+    IncubationBindingV1,
     PaperIncubationError,
     bind_incubation_v1,
     incubation_report_v1,
 )
+from .runner_liveness_v1 import RunnerLivenessV1
 from .strategy_lab_policies_v1 import CostPolicyV1
 from .strategy_lab_study_v1 import identity_hash_v1
 
@@ -118,6 +137,8 @@ NEED_SIZING: Final = f"{OR11}:PAPER_SIZING_IS_UNIT_EXPOSURE"
 NEED_ACCOUNT_POLICY: Final = f"{OR11}:NO_ACCOUNT_POLICY_RECORDED"
 NEED_EXIT_CRITERIA: Final = f"{OR7}:MISSING_OWNER_FORWARD_INCUBATION_EXIT_CRITERIA"
 NEED_LIVENESS: Final = "MISSING_PERSISTED_RUNNER_LIVENESS_EVIDENCE"
+#: Proven liveness that leaves time unproven (or saw restarts / discontinuities): the owner's tolerance decides.
+LIVENESS_GAP_TOLERANCE_PREFIX: Final = f"{OR7}:RUNNER_LIVENESS_GAP_TOLERANCE_UNDECIDED"
 NEED_PARITY: Final = "MISSING_LIVE_REPLAY_FILL_PARITY_EVIDENCE"
 #: A binding from caller-supplied identities (``bind_incubation_v1``) is never authority for
 #: eligibility; only one resolved from the persisted registry (``paper_incubation_registry_v1``) is.
@@ -152,6 +173,7 @@ class CandidateEvidenceV1:
     id to the content hash of its replayed fill, or is ``None`` when no replay
     was run. ``account_policy`` is the stored account policy version
     (``status`` plus its identity's ``unresolved``), or ``None``.
+    ``runner_liveness`` is the candidate's issued runner liveness, or ``None``.
     """
 
     study_id: str
@@ -167,6 +189,7 @@ class CandidateEvidenceV1:
     fills: Sequence[Mapping[str, Any]] = ()
     replay_fill_hashes: Mapping[str, str] | None = None
     account_policy: Mapping[str, Any] | None = None
+    runner_liveness: RunnerLivenessV1 | None = None
 
     def __post_init__(self) -> None:
         for name in ("study_id", "trial_id"):
@@ -227,7 +250,7 @@ def _account_blockers(account_policy: Mapping[str, Any] | None) -> list[str]:
 
 
 def _later(cost_policy: CostPolicyV1, account_policy: Mapping[str, Any] | None, *,
-           forward_started: bool) -> list[str]:
+           forward_started: bool, liveness: Sequence[str] = (NEED_LIVENESS,)) -> list[str]:
     """Requirements of the forward incubation path that no record evidences yet."""
     out: list[str] = []
     if not forward_started:
@@ -235,8 +258,24 @@ def _later(cost_policy: CostPolicyV1, account_policy: Mapping[str, Any] | None, 
     out += _cost_blockers(cost_policy)
     out += [NEED_FORWARD_FUNDING, NEED_COST_COMPLETE, NEED_SIZING]
     out += _account_blockers(account_policy)
-    out += [NEED_EXIT_CRITERIA, NEED_LIVENESS]
+    out += [NEED_EXIT_CRITERIA, *liveness]
     return out
+
+
+def _liveness_blockers(incubation: Mapping[str, Any]) -> list[str]:
+    """What the report's runner liveness leaves open: nothing only when the whole span is proven, unbroken."""
+    section = incubation.get("runner_liveness")
+    if section is None:
+        return [NEED_LIVENESS]
+    gaps = [f"{reason}={micros}" for reason, micros in section["unproven_micros_by_reason"].items()]
+    gaps += [f"{kind}={count}" for kind, count in section["discontinuities"].items()]
+    if section["restarts"]:
+        gaps.append(f"RESTARTS={section['restarts']}")
+    if section["excluded_sessions"]:
+        gaps.append(f"EXCLUDED_SESSIONS={len(section['excluded_sessions'])}")
+    if section["fills_decided_outside_proven_processing"]:
+        gaps.append(f"FILLS_OUTSIDE_PROVEN_PROCESSING={section['fills_decided_outside_proven_processing']}")
+    return [f"{LIVENESS_GAP_TOLERANCE_PREFIX}:{','.join(gaps)}"] if gaps else []
 
 
 def _packet_blockers(packet: Mapping[str, Any]) -> list[str]:
@@ -306,7 +345,7 @@ def _assess(evidence: CandidateEvidenceV1, cost_policy: CostPolicyV1, as_of: dat
         _require((str(item.get("study_id")), str(item.get("trial_id"))) == (ev.study_id, ev.trial_id),
                  "FILL_OF_ANOTHER_CANDIDATE")
     state = _canonical(ev)
-    later_layers = (ev.packet_identity, ev.validation_identity, mine or None, ev.fills or None)
+    later_layers = (ev.packet_identity, ev.validation_identity, mine or None, ev.fills or None, ev.runner_liveness)
 
     # Decimal selection -------------------------------------------------------
     facts: dict[str, Any] = {}
@@ -364,7 +403,8 @@ def _assess(evidence: CandidateEvidenceV1, cost_policy: CostPolicyV1, as_of: dat
 
     # Holdout validation ------------------------------------------------------
     if ev.validation_identity is None:
-        _require(not mine and not ev.fills, "CANDIDATE_STATE_OR_FILLS_WITHOUT_A_HOLDOUT_VALIDATION")
+        _require(not mine and not ev.fills and ev.runner_liveness is None,
+                 "CANDIDATE_STATE_OR_FILLS_WITHOUT_A_HOLDOUT_VALIDATION")
         return _result(ev, pending_selected, state,
                        [NEED_HOLDOUT_VALIDATION, *_later(cost_policy, ev.account_policy, forward_started=False)],
                        facts)
@@ -382,7 +422,7 @@ def _assess(evidence: CandidateEvidenceV1, cost_policy: CostPolicyV1, as_of: dat
     _require(from_this[0].get("state") == verdict, "CANDIDATE_STATE_DIFFERS_FROM_THE_VALIDATION_VERDICT")
     facts["validation_hash"] = ev.validation_hash
     if verdict == STATE_HOLDOUT_FAILED_REJECTED:
-        _require(not ev.fills, "PAPER_FILLS_FOR_A_REJECTED_CANDIDATE")
+        _require(not ev.fills and ev.runner_liveness is None, "PAPER_FILLS_FOR_A_REJECTED_CANDIDATE")
         reasons = [str(item) for item in judged[0].get("reasons", [])]
         return _result(ev, STAGE_HOLDOUT_REJECTED, state,
                        [f"HOLDOUT_FAILED_REJECTED_TERMINAL:{r}" for r in reasons]
@@ -399,12 +439,18 @@ def _assess(evidence: CandidateEvidenceV1, cost_policy: CostPolicyV1, as_of: dat
     facts.update({"symbol": binding.symbol, "required_days": binding.required_days,
                   "incubating_since_micros": binding.incubating_since_micros, "binding_source": binding.source})
     provenance = [] if binding.source == BINDING_SOURCE_REGISTRY_V1 else [NEED_REGISTRY_BINDING]
-    if not ev.fills:
+    liveness = ev.runner_liveness
+    if not ev.fills and liveness is None:
         return _result(ev, STAGE_INCUBATION_INCOMPLETE, state,
                        [NEED_FORWARD_FILLS, NEED_INCUBATION_WINDOW,
                         *_later(cost_policy, ev.account_policy, forward_started=False), *provenance], facts)
+    if liveness is not None and isinstance(liveness, RunnerLivenessV1):
+        watched = liveness.payload["candidate"].get("watched_as") or {}
+        _require(watched.get("study_content_hash") == packet.get("study_content_hash"),
+                 "RUNNER_LIVENESS_WATCHED_ANOTHER_STUDY_VERSION_THAN_THE_PREREGISTERED_ONE")
     try:
-        report = incubation_report_v1(ev.fills, cost_policy, as_of=as_of, bindings=(binding,))
+        report = incubation_report_v1(ev.fills, cost_policy, as_of=as_of, bindings=(binding,),
+                                      liveness=() if liveness is None else (liveness,))
     except PaperIncubationError as error:
         return _result(ev, STAGE_INCUBATION_EVIDENCE_FAILED, state, [f"INCUBATION_REPORT_REFUSED:{error}"], facts)
     (candidate,) = report["candidates"]
@@ -415,6 +461,19 @@ def _assess(evidence: CandidateEvidenceV1, cost_policy: CostPolicyV1, as_of: dat
                   "unfilled": candidate["fills"] - candidate["fills_by_status"][FILL_STATUS_FILLED],
                   "fills_skipped_unknown_position": candidate["fills_skipped_unknown_position"],
                   "round_trips": len(candidate["round_trips"])})
+    liveness_blockers = _liveness_blockers(incubation)
+    if "runner_liveness" in incubation:
+        section = incubation["runner_liveness"]
+        facts.update({"elapsed_clock": incubation["elapsed_clock"], "runner_liveness_hash": section["liveness_hash"],
+                      "runner_liveness_proven_micros": section["proven_micros"],
+                      "runner_liveness_restarts": section["restarts"],
+                      "runner_sessions": [item["runner_session_id"] for item in section["runner_sessions"]]})
+    if not ev.fills:
+        window = ([] if incubation["window"] == WINDOW_ELAPSED else _window_blockers(incubation, candidate, binding))
+        return _result(ev, STAGE_INCUBATION_INCOMPLETE, state,
+                       [NEED_FORWARD_FILLS, *window, NEED_PARITY,
+                        *_later(cost_policy, ev.account_policy, forward_started=True, liveness=liveness_blockers),
+                        *provenance], facts)
     failures, parity_blockers = _parity(ev.fills, ev.replay_fill_hashes)
     if candidate["chain_inconsistencies"]:
         failures.append(f"FORWARD_POSITION_CHAIN_INCONSISTENT:{candidate['chain_inconsistencies']}")
@@ -434,21 +493,28 @@ def _assess(evidence: CandidateEvidenceV1, cost_policy: CostPolicyV1, as_of: dat
     if report["sizing"] == SIZING_UNIT_EXPOSURE_PENDING_OR_11:
         forward.append(NEED_SIZING)
     forward += _account_blockers(ev.account_policy)
-    # Neither is persisted by any authority yet; listed until one exists, never assumed.
-    forward += [NEED_EXIT_CRITERIA, NEED_LIVENESS, *provenance]
+    # The exit criteria are judged on top of this module; liveness is listed until evidenced, never assumed.
+    forward += [NEED_EXIT_CRITERIA, *liveness_blockers, *provenance]
 
     if incubation["window"] != WINDOW_ELAPSED:
-        window = ([f"INCUBATION_WINDOW_INCOMPLETE:{candidate['elapsed_days']}/{binding.required_days}_DAYS"]
-                  if incubation["window"] == WINDOW_INCOMPLETE
-                  else [f"{OR7}:{reason}" for reason in incubation["unresolved"]] or [NEED_INCUBATION_WINDOW])
-        return _result(ev, STAGE_INCUBATION_INCOMPLETE, state, [*window, *forward], facts)
+        return _result(ev, STAGE_INCUBATION_INCOMPLETE, state,
+                       [*_window_blockers(incubation, candidate, binding), *forward], facts)
     if forward:
         return _result(ev, STAGE_FORWARD_EVIDENCE_INCOMPLETE, state, forward, facts)
     return _result(ev, STAGE_ELIGIBLE, state, [], facts)  # pragma: no cover - unreachable in v1 (see docstring)
 
 
+def _window_blockers(incubation: Mapping[str, Any], candidate: Mapping[str, Any],
+                     binding: IncubationBindingV1) -> list[str]:
+    if incubation["window"] == WINDOW_INCOMPLETE:
+        return [f"INCUBATION_WINDOW_INCOMPLETE:{candidate['elapsed_days']}/{binding.required_days}_DAYS"]
+    return [f"{OR7}:{reason}" for reason in incubation["unresolved"]] or [NEED_INCUBATION_WINDOW]
+
+
 __all__ = [
     "ACCOUNT_POLICY_ACTIVE",
+    "LIVENESS_GAP_TOLERANCE_PREFIX",
+    "NEED_LIVENESS",
     "PROMOTION_V1",
     "SELECTION_ESTABLISHED",
     "STAGES_V1",

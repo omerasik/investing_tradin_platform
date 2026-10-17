@@ -74,6 +74,21 @@ capture source's hourly acceptance and the sealed datasets
 (:meth:`SealedBarsEvidenceV1.from_forward_dataset`) to
 :func:`derive_runner_liveness_v1`; :attr:`RunnerLivenessV1.proven_intervals`
 is the answer.
+
+Candidate evidence identity (``watched_as``)
+--------------------------------------------
+A session counts for a candidate by study and trial; with ``watched_as``
+(``study_content_hash``, ``authority``, ``authority_evidence_hash``) it counts
+only when its ``STARTED`` binding watched the candidate under exactly that
+evidence -- for incubation, ``INCUBATING`` on the holdout validation that
+judged it (:func:`trade_platform.paper_incubation_report_v1.incubation_liveness_v1`).
+A session that watched it under other evidence (``RESEARCH_WATCH`` on a rerun,
+another validation, another study version) is listed in ``excluded_sessions``
+and proves nothing. Every counted session's binding entry is restated in the
+result, so the proof names the runner sessions and the candidate evidence it
+rests on; nothing is synthesized. A :class:`RunnerLivenessV1` is issued only by
+:func:`derive_runner_liveness_v1` (:attr:`RunnerLivenessV1.issued`): a result
+built or edited elsewhere is never evidence.
 """
 
 from __future__ import annotations
@@ -157,6 +172,13 @@ class SessionRefusalV1(StrEnum):
     RUNNER_SESSION_WITHOUT_START = "RUNNER_SESSION_WITHOUT_START"
     HASH_CHAIN_BROKEN = "HASH_CHAIN_BROKEN"
     SESSION_BINDING_CHANGED = "SESSION_BINDING_CHANGED"
+
+
+#: A session that watched the candidate under other evidence than ``watched_as`` (not a refusal).
+EXCLUDED_OTHER_CANDIDATE_EVIDENCE: Final = "CANDIDATE_WATCHED_UNDER_OTHER_EVIDENCE"
+WATCHED_AS_KEYS: Final = ("study_content_hash", "authority", "authority_evidence_hash")
+_LIVENESS_ISSUER: Final = object()
+_ISSUED_LIVENESS: set[str] = set()
 
 
 def _micros(value: datetime) -> int:
@@ -354,14 +376,28 @@ class LivenessIntervalV1:
 
 @dataclass(frozen=True, slots=True)
 class RunnerLivenessV1:
-    """Proven vs unproven minutes of one candidate's claimed window. Deterministic."""
+    """Proven vs unproven minutes of one candidate's claimed window. Deterministic.
+
+    Issued only by :func:`derive_runner_liveness_v1`; :attr:`issued` is false for
+    a result built elsewhere or edited after issuance.
+    """
 
     payload: Mapping[str, Any]
     intervals: tuple[LivenessIntervalV1, ...]
+    _issuer: object = field(default=None, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self._issuer is not _LIVENESS_ISSUER:
+            raise RunnerLivenessError("runner_liveness_is_issued_only_by_derive_runner_liveness_v1")
 
     @property
     def content_hash(self) -> str:
         return identity_hash_v1(dict(self.payload))
+
+    @property
+    def issued(self) -> bool:
+        return (self.content_hash in _ISSUED_LIVENESS
+                and [item.payload() for item in self.intervals] == list(self.payload["intervals"]))
 
     @property
     def proven_intervals(self) -> list[tuple[int, int]]:
@@ -469,8 +505,8 @@ def _break(previous: Mapping[str, Any], current: Mapping[str, Any], *, max_gap: 
     return None
 
 
-def _walk_session(walk: _Walk, records: Sequence[tuple[str, Mapping[str, Any]]], *, max_gap: int,
-                  max_divergence: int, max_lag: int) -> None:
+def _walk_session(walk: _Walk, records: Sequence[tuple[str, Mapping[str, Any]]], entry: Mapping[str, Any], *,
+                  max_gap: int, max_divergence: int, max_lag: int) -> None:
     """Chains, processing runs, minute flags and alive spans of one relevant runner session."""
     first = records[0][1]
     session_id = str(first["runner_session_id"])
@@ -531,14 +567,22 @@ def _walk_session(walk: _Walk, records: Sequence[tuple[str, Mapping[str, Any]]],
     walk.alive.append((chain_start, int(previous["host_wall_micros"]) * 1000))
     close()
     walk.sessions.append({"runner_session_id": session_id, "runner": str(first["binding"]["runner"]),
+                          "start_progress_hash": records[0][0], "binding_hash": str(first["binding_hash"]),
+                          "candidate_binding": {key: str(entry.get(key)) for key in WATCHED_AS_KEYS},
                           "started_host_wall_micros": int(first["host_wall_micros"]),
                           "last_host_wall_micros": int(previous["host_wall_micros"]),
                           "records": len(records), "discontinuities": breaks})
 
 
-def _relevant(binding: Mapping[str, Any], study_id: str, trial_id: str, symbol: str) -> bool:
-    return binding.get("symbol") == symbol and any(
-        item.get("study_id") == study_id and item.get("trial_id") == trial_id for item in binding["candidates"])
+def _relevant(binding: Mapping[str, Any], study_id: str, trial_id: str, symbol: str) -> Mapping[str, Any] | None:
+    """The binding's entry for this candidate on this symbol, or ``None``."""
+    if binding.get("symbol") != symbol:
+        return None
+    found = [item for item in binding["candidates"]
+             if item.get("study_id") == study_id and item.get("trial_id") == trial_id]
+    if len(found) > 1:
+        raise _Refused(SessionRefusalV1.MALFORMED_RECORD)
+    return found[0] if found else None
 
 
 def _hour_verdicts(acceptance: HourlyAcceptanceV1, symbol: str) -> dict[int, Any] | None:
@@ -560,13 +604,16 @@ def _hour_verdicts(acceptance: HourlyAcceptanceV1, symbol: str) -> dict[int, Any
 def derive_runner_liveness_v1(records: Sequence[Mapping[str, Any]], *, study_id: str, trial_id: str, symbol: str,
                               window_start: datetime, window_end: datetime, acceptance: HourlyAcceptanceV1,
                               sealed: Sequence[SealedBarsEvidenceV1], max_progress_gap_nanos: int,
-                              max_clock_divergence_nanos: int, max_processing_lag_nanos: int) -> RunnerLivenessV1:
+                              max_clock_divergence_nanos: int, max_processing_lag_nanos: int,
+                              watched_as: Mapping[str, str] | None = None) -> RunnerLivenessV1:
     """Proven vs unproven minutes of ``[window_start, window_end)`` for one candidate.
 
     ``records`` are stored progress rows (``{"content_hash", "identity"}``) -- every
     session may be passed; only sessions watching this candidate on this symbol
-    count. ``acceptance`` is the capture source's hourly acceptance and ``sealed``
-    the sealed datasets available. The three bounds have no default.
+    count, and with ``watched_as`` only those that watched it under exactly that
+    candidate evidence (see the module docstring). ``acceptance`` is the capture
+    source's hourly acceptance and ``sealed`` the sealed datasets available. The
+    three bounds have no default.
     """
     start, end = _micros(window_start), _micros(window_end)
     if start % _MINUTE_MICROS or end % _MINUTE_MICROS or end <= start:
@@ -574,8 +621,15 @@ def derive_runner_liveness_v1(records: Sequence[Mapping[str, Any]], *, study_id:
     for bound in (max_progress_gap_nanos, max_clock_divergence_nanos, max_processing_lag_nanos):
         if isinstance(bound, bool) or not isinstance(bound, int) or bound <= 0:
             raise RunnerLivenessError("liveness_bounds_must_be_positive_integer_nanos")
+    expected: dict[str, str] | None = None
+    if watched_as is not None:
+        if set(watched_as) != set(WATCHED_AS_KEYS) or not all(
+                isinstance(value, str) and value.strip() for value in watched_as.values()):
+            raise RunnerLivenessError("watched_as_needs_study_content_hash_authority_and_authority_evidence_hash")
+        expected = {key: watched_as[key].strip() for key in WATCHED_AS_KEYS}
 
     walk = _Walk()
+    excluded: list[dict[str, str]] = []
     by_session: dict[str, list[Mapping[str, Any]]] = {}
     for item in records:
         identity = item.get("identity")
@@ -591,11 +645,14 @@ def derive_runner_liveness_v1(records: Sequence[Mapping[str, Any]], *, study_id:
         except (KeyError, TypeError, AttributeError):
             walk.refusals.append({"runner_session_id": session_id, "reason": SessionRefusalV1.MALFORMED_RECORD.value})
             continue
-        if not relevant:
+        if relevant is None:
+            continue
+        if expected is not None and {key: str(relevant.get(key)) for key in WATCHED_AS_KEYS} != expected:
+            excluded.append({"runner_session_id": session_id, "reason": EXCLUDED_OTHER_CANDIDATE_EVIDENCE})
             continue
         try:
-            _walk_session(walk, ordered, max_gap=max_progress_gap_nanos, max_divergence=max_clock_divergence_nanos,
-                          max_lag=max_processing_lag_nanos)
+            _walk_session(walk, ordered, relevant, max_gap=max_progress_gap_nanos,
+                          max_divergence=max_clock_divergence_nanos, max_lag=max_processing_lag_nanos)
         except (KeyError, TypeError, RunnerLivenessError):
             walk.refusals.append({"runner_session_id": session_id, "reason": SessionRefusalV1.MALFORMED_RECORD.value})
 
@@ -699,7 +756,7 @@ def derive_runner_liveness_v1(records: Sequence[Mapping[str, Any]], *, study_id:
     payload = {
         "schema_version": RUNNER_LIVENESS_SCHEMA_VERSION_V1,
         "claim": LIVENESS_CLAIM_V1,
-        "candidate": {"study_id": study_id, "trial_id": trial_id, "symbol": symbol},
+        "candidate": {"study_id": study_id, "trial_id": trial_id, "symbol": symbol, "watched_as": expected},
         "window": {"start_micros": start, "end_micros": end},
         "bounds": {"max_progress_gap_nanos": max_progress_gap_nanos,
                    "max_clock_divergence_nanos": max_clock_divergence_nanos,
@@ -708,11 +765,14 @@ def derive_runner_liveness_v1(records: Sequence[Mapping[str, Any]], *, study_id:
         "runner_sessions": sessions,
         "restarts": max(0, len(sessions) - 1),
         "refused_sessions": sorted(walk.refusals, key=lambda item: (item["runner_session_id"], item["reason"])),
+        "excluded_sessions": sorted(excluded, key=lambda item: item["runner_session_id"]),
         "intervals": [item.payload() for item in intervals],
         "proven_micros": sum(item.end_micros - item.start_micros for item in intervals
                              if item.status == STATUS_PROVEN),
     }
-    return RunnerLivenessV1(payload, tuple(intervals))
+    result = RunnerLivenessV1(payload, tuple(intervals), _LIVENESS_ISSUER)
+    _ISSUED_LIVENESS.add(result.content_hash)
+    return result
 
 
 def _sealed_disagrees(datasets: Sequence[SealedBarsEvidenceV1], bar: Mapping[str, Any]) -> bool:
@@ -797,12 +857,14 @@ __all__ = [
     "CLAIM_ALIVE_ONLY",
     "CLAIM_BARS_EVALUATED",
     "DEFAULT_HEARTBEAT_INTERVAL_NANOS",
+    "EXCLUDED_OTHER_CANDIDATE_EVIDENCE",
     "KIND_BARS",
     "KIND_HEARTBEAT",
     "KIND_STARTED",
     "LIVENESS_CLAIM_V1",
     "STATUS_PROVEN",
     "STATUS_UNPROVEN",
+    "WATCHED_AS_KEYS",
     "DiscontinuityV1",
     "LivenessIntervalV1",
     "PostgresRunnerLivenessStoreV1",
