@@ -38,6 +38,7 @@ HEAVY_MODULES = frozenset({
     "test_strategy_lab_validation_v1",
     "test_crypto_liquidity_capacity_v1_postgres",
     "test_historical_dataset_sealing_scale_postgres",
+    "test_research_terminal_e2e_acceptance_postgres",
 })
 SHARDS = ("core", "heavy")
 

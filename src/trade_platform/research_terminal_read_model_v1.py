@@ -1,7 +1,7 @@
 """UI-2 -- read-only projections for the one-terminal research workflow.
 
 ``RESEARCH_ONLY``. Bounded, typed views over the R4 (Strategy Lab), R4.7
-(Decimal authority reruns), R6 (cycles, preregistrations, holdout, candidate
+(Decimal authority reruns), C.1.1 (walk-forward), R6 (cycles, preregistrations, holdout, candidate
 states), R8 (live signals), R9 (account policies) and R10 (paper incubation)
 tables for the protected operator API. Nothing here writes, launches, opens a
 holdout, approves a policy or promotes a candidate.
@@ -11,6 +11,8 @@ Every view states its claim and never lifts it:
 * search results are ``SEARCH_NON_AUTHORITATIVE``; a Decimal authority rerun
   makes a *selection* numerically authoritative, never the economics (gross,
   T2 ``CONDITIONAL``);
+* a C.1.1 walk-forward report is ``WALK_FORWARD_DEVELOPMENT`` /
+  ``SEARCH_NON_AUTHORITATIVE`` / ``GROSS_NON_PROMOTABLE``, never validation;
 * a candidate is ``INCUBATING`` or ``REJECTED`` only through a recorded R6 state,
   and nothing reaches a validated state;
 * live signals are ``NOT_VALIDATED_<authority>`` proposals;
@@ -91,6 +93,38 @@ class RerunView(BaseModel):
     rerun_count: int
     metric: str
     selected: list[RerunSelectionItemView]
+    recorded_at: datetime
+
+
+class WalkForwardFoldView(BaseModel):
+    fold: int
+    status: str
+    test_start: datetime
+    test_end_exclusive: datetime
+    selected_trial_id: UUID | None
+    train_metric_value: str | None
+    test_metrics: dict[str, Any]
+    flags: list[str]
+
+
+class WalkForwardView(BaseModel):
+    """One recorded C.1.1 walk-forward report: development evidence, never validation."""
+
+    report_hash: str
+    study_id: UUID
+    study_label: str
+    study_content_hash: str
+    dataset_content_hash: str
+    split_hash: str
+    evaluation_class: Literal["WALK_FORWARD_DEVELOPMENT"]
+    numeric_tier: Literal["SEARCH_NON_AUTHORITATIVE"]
+    cost_mode: Literal["GROSS_NON_PROMOTABLE"]
+    promotable: Literal[False] = False
+    rule: dict[str, Any]
+    multiple_testing_trial_count: int
+    evaluation_end_exclusive: datetime
+    folds: list[WalkForwardFoldView]
+    authority_reasons: list[str]
     recorded_at: datetime
 
 
@@ -184,6 +218,37 @@ def read_reruns_v1(cursor: _Cursor, *, limit: int) -> list[RerunView]:
                                              metric_value=str(item["metric_value"]))
                       for item in selection.get("selected", [])] if established else [],
             recorded_at=row[8]))
+    return out
+
+
+def read_walk_forward_v1(cursor: _Cursor, *, limit: int) -> list[WalkForwardView]:
+    """Recorded walk-forward reports, newest first; a stored identity that does not re-derive is refused."""
+    cursor.execute(
+        "SELECT w.report_hash, w.study_id, s.label, w.identity, w.recorded_at FROM strategy_lab_walk_forward_reports w "
+        "JOIN strategy_lab_studies s ON s.study_id = w.study_id ORDER BY w.recorded_at DESC, w.report_hash LIMIT %s",
+        (limit,))
+    out = []
+    for row in cursor.fetchall():
+        identity = _json(row[3])
+        report_hash = str(row[0]).strip()
+        if identity_hash_v1(identity) != report_hash:
+            raise ValueError("stored_walk_forward_report_does_not_rederive")
+        folds = [WalkForwardFoldView(
+            fold=int(fold["fold"]), status=str(fold["status"]), test_start=fold["test_start"],
+            test_end_exclusive=fold["test_end_exclusive"],
+            selected_trial_id=None if fold["selected"] is None else UUID(str(fold["selected"]["trial_id"])),
+            train_metric_value=None if fold["selected"] is None else str(fold["selected"]["train_metric_value"]),
+            test_metrics={} if fold["selected"] is None else dict(fold["selected"]["test_metrics"]),
+            flags=[str(flag) for flag in fold["flags"]]) for fold in identity["folds"]]
+        out.append(WalkForwardView(
+            report_hash=report_hash, study_id=row[1], study_label=str(row[2]),
+            study_content_hash=str(identity["study_content_hash"]),
+            dataset_content_hash=str(identity["dataset"]["content_hash"]), split_hash=str(identity["split_hash"]),
+            evaluation_class=identity["evaluation_class"], numeric_tier=identity["numeric_tier"],
+            cost_mode=identity["cost_mode"], promotable=identity["promotable"], rule=dict(identity["rule"]),
+            multiple_testing_trial_count=int(identity["multiple_testing_trial_count"]),
+            evaluation_end_exclusive=identity["plan"]["evaluation_end_exclusive"], folds=folds,
+            authority_reasons=[str(reason) for reason in identity["authority_reasons"]], recorded_at=row[4]))
     return out
 
 
@@ -333,6 +398,8 @@ __all__ = [
     "RerunView",
     "TerminalOverview",
     "ValidationView",
+    "WalkForwardFoldView",
+    "WalkForwardView",
     "read_accounts_v1",
     "read_cycle_v1",
     "read_incubation_v1",
@@ -340,4 +407,5 @@ __all__ = [
     "read_reruns_v1",
     "read_terminal_overview_v1",
     "read_validation_v1",
+    "read_walk_forward_v1",
 ]
