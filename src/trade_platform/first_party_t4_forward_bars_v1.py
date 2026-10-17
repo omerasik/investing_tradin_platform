@@ -61,8 +61,9 @@ A reference names exactly one bar of exactly one sealed dataset, and is refused
 
 * the instant is not an aware UTC instant on the minute grid;
 * no supplied dataset proved the bar, or more than one did;
-* the UTC hour containing the bar is not COMPLETE for the dataset's exchange
-  symbol under the supplied manifest-proven hourly acceptance
+* any UTC hour of host-arrival time in which the bar's records arrived (see
+  *Clock domains*) is not COMPLETE for the dataset's exchange symbol under the
+  supplied manifest-proven hourly acceptance
   (:mod:`trade_platform.first_party_capture_hourly_acceptance_v1`), is not yet
   judged, or was proven by another capture session than the dataset's;
 * the price the convention selects is sequence-ambiguous;
@@ -74,6 +75,31 @@ ambiguity flags it is checked against describe whole ``(T, seq)`` groups and
 are only knowable then, even for the open. ``known_by`` is a query parameter,
 not part of the reference identity, so the same sealed inputs give the same
 :attr:`T4PriceReferenceV1.reference_hash` whenever they are resolved.
+
+Clock domains
+-------------
+Four kinds of time meet here and are never interchanged:
+
+* **Venue event time** -- the trade's ``T`` (venue clock). It alone decides
+  which minute a trade belongs to, and so the bar grid and the instant.
+* **Host arrival time** -- ``arrival_utc_nanos``, the capture host's wall clock
+  when the record arrived. Capture coverage intervals, partition manifests and
+  therefore every hourly verdict are in this domain.
+* **Bounded knowledge time** -- ``arrival + clock_bound`` (the RTT-bracketed
+  venue-minus-host upper bound): the earliest venue-clock instant the record is
+  provably known by. It decides ``known_by`` and nothing about hours.
+* **Manifest coverage time** -- the hour grid of host arrival time the hourly
+  acceptance judges.
+
+The host clock may lag or lead the venue by seconds (about 9.5 s behind on
+2026-09-24), so a bar's records can arrive in another capture hour than its
+venue minute names: the trades of the venue minute starting at ``H`` may
+arrive before ``H`` on the host clock, and a minute ending at ``H`` may close
+on a record arriving after it. The hour check therefore uses the records'
+raw arrival span (:attr:`T4BarClockEvidenceV1.first_arrival_utc_nanos` ..
+``last_arrival_utc_nanos``, contributing and closing records) and requires
+*every* arrival hour it touches to be COMPLETE for the dataset's session. It
+never guesses an adjacent hour from the bar minute.
 
 Hourly segments and the open convention
 ---------------------------------------
@@ -113,13 +139,14 @@ from .first_party_t4_normalization_v1 import (
 from .first_party_t4_seal_v1 import FirstPartyT4SealV1, iter_frame_rows_v1
 from .research_data_plane_v1 import T4_OHLCV_1M_FRAME, T4_TRADE_FRAME, ResearchFrameStoreV1
 
-T4_FORWARD_BARS_SEMANTIC_VERSION_V1: Final = "first-party-t4-forward-bars-1.0.0"
+#: 1.1.0: bars carry their records' host-arrival span; references are judged
+#: against every arrival hour of it, not the venue-minute hour.
+T4_FORWARD_BARS_SEMANTIC_VERSION_V1: Final = "first-party-t4-forward-bars-1.1.0"
 
 #: The sealed ``T4_OHLCV_1M`` price columns are ``decimal128(38, 18)``.
 PRICE_QUANTUM_V1: Final = Decimal(1).scaleb(-T4_OHLCV_1M_FRAME.schema.field("open").type.scale)
 
 _MICROS_PER_MINUTE: Final = 60_000_000
-_NANOS_PER_MICRO: Final = 1_000
 _EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
 
 
@@ -215,6 +242,10 @@ class T4BarClockEvidenceV1:
     max_clock_bound_nanos: int
     clock_bound_evidence: tuple[str, ...]
     contributing_record_count: int
+    #: Host-arrival span of the same records (contributing and closing): the
+    #: domain capture coverage and hourly verdicts are judged in.
+    first_arrival_utc_nanos: int
+    last_arrival_utc_nanos: int
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -225,6 +256,8 @@ class T4BarClockEvidenceV1:
             "max_clock_bound_nanos": self.max_clock_bound_nanos,
             "clock_bound_evidence": list(self.clock_bound_evidence),
             "contributing_record_count": self.contributing_record_count,
+            "first_arrival_utc_nanos": self.first_arrival_utc_nanos,
+            "last_arrival_utc_nanos": self.last_arrival_utc_nanos,
         }
 
 
@@ -382,6 +415,8 @@ def _forward_bar(
             max_clock_bound_nanos=max(item.clock_bound_nanos for item in involved),
             clock_bound_evidence=tuple(sorted({item.clock_bound_evidence for item in involved})),
             contributing_record_count=len(records),
+            first_arrival_utc_nanos=min(item.arrival_utc_nanos for item in involved),
+            last_arrival_utc_nanos=max(item.arrival_utc_nanos for item in involved),
         ),
     )
 
@@ -535,20 +570,45 @@ def forward_bars_from_seal_v1(
 
 
 @dataclass(frozen=True, slots=True)
-class T4HourEvidenceV1:
-    """The manifest-proven COMPLETE hour that contains a referenced bar."""
+class T4ArrivalHourV1:
+    """One manifest-proven COMPLETE capture hour, in host-arrival time."""
 
     hour_start_utc_nanos: int
-    session_id: UUID
     unproven_nanos: int
+
+    def payload(self) -> dict[str, Any]:
+        return {"hour_start_utc_nanos": self.hour_start_utc_nanos, "unproven_nanos": self.unproven_nanos}
+
+
+@dataclass(frozen=True, slots=True)
+class T4HourEvidenceV1:
+    """The manifest-proven COMPLETE capture hours a referenced bar's records arrived in.
+
+    ``hours`` are every UTC hour of host-arrival time from the bar's first to its
+    last record arrival, in order -- one, or two when the arrivals straddle an
+    hour line -- each COMPLETE and proven by the same session.
+    ``hour_start_utc_nanos`` is the first of them.
+    """
+
+    hours: tuple[T4ArrivalHourV1, ...]
+    session_id: UUID
     max_unproven_nanos: int
+    first_arrival_utc_nanos: int
+    last_arrival_utc_nanos: int
+
+    @property
+    def hour_start_utc_nanos(self) -> int:
+        return self.hours[0].hour_start_utc_nanos
 
     def payload(self) -> dict[str, Any]:
         return {
+            "time_domain": "HOST_ARRIVAL_UTC",
             "hour_start_utc_nanos": self.hour_start_utc_nanos,
+            "hours": [hour.payload() for hour in self.hours],
             "session_id": str(self.session_id),
-            "unproven_nanos": self.unproven_nanos,
             "max_unproven_nanos": self.max_unproven_nanos,
+            "first_arrival_utc_nanos": self.first_arrival_utc_nanos,
+            "last_arrival_utc_nanos": self.last_arrival_utc_nanos,
         }
 
 
@@ -609,31 +669,51 @@ def _instant_micros(instant: object) -> int:
     return micros
 
 
-def _complete_hour(
-    acceptance: HourlyAcceptanceV1, exchange_symbol: str, bar_open_micros: int
+def _complete_arrival_hours(
+    acceptance: HourlyAcceptanceV1, exchange_symbol: str, session_id: UUID, bar: T4ForwardBarV1
 ) -> T4HourEvidenceV1:
-    hour_start = bar_open_micros * _NANOS_PER_MICRO // HOUR_NANOS * HOUR_NANOS
+    """Every arrival hour holding ``bar``'s records, each COMPLETE for ``session_id``.
+
+    Hour verdicts judge capture coverage, which is host-arrival time
+    (:class:`~trade_platform.first_party_capture_archive_v1.CaptureCoverageIntervalV1`);
+    the bar minute is venue event time. The hours are therefore taken from the
+    records' raw arrival readings -- never from the bar minute, and never from
+    knowledge time, which adds the venue-minus-host bound and so belongs to
+    neither clock's hour grid.
+    """
+    first_arrival = bar.clock.first_arrival_utc_nanos
+    last_arrival = bar.clock.last_arrival_utc_nanos
+    if last_arrival < first_arrival:
+        raise T4PriceReferenceRefusalV1("bar_arrival_span_malformed")
     symbols = [item for item in acceptance.symbols if item.symbol == exchange_symbol]
     if len(symbols) != 1:
         raise T4PriceReferenceRefusalV1("hourly_acceptance_does_not_cover_the_symbol")
     first = acceptance.first_hour_start_utc_nanos
-    if first is None or not first <= hour_start < first + acceptance.hours_judged * HOUR_NANOS:
-        raise T4PriceReferenceRefusalV1("hour_not_judged")
-    # One segment per judged hour, or the acceptance is not the evaluator's output.
-    if len(symbols[0].segments) != acceptance.hours_judged:
-        raise T4PriceReferenceRefusalV1("hourly_acceptance_malformed")
-    segment: HourlySegmentV1 = symbols[0].segments[(hour_start - first) // HOUR_NANOS]
-    if segment.hour_start_utc_nanos != hour_start:
-        raise T4PriceReferenceRefusalV1("hourly_acceptance_malformed")
-    if not segment.complete:
-        raise T4PriceReferenceRefusalV1(f"hour_not_complete:{segment.verdict.value}")
-    if segment.session_id is None or segment.unproven_nanos is None:
-        raise T4PriceReferenceRefusalV1("hourly_acceptance_malformed")
+    hours: list[T4ArrivalHourV1] = []
+    hour_start = first_arrival // HOUR_NANOS * HOUR_NANOS
+    while hour_start <= last_arrival:
+        if first is None or not first <= hour_start < first + acceptance.hours_judged * HOUR_NANOS:
+            raise T4PriceReferenceRefusalV1("hour_not_judged")
+        # One segment per judged hour, or the acceptance is not the evaluator's output.
+        if len(symbols[0].segments) != acceptance.hours_judged:
+            raise T4PriceReferenceRefusalV1("hourly_acceptance_malformed")
+        segment: HourlySegmentV1 = symbols[0].segments[(hour_start - first) // HOUR_NANOS]
+        if segment.hour_start_utc_nanos != hour_start:
+            raise T4PriceReferenceRefusalV1("hourly_acceptance_malformed")
+        if not segment.complete:
+            raise T4PriceReferenceRefusalV1(f"hour_not_complete:{segment.verdict.value}")
+        if segment.session_id is None or segment.unproven_nanos is None:
+            raise T4PriceReferenceRefusalV1("hourly_acceptance_malformed")
+        if segment.session_id != session_id:
+            raise T4PriceReferenceRefusalV1("hour_proven_by_another_capture_session")
+        hours.append(T4ArrivalHourV1(hour_start, segment.unproven_nanos))
+        hour_start += HOUR_NANOS
     return T4HourEvidenceV1(
-        hour_start_utc_nanos=hour_start,
-        session_id=segment.session_id,
-        unproven_nanos=segment.unproven_nanos,
+        hours=tuple(hours),
+        session_id=session_id,
         max_unproven_nanos=acceptance.max_unproven_nanos,
+        first_arrival_utc_nanos=first_arrival,
+        last_arrival_utc_nanos=last_arrival,
     )
 
 
@@ -670,9 +750,7 @@ def resolve_t4_price_reference_v1(
     if len({item.dataset_version_id for item, _ in found}) != 1:
         raise T4PriceReferenceRefusalV1("minute_proven_by_more_than_one_dataset")
     dataset, bar = found[0]
-    hour = _complete_hour(acceptance, dataset.exchange_symbol, bar_open)
-    if hour.session_id != dataset.session_id:
-        raise T4PriceReferenceRefusalV1("hour_proven_by_another_capture_session")
+    hour = _complete_arrival_hours(acceptance, dataset.exchange_symbol, dataset.session_id, bar)
     if convention is T4PriceConventionV1.FIRST_TRADE_OF_MINUTE_STARTING_AT_INSTANT:
         if bar.open_is_sequence_ambiguous:
             raise T4PriceReferenceRefusalV1("open_price_is_sequence_ambiguous")
@@ -701,6 +779,7 @@ def resolve_t4_price_reference_v1(
 __all__ = [
     "PRICE_QUANTUM_V1",
     "T4_FORWARD_BARS_SEMANTIC_VERSION_V1",
+    "T4ArrivalHourV1",
     "T4BarClockEvidenceV1",
     "T4ForwardBarError",
     "T4ForwardBarV1",

@@ -329,5 +329,111 @@ class PriceReferenceTests(_ForwardFixture):
         self.assertEqual(caught.exception.code, "datasets_must_name_exactly_one_exchange_symbol")
 
 
+NEXT_HOUR = HOUR + HOUR_NANOS  # 01:00:00Z, host (arrival) clock
+
+
+def _two_hours(
+    first: tuple[HourVerdictV1, UUID | None],
+    second: tuple[HourVerdictV1, UUID | None] | None,
+) -> HourlyAcceptanceV1:
+    """Acceptance judging 00:00Z and, unless ``second`` is ``None``, 01:00Z."""
+    verdicts = [first] if second is None else [first, second]
+    segments = tuple(
+        HourlySegmentV1(
+            HOUR + index * HOUR_NANOS, verdict, session_id=session,
+            unproven_nanos=0 if session is not None else None,
+        )
+        for index, (verdict, session) in enumerate(verdicts)
+    )
+    return HourlyAcceptanceV1(
+        required_consecutive_hours=24,
+        max_unproven_nanos=30 * SECOND,
+        first_hour_start_utc_nanos=HOUR,
+        hours_judged=len(segments),
+        symbols=(SymbolHoursV1("BTCUSDT", segments),),
+        joint_complete=tuple(segment.complete for segment in segments),
+        runs=(),
+    )
+
+
+class ClockDomainTests(_ForwardFixture):
+    """Bars are minutes of *venue event* time; hour verdicts judge *host arrival* time.
+
+    The fixture host runs ~9.94 s behind the venue (the real 2026-09-24 host was
+    ~9.47 s behind), so the trades of the venue minute starting at 01:00Z
+    arrive from about 00:59:50Z host time: in the *previous* capture hour.
+    """
+
+    def straddling_dataset(self) -> T4ForwardDatasetBarsV1:
+        start = NEXT_HOUR - 150 * SECOND  # host 00:57:30Z .. 01:01:30Z
+        samples = [start - 5 * SECOND + step * 60 * SECOND for step in range(6)]
+        return self.dataset(windows=[(start, start + 240 * SECOND)], samples=samples)
+
+    def test_the_bar_after_the_hour_has_records_that_arrived_before_it(self) -> None:
+        dataset = self.straddling_dataset()
+        output, _, _ = normalize_t4_segment_v1(self.plan)
+        bar_open = _micros(datetime(2026, 9, 20, 1, 0, tzinfo=UTC))
+        self.assertIsNotNone(dataset.bar_at(bar_open))
+        arrivals = [
+            trade.arrival.arrival_utc_nanos for trade in output.trades
+            if bar_open <= trade.trade_ts_millis * 1_000 < bar_open + 60_000_000
+        ]
+        # Event time in hour 01; the first arrivals in hour 00.
+        self.assertLess(min(arrivals), NEXT_HOUR)
+        self.assertGreaterEqual(max(arrivals), NEXT_HOUR)
+
+    def test_an_incomplete_arrival_hour_holding_the_bars_records_is_refused(self) -> None:
+        dataset = self.straddling_dataset()
+        instant = datetime(2026, 9, 20, 1, 0, tzinfo=UTC)
+        # 01:00Z is COMPLETE, but 00:00Z -- where this bar's first records arrived -- is not.
+        acceptance = _two_hours(
+            (HourVerdictV1.HEAD_UNPROVEN_EXCEEDS_BOUND, None), (HourVerdictV1.COMPLETE, self.session_id)
+        )
+        with self.assertRaises(T4PriceReferenceRefusalV1) as caught:
+            self.resolve(dataset, instant, OPEN, acceptance=acceptance)
+        self.assertEqual(caught.exception.code, "hour_not_complete:HEAD_UNPROVEN_EXCEEDS_BOUND")
+
+    def test_an_arrival_hour_proven_by_another_session_is_refused(self) -> None:
+        dataset = self.straddling_dataset()
+        acceptance = _two_hours(
+            (HourVerdictV1.COMPLETE, UUID(int=7)), (HourVerdictV1.COMPLETE, self.session_id)
+        )
+        with self.assertRaises(T4PriceReferenceRefusalV1) as caught:
+            self.resolve(dataset, datetime(2026, 9, 20, 1, 0, tzinfo=UTC), OPEN, acceptance=acceptance)
+        self.assertEqual(caught.exception.code, "hour_proven_by_another_capture_session")
+
+    def test_a_bar_spanning_two_complete_arrival_hours_names_both(self) -> None:
+        dataset = self.straddling_dataset()
+        acceptance = _two_hours(
+            (HourVerdictV1.COMPLETE, self.session_id), (HourVerdictV1.COMPLETE, self.session_id)
+        )
+        reference = self.resolve(dataset, datetime(2026, 9, 20, 1, 0, tzinfo=UTC), OPEN, acceptance=acceptance)
+        self.assertEqual(
+            [hour.hour_start_utc_nanos for hour in reference.hour.hours], [HOUR, NEXT_HOUR]
+        )
+        self.assertEqual(reference.hour.hour_start_utc_nanos, HOUR)
+        clock = reference.bar.clock
+        self.assertLess(clock.first_arrival_utc_nanos, NEXT_HOUR)
+        self.assertGreaterEqual(clock.last_arrival_utc_nanos, NEXT_HOUR)
+        self.assertEqual(reference.hour.first_arrival_utc_nanos, clock.first_arrival_utc_nanos)
+        # Knowledge never precedes the bounded arrival of the evidence it rests on.
+        self.assertGreaterEqual(
+            reference.bar.complete_market_knowledge_micros * 1_000,
+            clock.last_arrival_utc_nanos + clock.min_clock_bound_nanos,
+        )
+
+    def test_a_bar_whose_records_all_arrived_in_one_hour_needs_only_that_hour(self) -> None:
+        dataset = self.straddling_dataset()
+        # The venue minute 00:59 ends at the hour, but its records -- the closing one
+        # included -- all arrived before 01:00Z host time; 01:00Z is not judged yet.
+        acceptance = _two_hours((HourVerdictV1.COMPLETE, self.session_id), None)
+        reference = self.resolve(dataset, datetime(2026, 9, 20, 1, 0, tzinfo=UTC), CLOSE, acceptance=acceptance)
+        self.assertEqual([hour.hour_start_utc_nanos for hour in reference.hour.hours], [HOUR])
+        # The bar after the hour cannot be judged against a single hour.
+        with self.assertRaises(T4PriceReferenceRefusalV1) as caught:
+            self.resolve(dataset, datetime(2026, 9, 20, 1, 0, tzinfo=UTC), OPEN, acceptance=acceptance)
+        self.assertEqual(caught.exception.code, "hour_not_judged")
+
+
 if __name__ == "__main__":
     unittest.main()
