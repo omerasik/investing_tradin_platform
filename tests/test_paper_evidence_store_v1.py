@@ -246,7 +246,9 @@ class MirrorTests(unittest.TestCase):
             self.assertIn(constant, text)
 
     def test_the_module_is_import_light(self) -> None:
-        code = ("import sys, trade_platform.paper_evidence_store_v1; "
+        # The module and the fill loaders it imports when it re-derives holdings.
+        code = ("import sys, trade_platform.paper_evidence_store_v1, trade_platform.paper_account_v1, "
+                "trade_platform.paper_incubation_registry_v1, trade_platform.paper_incubation_report_v1; "
                 "print(sorted(m for m in ('numpy', 'polars', 'duckdb', 'pyarrow', 'pandas') if m in sys.modules))")
         result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True,  # nosec
                                 timeout=120)
@@ -398,6 +400,61 @@ class FundingVerificationTests(unittest.TestCase):
             store.record_funding_evidence_v1(NoDatabase(), evidence, section=section, cycle_id="cycle-2026-08-20",
                                              as_of=funding_as_of(), recorded_at=funding_as_of() - timedelta(seconds=1))
         self.assertEqual(store.AS_OF_AFTER_RECORDED_AT, str(refused.exception))
+
+
+class StoredFillsHoldingsTests(unittest.TestCase):
+    """Holdings re-derived from the cycle's stored fills, the loaders patched to serve real fill identities."""
+
+    fx: Fixtures
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.fx = Fixtures.get()
+
+    def _check(self, section: dict[str, Any], evidence: Any, stored: list[dict[str, Any]], *,
+               recorded: datetime | None = None, tamper: bool = False) -> None:
+        from unittest import mock
+
+        from trade_platform import paper_account_v1, paper_incubation_registry_v1
+        from trade_platform.strategy_lab_policies_v1 import gross_cost_policy_v1
+        from trade_platform.strategy_lab_study_v1 import identity_hash_v1
+
+        rows = [(("0" * 64) if tamper else identity_hash_v1(fill), fill) for fill in stored]
+        at = recorded or funding_as_of() - timedelta(minutes=1)
+        cursor = Scripted([[(content_hash, at) for content_hash, _ in rows]])
+        unresolved = paper_incubation_registry_v1.IncubationRegistryError("unresolved")
+        with mock.patch.object(paper_account_v1, "cycle_cost_policy_v1", return_value=gross_cost_policy_v1()), \
+                mock.patch.object(paper_account_v1, "cycle_fill_rows_v1", return_value=(rows, [])), \
+                mock.patch.object(paper_incubation_registry_v1, "resolve_incubation_bindings_v1",
+                                  side_effect=unresolved):
+            store._check_holdings_against_stored_fills(
+                cursor, cycle_id="cycle-2026-08-20", as_of=funding_as_of(), section=section,
+                bridges=[{"content_hash": h, "identity": dict(i)} for h, i in evidence.bridges])
+
+    def _refused(self, code: str, *args: Any, **kwargs: Any) -> None:
+        with self.assertRaises(PaperEvidenceStoreError) as refused:
+            self._check(*args, **kwargs)
+        self.assertEqual(code, str(refused.exception))
+
+    def test_holdings_must_be_the_stored_fills_own(self) -> None:
+        evidence = self.fx.evidence(bridge())
+        round_trip = self.fx.fills((funding_hours(1), funding_hours(10)))
+        section = self.fx.section(round_trip, evidence)
+        self._check(section, evidence, round_trip)  # built from exactly the stored fills
+        extra = self.fx.fills((funding_hours(1), funding_hours(3)), (funding_hours(5), funding_hours(10)))
+        self._refused(store.FUNDING_HOLDINGS_DO_NOT_MATCH_STORED_FILLS, self.fx.section(extra, evidence), evidence,
+                      round_trip)
+        self._refused(store.FUNDING_HOLDINGS_DO_NOT_MATCH_STORED_FILLS, section, evidence, round_trip[:1])
+        self._refused(store.FUNDING_HOLDINGS_DO_NOT_MATCH_STORED_FILLS, section, evidence, [])
+        # A fill recorded after the evidence's as_of was not known then.
+        self._refused(store.FUNDING_HOLDINGS_DO_NOT_MATCH_STORED_FILLS, section, evidence, round_trip,
+                      recorded=funding_as_of() + timedelta(seconds=1))
+
+    def test_stored_fills_that_do_not_rederive_are_refused(self) -> None:
+        evidence = self.fx.evidence(bridge())
+        round_trip = self.fx.fills((funding_hours(1), funding_hours(10)))
+        self._refused(store.STORED_FILLS_DO_NOT_REDERIVE, self.fx.section(round_trip, evidence), evidence,
+                      round_trip, tamper=True)
 
 
 class RegistryBindingTests(unittest.TestCase):

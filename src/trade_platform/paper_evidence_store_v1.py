@@ -26,6 +26,10 @@ What is stored
     bridges it binds (``None`` for ``NO_FUNDING_EVIDENCE_SUPPLIED``). The section is
     re-derived *in full* from those bridges and the holding intervals it states --
     on write and on every read -- so a section the module would not produce is refused.
+    The holding intervals and the skipped-fill fact it states must also be exactly
+    those :func:`~trade_platform.paper_incubation_report_v1.incubation_report_v1`
+    derives from the cycle's stored paper fills recorded by ``as_of`` (again on write
+    and on every read), so a section over invented holdings is refused.
 
 Two clocks
 ----------
@@ -159,6 +163,8 @@ FUNDING_SECTION_WITHOUT_ITS_EVIDENCE: Final = "FUNDING_SECTION_WITHOUT_ITS_EVIDE
 FUNDING_AS_OF_IS_NOT_THE_REPORT_AS_OF: Final = "FUNDING_AS_OF_IS_NOT_THE_REPORT_AS_OF"
 CONFLICTING_DUPLICATE_FUNDING_EVIDENCE: Final = "CONFLICTING_DUPLICATE_FUNDING_EVIDENCE"
 STORED_FUNDING_EVIDENCE_DOES_NOT_REDERIVE: Final = "STORED_FUNDING_EVIDENCE_DOES_NOT_REDERIVE"
+FUNDING_HOLDINGS_DO_NOT_MATCH_STORED_FILLS: Final = "FUNDING_HOLDINGS_DO_NOT_MATCH_STORED_FILLS"
+STORED_FILLS_DO_NOT_REDERIVE: Final = "STORED_FILLS_DO_NOT_REDERIVE"
 
 
 class PaperEvidenceStoreError(ValueError):
@@ -843,6 +849,79 @@ def _stored_funding(row: Sequence[Any]) -> StoredFundingEvidenceV1:
         evidence_validation_hash=expected["evidence_validation_hash"])
 
 
+def _holding_key(item: Mapping[str, Any]) -> tuple[int, int, int, str]:
+    return (int(item["direction"]), int(item["start_micros"]), int(item["end_micros"]), str(item["end_kind"]))
+
+
+def _check_holdings_against_stored_fills(cursor: _Cursor, *, cycle_id: str, as_of: datetime,
+                                         section: Mapping[str, Any], bridges: Sequence[Mapping[str, Any]]) -> None:
+    """The section's holdings and skipped-fill fact are the stored fills' own, as known at ``as_of``.
+
+    The cycle's paper fills are loaded and re-derived by the loaders the terminal read
+    model uses (:func:`~trade_platform.paper_account_v1.cycle_fill_rows_v1`, the cycle's
+    cost policy and registry resolution); only fills recorded at or before ``as_of`` count.
+    The holdings come from :func:`~trade_platform.paper_incubation_report_v1.incubation_report_v1`
+    itself (no accounting here): the section's bridges are attached without a validation
+    binding, which changes no holding. A section binding no bridge states no holding; its
+    fills are still loaded and must re-derive.
+    """
+    from .paper_account_v1 import cycle_cost_policy_v1, cycle_fill_rows_v1, fills_signals_from_rows
+    from .paper_incubation_registry_v1 import (
+        IncubationRegistryError,
+        resolve_incubation_bindings_v1,
+    )
+    from .paper_incubation_report_v1 import incubation_report_v1
+
+    known_micros = _micros(as_of)
+    candidate = section["candidate"]
+    study_id, trial_id, symbol = str(candidate["study_id"]), str(candidate["trial_id"]), str(candidate["symbol"])
+    try:
+        cost = cycle_cost_policy_v1(cursor, cycle_id)
+        try:
+            resolution: Any = resolve_incubation_bindings_v1(cursor, cycle_id=cycle_id)
+        except IncubationRegistryError:
+            resolution = None  # as the read model: an unresolved registry binds nothing, holdings are unchanged
+        fill_rows, signal_rows = cycle_fill_rows_v1(cursor, cycle_id)
+        identities, _ = fills_signals_from_rows(fill_rows, signal_rows)
+        hashes = [str(row[0]).strip() for row in fill_rows]
+        recorded: dict[str, datetime] = {}
+        if hashes:
+            cursor.execute("SELECT content_hash, recorded_at FROM paper_incubation_fills WHERE content_hash = ANY(%s)",
+                           (hashes,))
+            recorded = {str(row[0]).strip(): _aware(row[1]) for row in cursor.fetchall()}
+        fills = [identity for content_hash, identity in zip(hashes, identities, strict=True)
+                 if recorded[content_hash] <= as_of and int(identity["decided_at_micros"]) <= known_micros]
+        report = incubation_report_v1(fills, cost, as_of=as_of, resolution=resolution)
+    except (PaperEvidenceStoreError, ValueError, KeyError, TypeError) as error:
+        raise _refuse(STORED_FILLS_DO_NOT_REDERIVE, error) from error
+    if not bridges:
+        return
+    reported = any((str(item["study_id"]), str(item["trial_id"]), str(item["symbol"])) == (study_id, trial_id, symbol)
+                   for item in report["candidates"])
+    derived_holdings: list[tuple[int, int, int, str]] = []
+    derived_skipped = False
+    if reported:
+        try:
+            proxy = candidate_funding_evidence_v1(
+                study_id=study_id, trial_id=trial_id, symbol=symbol,
+                bridges=[_StoredBridgeV1(item["identity"], str(item["content_hash"])) for item in bridges])
+            with_funding = incubation_report_v1(fills, cost, as_of=as_of, resolution=resolution, funding=[proxy])
+            (entry,) = [item for item in with_funding["candidates"]
+                        if (str(item["study_id"]), str(item["trial_id"])) == (study_id, trial_id)]
+            derived = entry["funding_evidence"]
+            derived_holdings = [_holding_key(item) for item in derived["holding_intervals"]]
+            derived_skipped = FILLS_SKIPPED_UNKNOWN_POSITION in derived["completeness_blockers"]
+        except (PaperFundingEvidenceError, ValueError, KeyError, TypeError) as error:
+            raise _refuse(STORED_FILLS_DO_NOT_REDERIVE, error) from error
+    try:
+        stated = [_holding_key(item) for item in section["holding_intervals"]]
+        skipped = FILLS_SKIPPED_UNKNOWN_POSITION in section["completeness_blockers"]
+    except (KeyError, TypeError, ValueError) as error:
+        raise _refuse(FUNDING_HOLDINGS_DO_NOT_MATCH_STORED_FILLS, error) from error
+    if (stated, skipped) != (derived_holdings, derived_skipped):
+        raise _refuse(FUNDING_HOLDINGS_DO_NOT_MATCH_STORED_FILLS)
+
+
 # ---------------------------------------------------------------------------
 # Funding evidence: write and read
 # ---------------------------------------------------------------------------
@@ -883,6 +962,8 @@ def record_funding_evidence_v1(cursor: _Cursor, evidence: CandidateFundingEviden
             raise _holdout_refusal(end_micros)
     _check_candidate(cursor, cycle_id=cycle_id, study_id=values["study_id"], trial_id=values["trial_id"],
                      study_content_hash=None, claimed=values.pop("_claimed"))
+    _check_holdings_against_stored_fills(cursor, cycle_id=cycle_id, as_of=known, section=values["evidence"],
+                                         bridges=values["bridges"])
     return _insert_funding(cursor, {**values, "as_of": known, "recorded_at": recorded})
 
 
@@ -921,11 +1002,17 @@ def read_funding_evidence_v1(cursor: _Cursor, *, cycle_id: str, study_id: UUID, 
                    "ORDER BY as_of, recorded_at, record_id",
                    (cycle_id, _uuid(study_id, CANDIDATE_NOT_IN_STRATEGY_LAB),
                     _uuid(trial_id, CANDIDATE_NOT_IN_STRATEGY_LAB), known, known))
-    rows = [_stored_funding(row) for row in cursor.fetchall()]
+    raw = cursor.fetchall()
+    rows = [_stored_funding(row) for row in raw]
     for row in rows:
         if (row.cycle_id, str(row.study_id), str(row.trial_id)) != (cycle_id, str(study_id), str(trial_id)) \
                 or row.recorded_at > known or row.as_of > known:
             raise _refuse(STORED_FUNDING_EVIDENCE_DOES_NOT_REDERIVE)
+    bridges_at = _FUNDING_COLUMNS.index("bridges")
+    for row, stored in zip(rows, raw, strict=True):
+        # Every row's holdings are re-derived from the stored fills it was recorded against.
+        _check_holdings_against_stored_fills(cursor, cycle_id=row.cycle_id, as_of=row.as_of, section=row.evidence,
+                                             bridges=_json(stored[bridges_at]))
     return rows[-1] if rows else None
 
 
@@ -954,6 +1041,7 @@ __all__ = [
     "FUNDING_ECONOMIC_BLOCKERS_MISSING",
     "FUNDING_EVIDENCE_NOT_ISSUED",
     "FUNDING_EVIDENCE_NOT_OF_THIS_CANDIDATE",
+    "FUNDING_HOLDINGS_DO_NOT_MATCH_STORED_FILLS",
     "FUNDING_SECTION_CLAIMS_COSTABLE",
     "FUNDING_SECTION_DOES_NOT_REDERIVE",
     "FUNDING_SECTION_MALFORMED",
@@ -963,6 +1051,7 @@ __all__ = [
     "HOLDOUT_GATE_NOT_OF_THIS_CYCLE",
     "HOLDOUT_GATE_OPENING_NOT_REGISTERED",
     "PARITY_STATUSES_V1",
+    "STORED_FILLS_DO_NOT_REDERIVE",
     "STORED_FILL_PARITY_DOES_NOT_REDERIVE",
     "STORED_FUNDING_EVIDENCE_DOES_NOT_REDERIVE",
     "TIMESTAMP_NOT_TIMEZONE_AWARE",

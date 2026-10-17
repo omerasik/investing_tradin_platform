@@ -27,7 +27,8 @@ from tests.test_paper_evidence_store_v1 import (
 )
 
 CYCLE = "cycle-2026-08-20"
-FUTURE_CYCLE = "cycle-2031-03-17"  # registered prospectively by this test (idempotently)
+# Registered prospectively (idempotently) by this test; its holdout start must stay after every real cycle's.
+FUTURE_CYCLE = "cycle-2031-03-17"
 
 
 class Replay:
@@ -223,13 +224,14 @@ class PaperEvidenceStorePostgresTests(unittest.TestCase):
         )
 
         study_id, trial_id = self.ids
+        self.assertEqual([], self._stored_cycle_fills())  # the premise: the cycle holds no paper fill
         evidence = self.fx.evidence(bridge())
         base = funding_as_of()
+        # Sections built over the cycle's stored fills (none): no holding interval to bind.
         plan = [
-            ("NO_FUNDING_EVIDENCE_SUPPLIED", None, self.fx.fills((funding_hours(1), funding_hours(10))), base),
-            ("EVIDENCE_LINKED", evidence, self.fx.fills((funding_hours(1), None)), base + timedelta(hours=1)),
-            ("EVIDENCE_COMPLETE", evidence, self.fx.fills((funding_hours(1), funding_hours(10))),
-             base + timedelta(hours=2)),
+            ("none", "NO_FUNDING_EVIDENCE_SUPPLIED", None, None, base),
+            ("linked", "EVIDENCE_LINKED", evidence, None, base + timedelta(hours=1)),
+            ("linked-bound", "EVIDENCE_LINKED", evidence, "b" * 64, base + timedelta(hours=2)),
         ]
 
         def read(at: datetime) -> Any:
@@ -239,8 +241,8 @@ class PaperEvidenceStorePostgresTests(unittest.TestCase):
 
         self.assertIsNone(read(base - timedelta(seconds=1)))
         stored = {}
-        for state, item, fills, as_of in plan:
-            section = self.fx.section(fills, *([] if item is None else [item]), as_of=as_of)
+        for label, state, item, binding, as_of in plan:
+            section = self._section_over_stored_fills(item, as_of, binding)
             with self.cursor() as cursor:
                 row = record_funding_evidence_v1(cursor, item, section=section, cycle_id=CYCLE, as_of=as_of,
                                                  recorded_at=as_of + timedelta(minutes=5))
@@ -250,18 +252,34 @@ class PaperEvidenceStorePostgresTests(unittest.TestCase):
                              (row.completeness_blockers, row.economic_blockers))
             self.assertEqual({} if item is None else {item.bridges[0][0]: item.bridges[0][1]["funding_window"][
                 "content_hash"]}, dict(row.bridge_hashes))
-            stored[state] = row
+            stored[label] = row
             self.assertEqual(row, read(as_of + timedelta(minutes=5)))  # verbatim, distinct from ABSENT
-        self.assertIsNone(stored["NO_FUNDING_EVIDENCE_SUPPLIED"].window_start)
+        self.assertIsNone(stored["none"].window_start)
         self.assertEqual("NO_FUNDING_EVIDENCE_SUPPLIED", read(base + timedelta(hours=1, minutes=1)).state)
-        self.assertEqual(stored["EVIDENCE_COMPLETE"], read(base + timedelta(days=1)))
-        complete_section = self.fx.section(plan[2][2], evidence, as_of=plan[2][3])
+        self.assertEqual(stored["linked-bound"], read(base + timedelta(days=1)))
         with self.cursor() as cursor:
-            again = record_funding_evidence_v1(cursor, evidence, section=complete_section, cycle_id=CYCLE,
-                                               as_of=base + timedelta(days=2), recorded_at=base + timedelta(days=2))
-        self.assertEqual(stored["EVIDENCE_COMPLETE"], again)
+            again = record_funding_evidence_v1(cursor, evidence,
+                                               section=self._section_over_stored_fills(evidence, plan[2][4], "b" * 64),
+                                               cycle_id=CYCLE, as_of=base + timedelta(days=2),
+                                               recorded_at=base + timedelta(days=2))
+        self.assertEqual(stored["linked-bound"], again)
         self._assert_immutable("paper_funding_evidence_records", "record_id", again.record_id)
         self._assert_funding_tamper_is_refused(again)
+
+    def _stored_cycle_fills(self) -> list[Any]:
+        from trade_platform.paper_account_v1 import cycle_fill_rows_v1
+
+        with self.cursor() as cursor:
+            return cycle_fill_rows_v1(cursor, CYCLE)[0]
+
+    def _section_over_stored_fills(self, evidence: Any, as_of: datetime, binding: str | None) -> dict[str, Any]:
+        """The candidate's section as the module builds it over the cycle's stored fills (none here)."""
+        from trade_platform.paper_funding_evidence_v1 import funding_evidence_section_v1
+
+        return funding_evidence_section_v1(
+            evidence, study_id=str(self.fx.study.study_id), trial_id=self.fx.trial, symbol="BTCUSDT", holdings=[],
+            fills_skipped=0, as_of_micros=int(as_of.timestamp()) * 1_000_000, binding_validation_hash=binding,
+            fee_schedule_verified=False)
 
     def _assert_funding_tamper_is_refused(self, row: Any) -> None:
         from trade_platform import paper_evidence_store_v1 as store
@@ -283,7 +301,7 @@ class PaperEvidenceStorePostgresTests(unittest.TestCase):
         bridges = list(original[index["bridges"]])
         first_identity = dict(bridges[0]["identity"]) | {"status": "REFUSED_PRICE_EVIDENCE"}
         cases = [
-            tampered(state="EVIDENCE_LINKED"),
+            tampered(state="EVIDENCE_COMPLETE"),
             tampered(evidence={**evidence, "settlements_outside_holdings": 0}),
             tampered(bridges=[{**bridges[0], "identity": first_identity}]),
             tampered(evidence_validation_hash="a" * 64),
@@ -332,6 +350,18 @@ class PaperEvidenceStorePostgresTests(unittest.TestCase):
                                                 bridges=[bridge()])
         self._refused(store.CANDIDATE_NOT_IN_STRATEGY_LAB,
                       record(unknown, self.fx.section(fills, unknown)))
+        # A self-consistent section over holdings the stored fills do not have (one closed round trip
+        # where the cycle holds no fill), and one over an extra holding interval: both refused.
+        self.assertEqual([], self._stored_cycle_fills())
+        self._refused(store.FUNDING_HOLDINGS_DO_NOT_MATCH_STORED_FILLS, record(evidence, section))
+        extra = self.fx.section(self.fx.fills((funding_hours(1), funding_hours(3)), (funding_hours(5),
+                                                                                       funding_hours(10))), evidence)
+        self.assertEqual(2, len(extra["holding_intervals"]))
+        self._refused(store.FUNDING_HOLDINGS_DO_NOT_MATCH_STORED_FILLS, record(evidence, extra))
+        with self.cursor() as cursor:
+            cursor.execute("SELECT count(*) FROM paper_funding_evidence_records WHERE evidence_hash IN (%s, %s)",
+                           (section["evidence_hash"], extra["evidence_hash"]))
+            self.assertEqual(0, cursor.fetchone()[0])
 
     # -- immutability ---------------------------------------------------------------------
 
