@@ -49,7 +49,9 @@ code. ``blockers`` lists the current stage's own blockers first, then every
 later requirement along the path that is not evidenced yet. In this version the
 eligible stage is unreachable by construction: no authority persists the owner's
 forward exit criteria or runner liveness, and the R10 report models neither
-forward funding nor sizing -- each is listed, never assumed.
+forward funding nor sizing -- each is listed, never assumed. The owner's exit
+criteria are evaluated on top of this assessment by
+:mod:`trade_platform.incubation_exit_criteria_v1`, which never changes a stage here.
 
 Import-light (no numpy/pyarrow): the protected API may serve it.
 """
@@ -409,7 +411,10 @@ def _assess(evidence: CandidateEvidenceV1, cost_policy: CostPolicyV1, as_of: dat
     incubation = candidate["incubation"]
     facts.update({"window": incubation["window"], "evidenced_elapsed_micros": incubation["evidenced_elapsed_micros"],
                   "evidenced_segments": len(incubation["evidenced_segments"]), "fills": candidate["fills"],
-                  "chain_breaks": candidate["chain_breaks"], "elapsed_days": candidate["elapsed_days"]})
+                  "chain_breaks": candidate["chain_breaks"], "elapsed_days": candidate["elapsed_days"],
+                  "unfilled": candidate["fills"] - candidate["fills_by_status"][FILL_STATUS_FILLED],
+                  "fills_skipped_unknown_position": candidate["fills_skipped_unknown_position"],
+                  "round_trips": len(candidate["round_trips"])})
     failures, parity_blockers = _parity(ev.fills, ev.replay_fill_hashes)
     if candidate["chain_inconsistencies"]:
         failures.append(f"FORWARD_POSITION_CHAIN_INCONSISTENT:{candidate['chain_inconsistencies']}")
