@@ -1458,16 +1458,18 @@ class PostgresOperatorDashboardQueries:
         from datetime import datetime as _datetime
 
         from .paper_account_v1 import PaperAccountError, read_paper_account_v1, summarize_ledger_v1
-        from .research_terminal_read_model_v1 import current_cycle_id_v1
+        from .research_terminal_read_model_v1 import current_cycle_id_v1, read_account_risk_v1
 
         def read(cursor: Any) -> dict[str, Any]:
+            now = _datetime.now(UTC)
+            # The authoritative policy resolution and each recorded target's risk verdict, beside the ledger.
+            risk = read_account_risk_v1(cursor, account_id, now=now).model_dump(mode="json")
             try:
-                ledger = read_paper_account_v1(cursor, account_id, cycle_id=current_cycle_id_v1(),
-                                               as_of=_datetime.now(UTC))
+                ledger = read_paper_account_v1(cursor, account_id, cycle_id=current_cycle_id_v1(), as_of=now)
             except PaperAccountError as error:
-                return {"state": "BLOCKED", "account_id": account_id, "reasons": [str(error)]}
+                return {"state": "BLOCKED", "account_id": account_id, "reasons": [str(error)], "risk": risk}
             return {"state": "AVAILABLE", "account_id": account_id, "summary": summarize_ledger_v1(ledger),
-                    "ledger": ledger}
+                    "ledger": ledger, "risk": risk}
 
         return self._read(read)
 

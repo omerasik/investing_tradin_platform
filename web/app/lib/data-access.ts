@@ -760,6 +760,8 @@ export type PaperAccountLedger = {
     equity_by_scenario: Record<string, string>; open_positions: number };
   ledger?: { policy_version_id: string; cost_mode: string; risk_scenario: string; not_applicable_controls: string[];
     starting_capital: string; claim: string; content_hash: string };
+  /** The account's authoritative policy resolution and each recorded target's paper risk verdict. */
+  risk?: AccountRisk;
 };
 
 export function getTerminalPaperAccount(ctx: WorkspaceContext, accountId: string): Promise<EvidenceResult<PaperAccountLedger>> {
@@ -1112,10 +1114,83 @@ export type PaperFundingEvidence = {
   section: Record<string, unknown> | null;
 };
 
+/** One cost component of paper_economics_v1, verbatim. A figure exists only when VERIFIED. */
+export type EconomicsComponent = {
+  status: "VERIFIED" | "PROPOSED_SENSITIVITY_SCENARIO" | "MISSING" | "NON_COSTABLE_EVIDENCE";
+  value: string | null; by_scenario: Record<string, { cost_bps_per_side: string; value: string }> | null;
+  reasons: string[]; detail: Record<string, unknown>;
+};
+
+export type EconomicsSensitivityRow = {
+  name: string; status: "PROPOSED_SENSITIVITY_SCENARIO"; source: string; cost_bps_per_side: string;
+  rationale: string; value: string; in_net: false; scenario_hash: string;
+};
+
+/**
+ * Per-candidate paper economics (server-projected from stored fills). Every figure is a return per unit of
+ * notional (``units``), never money. NOT_LOADED / REFUSED / PROJECTED are distinct states.
+ */
+export type PaperEconomicsSection = {
+  status: "NOT_LOADED" | "REFUSED" | "PROJECTED";
+  reasons: string[];
+  units: "RETURN_PER_UNIT_NOTIONAL_SUMMED_NOT_COMPOUNDED_PENDING_OR_11";
+  money: "NONE_NOT_A_CURRENCY_AMOUNT";
+  sign_convention: string | null; economics_hash: string | null; economics_id: string | null; symbol: string | null;
+  cost_policy: { slot: string; mode: string } | null;
+  cost_approval: { packet_hash: string | null; authorized_by: string; authorized_on: string } | null;
+  exposure: { sizing: string; open_position_signed: number | null; closed_round_trips: number; closed_sides: number } | null;
+  gross_realized: { value: string; basis: string } | null;
+  gross_unrealized: {
+    status: "AVAILABLE" | "UNAVAILABLE" | "NOT_APPLICABLE_FLAT"; value: string | null; reasons: string[];
+    exposure: number | null; mark: Record<string, unknown> | null; detail: Record<string, unknown>; in_net: false;
+  } | null;
+  unrealized_mark_source: string;
+  fees: EconomicsComponent | null; slippage: EconomicsComponent | null; funding: EconomicsComponent | null;
+  sensitivity_rows: EconomicsSensitivityRow[];
+  net: { status: "CONFIRMED" | "NOT_COSTABLE" | "INCOMPLETE"; scope: string; by_scenario: Record<string, string> | null;
+    reasons: string[] } | null;
+  settlement_boundaries: Record<string, unknown> | null; provenance: Record<string, unknown> | null;
+  claim: "PAPER_ECONOMICS_PROJECTION_RESEARCH_ONLY_NOT_VALIDATED";
+};
+
+/** An account's authoritative policy (resolve_account_policy_v1). ACTIVE only when the resolver says so. */
+export type AccountPolicyResolution = {
+  account_id: string; as_of: string; status: "ACTIVE" | "UNRESOLVED" | "BLOCKED"; policy_status: string | null;
+  policy_version_id: string | null; policy_content_hash: string | null; policy_recorded_at: string | null;
+  approved_by: string | null; approved_on: string | null; account: Record<string, unknown> | null;
+  not_applicable_controls: string[]; versions_recorded: number; versions_known_at_as_of: number;
+  blocking: string[]; unresolved: string[]; integrity_failures: Record<string, string>[];
+  claim: "ACCOUNT_POLICY_RESOLUTION_NEVER_ACTIVATES_AN_ACCOUNT";
+};
+
+export type PaperRiskControl = {
+  control: string; policy_fields: string[]; status: string; reason: string | null; evidence: Record<string, unknown>;
+};
+
+/** A recorded paper target assessed under a stored policy. NOT_LOADED is never a verdict; sizing only when ALLOWED. */
+export type PaperRiskView = {
+  status: "NOT_LOADED" | "ALLOWED" | "BLOCKED" | "UNRESOLVED"; loaded: boolean; reasons: string[];
+  account_id: string | null; account_source: "AUTHORIZED_EXIT_CRITERIA_BINDING" | "OPERATOR_SELECTED_ACCOUNT" | "NONE";
+  requested_target: { source: string; signal_id: string; symbol: string; study_id: string; trial_id: string;
+    target_from: number; target_to: number; decided_at: string } | null;
+  assessed_as_of: string | null; policy_resolution: Record<string, unknown> | null;
+  current_policy: AccountPolicyResolution | null; order_action: string | null; controls: PaperRiskControl[];
+  blocking_reasons: string[]; unresolved_reasons: string[]; sizing: Record<string, string | null> | null;
+  sizing_absent_reasons: string[]; assessment_hash: string | null; assessment_id: string | null;
+  execution_authority: false; claim: "PAPER_RISK_ASSESSMENT_NOT_EXECUTION_AUTHORITY";
+};
+
+export type AccountRisk = {
+  account_id: string; as_of: string; cycle_id: string; current_policy: AccountPolicyResolution;
+  candidates: PaperRiskView[]; reasons: string[]; execution_authority: false;
+  claim: "PAPER_RISK_ASSESSMENT_NOT_EXECUTION_AUTHORITY";
+};
+
 export type CandidatePaperEvidence = {
   study_id: string; study_content_hash: string; trial_id: string; trial_content_hash: string; cycle_id: string;
   symbol: string | null; incubation: Record<string, unknown> | null; parity: PaperParityEvidence;
-  funding: PaperFundingEvidence; claim: "PAPER_EVIDENCE_NOT_A_PROMOTION_DECISION"; execution_authority: "NONE";
+  funding: PaperFundingEvidence; economics: PaperEconomicsSection; risk: PaperRiskView;
+  claim: "PAPER_EVIDENCE_NOT_A_PROMOTION_DECISION"; execution_authority: "NONE";
   validated_claim: "NONE_VALIDATED"; as_of: string;
 };
 

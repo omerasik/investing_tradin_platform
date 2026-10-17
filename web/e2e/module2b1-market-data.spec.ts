@@ -223,6 +223,9 @@ test.describe("Module 2B-1 Professional Market & Data Workspaces", () => {
         await expect(table).toContainText("Walk-forward development");
         await expect(table).toContainText("NONE_VALIDATED");
         await expect(table).toContainText("NON_COSTABLE");
+        // Paper economics are labelled as a return per unit of notional (never money); risk only for a recorded target.
+        await expect(table).toContainText("Paper economics (return per unit notional)");
+        await expect(table).toContainText("Paper risk (recorded target)");
         await expect(compared).toContainText("Composite score: NONE");
         // Parity and funding not loaded by this read are NOT_LOADED, never INCOMPLETE.
         await expect(page.getByRole("region", { name: "Paper evidence" })).toContainText("NOT_LOADED");
