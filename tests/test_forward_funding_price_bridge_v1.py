@@ -49,20 +49,43 @@ from trade_platform.first_party_t4_forward_bars_v1 import (
     T4ForwardBarV1,
     T4ForwardDatasetBarsV1,
     T4PriceConventionV1,
+    forward_bars_from_seal_v1,
     resolve_t4_price_reference_v1,
+)
+from trade_platform.first_party_t4_normalization_v1 import sha256_json_v1
+from trade_platform.first_party_t4_settlement_mark_price_v1 import (
+    PRICE_QUANTUM_V1 as MARK_PRICE_QUANTUM_V1,
+)
+from trade_platform.first_party_t4_settlement_mark_price_v1 import (
+    UNRESOLVED_OWNER_DECISION_NEARBY_MARK_SELECTION_CONVENTION,
+    UNRESOLVED_OWNER_DECISION_SETTLEMENT_MARK_IDENTITY,
+    T4MarkEvidenceDatasetV1,
+    T4MarkObservationV1,
+    T4TickerRowClockV1,
+    mark_evidence_from_seal_v1,
+    resolve_settlement_mark_price_v1,
 )
 from trade_platform.forward_funding_price_bridge_v1 import (
     CONFIRMED,
     EVIDENCE_BOUND_NOT_COSTABLE_PRICE_CONVENTION_UNAPPROVED,
     EVIDENCE_BOUND_TRADE_PROXY_UNAPPROVED,
+    EXACT_TIMESTAMP_MATCH_IS_NOT_THE_PROVEN_SETTLEMENT_MARK,
     FIRST_MINUTE_OF_AN_HOURLY_SEGMENT_IS_NOT_PROVABLE,
+    HOST_ARRIVAL_UTC,
     LONGS_PAY_SHORTS,
+    MARK_EVIDENCE_EXACT,
+    MARK_EVIDENCE_NEARBY,
+    MARK_EVIDENCE_REFUSED,
+    MARK_EVIDENCE_UNAVAILABLE,
+    NEARBY_MARKS_REPORTED_NONE_SELECTED,
+    NO_NEARBY_MARK_WITHIN_THE_CALLER_TOLERANCE,
     PRICE_EVIDENCE_REFUSED,
     REFUSED_FUNDING_EVIDENCE,
     REFUSED_PRICE_EVIDENCE,
     SHORTS_PAY_LONGS,
     TRADE_PRICE_PROXY,
     UNRESOLVED_OWNER_DECISION_FUNDING_PRICE_CONVENTION,
+    VENUE_PUBLISHED_MARK_PRICE,
     ZERO_RATE_NO_TRANSFER,
     ForwardFundingPriceBridgeError,
     ForwardFundingPriceBridgeV1,
@@ -177,12 +200,59 @@ def _run(observations: Sequence[ForwardFundingObservationV1] | None = None, *,
          datasets: Sequence[T4ForwardDatasetBarsV1] | None = None, convention: Any = CLOSE,
          as_of: datetime = AS_OF, interval: PublishedFundingIntervalV1 | None = INTERVAL_8H,
          acceptance: HourlyAcceptanceV1 | None = None, symbol: str = "BTCUSDT",
-         approval: object = None) -> ForwardFundingPriceBridgeV1:
+         approval: object = None, marks: Sequence[Any] = (), tolerance: Any = None) -> ForwardFundingPriceBridgeV1:
     return bridge_forward_funding_prices_v1(
         _store([_observe(RATES)] if observations is None else observations), symbol=symbol, start_ms=D0, end_ms=END,
         as_of=as_of, published_interval=interval,
         datasets=[_dataset(_close_bars())] if datasets is None else datasets,
-        acceptance=_acceptance() if acceptance is None else acceptance, convention=convention, approval=approval)
+        acceptance=_acceptance() if acceptance is None else acceptance, convention=convention, approval=approval,
+        mark_evidence=list(marks), mark_nearby_tolerance_ms=tolerance)
+
+
+# Hand-built mark evidence. The host is 9.47 s behind the venue, so a ticker the
+# venue stamps at a settlement hour arrives in the previous host-arrival hour.
+_HOST_LAG_NS = 9_470_000_000
+_MARK_BOUND_NS = 9_800_000_000
+_INDEX, _MARK = "INDEX", "MARK"
+
+
+def _ticker(sequence: int, ts_ms: int, component: str, bound_ns: int = _MARK_BOUND_NS) -> T4TickerRowClockV1:
+    record = f"{sequence:064x}"
+    return T4TickerRowClockV1(
+        f"t4-ref:{record}:{component}", component, "delta", ts_ms, SESSION, sequence, record,
+        ts_ms * 1_000_000 - _HOST_LAG_NS, bound_ns, "session-rtt-sample-bracket-max-upper-v1:fixture")
+
+
+def _mark_dataset(events: Sequence[tuple[Any, ...]], *, number: int = 50,
+                  symbol: str = "BTCUSDT") -> T4MarkEvidenceDatasetV1:
+    """``events`` are ``(venue_ts_ms, component, price or None[, clock_bound_ns])``."""
+    rows, marks = [], []
+    for sequence, event in enumerate(sorted(events, key=lambda item: item[0]), start=1):
+        row = _ticker(sequence, event[0], event[1], *event[3:])
+        rows.append(row)
+        if event[1] == _MARK:
+            marks.append(T4MarkObservationV1(row, Decimal(event[2]).quantize(MARK_PRICE_QUANTUM_V1)))
+    return T4MarkEvidenceDatasetV1(
+        dataset_version_id=UUID(int=number), dataset_content_hash=f"{number:064x}", source_id=UUID(int=99),
+        session_id=SESSION, instrument="BTCUSDT-PERP", exchange_symbol=symbol,
+        segment_clock_evidence_hash="e" * 64, ticker_rows=tuple(rows), marks=tuple(marks))
+
+
+EXACT_MARK = "65000.25"
+
+
+def _exact_events(at: int, price: str = EXACT_MARK) -> list[tuple[Any, ...]]:
+    return [(at - 500, _INDEX, None), (at - 200, _MARK, "65000.10"), (at, _MARK, price), (at + 700, _INDEX, None)]
+
+
+def _nearby_events(at: int) -> list[tuple[Any, ...]]:
+    return [(at - 500, _INDEX, None), (at - 200, _MARK, "65000.10"), (at + 300, _MARK, "65000.40"),
+            (at + 700, _INDEX, None)]
+
+
+def _marks(events_for: Any = _exact_events, settlements: Sequence[int] = tuple(sorted(RATES)),
+           **kwargs: Any) -> T4MarkEvidenceDatasetV1:
+    return _mark_dataset([event for at in settlements for event in events_for(at)], **kwargs)
 
 
 class EvidenceBindingTests(unittest.TestCase):
@@ -205,7 +275,10 @@ class EvidenceBindingTests(unittest.TestCase):
             self.assertEqual(price["price"], str(Decimal("65001").quantize(PRICE_QUANTUM_V1)))
             self.assertEqual(price["max_clock_bound_nanos"], 350_000_000)
             # The hour holding the minute before the settlement is the previous UTC hour.
-            self.assertEqual(price["hour"]["hour_start_utc_nanos"], (settlement["settled_at_ms"] - _H) * 1_000_000)
+            self.assertEqual(price["hour_time_domain"], HOST_ARRIVAL_UTC)
+            self.assertEqual([hour["hour_start_utc_nanos"] for hour in price["hours"]],
+                             [(settlement["settled_at_ms"] - _H) * 1_000_000])
+            self.assertEqual(price["first_arrival_utc_nanos"], price["bar_open_micros"] * 1000 + 1_000_000_000)
             # Funding is known the next day; the price seconds after the instant: funding decides.
             self.assertEqual(settlement["funding_knowledge_at_micros"], observation.knowledge_at_micros)
             self.assertEqual(settlement["funding_observation_id"], str(observation.observation_id))
@@ -213,7 +286,8 @@ class EvidenceBindingTests(unittest.TestCase):
             self.assertNotIn("charge", settlement)
         self.assertIn("PRICE_IS_A_TRADE_PROXY_NOT_THE_VENUE_MARK_PRICE", result.reasons)
         self.assertIn(UNRESOLVED_OWNER_DECISION_FUNDING_PRICE_CONVENTION, result.unresolved_decisions)
-        self.assertIn("NO_PROVEN_FORWARD_MARK_PRICE_RESOLVER_V1", result.unresolved_decisions)
+        self.assertIn(UNRESOLVED_OWNER_DECISION_SETTLEMENT_MARK_IDENTITY, result.unresolved_decisions)
+        self.assertIn(UNRESOLVED_OWNER_DECISION_NEARBY_MARK_SELECTION_CONVENTION, result.unresolved_decisions)
         self.assertIn("FORWARD_FUNDING_ACQUISITION:UNRESOLVED_OWNER_AUTHORIZATION", result.unresolved_decisions)
 
     def test_the_open_convention_matches_the_historical_rule_but_is_still_unapproved(self) -> None:
@@ -364,7 +438,7 @@ class FundingStoreTests(unittest.TestCase):
             bridge_forward_funding_prices_v1(
                 [_observe(RATES)], symbol="BTCUSDT", start_ms=D0, end_ms=END, as_of=AS_OF,  # type: ignore[arg-type]
                 published_interval=INTERVAL_8H, datasets=[_dataset(_close_bars())], acceptance=_acceptance(),
-                convention=CLOSE)
+                convention=CLOSE, mark_evidence=[], mark_nearby_tolerance_ms=None)
 
     def test_a_stored_record_that_no_longer_reproduces_refuses_the_bridge(self) -> None:
         store = _store([_observe(RATES)])
@@ -376,14 +450,15 @@ class FundingStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(ForwardFundingError, "does_not_reproduce"):
             bridge_forward_funding_prices_v1(
                 store, symbol="BTCUSDT", start_ms=D0, end_ms=END, as_of=AS_OF, published_interval=INTERVAL_8H,
-                datasets=[_dataset(_close_bars())], acceptance=_acceptance(), convention=CLOSE)
+                datasets=[_dataset(_close_bars())], acceptance=_acceptance(), convention=CLOSE,
+                mark_evidence=[], mark_nearby_tolerance_ms=None)
 
 
 class SealedPriceEvidenceTests(_ForwardFixture):
     """The real path: prices from a sealed, raw-replayed fixture segment via ``forward_bars_from_seal_v1``."""
 
     def _bridge(self, dataset: T4ForwardDatasetBarsV1, convention: T4PriceConventionV1,
-                funding_root: str) -> ForwardFundingPriceBridgeV1:
+                funding_root: str, marks: Sequence[T4MarkEvidenceDatasetV1] = ()) -> ForwardFundingPriceBridgeV1:
         settled = _venue_minute(2)  # a fixture minute, standing in for a settlement instant
         first = (settled - _EPOCH) // timedelta(milliseconds=1)
         rates = {first: "0.0001", first + 8 * _H: "0"}
@@ -400,7 +475,28 @@ class SealedPriceEvidenceTests(_ForwardFixture):
         return bridge_forward_funding_prices_v1(
             store, symbol="BTCUSDT", start_ms=start, end_ms=end, as_of=_EPOCH + timedelta(milliseconds=received + 60_000),
             published_interval=PublishedFundingIntervalV1(8, "t4-funding:fixture", start * 1000),
-            datasets=[dataset], acceptance=t4_acceptance(dataset.session_id), convention=convention)
+            datasets=[dataset], acceptance=t4_acceptance(dataset.session_id), convention=convention,
+            mark_evidence=list(marks), mark_nearby_tolerance_ms=None)
+
+    def test_sealed_ticker_marks_sit_beside_the_sealed_trade_proxy(self) -> None:
+        seal = self.seal()
+        dataset = forward_bars_from_seal_v1(seal, store=self.store())
+        marks = mark_evidence_from_seal_v1(seal, store=self.store())  # the same seal's reference frame
+        result = self._bridge(dataset, CLOSE, "funding-marks", marks=[marks])
+        bound, missing = result.settlements
+        self.assertEqual(bound["price"]["evidence_kind"], TRADE_PRICE_PROXY)
+        mark = bound["mark_price"]
+        self.assertEqual(mark["evidence_kind"], VENUE_PUBLISHED_MARK_PRICE)
+        direct = resolve_settlement_mark_price_v1(
+            [marks], symbol="BTCUSDT", settled_at_ms=bound["settled_at_ms"],
+            acceptance=t4_acceptance(dataset.session_id), known_by=_venue_minute(60))
+        self.assertEqual(mark["resolution_hash"], direct.resolution_hash)
+        self.assertEqual(mark["evidence_class"],
+                         MARK_EVIDENCE_EXACT if direct.mark_price is not None else MARK_EVIDENCE_NEARBY)
+        self.assertEqual(missing["mark_price"]["evidence_class"], MARK_EVIDENCE_REFUSED)
+        self.assertEqual(missing["mark_price"]["refusal"], "settlement_instant_not_bracketed_by_one_sealed_segment")
+        self.assertEqual(result.identity["mark_evidence_datasets"],
+                         [[str(marks.dataset_version_id), marks.dataset_content_hash]])
 
     def test_sealed_prices_bind_and_missing_bars_refuse(self) -> None:
         dataset = self.dataset()
@@ -426,6 +522,181 @@ class SealedPriceEvidenceTests(_ForwardFixture):
             # A second, independently written store of the same evidence gives the same hash.
             again = self._bridge(dataset, convention, f"again-{convention.value}")
             self.assertEqual(result.content_hash, again.content_hash)
+
+
+class MarkEvidenceTests(unittest.TestCase):
+    """Venue mark evidence per settlement, beside -- never instead of -- the trade proxy."""
+
+    def _classes(self, result: ForwardFundingPriceBridgeV1) -> list[str]:
+        return [s["mark_price"]["evidence_class"] for s in result.settlements]
+
+    def test_an_exact_timestamp_match_is_labelled_as_not_the_proven_settlement_mark(self) -> None:
+        dataset = _marks()
+        result = _run(marks=[dataset])
+        self.assertEqual(result.status, EVIDENCE_BOUND_NOT_COSTABLE_PRICE_CONVENTION_UNAPPROVED)
+        self.assertEqual(self._classes(result), [MARK_EVIDENCE_EXACT] * 3)
+        self.assertIn(EXACT_TIMESTAMP_MATCH_IS_NOT_THE_PROVEN_SETTLEMENT_MARK, result.reasons)
+        self.assertEqual(result.identity["mark_evidence_classes"],
+                         {MARK_EVIDENCE_EXACT: 3, MARK_EVIDENCE_NEARBY: 0, MARK_EVIDENCE_REFUSED: 0,
+                          MARK_EVIDENCE_UNAVAILABLE: 0})
+        for settlement in result.settlements:
+            mark, price = settlement["mark_price"], settlement["price"]
+            self.assertEqual(settlement["status"], EVIDENCE_BOUND_TRADE_PROXY_UNAPPROVED)
+            self.assertEqual(price["evidence_kind"], TRADE_PRICE_PROXY)  # the proxy is kept, not replaced
+            self.assertEqual(mark["evidence_kind"], VENUE_PUBLISHED_MARK_PRICE)
+            self.assertEqual(mark["meaning"], EXACT_TIMESTAMP_MATCH_IS_NOT_THE_PROVEN_SETTLEMENT_MARK)
+            self.assertEqual(mark["mark_price"], str(Decimal(EXACT_MARK).quantize(MARK_PRICE_QUANTUM_V1)))
+            self.assertNotEqual(mark["mark_price"], price["price"])
+            self.assertEqual(mark["nearby"], [])
+            self.assertIn(UNRESOLVED_OWNER_DECISION_SETTLEMENT_MARK_IDENTITY, mark["unresolved_decisions"])
+            self.assertEqual(mark["hour_time_domain"], HOST_ARRIVAL_UTC)
+            direct = resolve_settlement_mark_price_v1(
+                [dataset], symbol="BTCUSDT", settled_at_ms=settlement["settled_at_ms"], acceptance=_acceptance(),
+                known_by=AS_OF)
+            self.assertEqual(mark["resolution_hash"], direct.resolution_hash)
+            self.assertEqual(mark["knowable_at_micros"], direct.knowable_at_micros)
+            # The mark carries its own knowledge; the funding/proxy pair's is unchanged.
+            self.assertEqual(settlement["evidence_knowable_at_micros"],
+                             max(settlement["funding_knowledge_at_micros"], price["knowable_at_micros"]))
+            self.assertNotIn("charge", settlement)
+            self.assertNotEqual(settlement["status"], CONFIRMED)
+
+    def test_nearby_marks_are_reported_and_none_is_selected(self) -> None:
+        result = _run(marks=[_marks(_nearby_events)])
+        self.assertEqual(self._classes(result), [MARK_EVIDENCE_NEARBY] * 3)
+        self.assertIn(NEARBY_MARKS_REPORTED_NONE_SELECTED, result.reasons)
+        for settlement in result.settlements:
+            mark = settlement["mark_price"]
+            self.assertIsNone(mark["mark_price"])
+            self.assertIsNone(mark["resolution"]["mark_price"])
+            self.assertEqual(mark["meaning"], NEARBY_MARKS_REPORTED_NONE_SELECTED)
+            self.assertEqual([(n["side"], n["offset_millis"]) for n in mark["nearby"]], [("BEFORE", -200), ("AFTER", 300)])
+            self.assertEqual([n["within_caller_tolerance"] for n in mark["nearby"]], [None, None])
+            self.assertIsNone(mark["nearby_tolerance_ms"])
+            self.assertIn(UNRESOLVED_OWNER_DECISION_NEARBY_MARK_SELECTION_CONVENTION, mark["unresolved_decisions"])
+
+    def test_a_caller_tolerance_only_restricts_and_is_recorded(self) -> None:
+        dataset = _marks(_nearby_events)
+        open_ended, within, outside = (_run(marks=[dataset], tolerance=t) for t in (None, 250, 100))
+        self.assertEqual(self._classes(within), [MARK_EVIDENCE_NEARBY] * 3)
+        for settlement in within.settlements:
+            mark = settlement["mark_price"]
+            self.assertIsNone(mark["mark_price"])  # within tolerance is still not a selection
+            self.assertEqual([n["within_caller_tolerance"] for n in mark["nearby"]], [True, False])
+            self.assertEqual(mark["nearby_tolerance_ms"], 250)
+        self.assertEqual(self._classes(outside), [MARK_EVIDENCE_REFUSED] * 3)
+        self.assertEqual({s["mark_price"]["refusal"] for s in outside.settlements},
+                         {NO_NEARBY_MARK_WITHIN_THE_CALLER_TOLERANCE})
+        self.assertEqual([within.identity["mark_nearby_tolerance_ms"], outside.identity["mark_nearby_tolerance_ms"]],
+                         [250, 100])
+        self.assertEqual(len({open_ended.content_hash, within.content_hash, outside.content_hash}), 3)
+        # A tolerance never changes an exact match.
+        self.assertEqual(self._classes(_run(marks=[_marks()], tolerance=0)), [MARK_EVIDENCE_EXACT] * 3)
+        for tolerance in (True, -1, 1.5, "250", Decimal(250)):
+            with self.assertRaisesRegex(ForwardFundingPriceBridgeError, "tolerance_must_be_none_or_non_negative"):
+                _run(marks=[dataset], tolerance=tolerance)
+
+    def test_no_mark_evidence_is_unavailable_and_changes_no_status(self) -> None:
+        result = _run()
+        self.assertEqual(result.status, EVIDENCE_BOUND_NOT_COSTABLE_PRICE_CONVENTION_UNAPPROVED)
+        self.assertEqual(self._classes(result), [MARK_EVIDENCE_UNAVAILABLE] * 3)
+        for settlement in result.settlements:
+            self.assertEqual(settlement["mark_price"]["refusal"], "no_mark_evidence_dataset_supplied")
+            self.assertIsNone(settlement["mark_price"]["resolution_hash"])
+            self.assertIn(f"MARK_UNAVAILABLE:{settlement['settled_at']}:no_mark_evidence_dataset_supplied",
+                          result.reasons)
+
+    def test_resolver_refusals_are_kept_verbatim(self) -> None:
+        only_first = _marks(settlements=[D0])
+        result = _run(marks=[only_first])
+        self.assertEqual(self._classes(result), [MARK_EVIDENCE_EXACT, MARK_EVIDENCE_REFUSED, MARK_EVIDENCE_REFUSED])
+        refused = result.settlements[1]["mark_price"]
+        self.assertEqual(refused["refusal"], "settlement_instant_not_bracketed_by_one_sealed_segment")
+        self.assertIsNone(refused["mark_price"])
+        self.assertEqual(result.status, EVIDENCE_BOUND_NOT_COSTABLE_PRICE_CONVENTION_UNAPPROVED)  # proxy unaffected
+        ambiguous = _mark_dataset([*_exact_events(D0), (D0, _MARK, "65009"), *_exact_events(D0 + 8 * _H),
+                                   *_exact_events(D0 + 16 * _H)])
+        first = _run(marks=[ambiguous]).settlements[0]["mark_price"]
+        self.assertEqual(first["refusal"], "ambiguous_ordering_distinct_marks_stamped_at_the_instant")
+        twice = _run(marks=[only_first, only_first]).settlements[0]["mark_price"]
+        self.assertEqual(twice["refusal"], "dataset_supplied_more_than_once")
+
+    def test_mark_hours_are_host_arrival_hours_not_venue_hours(self) -> None:
+        dataset = _marks()
+        settled = D0 + 8 * _H
+        # The venue hour starting at the settlement is a gap: every cited row arrived before it.
+        venue_gap = _acceptance({settled * 1_000_000: HourVerdictV1.UNPROVEN_GAP_EXCEEDS_BOUND})
+        mark = _run(marks=[dataset], acceptance=venue_gap).settlements[1]["mark_price"]
+        self.assertEqual(mark["evidence_class"], MARK_EVIDENCE_EXACT)
+        self.assertEqual([h["hour_start_utc_nanos"] for h in mark["resolution"]["hours"]],
+                         [(settled - _H) * 1_000_000])
+        # The host-arrival hour the rows landed in is the one that refuses.
+        arrival_gap = _acceptance({(settled - _H) * 1_000_000: HourVerdictV1.UNPROVEN_GAP_EXCEEDS_BOUND})
+        refused = _run(marks=[dataset], acceptance=arrival_gap).settlements[1]["mark_price"]
+        self.assertEqual(refused["refusal"], "hour_not_complete:UNPROVEN_GAP_EXCEEDS_BOUND")
+
+    def test_a_mark_not_knowable_at_the_decision_instant_is_refused(self) -> None:
+        last = D0 + 16 * _H
+        as_of_us = (AS_OF - _EPOCH) // timedelta(microseconds=1)
+        # The row closing the set at the instant is only provably known 1 us after the decision instant.
+        late_bound = (as_of_us + 1) * 1000 - ((last + 700) * 1_000_000 - _HOST_LAG_NS)
+        events = [*_exact_events(D0), *_exact_events(D0 + 8 * _H), *_exact_events(last)[:-1],
+                  (last + 700, _INDEX, None, late_bound)]
+        dataset = _mark_dataset(events)
+        result = _run(marks=[dataset])
+        self.assertEqual(self._classes(result), [MARK_EVIDENCE_EXACT, MARK_EVIDENCE_EXACT, MARK_EVIDENCE_REFUSED])
+        self.assertEqual(result.settlements[2]["mark_price"]["refusal"], "mark_evidence_not_yet_knowable_at_known_by")
+        self.assertEqual(result.settlements[2]["status"], EVIDENCE_BOUND_TRADE_PROXY_UNAPPROVED)
+        later = _run(marks=[dataset], as_of=AS_OF + timedelta(microseconds=1))
+        self.assertEqual(later.settlements[2]["mark_price"]["evidence_class"], MARK_EVIDENCE_EXACT)
+        self.assertEqual(later.settlements[2]["mark_price"]["knowable_at_micros"], as_of_us + 1)
+
+    def test_identities_are_deterministic_and_tampering_shows(self) -> None:
+        one, two = _marks(settlements=[D0], number=50), _marks(settlements=[D0 + 8 * _H, D0 + 16 * _H], number=51)
+        forward, backward = _run(marks=[one, two]), _run(marks=[two, one])
+        self.assertEqual(forward.content_hash, backward.content_hash)
+        self.assertEqual(self._classes(forward), [MARK_EVIDENCE_EXACT] * 3)
+        for settlement in forward.settlements:
+            mark = settlement["mark_price"]
+            self.assertEqual(sha256_json_v1(mark["resolution"]), mark["resolution_hash"])  # self-proving
+        # A different mark at an instant changes the identity, even with the same dataset id.
+        altered = _mark_dataset([*_exact_events(D0, price="65000.26")], number=50)
+        changed = _run(marks=[altered, two])
+        self.assertNotEqual(changed.content_hash, forward.content_hash)
+        self.assertEqual(changed.settlements[0]["mark_price"]["mark_price"],
+                         str(Decimal("65000.26").quantize(MARK_PRICE_QUANTUM_V1)))
+        # Off-scale prices never reach a hash: the observation refuses them.
+        with self.assertRaises(ValueError):
+            T4MarkObservationV1(one.marks[0].clock, Decimal("65000.1"))
+
+    def test_trade_evidence_and_foreign_symbols_are_never_mark_evidence(self) -> None:
+        bars = _dataset(_close_bars())
+        reference = resolve_t4_price_reference_v1([bars], instant=_EPOCH + timedelta(milliseconds=D0),
+                                                  convention=CLOSE, acceptance=_acceptance(), known_by=AS_OF)
+        for item in (bars, reference):
+            with self.assertRaisesRegex(ForwardFundingPriceBridgeError, "trade_price_evidence_is_never_mark"):
+                _run(marks=[item])
+        with self.assertRaisesRegex(ForwardFundingPriceBridgeError, "must_come_from_a_sealed_reference_frame"):
+            _run(marks=[{"markPrice": "65000"}])
+        with self.assertRaisesRegex(ForwardFundingPriceBridgeError, "mark_dataset_symbol_differs"):
+            _run(marks=[_marks(symbol="ETHUSDT")])
+        with self.assertRaisesRegex(ForwardFundingPriceBridgeError, "mark_evidence_must_be_a_declared_sequence"):
+            bridge_forward_funding_prices_v1(
+                _store([_observe(RATES)]), symbol="BTCUSDT", start_ms=D0, end_ms=END, as_of=AS_OF,
+                published_interval=INTERVAL_8H, datasets=[bars], acceptance=_acceptance(), convention=CLOSE,
+                mark_evidence=None, mark_nearby_tolerance_ms=None)  # type: ignore[arg-type]
+
+    def test_the_contract_records_the_mark_path_and_its_limits(self) -> None:
+        contract = bridge.BRIDGE_CONTRACT_V1
+        self.assertEqual(contract["mark_price_evidence_kind"], VENUE_PUBLISHED_MARK_PRICE)
+        self.assertEqual(contract["mark_exact_meaning"], EXACT_TIMESTAMP_MATCH_IS_NOT_THE_PROVEN_SETTLEMENT_MARK)
+        self.assertEqual(contract["mark_evidence_classes"],
+                         [MARK_EVIDENCE_EXACT, MARK_EVIDENCE_NEARBY, MARK_EVIDENCE_REFUSED, MARK_EVIDENCE_UNAVAILABLE])
+        self.assertEqual(contract["price_hour_time_domain"], HOST_ARRIVAL_UTC)
+        self.assertEqual(contract["charge"], "NOT_CALCULATED_PRICE_CONVENTION_UNAPPROVED")
+        params = inspect.signature(bridge_forward_funding_prices_v1).parameters
+        for name in ("mark_evidence", "mark_nearby_tolerance_ms"):
+            self.assertIs(params[name].default, inspect.Parameter.empty, name)  # no default
 
 
 class CallerErrorTests(unittest.TestCase):
