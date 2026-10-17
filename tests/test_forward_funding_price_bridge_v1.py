@@ -135,7 +135,10 @@ def _bar(open_micros: int, *, open_price: str = "65000.5", close_price: str = "6
         open_is_sequence_ambiguous=False, close_is_sequence_ambiguous=close_ambiguous,
         trade_manifest_hash="m" * 64,
         clock=T4BarClockEvidenceV1("o" * 64, "c" * 64, "CLOSE_BOUNDARY", 300_000_000, 350_000_000,
-                                   ("session-rtt-sample-bracket-max-upper-v1:fixture",), 2))
+                                   ("session-rtt-sample-bracket-max-upper-v1:fixture",), 2,
+                                   # Records arrive (host clock) inside the bar minute.
+                                   first_arrival_utc_nanos=open_micros * 1000 + 1_000_000_000,
+                                   last_arrival_utc_nanos=(open_micros + _MINUTE_US) * 1000 - 1))
 
 
 def _dataset(bars: Sequence[T4ForwardBarV1], *, number: int = 1, symbol: str = "BTCUSDT") -> T4ForwardDatasetBarsV1:
