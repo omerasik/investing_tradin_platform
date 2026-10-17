@@ -27,7 +27,7 @@ import {
 } from "../../lib/data-access";
 import { CommandConsole } from "./command-console";
 import { CandidateLifecycleSection, WalkForwardSection } from "./candidate-lifecycle";
-import { COMPARE_MAX_STUDIES, ComparisonSection, PaperEvidenceSection, type CompareSelection } from "./compare-section";
+import { AccountRiskSection, COMPARE_MAX_STUDIES, ComparisonSection, PaperEvidenceSection, type CompareSelection } from "./compare-section";
 import { WorkspaceToolbar } from "../../components/workspace-toolbar";
 import { QualityStateBadge } from "../../components/quality-state-badge";
 import { DataTable } from "../../components/data-table";
@@ -247,8 +247,11 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
   }
   const activation = activationResult.state === "AVAILABLE" ? activationResult.value : undefined;
   const commands = commandsResult.state === "AVAILABLE" ? commandsResult.value : undefined;
-  const activeAccounts = (accountsResult.state === "AVAILABLE" ? accountsResult.value : []).filter((a) => a.policy_status === "ACTIVE");
-  const ledgers = await Promise.all(activeAccounts.map((account) => getTerminalPaperAccount(ctx, account.account_id)));
+  const registeredAccounts = accountsResult.state === "AVAILABLE" ? accountsResult.value : [];
+  // Every registered account: the read restates its authoritative policy resolution and paper risk verdicts.
+  const accountReads = await Promise.all(registeredAccounts.map((account) => getTerminalPaperAccount(ctx, account.account_id)));
+  const activeAccounts = registeredAccounts.filter((a) => a.policy_status === "ACTIVE");
+  const ledgers = activeAccounts.map((account) => accountReads[registeredAccounts.indexOf(account)]);
   const overview = overviewResult.state === "AVAILABLE" ? overviewResult.value : undefined;
   const capture = captureResult.state === "AVAILABLE" ? captureResult.value : undefined;
   const signals = signalsResult.state === "AVAILABLE" ? signalsResult.value : undefined;
@@ -470,6 +473,7 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
             </tbody>
           </DataTable>
         ) : <p className="empty-notice">{accounts ? "No account context registered (OR-11 open)." : stateText(accountsResult)}</p>}
+        <AccountRiskSection accounts={registeredAccounts} reads={accountReads} />
       </Step>
 
       <Step id="paper" title="Paper" claim="INCUBATING · UNIT EXPOSURE · GROSS">

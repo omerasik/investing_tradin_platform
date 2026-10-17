@@ -90,6 +90,18 @@ class ResearchTerminalReadModelPostgresTests(unittest.TestCase):
             mine = next(view for view in queries.terminal_accounts() if view.account_id == account.account_id)
             self.assertEqual("UNCONFIGURED", mine.policy_status)
             self.assertTrue(all(reason.endswith("_OR_11") for reason in mine.unresolved))
+            # The paper-account read restates the authoritative resolution: UNCONFIGURED is never ACTIVE, and no
+            # recorded target is ever sized under it.
+            paper = queries.terminal_paper_account(account.account_id)
+            self.assertEqual("BLOCKED", paper["state"])
+            current = paper["risk"]["current_policy"]
+            self.assertEqual(("UNRESOLVED", "UNCONFIGURED"), (current["status"], current["policy_status"]))
+            self.assertIn("ACCOUNT_POLICY_UNCONFIGURED", current["unresolved"])
+            self.assertTrue(any(reason.startswith("MISSING_OWNER_") for reason in current["unresolved"]))
+            for item in paper["risk"]["candidates"]:  # other tests' cycle signals, if any: never sized here
+                self.assertEqual(("UNRESOLVED", None), (item["status"], item["sizing"]))
+            self.assertEqual(not paper["risk"]["candidates"],
+                             paper["risk"]["reasons"] == ["NO_STORED_INCUBATING_SIGNAL_TARGET_FOR_CANDIDATE_IN_CYCLE"])
 
             # The report is the current cycle's: these fixture fills' INCUBATING evidence is no recorded
             # validation of cycle-2026-08-20, so they are never part of it (cycle isolation).
@@ -270,6 +282,12 @@ class ResearchTerminalReadModelPostgresTests(unittest.TestCase):
                 self.assertIn(FUNDING_BRIDGES_NOT_LOADED, paper.funding.reasons)
                 self.assertEqual(("NON_COSTABLE", False), (paper.funding.cost_status, paper.funding.costable))
                 self.assertEqual(study.content_hash, paper.study_content_hash)
+                # No cycle fill: nothing is projected; no recorded target or bound account: risk is not assessed.
+                self.assertEqual((NOT_LOADED, None), (paper.economics.status, paper.economics.net))
+                self.assertEqual("RETURN_PER_UNIT_NOTIONAL_SUMMED_NOT_COMPOUNDED_PENDING_OR_11", paper.economics.units)
+                self.assertEqual((NOT_LOADED, None, None), (paper.risk.status, paper.risk.assessment_hash,
+                                                            paper.risk.sizing))
+                self.assertIn("NO_ACCOUNT_BOUND_BY_AUTHORIZED_EXIT_CRITERIA", paper.risk.reasons)
 
             ordered = queries.terminal_comparison(
                 study_ids=[study.study_id], sort=ComparisonSortV1(SortDimensionV1.DECIMAL_BASELINE, "trades", "DESC"))

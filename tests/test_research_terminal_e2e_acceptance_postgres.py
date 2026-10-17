@@ -226,8 +226,16 @@ class ResearchTerminalAcceptancePostgresTests(unittest.TestCase):
             for reason in account_view["unresolved"]:
                 self.assertIn(f"BLOCKED_OWNER_DECISION_OR_11:{reason}", ready.blockers)
             ledger = get(f"research-terminal/paper-account?account_id={account.account_id}")
+            risk = ledger.pop("risk")
             self.assertEqual({"state": "BLOCKED", "account_id": account.account_id,
                               "reasons": ["BLOCKED_OWNER_DECISION_OR_11:NO_ACTIVE_ACCOUNT_POLICY"]}, ledger)
+            # Its authoritative policy resolution is UNRESOLVED (never ACTIVE) with every missing owner value.
+            self.assertEqual(("UNRESOLVED", "UNCONFIGURED", False),
+                             (risk["current_policy"]["status"], risk["current_policy"]["policy_status"],
+                              risk["execution_authority"]))
+            for reason in account_view["unresolved"]:
+                self.assertIn(reason, risk["current_policy"]["unresolved"])
+            self.assertTrue(all(item["sizing"] is None for item in risk["candidates"]))
 
             # 5. Paper incubation report: registry-resolved, unopened, gross, never cost-complete.
             incubation = get("research-terminal/incubation")["report"]
