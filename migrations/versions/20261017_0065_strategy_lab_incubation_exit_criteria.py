@@ -1,7 +1,7 @@
 """strategy lab forward incubation exit criteria (Phase R10, OR-7 exit contract)
 
 Revision ID: 20261017_0065
-Revises: 20261016_0063
+Revises: 20261017_0064
 Create Date: 2026-10-17
 
 ``strategy_lab_incubation_exit_criteria`` holds immutable, content-addressed
@@ -22,7 +22,7 @@ from alembic import op
 from trade_platform.postgres_schema import immutable_trigger_sql
 
 revision = "20261017_0065"
-down_revision = "20261016_0063"
+down_revision = "20261017_0064"
 branch_labels = None
 depends_on = None
 
