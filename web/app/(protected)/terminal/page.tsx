@@ -8,7 +8,9 @@ import {
   getTerminalCommands,
   getTerminalPaperAccount,
   getTerminalIncubation,
+  getTerminalComparison,
   getTerminalOverview,
+  getTerminalPaperEvidence,
   getTerminalReruns,
   getTerminalSignals,
   getTerminalValidation,
@@ -17,12 +19,15 @@ import {
   stateText,
   utc,
   type ActivationReadiness,
+  type CandidatePaperEvidence,
+  type ComparisonSort,
   type ReadinessAnswer,
   type TerminalCommand,
   type TerminalCycle,
 } from "../../lib/data-access";
 import { CommandConsole } from "./command-console";
 import { CandidateLifecycleSection, WalkForwardSection } from "./candidate-lifecycle";
+import { COMPARE_MAX_STUDIES, ComparisonSection, PaperEvidenceSection, type CompareSelection } from "./compare-section";
 import { WorkspaceToolbar } from "../../components/workspace-toolbar";
 import { QualityStateBadge } from "../../components/quality-state-badge";
 import { DataTable } from "../../components/data-table";
@@ -38,6 +43,8 @@ const STEPS = [
   ["strategy-lab", "Strategy Lab"],
   ["compare", "Compare"],
   ["validation", "Validation"],
+  ["candidate-readiness", "Candidate readiness"],
+  ["paper-evidence", "Paper evidence"],
   ["risk-preview", "Risk Preview"],
   ["paper", "Paper"],
   ["monitoring", "Monitoring"],
@@ -191,8 +198,39 @@ function CycleSummary({ cycle }: { cycle: TerminalCycle }) {
   );
 }
 
-export default async function ResearchTerminalPage() {
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const METRIC = /^[a-z][a-z0-9_]{0,63}$/;
+
+type RawParams = Record<string, string | string[] | undefined>;
+
+function one(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+/** The operator's comparison choice from the URL; malformed values are dropped, nothing is defaulted. */
+function compareSelection(raw: RawParams): CompareSelection {
+  const listed = ([] as string[]).concat(raw.compare_study ?? []);
+  const studies = [...new Set(listed.filter((id) => UUID.test(id)))].slice(0, COMPARE_MAX_STUDIES);
+  const metricText = one(raw.compare_metric);
+  const metric = metricText && METRIC.test(metricText) ? metricText : undefined;
+  const dimension = one(raw.compare_dimension);
+  const direction = one(raw.compare_direction);
+  const sort: ComparisonSort | undefined = metric && (dimension === "SEARCH" || dimension === "DECIMAL_BASELINE")
+    && (direction === "ASC" || direction === "DESC") ? { dimension, metric, direction } : undefined;
+  return { studies, metric, sort };
+}
+
+export default async function ResearchTerminalPage({ searchParams }: { searchParams?: Promise<RawParams> }) {
+  const raw = (await searchParams) ?? {};
+  const selection = compareSelection(raw);
+  const paperStudy = one(raw.paper_study);
+  const paperTrial = one(raw.paper_trial);
+  const paperTarget = paperStudy && paperTrial && UUID.test(paperStudy) && UUID.test(paperTrial) ? [paperStudy, paperTrial] as const : undefined;
   const ctx = await getWorkspaceContext();
+  const selectedReads = Promise.all([
+    selection.studies.length ? getTerminalComparison(ctx, selection.studies, selection.sort) : Promise.resolve(undefined),
+    paperTarget ? getTerminalPaperEvidence(ctx, paperTarget[0], paperTarget[1]) : Promise.resolve(undefined),
+  ]);
   const [overviewResult, captureResult, signalsResult, studiesResult, rerunsResult, validationResult, accountsResult, incubationResult,
     activationResult, commandsResult, walkForwardResult, candidatesResult] =
     await Promise.all([
@@ -200,6 +238,13 @@ export default async function ResearchTerminalPage() {
       getTerminalReruns(ctx), getTerminalValidation(ctx), getTerminalAccounts(ctx), getTerminalIncubation(ctx),
       getTerminalActivation(ctx), getTerminalCommands(ctx), getTerminalWalkForward(ctx), getTerminalCandidates(ctx),
     ]);
+  const [comparisonResult, paperResult] = await selectedReads;
+  const comparison = comparisonResult?.state === "AVAILABLE" ? comparisonResult.value : undefined;
+  const paperItems: CandidatePaperEvidence[] = [];
+  if (paperResult?.state === "AVAILABLE") paperItems.push(paperResult.value);
+  for (const item of comparison?.paper_evidence ?? []) {
+    if (!paperItems.some((seen) => seen.study_id === item.study_id && seen.trial_id === item.trial_id)) paperItems.push(item);
+  }
   const activation = activationResult.state === "AVAILABLE" ? activationResult.value : undefined;
   const commands = commandsResult.state === "AVAILABLE" ? commandsResult.value : undefined;
   const activeAccounts = (accountsResult.state === "AVAILABLE" ? accountsResult.value : []).filter((a) => a.policy_status === "ACTIVE");
@@ -327,12 +372,13 @@ export default async function ResearchTerminalPage() {
         </p>
         {studies && studies.items.length ? (
           <DataTable caption="Registered studies" ariaLabel="Strategy Lab studies">
-            <thead><tr><th scope="col">Study</th><th scope="col">Family</th><th scope="col">Trials</th><th scope="col">Progress</th><th scope="col">Why not authoritative</th></tr></thead>
+            <thead><tr><th scope="col">Study</th><th scope="col">Family</th><th scope="col">Trials</th><th scope="col">Progress</th><th scope="col">Why not authoritative</th><th scope="col">Next</th></tr></thead>
             <tbody>
               {studies.items.map((study) => (
                 <tr key={study.study_id}>
                   <td><a href={`/strategy-lab?study=${study.study_id}`}>{study.label}</a></td><td>{study.strategy_family}</td><td className="tabular-num">{study.planned_trial_count}</td>
                   <td>{counts(study.queue_states)}</td><td>{study.authority.reasons.join(", ")}</td>
+                  <td><a href={`/terminal?${new URLSearchParams({ compare_study: study.study_id }).toString()}#compare`}>Compare its frozen candidates</a></td>
                 </tr>
               ))}
             </tbody>
@@ -341,6 +387,18 @@ export default async function ResearchTerminalPage() {
       </Step>
 
       <Step id="compare" title="Compare" claim="GROSS · CONDITIONAL">
+        <p>
+          Frozen candidates side by side from recorded evidence only: the search tier, the Decimal rerun, walk-forward development
+          evidence and holdout validation stay in separate rows, and none of them is a validation. You choose the studies, the metric
+          shown and any sort; there is no composite score and no default ranking.
+        </p>
+        <ComparisonSection
+          studies={studies?.items}
+          selection={selection}
+          comparison={comparison}
+          unavailable={comparisonResult && comparisonResult.state !== "AVAILABLE" ? stateText(comparisonResult) : undefined}
+        />
+        <h3>Decimal reruns</h3>
         <p>Each frozen top-k recomputed in Decimal (OR-3). An established selection is numerically authoritative; its economics stay gross (no verified fee schedule) and T2-conditional.</p>
         {reruns && reruns.length ? reruns.map((rerun) => (
           <DataTable key={rerun.rerun_hash} caption={`${rerun.study_label} — ${rerun.metric || "metric"}`} ariaLabel={`Rerun ${rerun.rerun_hash.slice(0, 8)}`}>
@@ -382,8 +440,19 @@ export default async function ResearchTerminalPage() {
             ) : <p className="empty-notice">No candidate has been through a holdout. Opening it is one-shot and needs the owner&apos;s OR-7 packet.</p>}
           </>
         ) : <p className="empty-notice">{stateText(validationResult)}</p>}
-        <h3>Candidate readiness and exit criteria</h3>
+      </Step>
+
+      <Step id="candidate-readiness" title="Candidate readiness" claim="ASSESSMENT · NOT A DECISION">
+        <p>Each candidate&apos;s stored chain (study → rerun → walk-forward → preregistration → validation → exit criteria), its blockers and the owner gate each waits on.</p>
         <CandidateLifecycleSection candidates={candidatesResult.state === "AVAILABLE" ? candidatesResult.value : undefined} unavailable={stateText(candidatesResult)} />
+      </Step>
+
+      <Step id="paper-evidence" title="Paper evidence" claim="NON_COSTABLE · NOT A PROMOTION DECISION">
+        <p>Live/replay paper-fill parity and linked forward funding evidence per candidate, resolved server-side from stored rows. Nothing here promotes, sizes or charges.</p>
+        <PaperEvidenceSection
+          items={paperItems}
+          unavailable={paperResult && paperResult.state !== "AVAILABLE" ? stateText(paperResult) : undefined}
+        />
       </Step>
 
       <Step id="risk-preview" title="Risk Preview" claim="OR-11">

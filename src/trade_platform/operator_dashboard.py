@@ -36,6 +36,8 @@ from .research_terminal_commands_v1 import CommandView, read_commands_v1
 from .research_terminal_read_model_v1 import (
     AccountView,
     CandidateLifecycleView,
+    CandidatePaperEvidenceView,
+    ComparisonView,
     IncubationView,
     LiveSignalView,
     RerunView,
@@ -46,9 +48,11 @@ from .research_terminal_read_model_v1 import (
     read_accounts_v1,
     read_candidate_lifecycle_v1,
     read_candidate_lifecycles_v1,
+    read_candidate_paper_evidence_v1,
     read_incubation_v1,
     read_live_signals_v1,
     read_reruns_v1,
+    read_terminal_comparison_v1,
     read_terminal_overview_v1,
     read_validation_v1,
     read_walk_forward_report_v1,
@@ -1405,6 +1409,24 @@ class PostgresOperatorDashboardQueries:
         def operation(cursor: _Cursor) -> CandidateLifecycleView:
             try:
                 return read_candidate_lifecycle_v1(cursor, study_id, trial_id)
+            except TerminalObjectNotFound as error:
+                raise DashboardObjectNotFound(str(error)) from error
+        return self._read(operation)
+
+    def terminal_comparison(self, *, study_ids: list[UUID], sort: Any) -> ComparisonView:
+        """Recorded comparison of the studies' frozen sets with per-row paper evidence (no score, no default sort)."""
+        def operation(cursor: _Cursor) -> ComparisonView:
+            try:
+                return read_terminal_comparison_v1(cursor, study_ids=study_ids, sort=sort)
+            except TerminalObjectNotFound as error:
+                raise DashboardObjectNotFound(str(error)) from error
+        return self._read(operation)
+
+    def terminal_candidate_paper_evidence(self, study_id: UUID, trial_id: UUID) -> CandidatePaperEvidenceView:
+        """One candidate's live/replay parity and forward funding evidence (NOT_LOADED when not loaded)."""
+        def operation(cursor: _Cursor) -> CandidatePaperEvidenceView:
+            try:
+                return read_candidate_paper_evidence_v1(cursor, study_id, trial_id)
             except TerminalObjectNotFound as error:
                 raise DashboardObjectNotFound(str(error)) from error
         return self._read(operation)
