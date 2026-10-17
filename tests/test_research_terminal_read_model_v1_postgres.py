@@ -10,6 +10,12 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 
+def _identity(raw: object) -> dict:
+    import json
+
+    return raw if isinstance(raw, dict) else json.loads(raw)  # type: ignore[arg-type]
+
+
 @unittest.skipUnless(os.environ.get("POSTGRES_TEST_DSN"), "POSTGRES_TEST_DSN not configured")
 class ResearchTerminalReadModelPostgresTests(unittest.TestCase):
     @classmethod
@@ -113,6 +119,7 @@ class ResearchTerminalReadModelPostgresTests(unittest.TestCase):
             STAGE_UNRESOLVED,
             ExitCriteriaPacketV1,
             PostgresExitCriteriaRegistryV1,
+            resolve_exit_criteria_v1,
         )
         from trade_platform.operator_dashboard import (
             DashboardObjectNotFound,
@@ -170,30 +177,49 @@ class ResearchTerminalReadModelPostgresTests(unittest.TestCase):
                 queries.terminal_walk_forward_report("0" * 64)
 
             view = queries.terminal_candidate(study.study_id, UUID(selected[0]))
-            self.assertEqual((rerun.rerun_hash, draft.content_hash, "DRAFT", False, None),
-                             (view.links.rerun_hash, view.links.preregistration_hash,
-                              view.links.preregistration_status, view.links.holdout_opened_for_this_preregistration,
+            # The fixture study is deterministic, so in a shared database other tests may have recorded more
+            # packets for this candidate: the view is checked against what the stored rows resolve to.
+            self.assertEqual((rerun.rerun_hash, False, None),
+                             (view.links.rerun_hash, view.links.holdout_opened_for_this_preregistration,
                               view.links.validation_hash))
-            self.assertEqual([report.report_hash], [item.report_hash for item in view.links.walk_forward])
+            self.assertIn(report.report_hash, [item.report_hash for item in view.links.walk_forward])
             self.assertEqual((STAGE_DECIMAL_SELECTION_ESTABLISHED, "DECIMAL_SELECTION_ESTABLISHED",
                               "GROSS_NON_PROMOTABLE", "NONE_VALIDATED"),
                              (view.readiness.stage, view.claim, view.economics, view.validated_claim))
-            # The route assesses exactly what the readiness module assesses on the same stored rows.
             with database.transaction() as connection, connection.cursor() as cursor:
                 cost = cycle_cost_policy_v1(cursor, "cycle-2026-08-20")
-            expected = assess_candidate_readiness_v1(CandidateEvidenceV1(
-                study_id=str(study.study_id), trial_id=selected[0], rerun_identity=rerun.identity,
-                rerun_hash=rerun.rerun_hash, packet_identity=draft.identity(), packet_hash=draft.content_hash),
-                cost_policy=cost, as_of=view.as_of)
-            self.assertEqual(list(expected.blockers), view.readiness.blockers)
+                cursor.execute("SELECT identity, status FROM strategy_lab_preregistrations "
+                               "WHERE preregistration_hash=%s", (view.links.preregistration_hash,))
+                packet_identity, packet_status = cursor.fetchone()
+                registered = resolve_exit_criteria_v1(cursor, cycle_id="cycle-2026-08-20",
+                                                      study_id=str(study.study_id), trial_id=selected[0])
+                cursor.execute("SELECT count(*) FROM strategy_lab_incubation_exit_criteria WHERE criteria_hash=%s",
+                               (criteria.content_hash,))
+                self.assertEqual(1, cursor.fetchone()[0])  # the DRAFT is stored, never upgraded
+            self.assertEqual(packet_status, view.links.preregistration_status)
+            assert registered is not None
+            self.assertEqual((registered.criteria_hash, registered.packet.status),
+                             (view.exit_criteria.criteria_hash, view.exit_criteria.status))
+            self.assertEqual(view.exit_criteria.criteria_hash, view.links.criteria_hash)
+            if view.exit_criteria.status == "DRAFT":
+                self.assertEqual((None, STAGE_UNRESOLVED), (view.exit_criteria.authorized_by, view.exit_criteria.stage))
+                self.assertTrue(all(value == "UNRESOLVED" for value in view.exit_criteria.thresholds.values()))
+                self.assertIn("MISSING_OWNER_AUTHORIZATION", view.exit_criteria.unresolved)
+                # The route assesses exactly what the readiness module assesses on the same stored rows.
+                expected = assess_candidate_readiness_v1(CandidateEvidenceV1(
+                    study_id=str(study.study_id), trial_id=selected[0], rerun_identity=rerun.identity,
+                    rerun_hash=rerun.rerun_hash, packet_identity=_identity(packet_identity),
+                    packet_hash=view.links.preregistration_hash), cost_policy=cost, as_of=view.as_of)
+                self.assertEqual(list(expected.blockers), view.readiness.blockers)
+                self.assertEqual([NOT_LOADED_RUNNER_LIVENESS, NOT_LOADED_PARITY, NOT_LOADED_ACCOUNT_POLICY],
+                                 view.evidence_not_loaded)
+            else:  # another test authorized this candidate's criteria: shown as such, never as the draft
+                self.assertEqual("AUTHORIZED", view.exit_criteria.status)
+                self.assertIsNotNone(view.exit_criteria.authorized_by)
+                self.assertEqual([], view.exit_criteria.unresolved)
+                self.assertNotEqual(STAGE_UNRESOLVED, view.exit_criteria.stage)
             self.assertTrue({"OR-6", "OR-7", "OR-11"} <= set(view.readiness.owner_gates))
-            self.assertEqual(("DRAFT", criteria.content_hash, None, STAGE_UNRESOLVED),
-                             (view.exit_criteria.status, view.exit_criteria.criteria_hash,
-                              view.exit_criteria.authorized_by, view.exit_criteria.stage))
-            self.assertTrue(all(value == "UNRESOLVED" for value in view.exit_criteria.thresholds.values()))
-            self.assertIn("MISSING_OWNER_AUTHORIZATION", view.exit_criteria.unresolved)
-            self.assertEqual([NOT_LOADED_RUNNER_LIVENESS, NOT_LOADED_PARITY, NOT_LOADED_ACCOUNT_POLICY],
-                             view.evidence_not_loaded)
+            self.assertEqual([NOT_LOADED_RUNNER_LIVENESS, NOT_LOADED_PARITY], view.evidence_not_loaded[:2])
 
             other = queries.terminal_candidate(study.study_id, UUID(unselected))
             self.assertEqual((STAGE_SEARCH_ONLY, "SEARCH_NON_AUTHORITATIVE", "NOT_RECORDED", None),
