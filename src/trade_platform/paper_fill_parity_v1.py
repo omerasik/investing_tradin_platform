@@ -34,8 +34,8 @@ references compare exactly; no price is ever inferred.
 * **Bars** (within the live observation window of each symbol): every field of
   the bar except knowledge times. A sealed bar the live feed never produced
   inside its window is a live capture gap (``BAR_ABSENT_FROM_LIVE``); a live bar
-  absent from the seal is ``BAR_ABSENT_FROM_SEALED_REPLAY`` -- or, after the last
-  sealed bar, ``REPLAY_BAR_NOT_SEALED`` (unavailable).
+  absent from the seal is ``BAR_ABSENT_FROM_SEALED_REPLAY`` -- or, before the
+  first or after the last sealed bar, ``REPLAY_BAR_NOT_SEALED`` (unavailable).
 * **Signals**, keyed by (symbol, study, trial, signal bar), across eight
   dimensions: ``candidate`` (identity, authority, holdout, policy slots),
   ``signal`` (explanation and bar/window provenance), ``target``,
@@ -51,6 +51,16 @@ references compare exactly; no price is ever inferred.
   restarted in between and its warm-up emitted nothing (``LIVE_RUNNER_RESTART_GAP``);
   with no later live signal continuity is unproven; outside the live window the
   bar was not observed. All three are ``UNAVAILABLE``.
+* Coverage edges. The replay is fed the sealed bars from the live window's first
+  minute on, so both runners start from the same history; sealed bars before it
+  only yield replay signals the live side never observed. A live decision at bar
+  *b* depends on the rolling window of the last bar before *b* (its target is
+  the "previous" one) and of *b* itself, i.e. on every live bar since the start
+  of that earlier window. When that start lies before the first sealed bar the
+  replay cannot rebuild the decision, so every signal there -- matched, live-only
+  or replay-only -- is ``REPLAY_WINDOW_NOT_SEALED`` (unavailable), never a
+  divergence. Bars are still compared one by one, so a sealed bar that disagrees
+  still fails.
 * Live sequence faults: a signal naming a predecessor that is not the
   immediately preceding live signal of its candidate (``DIVERGED``) or one not
   supplied (``UNAVAILABLE``); two live signals or fills for one key; a fill whose
@@ -66,6 +76,7 @@ re-derive its own hash is refused outright (:class:`PaperFillParityError`).
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -123,6 +134,7 @@ LIVE_SIGNAL_PREDECESSOR_NOT_SUPPLIED: Final = "LIVE_SIGNAL_PREDECESSOR_NOT_SUPPL
 LIVE_FILL_SIGNAL_NOT_SUPPLIED: Final = "LIVE_FILL_SIGNAL_NOT_SUPPLIED"
 REPLAY_BAR_NOT_SEALED: Final = "REPLAY_BAR_NOT_SEALED"
 REPLAY_FILL_BAR_NOT_SEALED: Final = "REPLAY_FILL_BAR_NOT_SEALED"
+REPLAY_WINDOW_NOT_SEALED: Final = "REPLAY_WINDOW_NOT_SEALED"
 NO_MATCHED_FILLED_OBSERVATION: Final = "NO_MATCHED_FILLED_OBSERVATION"
 
 # Divergence reasons.
@@ -251,6 +263,50 @@ def _unique_bars(bars: Iterable[tuple[str, T4MinuteBarV1]], side: str) -> dict[t
     return out
 
 
+def _sealed_span(replay: Iterable[tuple[str, int]]) -> tuple[dict[str, int], dict[str, int]]:
+    """First and last sealed bar open per symbol."""
+    first: dict[str, int] = {}
+    last: dict[str, int] = {}
+    for symbol, opened in replay:
+        first[symbol] = min(opened, first.get(symbol, opened))
+        last[symbol] = max(opened, last.get(symbol, opened))
+    return first, last
+
+
+class _LiveDependencies:
+    """Where each live decision's inputs begin: the rolling-window start the R8 runner used.
+
+    The runner clears its history whenever a bar's segment differs from the previous
+    bar's, and a signal's ``target_from`` is the target of the last admitted bar before
+    it -- so a decision at bar *b* depends on every live bar since the window start of
+    that earlier bar (or of *b* itself when nothing was admitted before it).
+    """
+
+    def __init__(self, live_bars: Sequence[LiveBarV1], gate: LiveHoldoutGateV1) -> None:
+        self._all: dict[str, tuple[list[int], list[int]]] = {}
+        self._admitted: dict[str, tuple[list[int], list[int]]] = {}
+        previous: dict[str, tuple[int, int]] = {}  # symbol -> (segment, window start)
+        for bar in sorted(live_bars, key=lambda b: (b.symbol, b.bar.bar_open_micros)):
+            opened = bar.bar.bar_open_micros
+            last = previous.get(bar.symbol)
+            start = last[1] if last is not None and last[0] == bar.segment else opened
+            previous[bar.symbol] = (bar.segment, start)
+            for target, wanted in ((self._all, True), (self._admitted, gate.admits(opened))):
+                if wanted:
+                    opens, starts = target.setdefault(bar.symbol, ([], []))
+                    opens.append(opened)
+                    starts.append(start)
+
+    def start(self, symbol: str, bar_open: int) -> int:
+        opens, starts = self._admitted.get(symbol, ([], []))
+        index = bisect_left(opens, bar_open) - 1
+        if index >= 0:
+            return starts[index]
+        opens, starts = self._all.get(symbol, ([], []))
+        index = bisect_right(opens, bar_open) - 1
+        return starts[index] if index >= 0 else bar_open
+
+
 def _replay(candidates: Sequence[WatchedCandidateV1], gate: LiveHoldoutGateV1, cost_policy: CostPolicyV1,
             bars: Sequence[SealedReplayBarV1]) -> tuple[list[LiveSignalV1], list[PaperFillV1]]:
     """R8 signals and R10 fills over the sealed bars, through the unchanged engines."""
@@ -275,9 +331,7 @@ def _replay(candidates: Sequence[WatchedCandidateV1], gate: LiveHoldoutGateV1, c
 def _bar_observations(live: Mapping[tuple[str, int], T4MinuteBarV1], live_sessions: Mapping[tuple[str, int], UUID],
                       replay: Mapping[tuple[str, int], SealedReplayBarV1],
                       windows: Mapping[str, tuple[int, int]]) -> list[FillParityObservationV1]:
-    last_sealed: dict[str, int] = {}
-    for symbol, opened in replay:
-        last_sealed[symbol] = max(opened, last_sealed.get(symbol, opened))
+    first_sealed, last_sealed = _sealed_span(replay)
     keys = set(live) | {key for key in replay if key[0] in windows
                         and windows[key[0]][0] <= key[1] <= windows[key[0]][1]}
     out = []
@@ -298,9 +352,9 @@ def _bar_observations(live: Mapping[tuple[str, int], T4MinuteBarV1], live_sessio
                                     {"knowledge": knowledge}))
             continue
         if sealed is None:
-            beyond = key[1] > last_sealed.get(key[0], -1)
-            out.append(_observation(KIND_BAR, payload, OUTCOME_UNAVAILABLE if beyond else OUTCOME_DIVERGED,
-                                    [REPLAY_BAR_NOT_SEALED if beyond else BAR_ABSENT_FROM_SEALED_REPLAY],
+            outside = not first_sealed.get(key[0], -1) <= key[1] <= last_sealed.get(key[0], -1)
+            out.append(_observation(KIND_BAR, payload, OUTCOME_UNAVAILABLE if outside else OUTCOME_DIVERGED,
+                                    [REPLAY_BAR_NOT_SEALED if outside else BAR_ABSENT_FROM_SEALED_REPLAY],
                                     {"knowledge": knowledge}))
             continue
         live_values = {name: getattr(live_bar, name) for name in _BAR_FIELDS} | {"session_id": live_sessions[key]}
@@ -409,9 +463,25 @@ def _compare_signal(key: tuple[str, str, str, int], live: LiveSignalV1, replay: 
     return _observation(KIND_SIGNAL, _key_payload(key), outcome, reasons, facts)
 
 
+def _window_not_sealed(key: tuple[str, str, str, int], live: LiveSignalV1 | None, replay: LiveSignalV1 | None,
+                       coverage: Mapping[str, int | None]) -> FillParityObservationV1:
+    """A decision whose live inputs begin before the first sealed bar: the replay cannot rebuild it."""
+    return _observation(KIND_SIGNAL, _key_payload(key), OUTCOME_UNAVAILABLE, [REPLAY_WINDOW_NOT_SEALED], {
+        "coverage": dict(coverage),
+        "live_signal": None if live is None else {
+            "signal_id": str(live.signal_id), "target": [live.identity["target_from"], live.identity["target_to"]],
+            "window_first_bar_open_micros": live.identity["evidence"]["window_first_bar_open_micros"]},
+        "replay_signal": None if replay is None else {
+            "signal_id": str(replay.signal_id),
+            "target": [replay.identity["target_from"], replay.identity["target_to"]],
+            "window_first_bar_open_micros": replay.identity["evidence"]["window_first_bar_open_micros"]},
+        "knowledge": {"live_provisional": _knowledge(live, None), "sealed_finalized": _knowledge(replay, None)}})
+
+
 def _replay_only(key: tuple[str, str, str, int], replay: LiveSignalV1,
                  chain: Sequence[tuple[int, LiveSignalV1]], window: tuple[int, int] | None,
-                 seals: Mapping[tuple[str, int], str]) -> FillParityObservationV1:
+                 seals: Mapping[tuple[str, int], str],
+                 coverage: Mapping[str, int | None] | None) -> FillParityObservationV1:
     """A replay signal with no live counterpart: a divergence only where the live runner provably ran."""
     bar = key[3]
     facts: dict[str, Any] = {"replay_signal": {"signal_id": str(replay.signal_id),
@@ -420,6 +490,8 @@ def _replay_only(key: tuple[str, str, str, int], replay: LiveSignalV1,
                              "knowledge": {"live_provisional": None, "sealed_finalized": _knowledge(replay, None)}}
     if window is None or not window[0] <= bar <= window[1]:
         return _observation(KIND_SIGNAL, _key_payload(key), OUTCOME_UNAVAILABLE, [LIVE_NOT_OBSERVED_AT_BAR], facts)
+    if coverage is not None:
+        return _window_not_sealed(key, None, replay, coverage)
     later = next((signal for opened, signal in chain if opened > bar), None)
     if later is None:
         return _observation(KIND_SIGNAL, _key_payload(key), OUTCOME_UNAVAILABLE,
@@ -530,28 +602,50 @@ def assess_fill_parity_v1(
             continue
         live_fill_by_signal[signal_id] = fill
 
-    # Replay through the unchanged R8 runner and R10 engine.
-    replay_signals, replay_fills = _replay(candidates, holdout_gate, cost_policy, replay_bars)
-    replay_by_key = {_signal_key(signal): signal for signal in replay_signals}
+    # Replay through the unchanged R8 runner and R10 engine, from the live window's first minute
+    # on (the live runner's history began there); earlier sealed bars replay on their own and
+    # only yield signals the live side never observed.
+    before_live = [bar for bar in replay_bars if bar.symbol in windows
+                   and bar.bar.bar_open_micros < windows[bar.symbol][0]]
+    comparable = [bar for bar in replay_bars if bar.symbol not in windows
+                  or bar.bar.bar_open_micros >= windows[bar.symbol][0]]
+    replay_signals, replay_fills = _replay(candidates, holdout_gate, cost_policy, comparable)
+    unobserved_signals, _ = _replay(candidates, holdout_gate, cost_policy, before_live)
+    replay_by_key = {_signal_key(signal): signal for signal in [*unobserved_signals, *replay_signals]}
     replay_fill_by_signal = {str(fill.identity["signal_id"]): fill for fill in replay_fills}
-    replay_last: dict[str, int] = {}
-    for symbol, opened in replay_map:
-        replay_last[symbol] = max(opened, replay_last.get(symbol, opened))
+    replay_first, replay_last = _sealed_span(replay_map)
+    dependencies = _LiveDependencies(live_bars, holdout_gate)
+
+    def unsealed_window(symbol: str, bar_open: int) -> dict[str, int | None] | None:
+        """The coverage facts when the live decision's inputs begin before the first sealed bar."""
+        depends_from = dependencies.start(symbol, bar_open)
+        first = replay_first.get(symbol)
+        if first is not None and first <= depends_from:
+            return None
+        return {"live_inputs_first_bar_open_micros": depends_from, "first_sealed_bar_open_micros": first}
 
     for key in sorted(live_by_key.keys() | replay_by_key.keys()):
         live, replay = live_by_key.get(key), replay_by_key.get(key)
         if live is not None and replay is not None:
+            coverage = unsealed_window(key[0], key[3])
+            if coverage is not None:
+                observations.append(_window_not_sealed(key, live, replay, coverage))
+                continue
             observations.append(_compare_signal(
                 key, live, replay, live_fill_by_signal.get(str(live.signal_id)),
                 replay_fill_by_signal.get(str(replay.signal_id)), live_last_bar=windows[key[0]][1],
                 replay_last_bar=replay_last.get(key[0], -1), seals=seals))
         elif replay is not None:
-            observations.append(_replay_only(key, replay, chains.get(key[:3], []), windows.get(key[0]), seals))
+            observations.append(_replay_only(key, replay, chains.get(key[:3], []), windows.get(key[0]), seals,
+                                             unsealed_window(key[0], key[3])))
         elif live is not None:
-            sealed = (key[0], key[3]) in replay_map
             beyond = key[3] > replay_last.get(key[0], -1)
-            outcome, reason = ((OUTCOME_DIVERGED, SIGNAL_ABSENT_REPLAY) if sealed or not beyond
-                               else (OUTCOME_UNAVAILABLE, REPLAY_BAR_NOT_SEALED))
+            coverage = None if beyond else unsealed_window(key[0], key[3])
+            if coverage is not None:
+                observations.append(_window_not_sealed(key, live, None, coverage))
+                continue
+            outcome, reason = ((OUTCOME_UNAVAILABLE, REPLAY_BAR_NOT_SEALED) if beyond
+                               else (OUTCOME_DIVERGED, SIGNAL_ABSENT_REPLAY))
             observations.append(_observation(KIND_SIGNAL, _key_payload(key), outcome, [reason], {
                 "live_signal": {"signal_id": str(live.signal_id),
                                 "target": [live.identity["target_from"], live.identity["target_to"]]},

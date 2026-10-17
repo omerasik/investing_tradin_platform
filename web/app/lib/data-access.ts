@@ -1038,6 +1038,123 @@ export function getTerminalIncubation(ctx: WorkspaceContext): Promise<EvidenceRe
   return terminal(ctx, authorityUrl(ctx.origin, "/operator-dashboard/research-terminal/incubation"), "Paper incubation is unavailable.");
 }
 
+/** A recorded value is ``RECORDED`` with its stored text, or ``MISSING`` -- never zero. */
+export type ComparisonMetric = { key: string; state: "RECORDED" | "MISSING"; value: string | null };
+
+export type ComparisonRerunLag = {
+  lag_micros: number; reconciliation: string; held_divergence_bars: number | null;
+  trade_count_divergence: number | null; metrics: ComparisonMetric[];
+};
+
+export type ComparisonDispersion = {
+  metric: string; folds_with_value: number; folds_missing: number; folds_not_numeric: number;
+  min: string | null; max: string | null; median_nearest_rank: string | null; spread: string | null;
+  positive: number; zero: number; negative: number;
+};
+
+/** One frozen candidate with every evidence dimension kept apart (research_candidate_comparison_v1). */
+export type ComparisonRow = {
+  identity: {
+    study_id: string; study_content_hash: string; study_label: string; strategy_family: string; manifest_hash: string;
+    candidate_set_hash: string; freeze_rule: Record<string, unknown>; trial_id: string; trial_content_hash: string;
+    result_content_hash: string; frozen_rank: number; parameters: Record<string, string>;
+  };
+  search: {
+    claim: "SEARCH_NON_AUTHORITATIVE"; outcome: string; metrics: ComparisonMetric[]; frozen_metric: string;
+    frozen_metric_value: string; multiple_testing_trial_count: number; eligible_count: number; ineligible_count: number;
+    cutoff_tie: boolean;
+  };
+  decimal_rerun: {
+    claim: "DECIMAL_SELECTION_ESTABLISHED" | "FAIL_CLOSED_AUTHORITY_NOT_ESTABLISHED" | "NO_DECIMAL_RERUN_RECORDED";
+    economics: "GROSS_CONDITIONAL_NON_PROMOTABLE"; reruns_recorded: number; rerun_hash: string | null;
+    selection_status: string | null; in_decimal_selection: boolean | null; decimal_rank: number | null;
+    decimal_selection_changed_versus_search: boolean | null; claim_ceiling: string | null;
+    baseline: ComparisonRerunLag | null; sweep: ComparisonRerunLag[]; sweep_lags_missing: number[];
+  };
+  walk_forward: {
+    claim: "WALK_FORWARD_DEVELOPMENT" | "NO_WALK_FORWARD_REPORT_RECORDED"; numeric_tier: "SEARCH_NON_AUTHORITATIVE";
+    cost_mode: "GROSS_NON_PROMOTABLE";
+    reports: {
+      report_hash: string; fold_count: number; folds_excluded_no_eligible_trial: number; folds_selected_other_trial: number;
+      folds_selected_this_candidate: number[]; dispersion: ComparisonDispersion[]; multiple_testing_trial_count: number;
+    }[];
+  };
+  economics: {
+    completeness: "GROSS_ONLY" | "COST_SCENARIO_APPLIED_UNVERIFIED"; study_cost_mode: string;
+    verified_costs: "UNAVAILABLE"; net_profitability: "UNAVAILABLE"; reasons: string[];
+  };
+  provenance: {
+    datasets: { role: string; content_hash: string; evidence_tier: string; tier_claim: string }[];
+    baseline_lag_micros: number | null; timing_claim_ceiling: string | null; evaluation_before_holdout: boolean | null;
+  };
+  candidate_state: { state: string; evidence_hash: string; reasons: string[] } | null;
+  restated_claims: string[];
+  authority_reasons: string[];
+  promotable: false;
+  execution_authority: "NONE";
+  sort_state: "VALUE" | "MISSING" | "NOT_NUMERIC" | "UNSORTED";
+  sort_value: string | null;
+  sort_position: number | null;
+  tied_with: number;
+};
+
+/** Evidence this read did not load is ``NOT_LOADED`` -- distinct from a loaded ``INCOMPLETE`` verdict. */
+export type PaperParityEvidence = {
+  status: string; loaded: boolean; reasons: string[]; report_hash: string | null;
+  summary: Record<string, unknown>; live_side: { live_signals_recorded?: number; paper_fills_in_cycle?: number;
+    fills_by_status?: Record<string, number> };
+  claim: "READ_ONLY_PARITY_EVIDENCE_NOT_A_PROMOTION_DECISION";
+};
+
+export type PaperFundingEvidence = {
+  status: string; loaded: boolean; costable: false; cost_status: "NON_COSTABLE"; charge: "NOT_CALCULATED";
+  reasons: string[]; completeness_blockers: string[]; economic_blockers: string[]; evidence_hash: string | null;
+  section: Record<string, unknown> | null;
+};
+
+export type CandidatePaperEvidence = {
+  study_id: string; study_content_hash: string; trial_id: string; trial_content_hash: string; cycle_id: string;
+  symbol: string | null; incubation: Record<string, unknown> | null; parity: PaperParityEvidence;
+  funding: PaperFundingEvidence; claim: "PAPER_EVIDENCE_NOT_A_PROMOTION_DECISION"; execution_authority: "NONE";
+  validated_claim: "NONE_VALIDATED"; as_of: string;
+};
+
+export type TerminalComparison = {
+  claim: "RESEARCH_COMPARISON_NON_AUTHORITATIVE";
+  composite_score: "NONE";
+  holdout: "NOT_READ";
+  validated_claim: "NONE_VALIDATED";
+  evidence_stages: { stage: string; label: string; claim: string; meaning: string }[];
+  cycle: TerminalCycle;
+  comparison: {
+    schema_version: string; restated_claims: string[]; sort: { dimension: string; metric: string; direction: string } | null;
+    tie_break: string; studies: string[]; studies_without_frozen_set: string[]; rows: ComparisonRow[];
+    sort_counts: Record<string, number>; cross_study: { differences: string[] }; output_hash: string;
+  };
+  paper_evidence: CandidatePaperEvidence[];
+  as_of: string;
+};
+
+export type ComparisonSort = { dimension: "SEARCH" | "DECIMAL_BASELINE"; metric: string; direction: "ASC" | "DESC" };
+
+/** The operator's selection only: studies to compare and, optionally, one explicit sort. No default ranking. */
+export function getTerminalComparison(
+  ctx: WorkspaceContext, studyIds: string[], sort?: ComparisonSort,
+): Promise<EvidenceResult<TerminalComparison>> {
+  const query = new URLSearchParams();
+  for (const id of studyIds) query.append("study_id", id);
+  if (sort) {
+    query.set("sort_dimension", sort.dimension);
+    query.set("sort_metric", sort.metric);
+    query.set("sort_direction", sort.direction);
+  }
+  return terminal(ctx, authorityUrl(ctx.origin, `/operator-dashboard/research-terminal/compare?${query.toString()}`), "Candidate comparison is unavailable.");
+}
+
+export function getTerminalPaperEvidence(ctx: WorkspaceContext, studyId: string, trialId: string): Promise<EvidenceResult<CandidatePaperEvidence>> {
+  return terminal(ctx, authorityUrl(ctx.origin, `/operator-dashboard/research-terminal/candidates/${encodeURIComponent(studyId)}/${encodeURIComponent(trialId)}/paper-evidence`), "Paper evidence is unavailable.");
+}
+
 export function getStrategyLabStudies(
   ctx: WorkspaceContext,
   filters: { strategyFamily?: string; instrument?: string; limit?: number; offset?: number } = {},

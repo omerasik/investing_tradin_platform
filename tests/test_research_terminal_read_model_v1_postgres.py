@@ -232,6 +232,59 @@ class ResearchTerminalReadModelPostgresTests(unittest.TestCase):
         finally:
             database.close()
 
+    def test_comparison_and_paper_evidence_resolve_stored_identities_and_state_what_is_not_loaded(self) -> None:
+        from tests.test_activation_readiness_v1_postgres import recorded_established_study
+        from trade_platform.operator_dashboard import (
+            DashboardObjectNotFound,
+            PostgresOperatorDashboardQueries,
+        )
+        from trade_platform.persistence import PostgresDatabase
+        from trade_platform.research_candidate_comparison_v1 import (
+            ComparisonSortV1,
+            SortDimensionV1,
+        )
+        from trade_platform.research_terminal_read_model_v1 import (
+            FUNDING_BRIDGES_NOT_LOADED,
+            NOT_LOADED,
+            PARITY_REPORT_NOT_PERSISTED,
+        )
+
+        database = PostgresDatabase(os.environ["POSTGRES_TEST_DSN"])
+        try:
+            fixture = recorded_established_study(self.temp, database)
+            study = fixture["study"]
+            queries = PostgresOperatorDashboardQueries(database)
+            view = queries.terminal_comparison(study_ids=[study.study_id], sort=None)
+            self.assertEqual(("RESEARCH_COMPARISON_NON_AUTHORITATIVE", "NONE", "NOT_READ", "NONE_VALIDATED"),
+                             (view.claim, view.composite_score, view.holdout, view.validated_claim))
+            rows = view.comparison["rows"]
+            self.assertTrue(rows)
+            self.assertEqual({"UNSORTED"}, {row["sort_state"] for row in rows})
+            # The latest recorded frozen set of the study, resolved server-side (never a caller hash).
+            self.assertEqual({str(study.study_id)}, {row["identity"]["study_id"] for row in rows})
+            self.assertEqual([(row["identity"]["study_id"], row["identity"]["trial_id"]) for row in rows],
+                             [(str(item.study_id), str(item.trial_id)) for item in view.paper_evidence])
+            for paper in view.paper_evidence:
+                self.assertEqual((NOT_LOADED, [PARITY_REPORT_NOT_PERSISTED]), (paper.parity.status, paper.parity.reasons))
+                self.assertEqual(NOT_LOADED, paper.funding.status)
+                self.assertIn(FUNDING_BRIDGES_NOT_LOADED, paper.funding.reasons)
+                self.assertEqual(("NON_COSTABLE", False), (paper.funding.cost_status, paper.funding.costable))
+                self.assertEqual(study.content_hash, paper.study_content_hash)
+
+            ordered = queries.terminal_comparison(
+                study_ids=[study.study_id], sort=ComparisonSortV1(SortDimensionV1.DECIMAL_BASELINE, "trades", "DESC"))
+            self.assertEqual({"DECIMAL_BASELINE", "trades", "DESC"}, set(ordered.comparison["sort"].values()))
+
+            trial = UUID(rows[0]["identity"]["trial_id"])
+            single = queries.terminal_candidate_paper_evidence(study.study_id, trial)
+            self.assertEqual((NOT_LOADED, NOT_LOADED), (single.parity.status, single.funding.status))
+            with self.assertRaises(DashboardObjectNotFound):
+                queries.terminal_comparison(study_ids=[uuid4()], sort=None)
+            with self.assertRaises(DashboardObjectNotFound):
+                queries.terminal_candidate_paper_evidence(study.study_id, uuid4())
+        finally:
+            database.close()
+
 
 if __name__ == "__main__":
     unittest.main()

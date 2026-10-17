@@ -64,6 +64,9 @@ const requested = [
   `/operator-dashboard/research-terminal/walk-forward/${"a".repeat(64)}`,
   "/operator-dashboard/research-terminal/candidates?limit=50",
   `/operator-dashboard/research-terminal/candidates/${uuid}/${uuid}`,
+  `/operator-dashboard/research-terminal/candidates/${uuid}/${uuid}/paper-evidence`,
+  `/operator-dashboard/research-terminal/compare?study_id=${uuid}`,
+  `/operator-dashboard/research-terminal/compare?study_id=${uuid}&study_id=${uuid}&sort_dimension=SEARCH&sort_metric=total_return&sort_direction=DESC`,
 ];
 for (const target of requested) {
   assert.equal(allowedAuthorityTarget(target), true, `refused: ${target}`);
@@ -107,6 +110,12 @@ const refused = [
   `/operator-dashboard/research-terminal/candidates/${uuid}`,
   `/operator-dashboard/research-terminal/candidates/${uuid}/${uuid}?x=1`,
   `/operator-dashboard/research-terminal/candidates/${uuid}/../${uuid}`,
+  `/operator-dashboard/research-terminal/candidates/${uuid}/${uuid}/paper-evidence?x=1`,
+  `/operator-dashboard/research-terminal/candidates/${uuid}/paper-evidence`,
+  "/operator-dashboard/research-terminal/compare",
+  `/operator-dashboard/research-terminal/compare?sort_metric=total_return`,
+  `/operator-dashboard/research-terminal/compare?study_id=${uuid}&candidate_set_hash=${"a".repeat(64)}`,
+  `/operator-dashboard/research-terminal/compare?study_id=${uuid}&score=composite`,
   `/operator-dashboard/strategy-lab/studies/${uuid}?x=1`,
   "/operator-dashboard/strategy-lab/studies/ABCDEF01-0000-0000-0000-000000000001",
   `/operator-dashboard/strategy-lab/studies/${uuid}/trials?path=..`,

@@ -1,6 +1,7 @@
 import React from "react";
 import { utc, type TerminalCandidate, type TerminalWalkForward } from "../../lib/data-access";
 import { DataTable } from "../../components/data-table";
+import { paperEvidenceHref } from "./compare-section";
 
 /** Owner-gated blockers carry this prefix; everything else is evidence or engineering. */
 const OWNER_PREFIX = "BLOCKED_OWNER_DECISION_";
@@ -58,7 +59,7 @@ export function CandidateLifecycleSection({ candidates, unavailable }: { candida
   return (
     <>
       <DataTable caption="Candidate readiness (an assessment, never a decision)" ariaLabel="Candidate readiness">
-        <thead><tr><th scope="col">Candidate</th><th scope="col">Claim</th><th scope="col">Readiness stage</th><th scope="col">Waiting on owner</th><th scope="col">Exit criteria</th><th scope="col">Economics</th></tr></thead>
+        <thead><tr><th scope="col">Candidate</th><th scope="col">Claim</th><th scope="col">Readiness stage</th><th scope="col">Waiting on owner</th><th scope="col">Exit criteria</th><th scope="col">Economics</th><th scope="col">Next</th></tr></thead>
         <tbody>
           {candidates.map((item) => (
             <tr key={`${item.links.study_id}-${item.links.trial_id}`} data-candidate={item.links.trial_id}>
@@ -68,6 +69,7 @@ export function CandidateLifecycleSection({ candidates, unavailable }: { candida
               <td>{item.readiness.owner_gates.length ? item.readiness.owner_gates.join(" · ") : "—"}</td>
               <td><ExitCriteria exit={item.exit_criteria} /></td>
               <td><Badge label={item.economics} /></td>
+              <td><a href={paperEvidenceHref(item.links.study_id, item.links.trial_id)}>Paper evidence</a></td>
             </tr>
           ))}
         </tbody>
@@ -88,7 +90,7 @@ export function CandidateLifecycleSection({ candidates, unavailable }: { candida
               {" "}→ exit criteria {short(item.links.criteria_hash)} ({item.links.cycle_id}).
             </p>
             {item.evidence_not_loaded.length ? (
-              <p><Badge label="INCOMPLETE_EVIDENCE" /> Not derived by this read, so its blockers stay listed: {item.evidence_not_loaded.join(", ")}.</p>
+              <p><Badge label="NOT_LOADED" /> Not derived by this read (not loaded, which is not the same as incomplete), so its blockers stay listed: {item.evidence_not_loaded.join(", ")}.</p>
             ) : null}
             <h4>Owner-gated ({owner.length})</h4>
             {owner.length ? <ul>{owner.map((blocker) => <li key={blocker}><code>{blocker}</code></li>)}</ul> : <p>None.</p>}

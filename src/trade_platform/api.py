@@ -95,6 +95,8 @@ from .portfolio_risk import (
 )
 from .postgres_paper_oms import PostgresPaperOms
 from .research import CostModel, ResearchValidationError, SQLiteExperimentStore, WalkForwardProtocol
+from .research_candidate_comparison_v1 import MAX_STUDIES_V1 as COMPARISON_MAX_STUDIES_V1
+from .research_candidate_comparison_v1 import ComparisonSortV1, SortDimensionV1
 from .research_terminal_commands_v1 import (
     INLINE_KINDS,
     OWNER_KINDS,
@@ -108,6 +110,8 @@ from .research_terminal_commands_v1 import (
 from .research_terminal_read_model_v1 import (
     AccountView,
     CandidateLifecycleView,
+    CandidatePaperEvidenceView,
+    ComparisonView,
     IncubationView,
     LiveSignalView,
     RerunView,
@@ -684,6 +688,38 @@ def build_app(
     ) -> object:
         """One candidate: study -> rerun -> walk-forward -> readiness -> incubation identities and blockers."""
         return read_dashboard(lambda: queries.terminal_candidate(study_id, trial_id))
+
+    @app.get("/operator-dashboard/research-terminal/candidates/{study_id}/{trial_id}/paper-evidence",
+             response_model=CandidatePaperEvidenceView)
+    def dashboard_terminal_candidate_paper_evidence(
+        study_id: UUID, trial_id: UUID,
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """One candidate's live/replay fill parity and forward funding evidence (NOT_LOADED / NON_COSTABLE stated)."""
+        return read_dashboard(lambda: queries.terminal_candidate_paper_evidence(study_id, trial_id))
+
+    @app.get("/operator-dashboard/research-terminal/compare", response_model=ComparisonView)
+    def dashboard_terminal_compare(
+        study_id: list[UUID] = Query(),
+        sort_dimension: Literal["SEARCH", "DECIMAL_BASELINE"] | None = Query(default=None),
+        sort_metric: str | None = Query(default=None, min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]{0,63}$"),
+        sort_direction: Literal["ASC", "DESC"] | None = Query(default=None),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """Frozen candidates of the selected studies side by side, from recorded evidence only.
+
+        No composite score and no default order: a sort is one operator-chosen recorded
+        metric in an explicit direction, all three parameters or none. Each study's
+        latest recorded frozen set is resolved and re-derived server-side.
+        """
+        if not 1 <= len(study_id) <= COMPARISON_MAX_STUDIES_V1 or len(set(study_id)) != len(study_id):
+            raise HTTPException(status_code=422, detail="Select 1-20 distinct studies.")
+        chosen = (sort_dimension, sort_metric, sort_direction)
+        if any(value is not None for value in chosen) and any(value is None for value in chosen):
+            raise HTTPException(status_code=422, detail="A sort needs a dimension, a metric and a direction.")
+        sort = None if sort_dimension is None or sort_metric is None or sort_direction is None else ComparisonSortV1(
+            SortDimensionV1(sort_dimension), sort_metric, sort_direction)
+        return read_dashboard(lambda: queries.terminal_comparison(study_ids=list(study_id), sort=sort))
 
     @app.get("/operator-dashboard/research-terminal/validation", response_model=ValidationView)
     def dashboard_terminal_validation(
