@@ -35,17 +35,24 @@ from .real_market_data_provenance_v1 import (
 from .research_terminal_commands_v1 import CommandView, read_commands_v1
 from .research_terminal_read_model_v1 import (
     AccountView,
+    CandidateLifecycleView,
     IncubationView,
     LiveSignalView,
     RerunView,
+    TerminalObjectNotFound,
     TerminalOverview,
     ValidationView,
+    WalkForwardView,
     read_accounts_v1,
+    read_candidate_lifecycle_v1,
+    read_candidate_lifecycles_v1,
     read_incubation_v1,
     read_live_signals_v1,
     read_reruns_v1,
     read_terminal_overview_v1,
     read_validation_v1,
+    read_walk_forward_report_v1,
+    read_walk_forward_v1,
 )
 from .strategy_lab_read_model_v1 import (
     StrategyLabBreakEvenDistributionView,
@@ -1377,6 +1384,30 @@ class PostgresOperatorDashboardQueries:
     def terminal_reruns(self, *, limit: int = 50) -> list[RerunView]:
         """UI-2: Decimal authority reruns, newest first (selection authority only; economics gross)."""
         return self._read(lambda cursor: read_reruns_v1(cursor, limit=limit))
+
+    def terminal_walk_forward(self, *, limit: int = 50, study_id: UUID | None = None) -> list[WalkForwardView]:
+        """C.1.1 walk-forward reports: development evidence, search tier, gross; never validation."""
+        return self._read(lambda cursor: read_walk_forward_v1(cursor, limit=limit, study_id=study_id))
+
+    def terminal_walk_forward_report(self, report_hash: str) -> WalkForwardView:
+        def operation(cursor: _Cursor) -> WalkForwardView:
+            try:
+                return read_walk_forward_report_v1(cursor, report_hash)
+            except TerminalObjectNotFound as error:
+                raise DashboardObjectNotFound(str(error)) from error
+        return self._read(operation)
+
+    def terminal_candidates(self, *, limit: int = 50) -> list[CandidateLifecycleView]:
+        """Per-candidate lifecycle readiness and exit criteria (assessments, never decisions)."""
+        return self._read(lambda cursor: read_candidate_lifecycles_v1(cursor, limit=limit))
+
+    def terminal_candidate(self, study_id: UUID, trial_id: UUID) -> CandidateLifecycleView:
+        def operation(cursor: _Cursor) -> CandidateLifecycleView:
+            try:
+                return read_candidate_lifecycle_v1(cursor, study_id, trial_id)
+            except TerminalObjectNotFound as error:
+                raise DashboardObjectNotFound(str(error)) from error
+        return self._read(operation)
 
     def terminal_validation(self, *, limit: int = 200) -> ValidationView:
         """UI-2: the current cycle's holdout state and recorded candidate states."""

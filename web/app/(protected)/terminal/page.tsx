@@ -4,6 +4,7 @@ import {
   getStrategyLabStudies,
   getTerminalAccounts,
   getTerminalActivation,
+  getTerminalCandidates,
   getTerminalCommands,
   getTerminalPaperAccount,
   getTerminalIncubation,
@@ -11,6 +12,7 @@ import {
   getTerminalReruns,
   getTerminalSignals,
   getTerminalValidation,
+  getTerminalWalkForward,
   getWorkspaceContext,
   stateText,
   utc,
@@ -20,6 +22,7 @@ import {
   type TerminalCycle,
 } from "../../lib/data-access";
 import { CommandConsole } from "./command-console";
+import { CandidateLifecycleSection, WalkForwardSection } from "./candidate-lifecycle";
 import { WorkspaceToolbar } from "../../components/workspace-toolbar";
 import { QualityStateBadge } from "../../components/quality-state-badge";
 import { DataTable } from "../../components/data-table";
@@ -191,11 +194,11 @@ function CycleSummary({ cycle }: { cycle: TerminalCycle }) {
 export default async function ResearchTerminalPage() {
   const ctx = await getWorkspaceContext();
   const [overviewResult, captureResult, signalsResult, studiesResult, rerunsResult, validationResult, accountsResult, incubationResult,
-    activationResult, commandsResult] =
+    activationResult, commandsResult, walkForwardResult, candidatesResult] =
     await Promise.all([
       getTerminalOverview(ctx), getCaptureAvailability(ctx), getTerminalSignals(ctx), getStrategyLabStudies(ctx),
       getTerminalReruns(ctx), getTerminalValidation(ctx), getTerminalAccounts(ctx), getTerminalIncubation(ctx),
-      getTerminalActivation(ctx), getTerminalCommands(ctx),
+      getTerminalActivation(ctx), getTerminalCommands(ctx), getTerminalWalkForward(ctx), getTerminalCandidates(ctx),
     ]);
   const activation = activationResult.state === "AVAILABLE" ? activationResult.value : undefined;
   const commands = commandsResult.state === "AVAILABLE" ? commandsResult.value : undefined;
@@ -352,6 +355,8 @@ export default async function ResearchTerminalPage() {
             </tbody>
           </DataTable>
         )) : <p className="empty-notice">{reruns ? "No Decimal authority rerun recorded." : stateText(rerunsResult)}</p>}
+        <h3>Walk-forward</h3>
+        <WalkForwardSection reports={walkForwardResult.state === "AVAILABLE" ? walkForwardResult.value : undefined} unavailable={stateText(walkForwardResult)} />
       </Step>
 
       <Step id="validation" title="Validation" claim="NONE VALIDATED">
@@ -377,6 +382,8 @@ export default async function ResearchTerminalPage() {
             ) : <p className="empty-notice">No candidate has been through a holdout. Opening it is one-shot and needs the owner&apos;s OR-7 packet.</p>}
           </>
         ) : <p className="empty-notice">{stateText(validationResult)}</p>}
+        <h3>Candidate readiness and exit criteria</h3>
+        <CandidateLifecycleSection candidates={candidatesResult.state === "AVAILABLE" ? candidatesResult.value : undefined} unavailable={stateText(candidatesResult)} />
       </Step>
 
       <Step id="risk-preview" title="Risk Preview" claim="OR-11">

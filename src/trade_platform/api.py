@@ -9,6 +9,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Path as PathParam
 from pydantic import BaseModel, Field
 
 from .activation_readiness_v1 import ActivationReadiness, read_window_catalogue_v1
@@ -106,11 +107,13 @@ from .research_terminal_commands_v1 import (
 )
 from .research_terminal_read_model_v1 import (
     AccountView,
+    CandidateLifecycleView,
     IncubationView,
     LiveSignalView,
     RerunView,
     TerminalOverview,
     ValidationView,
+    WalkForwardView,
 )
 from .return_history import ReturnIngestionCadence, SQLitePortfolioReturnStore
 from .risk import SQLiteRiskDecisionStore
@@ -648,6 +651,39 @@ def build_app(
     ) -> object:
         """UI-2: Decimal authority reruns (selection authority only; economics gross and conditional)."""
         return read_dashboard(lambda: queries.terminal_reruns(limit=limit))
+
+    @app.get("/operator-dashboard/research-terminal/walk-forward", response_model=list[WalkForwardView])
+    def dashboard_terminal_walk_forward(
+        limit: int = Query(default=50, ge=1, le=200), study_id: UUID | None = Query(default=None),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """C.1.1 walk-forward reports: WALK_FORWARD_DEVELOPMENT / SEARCH_NON_AUTHORITATIVE / GROSS_NON_PROMOTABLE."""
+        return read_dashboard(lambda: queries.terminal_walk_forward(limit=limit, study_id=study_id))
+
+    @app.get("/operator-dashboard/research-terminal/walk-forward/{report_hash}", response_model=WalkForwardView)
+    def dashboard_terminal_walk_forward_report(
+        report_hash: str = PathParam(pattern=r"^[0-9a-f]{64}$"),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """One recorded walk-forward report by content hash (development evidence, never validation)."""
+        return read_dashboard(lambda: queries.terminal_walk_forward_report(report_hash))
+
+    @app.get("/operator-dashboard/research-terminal/candidates", response_model=list[CandidateLifecycleView])
+    def dashboard_terminal_candidates(
+        limit: int = Query(default=50, ge=1, le=100),
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """Per-candidate lifecycle readiness, blockers and exit criteria (AUTHORIZED vs DRAFT); never a decision."""
+        return read_dashboard(lambda: queries.terminal_candidates(limit=limit))
+
+    @app.get("/operator-dashboard/research-terminal/candidates/{study_id}/{trial_id}",
+             response_model=CandidateLifecycleView)
+    def dashboard_terminal_candidate(
+        study_id: UUID, trial_id: UUID,
+        _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
+    ) -> object:
+        """One candidate: study -> rerun -> walk-forward -> readiness -> incubation identities and blockers."""
+        return read_dashboard(lambda: queries.terminal_candidate(study_id, trial_id))
 
     @app.get("/operator-dashboard/research-terminal/validation", response_model=ValidationView)
     def dashboard_terminal_validation(

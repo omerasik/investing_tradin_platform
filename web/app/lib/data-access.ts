@@ -591,6 +591,55 @@ export type TerminalRerun = {
   recorded_at: string;
 };
 
+/** A recorded C.1.1 walk-forward report: development evidence, search tier, gross; never validation. */
+export type TerminalWalkForward = {
+  report_hash: string;
+  study_id: string;
+  study_label: string;
+  study_content_hash: string;
+  dataset_content_hash: string;
+  split_hash: string;
+  evaluation_class: "WALK_FORWARD_DEVELOPMENT";
+  numeric_tier: "SEARCH_NON_AUTHORITATIVE";
+  cost_mode: "GROSS_NON_PROMOTABLE";
+  promotable: false;
+  rule: Record<string, unknown>;
+  multiple_testing_trial_count: number;
+  evaluation_end_exclusive: string;
+  folds: {
+    fold: number; status: string; test_start: string; test_end_exclusive: string; selected_trial_id: string | null;
+    train_metric_value: string | null; test_metrics: Record<string, unknown>; flags: string[];
+  }[];
+  authority_reasons: string[];
+  recorded_at: string;
+};
+
+/** One candidate's readiness and exit criteria, read from its stored chain. An assessment, never a decision. */
+export type TerminalCandidate = {
+  links: {
+    study_id: string; study_label: string; trial_id: string; cycle_id: string; rerun_hash: string | null;
+    walk_forward: { report_hash: string; fold_count: number; folds_selecting_trial: number; recorded_at: string }[];
+    preregistration_hash: string | null; preregistration_status: "DRAFT" | "AUTHORIZED" | null;
+    holdout_opened_for_this_preregistration: boolean; validation_hash: string | null; criteria_hash: string | null;
+  };
+  claim: "SEARCH_NON_AUTHORITATIVE" | "DECIMAL_SELECTION_ESTABLISHED" | "INCUBATING" | "REJECTED" | "EVIDENCE_INCONSISTENT";
+  economics: "GROSS_NON_PROMOTABLE" | "VERIFIED_FEES_NOT_COST_COMPLETE";
+  readiness: {
+    stage: string; canonical_state: string | null; blockers: string[]; owner_gates: string[];
+    evidence: Record<string, unknown>; assessment_hash: string;
+    claim: "READINESS_ASSESSMENT_NOT_A_DECISION"; promotion: "PROFESSIONALLY_VALIDATED_RESERVED_NEVER_PROMOTED_HERE";
+  };
+  exit_criteria: {
+    status: "NOT_RECORDED" | "DRAFT" | "AUTHORIZED" | "REFUSED"; criteria_hash: string | null; recorded_at: string | null;
+    authorized_by: string | null; authorized_on: string | null; unresolved: string[]; thresholds: Record<string, unknown>;
+    stage: string; evidence_inputs: Record<string, string>; blockers: string[]; refusals: string[]; owner_gates: string[];
+    claim: "EXIT_READINESS_ASSESSMENT_NOT_A_DECISION"; account_activation: "NEVER_ACTIVATES_AN_ACCOUNT";
+  };
+  evidence_not_loaded: string[];
+  validated_claim: "NONE_VALIDATED";
+  as_of: string;
+};
+
 export type TerminalValidation = {
   cycle: TerminalCycle;
   candidates: {
@@ -967,6 +1016,14 @@ export function getTerminalReruns(ctx: WorkspaceContext): Promise<EvidenceResult
 
 export function getTerminalValidation(ctx: WorkspaceContext): Promise<EvidenceResult<TerminalValidation>> {
   return terminal(ctx, authorityUrl(ctx.origin, "/operator-dashboard/research-terminal/validation?limit=200"), "Validation state is unavailable.");
+}
+
+export function getTerminalWalkForward(ctx: WorkspaceContext): Promise<EvidenceResult<TerminalWalkForward[]>> {
+  return terminal(ctx, authorityUrl(ctx.origin, "/operator-dashboard/research-terminal/walk-forward?limit=50"), "Walk-forward reports are unavailable.");
+}
+
+export function getTerminalCandidates(ctx: WorkspaceContext): Promise<EvidenceResult<TerminalCandidate[]>> {
+  return terminal(ctx, authorityUrl(ctx.origin, "/operator-dashboard/research-terminal/candidates?limit=50"), "Candidate readiness is unavailable.");
 }
 
 export function getTerminalSignals(ctx: WorkspaceContext): Promise<EvidenceResult<TerminalSignal[]>> {
