@@ -6,7 +6,7 @@ import os
 import subprocess
 import sys
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock
 from uuid import UUID, uuid4
@@ -32,6 +32,7 @@ from trade_platform.research_terminal_read_model_v1 import (
     IncubationView,
     LiveSignalView,
     OwnerGateView,
+    PaperEconomicsSectionView,
     ParityEvidenceView,
     RerunView,
     TerminalOverview,
@@ -39,6 +40,7 @@ from trade_platform.research_terminal_read_model_v1 import (
     WalkForwardView,
     funding_evidence_view_v1,
     parity_evidence_view_v1,
+    stored_funding_evidence_view_v1,
 )
 from trade_platform.security import InMemoryRateLimiter, OperatorAuthenticator
 from trade_platform.strategy_lab_study_v1 import identity_hash_v1
@@ -194,10 +196,14 @@ def _funding_section(study: str, trial: str) -> dict[str, object]:
 
 
 def _paper(study: UUID, trial: UUID) -> CandidatePaperEvidenceView:
+    from trade_platform.research_terminal_read_model_v1 import _risk_not_loaded
+
     return CandidatePaperEvidenceView(
         study_id=study, study_content_hash="d" * 64, trial_id=trial, trial_content_hash="e" * 64,
         cycle_id="cycle-2026-08-20", symbol=None, incubation=None, parity=_parity(),
-        funding=funding_evidence_view_v1(None, bridges_loaded=False, not_loaded_reasons=["X"]), as_of=NOW)
+        funding=funding_evidence_view_v1(None, not_loaded_reasons=["X"]),
+        economics=PaperEconomicsSectionView(status="NOT_LOADED", reasons=["CANDIDATE_HAS_NO_PAPER_FILL_IN_THE_CURRENT_CYCLE"]),
+        risk=_risk_not_loaded(["NO_STORED_INCUBATING_SIGNAL_TARGET_FOR_CANDIDATE_IN_CYCLE"]), as_of=NOW)
 
 
 def _comparison(study: UUID, trial: UUID) -> ComparisonView:
@@ -248,6 +254,12 @@ class CompareAndPaperEvidenceApiTests(unittest.TestCase):
         self.assertEqual(("NOT_LOADED", False, "NOT_LOADED", False, "NON_COSTABLE"),
                          (paper["parity"]["status"], paper["parity"]["loaded"], paper["funding"]["status"],
                           paper["funding"]["costable"], paper["funding"]["cost_status"]))
+        self.assertEqual(("NOT_LOADED", "RETURN_PER_UNIT_NOTIONAL_SUMMED_NOT_COMPOUNDED_PENDING_OR_11",
+                          "NONE_NOT_A_CURRENCY_AMOUNT"),
+                         (paper["economics"]["status"], paper["economics"]["units"], paper["economics"]["money"]))
+        self.assertEqual(("NOT_LOADED", False, None, False),
+                         (paper["risk"]["status"], paper["risk"]["loaded"], paper["risk"]["sizing"],
+                          paper["risk"]["execution_authority"]))
         self.queries.terminal_candidate_paper_evidence.assert_called_with(self.study, self.trial)
 
     def test_no_default_sort_and_a_sort_is_explicit_and_complete(self) -> None:
@@ -310,29 +322,168 @@ class PaperEvidenceViewTests(unittest.TestCase):
 
     def test_funding_is_non_costable_and_its_section_must_rederive(self) -> None:
         section = _funding_section("s", "t")
-        view = funding_evidence_view_v1(section, bridges_loaded=False, not_loaded_reasons=["B", "A", "A"])
+        view = funding_evidence_view_v1(section, not_loaded_reasons=["B", "A", "A"])
         self.assertEqual(("NOT_LOADED", False, ["A", "B"]), (view.status, view.loaded, view.reasons))
         self.assertIn("MISSING_VERIFIED_FEE_SCHEDULE_OR_6", view.economic_blockers)
         self.assertEqual(("NON_COSTABLE", False, "NOT_CALCULATED"), (view.cost_status, view.costable, view.charge))
-        loaded = funding_evidence_view_v1(section, bridges_loaded=True, not_loaded_reasons=["A"])
-        self.assertEqual(("NO_FUNDING_EVIDENCE_SUPPLIED", True, []), (loaded.status, loaded.loaded, loaded.reasons))
-        self.assertEqual("NOT_LOADED", funding_evidence_view_v1(None, bridges_loaded=True,
-                                                                not_loaded_reasons=["A"]).status)
+        self.assertEqual("NOT_LOADED", funding_evidence_view_v1(None, not_loaded_reasons=["A"]).status)
         with self.assertRaises(ValueError):
-            funding_evidence_view_v1({**section, "state": "EVIDENCE_COMPLETE"}, bridges_loaded=True,
-                                     not_loaded_reasons=[])
+            funding_evidence_view_v1({**section, "state": "EVIDENCE_COMPLETE"}, not_loaded_reasons=["A"])
         costable = {key: value for key, value in section.items() if key != "evidence_hash"}
         costable["costable"] = True
         costable["evidence_hash"] = identity_hash_v1(costable)
         with self.assertRaises(ValueError):
-            funding_evidence_view_v1(costable, bridges_loaded=True, not_loaded_reasons=[])
+            funding_evidence_view_v1(costable, not_loaded_reasons=["A"])
+        with self.assertRaises(ValueError):  # a stored record whose section claims to be costable is refused
+            stored_funding_evidence_view_v1(_stored_funding_row("s", "t", costable), study_id="s", trial_id="t",
+                                            cycle_id=CYCLE.cycle_id)
         with self.assertRaises(ValueError):
             FundingEvidenceView(**{**view.model_dump(), "costable": True})
         with self.assertRaises(ValueError):
             ComparisonView(**{**_comparison(uuid4(), uuid4()).model_dump(), "composite_score": "WEIGHTED"})
 
 
+def _stored_parity_row(study: str, trial: str, status: str = "INCOMPLETE") -> object:
+    from trade_platform.paper_evidence_store_v1 import StoredFillParityV1
+
+    at = datetime(2026, 8, 2, tzinfo=UTC)
+    return StoredFillParityV1(
+        assessment_id=uuid4(), report_content_hash="c" * 64, cycle_id=CYCLE.cycle_id, study_id=UUID(study),
+        trial_id=UUID(trial), symbol="BTCUSDT", status=status,
+        reasons=() if status == "PASS" else ("REPLAY_BAR_NOT_OBSERVED",), as_of=at,
+        window_start=at - timedelta(days=1), window_end=at - timedelta(hours=22), source_hashes={},
+        identity={"summary": {"outcomes": {"MATCH": 59}}}, recorded_at=at + timedelta(hours=1), report_id=uuid4(),
+        schema_version="paper-fill-parity-v1", study_content_hash="d" * 64, authority_evidence_hash="v" * 64,
+        holdout_start=datetime(2026, 8, 20, tzinfo=UTC), holdout_end_exclusive=None)
+
+
+def _stored_funding_row(study: str, trial: str, section: dict[str, object] | None = None) -> object:
+    from trade_platform.paper_evidence_store_v1 import StoredFundingEvidenceV1
+
+    section = section or _funding_section(study, trial)
+    at = datetime(2026, 8, 2, tzinfo=UTC)
+    return StoredFundingEvidenceV1(
+        record_id=uuid4(), evidence_hash=str(section["evidence_hash"]), cycle_id=CYCLE.cycle_id,
+        study_id=UUID(study), trial_id=UUID(trial), symbol="ETHUSDT", state=str(section["state"]),
+        completeness_blockers=tuple(section["completeness_blockers"]),  # type: ignore[arg-type]
+        economic_blockers=tuple(section["economic_blockers"]), as_of=at,  # type: ignore[arg-type]
+        window_start=None, window_end=None, bridge_hashes={}, evidence=section, recorded_at=at + timedelta(minutes=5),
+        schema_version="paper-funding-evidence-v1", evidence_validation_hash=None)
+
+
+class StoredPaperEvidencePathTests(unittest.TestCase):
+    """Parity and funding come only from the store: stored -> verbatim, None -> NOT_LOADED, refusal -> REFUSED."""
+
+    def setUp(self) -> None:
+        self.study, self.trial = uuid4(), uuid4()
+        self.identity = {"schema_version": "strategy-lab-study-v1", "label": "x"}
+        self.study_row = (identity_hash_v1(self.identity), self.identity)
+
+    def read(self, parity: object = None, funding: object = None) -> CandidatePaperEvidenceView:
+        from unittest.mock import patch
+
+        from trade_platform.paper_evidence_store_v1 import PaperEvidenceStoreError
+        from trade_platform.research_terminal_read_model_v1 import _candidate_paper_evidence
+
+        def answer(value: object) -> dict[str, object]:
+            if isinstance(value, PaperEvidenceStoreError):
+                return {"side_effect": value}
+            return {"return_value": value}
+
+        cursor = _ScriptedCursor([self.study_row, ("e" * 64,), (0,)])
+        with patch("trade_platform.paper_evidence_store_v1.read_fill_parity_v1", **answer(parity)) as parity_read, \
+                patch("trade_platform.paper_evidence_store_v1.read_funding_evidence_v1", **answer(funding)) as funding_read:
+            view = _candidate_paper_evidence(cursor, _Context([], {"candidates": []}),  # type: ignore[arg-type]
+                                             self.study, self.trial)
+        for read in (parity_read, funding_read):
+            self.assertEqual({"cycle_id": "cycle-2026-08-20", "study_id": self.study, "trial_id": self.trial,
+                              "as_of": NOW}, read.call_args.kwargs)
+        return view
+
+    def test_a_stored_row_is_restated_verbatim_with_its_instants(self) -> None:
+        for status in ("PASS", "FAIL", "INCOMPLETE"):
+            with self.subTest(status=status):
+                parity = _stored_parity_row(str(self.study), str(self.trial), status)
+                funding = _stored_funding_row(str(self.study), str(self.trial))
+                view = self.read(parity, funding)
+                self.assertEqual((status, True, "c" * 64, list(parity.reasons), parity.assessment_id),
+                                 (view.parity.status, view.parity.loaded, view.parity.report_hash, view.parity.reasons,
+                                  view.parity.assessment_id))
+                self.assertEqual((parity.as_of, parity.recorded_at, parity.window_start, parity.window_end),
+                                 (view.parity.evidence_as_of, view.parity.recorded_at, view.parity.window_start,
+                                  view.parity.window_end))
+                self.assertEqual({"outcomes": {"MATCH": 59}}, view.parity.summary)
+                self.assertEqual(("NO_FUNDING_EVIDENCE_SUPPLIED", True, [], funding.evidence_hash, funding.record_id),
+                                 (view.funding.status, view.funding.loaded, view.funding.reasons,
+                                  view.funding.evidence_hash, view.funding.record_id))
+                self.assertEqual(("NON_COSTABLE", False, "NOT_CALCULATED", dict(funding.evidence)),
+                                 (view.funding.cost_status, view.funding.costable, view.funding.charge,
+                                  view.funding.section))
+                self.assertEqual(list(funding.economic_blockers), view.funding.economic_blockers)
+                # Stored funding is evidence only: no cycle fill, nothing projected, never a cost.
+                self.assertEqual(("NOT_LOADED", None), (view.economics.status, view.economics.funding))
+
+    def test_nothing_stored_is_not_loaded_with_its_reason(self) -> None:
+        view = self.read()
+        self.assertEqual(("NOT_LOADED", False, ["NO_STORED_PARITY_ASSESSMENT_FOR_CANDIDATE_IN_CYCLE"], None),
+                         (view.parity.status, view.parity.loaded, view.parity.reasons, view.parity.assessment_id))
+        self.assertEqual(("NOT_LOADED", False, None),
+                         (view.funding.status, view.funding.loaded, view.funding.record_id))
+        self.assertEqual(["CANDIDATE_HAS_NO_PAPER_FILL_IN_THE_CURRENT_CYCLE",
+                          "NO_STORED_FUNDING_EVIDENCE_FOR_CANDIDATE_IN_CYCLE"], view.funding.reasons)
+
+    def test_a_refused_stored_row_is_refused_never_not_loaded_nor_a_500(self) -> None:
+        from trade_platform.paper_evidence_store_v1 import PaperEvidenceStoreError
+
+        view = self.read(PaperEvidenceStoreError("STORED_FILL_PARITY_DOES_NOT_REDERIVE"),
+                         PaperEvidenceStoreError("FUNDING_HOLDINGS_DO_NOT_MATCH_STORED_FILLS"))
+        self.assertEqual(("REFUSED", False, ["STORED_EVIDENCE_REFUSED:STORED_FILL_PARITY_DOES_NOT_REDERIVE"], None),
+                         (view.parity.status, view.parity.loaded, view.parity.reasons, view.parity.report_hash))
+        self.assertEqual(("REFUSED", False, ["STORED_EVIDENCE_REFUSED:FUNDING_HOLDINGS_DO_NOT_MATCH_STORED_FILLS"],
+                          None, None, "NON_COSTABLE"),
+                         (view.funding.status, view.funding.loaded, view.funding.reasons, view.funding.evidence_hash,
+                          view.funding.section, view.funding.cost_status))
+        # A row of another candidate is refused too (the store never returns one; the view does not trust it).
+        other = self.read(_stored_parity_row(str(uuid4()), str(self.trial)),
+                          _stored_funding_row(str(self.study), str(uuid4())))
+        self.assertEqual(("REFUSED", "REFUSED"), (other.parity.status, other.funding.status))
+
+    def test_refused_not_loaded_and_verbatim_statuses_never_mix(self) -> None:
+        from trade_platform.research_terminal_read_model_v1 import (
+            refused_funding_view_v1,
+            refused_parity_view_v1,
+        )
+
+        refused = refused_parity_view_v1("X", live_side={}).model_dump()
+        stored = self.read(_stored_parity_row(str(self.study), str(self.trial)),
+                           _stored_funding_row(str(self.study), str(self.trial)))
+        loaded = stored.parity.model_dump()
+        for payload in ({**refused, "loaded": True}, {**refused, "status": "NOT_LOADED"},
+                        {**refused, "reasons": ["X"]}, {**refused, "reasons": []},
+                        {**refused, "report_hash": "c" * 64},
+                        {**loaded, "status": "REFUSED"}, {**loaded, "status": "NOT_LOADED"},
+                        {**loaded, "loaded": False},
+                        {**_parity().model_dump(), "reasons": ["STORED_EVIDENCE_REFUSED:X"]},
+                        {**_parity().model_dump(), "status": "INCOMPLETE"}):
+            with self.subTest(payload=str(payload)[:70]), self.assertRaises(ValueError):
+                ParityEvidenceView(**payload)
+        refused_f = refused_funding_view_v1("X").model_dump()
+        loaded_f = stored.funding.model_dump()
+        for payload in ({**refused_f, "loaded": True}, {**refused_f, "status": "NOT_LOADED"},
+                        {**refused_f, "evidence_hash": "a" * 64}, {**loaded_f, "status": "NOT_LOADED"},
+                        {**loaded_f, "status": "REFUSED", "loaded": False},
+                        {**loaded_f, "record_id": None}, {**loaded_f, "costable": True}):
+            with self.subTest(payload=str(payload)[:70]), self.assertRaises(ValueError):
+                FundingEvidenceView(**payload)
+
+
+#: Holdout names a paper-evidence read may mention: registry and recorded gate boundaries, never holdout data.
+ALLOWED_HOLDOUT_NAMES = {"strategy_lab_holdout_validations", "holdout_start", "holdout_end_exclusive"}
+
+
 class _ScriptedCursor:
+    """``fetchone`` rows in order (the trailing ``None`` is the absent stored signal target); ``fetchall`` empty."""
+
     def __init__(self, rows: list[object]) -> None:
         self.rows = list(rows)
         self.queries: list[tuple[str, tuple[object, ...]]] = []
@@ -341,17 +492,20 @@ class _ScriptedCursor:
         self.queries.append((query, params))
 
     def fetchone(self) -> object:
-        return self.rows.pop(0)
+        return self.rows.pop(0) if self.rows else None
 
-    def fetchall(self) -> list[object]:  # pragma: no cover - not used by this read
-        raise AssertionError("unexpected fetchall")
+    def fetchall(self) -> list[object]:  # the candidate's exit criteria: none recorded
+        return []
 
 
 class _Context:
     def __init__(self, fills: list[dict[str, object]], report: dict[str, object] | None,
                  refusal: str | None = None) -> None:
-        self.cycle = Mock(fills=fills, cycle_id="cycle-2026-08-20", as_of=NOW)
-        self.report, self.refusal = report, refusal
+        from trade_platform.strategy_lab_policies_v1 import gross_cost_policy_v2
+
+        self.cycle = Mock(fills=fills, cycle_id="cycle-2026-08-20", as_of=NOW, cost=gross_cost_policy_v2(),
+                          resolution=None)
+        self.report, self.refusal, self.cost_approval = report, refusal, None
 
 
 class CandidatePaperEvidenceReadTests(unittest.TestCase):
@@ -373,21 +527,36 @@ class CandidatePaperEvidenceReadTests(unittest.TestCase):
                                                                      view.symbol))
         self.assertEqual({"live_signals_recorded": 3, "paper_fills_in_cycle": 1, "fills_by_status": {"FILLED": 1}},
                          view.parity.live_side)
-        self.assertEqual(("NOT_LOADED", ["NO_PERSISTED_PARITY_REPORT_REPLAY_NOT_RECONSTRUCTED_BY_THIS_READ"]),
+        self.assertEqual(("NOT_LOADED", ["NO_STORED_PARITY_ASSESSMENT_FOR_CANDIDATE_IN_CYCLE"]),
                          (view.parity.status, view.parity.reasons))
-        self.assertEqual(("NOT_LOADED", ["FORWARD_FUNDING_BRIDGES_NOT_PERSISTED_NOT_LOADED_BY_THIS_READ"]),
+        self.assertEqual(("NOT_LOADED", ["NO_STORED_FUNDING_EVIDENCE_FOR_CANDIDATE_IN_CYCLE"]),
                          (view.funding.status, view.funding.reasons))
         self.assertEqual("NO_FUNDING_EVIDENCE_SUPPLIED", (view.funding.section or {})["state"])
-        self.assertTrue(all("holdout" not in query.lower() for query, _ in cursor.queries))
+        # The holdout is never read: the only holdout names are the validation registry the cycle's INCUBATING
+        # signals are bound to (as for the cycle's fills) and a stored parity row's recorded gate boundaries.
+        for query, _ in cursor.queries:
+            self.assertEqual([], [word for word in query.lower().replace(",", " ").split()
+                                  if "holdout" in word and word not in ALLOWED_HOLDOUT_NAMES])
+        # A fill that is not a stored paper fill identity is refused by the projection, never shown as figures.
+        self.assertEqual(("REFUSED", ["PAPER_ECONOMICS_REFUSED:fill_schema_version_unknown"]),
+                         (view.economics.status, view.economics.reasons))
+        self.assertIsNone(view.economics.net)
+        self.assertEqual(("NOT_LOADED", ["NO_ACCOUNT_BOUND_BY_AUTHORIZED_EXIT_CRITERIA",
+                                         "NO_STORED_INCUBATING_SIGNAL_TARGET_FOR_CANDIDATE_IN_CYCLE"]),
+                         (view.risk.status, view.risk.reasons))
 
         empty = _candidate_paper_evidence(_ScriptedCursor([self.study_row, ("e" * 64,), (0,)]),
                                           _Context([], {"candidates": []}), self.study, self.trial)  # type: ignore[arg-type]
         self.assertIn("CANDIDATE_HAS_NO_PAPER_FILL_IN_THE_CURRENT_CYCLE", empty.funding.reasons)
         self.assertIsNone(empty.funding.section)
+        self.assertEqual(("NOT_LOADED", ["CANDIDATE_HAS_NO_PAPER_FILL_IN_THE_CURRENT_CYCLE"]),
+                         (empty.economics.status, empty.economics.reasons))
         refused = _candidate_paper_evidence(_ScriptedCursor([self.study_row, ("e" * 64,), (0,)]),
                                             _Context([], None, "INCUBATION_REPORT_REFUSED:x"),  # type: ignore[arg-type]
                                             self.study, self.trial)
         self.assertIn("INCUBATION_REPORT_REFUSED:x", refused.funding.reasons)
+        self.assertEqual(("NOT_LOADED", ["INCUBATION_REPORT_REFUSED:x"]),
+                         (refused.economics.status, refused.economics.reasons))
 
     def test_unknown_or_unverifiable_identities_are_refused(self) -> None:
         from trade_platform.research_terminal_read_model_v1 import (
@@ -406,6 +575,321 @@ class CandidatePaperEvidenceReadTests(unittest.TestCase):
                                       self.study, self.trial)
 
 
+class _EconomicsContext:
+    """The per-request paper context as ``_candidate_economics`` reads it (stored policy, approval, no input)."""
+
+    def __init__(self, policy: object, approval: object = None, refusal: str | None = None) -> None:
+        from tests.test_paper_economics_v1 import AS_OF
+
+        self.cycle = Mock(cost=policy, as_of=AS_OF, resolution=None)
+        self.cost_approval, self.refusal = approval, refusal
+
+
+class PaperEconomicsSectionTests(unittest.TestCase):
+    """The terminal restates ``paper_economics_v1`` verbatim: every component apart, units never money."""
+
+    def economics(self, fills: list[dict[str, object]], policy: object, approval: object = None) -> object:
+        from tests.test_paper_economics_v1 import STUDY, TRIAL
+        from trade_platform.research_terminal_read_model_v1 import _candidate_economics
+
+        return _candidate_economics(_EconomicsContext(policy, approval), STUDY, TRIAL, fills)  # type: ignore[arg-type]
+
+    def test_gross_policy_projects_realized_apart_from_unrealized_and_every_cost_is_missing(self) -> None:
+        from tests.test_paper_economics_v1 import GROSS, chain
+        from trade_platform.paper_economics_v1 import UNITS_V1
+
+        view = self.economics(chain((1, 1, "100"), (5, 0, "110"), (9, -1, "100")), GROSS)
+        self.assertEqual(("PROJECTED", [], UNITS_V1), (view.status, view.reasons, view.units))
+        self.assertEqual("0.1", view.gross_realized["value"].rstrip("0"))
+        # The open short has no stored proven mark: UNAVAILABLE with the module's own reason, never a guess.
+        self.assertEqual(("UNAVAILABLE", None, ["NO_PROVEN_MARK_SUPPLIED"], -1, False),
+                         (view.gross_unrealized.status, view.gross_unrealized.value, view.gross_unrealized.reasons,
+                          view.gross_unrealized.exposure, view.gross_unrealized.in_net))
+        self.assertEqual("NO_STORED_PROVEN_T4_MARK_SOURCE_READ_BY_THIS_TERMINAL", view.unrealized_mark_source)
+        self.assertEqual(("MISSING", None, ["MISSING_VERIFIED_FEE_SCHEDULE_OR_6"]),
+                         (view.fees.status, view.fees.value, view.fees.reasons))
+        self.assertEqual(("MISSING", None, ["NO_SLIPPAGE_SCENARIO_DECLARED"]),
+                         (view.slippage.status, view.slippage.by_scenario, view.slippage.reasons))
+        self.assertEqual(("NON_COSTABLE_EVIDENCE", None, "NOT_CALCULATED"),
+                         (view.funding.status, view.funding.value, view.funding.detail["charge"]))
+        self.assertIn("FUNDING_EVIDENCE_IS_NEVER_A_CHARGE_IN_V1", view.funding.reasons)
+        self.assertEqual(("NOT_COSTABLE", None), (view.net.status, view.net.by_scenario))
+        # No sensitivity row exists unless a stored policy declares one: nothing is hard-coded here.
+        self.assertEqual([], view.sensitivity_rows)
+        self.assertEqual(64, len(view.economics_hash or ""))
+
+    def test_sensitivity_rows_come_only_from_the_stored_policy_and_never_enter_net(self) -> None:
+        from tests.test_paper_economics_v1 import CONSERVATIVE_MEDIUM, chain
+        from trade_platform.strategy_lab_policies_v1 import CostPolicyV2
+
+        stored = CostPolicyV2(fee_schedule=None, slippage_scenarios=CONSERVATIVE_MEDIUM)
+        view = self.economics(chain((1, 1, "100"), (5, 0, "110"), policy=stored), stored)
+        self.assertEqual([("conservative-medium-high", "5"), ("conservative-medium-low", "1"),
+                          ("conservative-medium-mid", "2.5")],
+                         [(row.name, row.cost_bps_per_side) for row in view.sensitivity_rows])
+        self.assertTrue(all(row.status == "PROPOSED_SENSITIVITY_SCENARIO" and row.in_net is False
+                            and row.source == "COST_POLICY_SCENARIO_NOT_OWNER_APPROVED" for row in view.sensitivity_rows))
+        self.assertEqual(("MISSING", ["SLIPPAGE_ENVELOPE_NOT_OWNER_APPROVED_OR_6"]),
+                         (view.slippage.status, view.slippage.reasons))
+        self.assertEqual("NOT_COSTABLE", view.net.status)
+
+    def test_an_authorized_packet_verifies_fees_and_slippage_but_funding_keeps_net_not_costable(self) -> None:
+        from tests.test_paper_economics_v1 import VERIFIED_POLICY, approval, chain
+
+        view = self.economics(chain((1, 1, "100"), (5, 0, "110"), policy=VERIFIED_POLICY), VERIFIED_POLICY,
+                              approval())
+        self.assertEqual(("VERIFIED", "VERIFIED", "NON_COSTABLE_EVIDENCE"),
+                         (view.fees.status, view.slippage.status, view.funding.status))
+        self.assertIsNotNone(view.fees.value)
+        self.assertEqual(("NOT_COSTABLE", None), (view.net.status, view.net.by_scenario))
+        self.assertTrue(any(reason.startswith("COMPONENT_NOT_VERIFIED:funding:") for reason in view.net.reasons))
+        self.assertEqual("owner", view.cost_approval["authorized_by"])
+
+    def test_refusals_and_absences_are_never_figures(self) -> None:
+        from tests.test_paper_economics_v1 import GROSS, VERIFIED_POLICY, approval, chain, packet
+        from trade_platform.research_terminal_read_model_v1 import _candidate_economics
+
+        refused = self.economics(chain((1, 1, "100"), policy=VERIFIED_POLICY), VERIFIED_POLICY,
+                                 approval(packet(policy=GROSS)))
+        self.assertEqual(("REFUSED", ["PAPER_ECONOMICS_REFUSED:cost_approval_is_of_another_cost_policy"]),
+                         (refused.status, refused.reasons))
+        self.assertIsNone(refused.net)
+        self.assertEqual(("NOT_LOADED", ["CANDIDATE_HAS_NO_PAPER_FILL_IN_THE_CURRENT_CYCLE"]),
+                         (self.economics([], GROSS).status, self.economics([], GROSS).reasons))
+        upstream = _candidate_economics(_EconomicsContext(GROSS, refusal="INCUBATION_REPORT_REFUSED:x"),  # type: ignore[arg-type]
+                                        "s", "t", chain((1, 1, "100")))
+        self.assertEqual(("NOT_LOADED", ["INCUBATION_REPORT_REFUSED:x"]), (upstream.status, upstream.reasons))
+
+    def test_a_proven_mark_alone_makes_unrealized_available_and_payloads_must_rederive(self) -> None:
+        from dataclasses import replace
+
+        from tests.test_paper_economics_v1 import SOURCE_HASH, STUDY, TRIAL, chain, project
+        from trade_platform.paper_economics_v1 import ProvenMarkV1
+        from trade_platform.research_terminal_read_model_v1 import economics_section_view_v1
+
+        fills = chain((1, 1, "100"))
+        opened = fills[0]["fill_bar_open_micros"]
+        mark = ProvenMarkV1("BTCUSDT", "105", opened + 120_000_000, opened + 120_300_000, SOURCE_HASH)
+        view = economics_section_view_v1(project(fills, marks=(mark,)), study_id=STUDY, trial_id=TRIAL)
+        self.assertEqual(("AVAILABLE", "T4_PROVEN_BAR_OPEN_FIRST_TRADE", False),
+                         (view.gross_unrealized.status, view.gross_unrealized.mark["evidence_kind"],
+                          view.gross_unrealized.in_net))
+        self.assertEqual("0.05", view.gross_unrealized.value.rstrip("0"))
+        result = project(fills)
+        with self.assertRaises(ValueError):
+            economics_section_view_v1(replace(result, content_hash="0" * 64), study_id=STUDY, trial_id=TRIAL)
+        with self.assertRaises(ValueError):
+            economics_section_view_v1(result, study_id=STUDY, trial_id=str(uuid4()))
+
+    def test_the_views_cannot_conflate_states_or_express_a_figure_they_do_not_have(self) -> None:
+        from tests.test_paper_economics_v1 import GROSS, chain
+        from trade_platform.research_terminal_read_model_v1 import (
+            EconomicsComponentView,
+            EconomicsNetView,
+            SensitivityRowView,
+            UnrealizedEvidenceView,
+        )
+
+        projected = self.economics(chain((1, 1, "100"), (5, 0, "110")), GROSS)
+        data = projected.model_dump()
+        bad = [
+            {**data, "status": "NOT_LOADED"},                       # figures under NOT_LOADED
+            {**data, "reasons": ["X"]},                              # a projection restated with invented reasons
+            {**data, "net": {**data["net"], "status": "CONFIRMED", "by_scenario": {"s": "0.1"}}},  # unverified costs
+            {**data, "funding": {**data["funding"], "status": "VERIFIED", "value": "-0.01"}},       # funding a charge
+            {**data, "units": "USD"},
+            {**data, "money": "USDT"},
+            {"status": "REFUSED", "reasons": []},
+        ]
+        for payload in bad:
+            with self.subTest(payload=str(payload)[:80]), self.assertRaises(ValueError):
+                PaperEconomicsSectionView(**payload)
+        with self.assertRaises(ValueError):
+            EconomicsComponentView(status="MISSING", value="-0.001", reasons=["X"], detail={})
+        with self.assertRaises(ValueError):
+            EconomicsComponentView(status="NOT_LOADED", value=None, reasons=["X"], detail={})
+        with self.assertRaises(ValueError):
+            EconomicsNetView(status="NOT_COSTABLE", scope="x", by_scenario={"s": "0.1"}, reasons=["X"])
+        with self.assertRaises(ValueError):
+            UnrealizedEvidenceView(status="AVAILABLE", value="0.1", reasons=[], exposure=1, mark=None, detail={})
+        with self.assertRaises(ValueError):
+            SensitivityRowView(name="n", status="PROPOSED_SENSITIVITY_SCENARIO", source="s", cost_bps_per_side="1",
+                               rationale="r", value="-0.0002", in_net=True, scenario_hash="a" * 64)
+
+
+#: A stored INCUBATING signal decided after the fixture policy was approved and recorded (2026-09-01).
+DECIDED = datetime(2026, 9, 2, 0, 0, 1, tzinfo=UTC)
+
+
+def _signal_row(study: UUID, trial: UUID, *, target_to: int = 1, tamper: bool = False) -> tuple[object, ...]:
+    knowledge = int((DECIDED.timestamp() - 1) * 1_000_000)
+    identity = {"authority": "INCUBATING", "candidate": {"study_id": str(study), "trial_id": str(trial)},
+                "symbol": "BTCUSDT", "target_from": 0, "target_to": target_to, "authority_evidence_hash": "a" * 64,
+                "evidence": {"complete_market_knowledge_micros": knowledge}}
+    content_hash = identity_hash_v1(identity)
+    if tamper:
+        identity = {**identity, "target_to": -target_to}
+    return (uuid4(), content_hash, identity, DECIDED, study, trial, "BTCUSDT", 0, target_to)
+
+
+class _RoutingCursor:
+    """Answers each read by the table it names: stored account rows, policy versions, signals; no fills."""
+
+    def __init__(self, *, account: object, policies: list[object], signals: list[object],
+                 bound: object = None) -> None:
+        self.account, self.policies, self.signals, self.bound = account, policies, signals, bound
+        self.sql = ""
+        self.queries: list[str] = []
+
+    def execute(self, sql: str, params: object = ()) -> None:
+        self.sql = sql
+        self.queries.append(sql)
+
+    def fetchone(self) -> object:
+        if "FROM account_contexts" in self.sql:
+            return self.account
+        if "WHERE content_hash" in self.sql:
+            return self.bound
+        if "FROM live_strategy_signals" in self.sql:
+            return self.signals[0] if self.signals else None
+        raise AssertionError(self.sql)
+
+    def fetchall(self) -> list[object]:
+        if "FROM account_policy_versions WHERE account_id" in self.sql:
+            return list(self.policies)
+        if "live_strategy_signals" in self.sql and "DISTINCT ON" in self.sql:
+            return list(self.signals)
+        return []  # fills, openings, exit criteria: none recorded
+
+
+class PaperRiskViewTests(unittest.TestCase):
+    """Risk restates ``paper_risk_assessment_v1`` for a recorded target only; NOT_LOADED is never a verdict."""
+
+    def setUp(self) -> None:
+        from tests.test_paper_risk_assessment_v1 import ACCOUNT_ROW, policy, row
+
+        self.study, self.trial = uuid4(), uuid4()
+        self.active = policy()
+        self.account_row, self.row = ACCOUNT_ROW, row
+
+    def candidate_risk(self, cursor: _RoutingCursor, criteria: object = None) -> object:
+        from unittest.mock import patch
+
+        from trade_platform.research_terminal_read_model_v1 import _candidate_risk
+
+        context = Mock(cycle=Mock(cycle_id="cycle-2026-08-20", as_of=NOW))
+        with patch("trade_platform.incubation_exit_criteria_v1.resolve_exit_criteria_v1", return_value=criteria):
+            return _candidate_risk(cursor, context, self.study, self.trial)  # type: ignore[arg-type]
+
+    def bound_criteria(self, content_hash: str) -> object:
+        return Mock(packet=Mock(status="AUTHORIZED",
+                                frozen={"criteria": {"required_account_policy_hash": content_hash}}))
+
+    def test_without_a_recorded_target_or_bound_account_risk_is_not_loaded(self) -> None:
+        cursor = _RoutingCursor(account=self.account_row, policies=[self.row(self.active)], signals=[])
+        view = self.candidate_risk(cursor)
+        self.assertEqual(("NOT_LOADED", False, None, None, "NONE"),
+                         (view.status, view.loaded, view.sizing, view.account_id, view.account_source))
+        self.assertEqual(["NO_ACCOUNT_BOUND_BY_AUTHORIZED_EXIT_CRITERIA",
+                          "NO_STORED_INCUBATING_SIGNAL_TARGET_FOR_CANDIDATE_IN_CYCLE"], view.reasons)
+        # A recorded target without a bound account is still not assessed: no account is ever guessed.
+        signal = _signal_row(self.study, self.trial)
+        view = self.candidate_risk(_RoutingCursor(account=self.account_row, policies=[self.row(self.active)],
+                                                  signals=[signal]))
+        self.assertEqual(("NOT_LOADED", ["NO_ACCOUNT_BOUND_BY_AUTHORIZED_EXIT_CRITERIA"], 1),
+                         (view.status, view.reasons, view.requested_target["target_to"]))
+        view = self.candidate_risk(_RoutingCursor(account=self.account_row, policies=[], signals=[signal]),
+                                   self.bound_criteria("f" * 64))
+        self.assertEqual(("NOT_LOADED", ["BOUND_ACCOUNT_POLICY_VERSION_NOT_RECORDED"]), (view.status, view.reasons))
+
+    def test_a_recorded_target_under_the_bound_account_is_assessed_at_its_decision_instant(self) -> None:
+        signal = _signal_row(self.study, self.trial)
+        cursor = _RoutingCursor(account=self.account_row, policies=[self.row(self.active)], signals=[signal],
+                                bound=(str(self.active.policy_version_id), "fixture-paper"))
+        view = self.candidate_risk(cursor, self.bound_criteria(self.active.content_hash))
+        # Every control passes, but no reference price is stored for a signal: sizing is withheld, UNRESOLVED.
+        self.assertEqual(("UNRESOLVED", True, "OPEN", None), (view.status, view.loaded, view.order_action, view.sizing))
+        self.assertEqual(["REFERENCE_PRICE_MISSING"], view.unresolved_reasons)
+        self.assertEqual(("AUTHORIZED_EXIT_CRITERIA_BINDING", DECIDED, "LATEST_STORED_INCUBATING_SIGNAL"),
+                         (view.account_source, view.assessed_as_of, view.requested_target["source"]))
+        self.assertEqual(str(self.active.policy_version_id), view.policy_resolution["expected_policy_version_id"])
+        self.assertEqual(("ACTIVE", []), (view.current_policy.status, view.current_policy.unresolved))
+        self.assertFalse(view.execution_authority)
+        self.assertEqual({"PASS", "NOT_APPLICABLE", "EVIDENCE_ONLY"}, {item["status"] for item in view.controls})
+
+    def test_an_unconfigured_or_later_policy_is_unresolved_never_active(self) -> None:
+        from tests.test_paper_risk_assessment_v1 import PAPER
+        from trade_platform.account_policy_v1 import AccountPolicyV1
+
+        unconfigured = AccountPolicyV1(PAPER, {})
+        signal = _signal_row(self.study, self.trial)
+        view = self.candidate_risk(
+            _RoutingCursor(account=self.account_row, policies=[self.row(unconfigured)], signals=[signal],
+                           bound=(str(unconfigured.policy_version_id), "fixture-paper")),
+            self.bound_criteria(unconfigured.content_hash))
+        self.assertEqual(("UNRESOLVED", None), (view.status, view.sizing))
+        self.assertIn("ACCOUNT_POLICY_UNCONFIGURED", view.unresolved_reasons)
+        self.assertTrue(any(reason.startswith("MISSING_OWNER_") and reason.endswith("_OR_11")
+                            for reason in view.unresolved_reasons))
+        self.assertEqual(("UNRESOLVED", "UNCONFIGURED"), (view.current_policy.status, view.current_policy.policy_status))
+        self.assertTrue(all(item["status"] == "NOT_EVALUATED" for item in view.controls))
+        # A policy recorded after the signal's decision is current now, but was not known when it was decided.
+        later = _RoutingCursor(account=self.account_row, policies=[self.row(self.active, recorded=NOW)],
+                               signals=[signal], bound=(str(self.active.policy_version_id), "fixture-paper"))
+        view = self.candidate_risk(later, self.bound_criteria(self.active.content_hash))
+        self.assertEqual(("UNRESOLVED", ["NO_ACCOUNT_POLICY_KNOWN_AT_AS_OF"]), (view.status, view.unresolved_reasons))
+        self.assertEqual("ACTIVE", view.current_policy.status)
+
+    def test_a_signal_row_that_does_not_rederive_is_refused(self) -> None:
+        cursor = _RoutingCursor(account=self.account_row, policies=[], signals=[_signal_row(self.study, self.trial,
+                                                                                            tamper=True)])
+        with self.assertRaises(ValueError):
+            self.candidate_risk(cursor)
+
+    def test_the_paper_account_read_assesses_each_recorded_target_under_the_named_account(self) -> None:
+        from trade_platform.research_terminal_read_model_v1 import read_account_risk_v1
+
+        signal = _signal_row(self.study, self.trial)
+        view = read_account_risk_v1(_RoutingCursor(account=self.account_row, policies=[self.row(self.active)],
+                                                   signals=[signal]), "fixture-paper", now=NOW)
+        self.assertEqual(("ACTIVE", [], 1), (view.current_policy.status, view.reasons, len(view.candidates)))
+        self.assertEqual(("UNRESOLVED", "OPERATOR_SELECTED_ACCOUNT"),
+                         (view.candidates[0].status, view.candidates[0].account_source))
+        empty = read_account_risk_v1(_RoutingCursor(account=None, policies=[], signals=[]), "nobody", now=NOW)
+        self.assertEqual(("UNRESOLVED", ["ACCOUNT_NOT_REGISTERED"], [], ["NO_STORED_INCUBATING_SIGNAL_TARGET_FOR_CANDIDATE_IN_CYCLE"]),
+                         (empty.current_policy.status, empty.current_policy.unresolved, empty.candidates, empty.reasons))
+
+    def test_the_views_cannot_conflate_not_loaded_with_a_verdict(self) -> None:
+        from trade_platform.research_terminal_read_model_v1 import (
+            AccountPolicyResolutionView,
+            PaperRiskView,
+            _risk_not_loaded,
+        )
+
+        not_loaded = _risk_not_loaded(["X"]).model_dump()
+        for payload in ({**not_loaded, "status": "BLOCKED"}, {**not_loaded, "loaded": True},
+                        {**not_loaded, "reasons": []}, {**not_loaded, "sizing": {"open_quantity": "1"}},
+                        {**not_loaded, "status": "UNRESOLVED", "loaded": True, "assessment_hash": "a" * 64,
+                         "account_id": "a", "requested_target": {}, "unresolved_reasons": ["U"],
+                         "sizing": {"open_quantity": "1"}},
+                        {**not_loaded, "status": "BLOCKED", "loaded": True, "assessment_hash": "a" * 64,
+                         "account_id": "a", "requested_target": {}, "blocking_reasons": []},
+                        {**not_loaded, "execution_authority": True}):
+            with self.subTest(payload=str(payload)[:60]), self.assertRaises(ValueError):
+                PaperRiskView(**payload)
+        signal = _signal_row(self.study, self.trial)
+        view = self.candidate_risk(
+            _RoutingCursor(account=self.account_row, policies=[self.row(self.active)], signals=[signal],
+                           bound=(str(self.active.policy_version_id), "fixture-paper")),
+            self.bound_criteria(self.active.content_hash))
+        current = view.current_policy.model_dump()
+        for payload in ({**current, "status": "ACTIVE", "policy_status": "UNCONFIGURED"},
+                        {**current, "status": "ACTIVE", "unresolved": ["MISSING_OWNER_X_OR_11"]},
+                        {**current, "status": "UNRESOLVED"}):
+            with self.subTest(payload=str(payload)[:60]), self.assertRaises(ValueError):
+                AccountPolicyResolutionView(**payload)
+
+
 class RuntimeImageImportTests(unittest.TestCase):
     def test_the_api_imports_without_numerical_libraries(self) -> None:
         # The runtime image installs requirements-runtime.txt only: no numpy, polars or duckdb.
@@ -413,7 +897,9 @@ class RuntimeImageImportTests(unittest.TestCase):
                 "for name in ('numpy', 'polars', 'duckdb', 'pyarrow'): sys.modules[name] = None\n"
                 "import trade_platform.api, trade_platform.research_terminal_read_model_v1\n"
                 "import trade_platform.research_candidate_comparison_v1, trade_platform.paper_funding_evidence_v1\n"
-                "import trade_platform.paper_incubation_report_v1\n")
+                "import trade_platform.paper_incubation_report_v1\n"
+                "import trade_platform.paper_economics_v1, trade_platform.paper_risk_assessment_v1\n"
+                "import trade_platform.incubation_exit_criteria_v1, trade_platform.operator_dashboard\n")
         result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120, check=False,
                                 env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")})
         self.assertEqual(0, result.returncode, result.stderr[-2000:])

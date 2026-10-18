@@ -5,9 +5,23 @@ import {
   type ComparisonMetric,
   type ComparisonRow,
   type ComparisonSort,
+  type PaperAccountLedger,
+  type TerminalAccount,
   type TerminalComparison,
 } from "../../lib/data-access";
+import type { EvidenceResult } from "../../operator-contracts";
 import { DataTable } from "../../components/data-table";
+import {
+  RETURN_UNIT_LABEL,
+  economicsRows,
+  netCostability,
+  policySummary,
+  returnFigure,
+  sensitivityLabel,
+  sizingText,
+  storedEvidenceText,
+  targetText,
+} from "./paper-economics";
 
 /**
  * Compare and Paper evidence: recorded evidence side by side. The operator picks the
@@ -130,12 +144,89 @@ function CompareForm({ studies, selection, metrics }: {
 
 function ParityCell({ paper }: { paper: CandidatePaperEvidence | undefined }) {
   if (!paper) return <Badge label="NOT_LOADED" />;
-  return <><Badge label={paper.parity.status} />{paper.parity.loaded ? null : " no parity evidence loaded"}</>;
+  return <><Badge label={paper.parity.status} />{paper.parity.loaded ? null : paper.parity.status === "REFUSED" ? " stored row refused" : " no stored parity assessment"}</>;
 }
 
 function FundingCell({ paper }: { paper: CandidatePaperEvidence | undefined }) {
   if (!paper) return <><Badge label="NOT_LOADED" /> <Badge label="NON_COSTABLE" /></>;
   return <><Badge label={paper.funding.status} /> <Badge label={paper.funding.cost_status} /></>;
+}
+
+function EconomicsCell({ paper }: { paper: CandidatePaperEvidence | undefined }) {
+  if (!paper) return <Badge label="NOT_LOADED" />;
+  const economics = paper.economics;
+  return (
+    <>
+      Net <Badge label={netCostability(economics)} />
+      {economics.gross_realized ? <div>Realized gross {returnFigure(economics.gross_realized.value)}</div> : null}
+    </>
+  );
+}
+
+function RiskCell({ paper }: { paper: CandidatePaperEvidence | undefined }) {
+  if (!paper) return <Badge label="NOT_LOADED" />;
+  return <><Badge label={paper.risk.status} /> <div>{sizingText(paper.risk)}</div></>;
+}
+
+/** Economics by component: each with its own status and reasons; figures are returns per unit notional. */
+function EconomicsDetail({ item }: { item: CandidatePaperEvidence }) {
+  const economics = item.economics;
+  return (
+    <section aria-label={`Paper economics ${item.trial_id.slice(0, 8)}`} data-paper-economics={item.trial_id}>
+      <h4>Paper economics: <Badge label={economics.status} /> <Badge label={economics.claim} /></h4>
+      <p>
+        Units <code>{economics.units}</code> ({RETURN_UNIT_LABEL}; money: {economics.money}). Realized and unrealized
+        are kept apart; unrealized is never part of net.
+        {economics.economics_hash ? <> Projection {short(economics.economics_hash)}.</> : null}
+      </p>
+      <DataTable caption="Economics by component (each status is the module's own)" ariaLabel={`Economics components ${item.trial_id.slice(0, 8)}`}>
+        <thead><tr><th scope="col">Component</th><th scope="col">Status</th><th scope="col">Figure</th><th scope="col">Reasons</th></tr></thead>
+        <tbody>
+          {economicsRows(economics).map((row) => (
+            <tr key={row.component} data-economics-component={row.component}>
+              <td>{row.component}</td><td><Badge label={row.status} /></td><td className="tabular-num">{row.figure}</td>
+              <td>{row.reasons.length ? row.reasons.map((reason) => <div key={reason}><code>{reason}</code></div>) : "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </DataTable>
+      {economics.sensitivity_rows.length ? (
+        <>
+          <h5>Proposed sensitivity scenarios (not owner-approved, never in net)</h5>
+          <ul>{economics.sensitivity_rows.map((row) => <li key={row.name}>{sensitivityLabel(row)} <small>({row.source})</small></li>)}</ul>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+/** Risk of the candidate's recorded paper target under its bound account; sizing only when ALLOWED. */
+function RiskDetail({ item }: { item: CandidatePaperEvidence }) {
+  const risk = item.risk;
+  const current = policySummary(risk.current_policy);
+  return (
+    <section aria-label={`Paper risk ${item.trial_id.slice(0, 8)}`} data-paper-risk={item.trial_id}>
+      <h4>Paper risk: <Badge label={risk.status} /> <Badge label={risk.claim} /></h4>
+      <p>
+        Account {risk.account_id ? <code>{risk.account_id}</code> : "none"} ({risk.account_source}) · current policy{" "}
+        <Badge label={current.status} />{risk.current_policy?.policy_status ? <> stored as {risk.current_policy.policy_status}</> : null} ·
+        target {targetText(risk)} · {sizingText(risk)} · execution authority: none.
+      </p>
+      <h5>Reasons</h5>
+      {reasonsList(risk.reasons)}
+      {current.reasons.length ? <><h5>Current policy reasons</h5>{reasonsList(current.reasons)}</> : null}
+      {risk.controls.length ? (
+        <DataTable caption="Risk controls (stored policy values only; nothing defaulted)" ariaLabel={`Risk controls ${item.trial_id.slice(0, 8)}`}>
+          <thead><tr><th scope="col">Control</th><th scope="col">Status</th><th scope="col">Reason</th></tr></thead>
+          <tbody>
+            {risk.controls.map((control) => (
+              <tr key={control.control}><td>{control.control}</td><td><Badge label={control.status} /></td><td>{control.reason ?? "—"}</td></tr>
+            ))}
+          </tbody>
+        </DataTable>
+      ) : null}
+    </section>
+  );
 }
 
 /** Selected studies' frozen candidates side by side, one column per candidate. */
@@ -246,6 +337,14 @@ export function ComparisonSection({ studies, selection, comparison, unavailable 
                   <th scope="row">Forward funding</th>
                   {rows.map((row) => <td key={key(row)}><FundingCell paper={paper.get(key(row))} /></td>)}
                 </tr>
+                <tr data-stage-row="PAPER_ECONOMICS">
+                  <th scope="row">Paper economics ({RETURN_UNIT_LABEL})</th>
+                  {rows.map((row) => <td key={key(row)}><EconomicsCell paper={paper.get(key(row))} /></td>)}
+                </tr>
+                <tr data-stage-row="PAPER_RISK">
+                  <th scope="row">Paper risk (recorded target)</th>
+                  {rows.map((row) => <td key={key(row)}><RiskCell paper={paper.get(key(row))} /></td>)}
+                </tr>
                 <tr>
                   <th scope="row">Next</th>
                   {rows.map((row) => (
@@ -260,6 +359,55 @@ export function ComparisonSection({ studies, selection, comparison, unavailable 
           <p>Every column restates {rows[0]?.restated_claims.join(" · ") ?? "its claims"}; promotable: no; execution authority: NONE.</p>
         </>
       ) : null}
+    </section>
+  );
+}
+
+/**
+ * Risk Preview per registered account: the authoritative policy resolution (ACTIVE only when resolved) and the
+ * paper risk verdict of each candidate's latest recorded target. Nothing here sizes for an order or activates.
+ */
+export function AccountRiskSection({ accounts, reads }: {
+  accounts: TerminalAccount[];
+  reads: EvidenceResult<PaperAccountLedger>[];
+}) {
+  if (!accounts.length) return null;
+  return (
+    <section aria-label="Account risk" className="margin-bottom-24">
+      <h3>Authoritative policy and paper risk by account</h3>
+      <p>
+        The policy is the latest version recorded now, whatever its status: <Badge label="ACTIVE" /> only when every owner
+        value is set and approved, otherwise <Badge label="UNRESOLVED" /> with each missing owner value. Risk assesses only a
+        candidate&apos;s latest stored signal target at its decision instant; sizing appears only when <Badge label="ALLOWED" />.
+      </p>
+      {accounts.map((account, index) => {
+        const read = reads[index];
+        const risk = read?.state === "AVAILABLE" ? read.value.risk : undefined;
+        if (!risk) {
+          return <p key={account.account_id} className="empty-notice">{account.display_name}: risk read unavailable ({read ? read.state : "NOT_LOADED"}).</p>;
+        }
+        const current = policySummary(risk.current_policy);
+        return (
+          <div key={account.account_id} data-account-risk={account.account_id}>
+            <h4>{account.display_name}: policy <Badge label={current.status} /> {risk.current_policy.policy_status ? <>(stored {risk.current_policy.policy_status})</> : null}</h4>
+            {current.reasons.length ? reasonsList(current.reasons) : null}
+            {risk.candidates.length ? (
+              <DataTable caption={`Recorded targets under ${account.display_name} (paper risk, never execution authority)`} ariaLabel={`Account risk ${account.account_id}`}>
+                <thead><tr><th scope="col">Trial</th><th scope="col">Target</th><th scope="col">Verdict</th><th scope="col">Reasons</th><th scope="col">Sizing</th></tr></thead>
+                <tbody>
+                  {risk.candidates.map((item) => (
+                    <tr key={item.requested_target?.signal_id ?? item.assessment_hash ?? "none"}>
+                      <td>{item.requested_target ? <code title={item.requested_target.trial_id}>{item.requested_target.trial_id.slice(0, 8)}…</code> : "—"}</td>
+                      <td>{targetText(item)}</td><td><Badge label={item.status} /></td>
+                      <td>{item.reasons.length ? item.reasons.join(", ") : "—"}</td><td>{sizingText(item)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </DataTable>
+            ) : <p>No recorded target assessed: {risk.reasons.join(", ") || "—"}.</p>}
+          </div>
+        );
+      })}
     </section>
   );
 }
@@ -282,11 +430,15 @@ export function PaperEvidenceSection({ items, unavailable }: { items: CandidateP
     <>
       <p>
         Status words: <Badge label="PASS" /> <Badge label="FAIL" /> <Badge label="INCOMPLETE" /> are a loaded parity report&apos;s own verdict;{" "}
-        <Badge label="NOT_LOADED" /> means this read loaded no such evidence, which is not the same as incomplete evidence. Funding is always{" "}
-        <Badge label="NON_COSTABLE" />: no funding charge is calculated and no return changes.
+        <Badge label="NOT_LOADED" /> means nothing is stored for the candidate in the cycle, which is not the same as incomplete evidence;{" "}
+        <Badge label="REFUSED" /> means a stored row did not re-derive and is not shown. Funding is always{" "}
+        <Badge label="NON_COSTABLE" />: no funding charge is calculated and no return changes. Economics figures are a{" "}
+        {RETURN_UNIT_LABEL}, never money; net is <Badge label="CONFIRMED" />, <Badge label="NOT_COSTABLE" /> or{" "}
+        <Badge label="INCOMPLETE" /> as the projection decides. Risk is <Badge label="ALLOWED" />, <Badge label="BLOCKED" /> or{" "}
+        <Badge label="UNRESOLVED" /> only for a recorded target under a bound account, and sizing appears only when ALLOWED.
       </p>
       <DataTable caption="Paper evidence by candidate (evidence, never a promotion decision)" ariaLabel="Paper evidence">
-        <thead><tr><th scope="col">Candidate</th><th scope="col">Symbol</th><th scope="col">Live side</th><th scope="col">Fill parity</th><th scope="col">Forward funding</th><th scope="col">Costable</th></tr></thead>
+        <thead><tr><th scope="col">Candidate</th><th scope="col">Symbol</th><th scope="col">Live side</th><th scope="col">Fill parity</th><th scope="col">Forward funding</th><th scope="col">Costable</th><th scope="col">Realized gross</th><th scope="col">Net</th><th scope="col">Risk</th></tr></thead>
         <tbody>
           {items.map((item) => (
             <tr key={key(item)} data-paper-evidence={item.trial_id}>
@@ -298,28 +450,33 @@ export function PaperEvidenceSection({ items, unavailable }: { items: CandidateP
               <td><Badge label={item.parity.status} /></td>
               <td><Badge label={item.funding.status} /></td>
               <td><Badge label={item.funding.cost_status} /></td>
+              <td className="tabular-num">{item.economics.gross_realized ? returnFigure(item.economics.gross_realized.value) : <Badge label={item.economics.status} />}</td>
+              <td><Badge label={netCostability(item.economics)} /></td>
+              <td><Badge label={item.risk.status} /></td>
             </tr>
           ))}
         </tbody>
       </DataTable>
       {items.map((item) => (
         <details key={`paper-${key(item)}`} className="margin-bottom-24" data-paper-evidence-detail={item.trial_id}>
-          <summary>{item.trial_id.slice(0, 8)}… — parity and funding reasons, bound identities</summary>
+          <summary>{item.trial_id.slice(0, 8)}… — parity, funding, economics and risk reasons, bound identities</summary>
           <p>
             Study <code>{item.study_id}</code> ({short(item.study_content_hash)}) · trial {short(item.trial_content_hash)} · resolved
             server-side from stored rows · assessed <time dateTime={item.as_of}>{utc(item.as_of)}</time>.
           </p>
           <h4>Live/replay fill parity: <Badge label={item.parity.status} /></h4>
-          {item.parity.loaded ? <p>Report {short(item.parity.report_hash)}</p> : null}
+          <p data-stored-evidence="parity">{storedEvidenceText(item.parity)}{item.parity.loaded ? <> · report {short(item.parity.report_hash)}</> : null}</p>
           {reasonsList(item.parity.reasons)}
           <h4>Forward funding: <Badge label={item.funding.status} /> <Badge label={item.funding.cost_status} /></h4>
-          <p>Charge {item.funding.charge}; evidence {short(item.funding.evidence_hash)}.</p>
-          <h5>Why not loaded</h5>
+          <p data-stored-evidence="funding">{storedEvidenceText(item.funding)} · charge {item.funding.charge}; evidence {short(item.funding.evidence_hash)}.</p>
+          <h5>{item.funding.status === "REFUSED" ? "Why refused" : item.funding.loaded ? "Load reasons" : "Why not loaded"}</h5>
           {reasonsList(item.funding.reasons)}
           <h5>Completeness blockers</h5>
           {reasonsList(item.funding.completeness_blockers)}
           <h5>Why not costable</h5>
           {reasonsList(item.funding.economic_blockers.length ? item.funding.economic_blockers : ["NO_FUNDING_EVIDENCE_SECTION_FOR_THIS_CANDIDATE"])}
+          <EconomicsDetail item={item} />
+          <RiskDetail item={item} />
           <p>{item.claim} · execution authority {item.execution_authority} · {item.validated_claim}.</p>
         </details>
       ))}

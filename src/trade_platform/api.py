@@ -695,7 +695,11 @@ def build_app(
         study_id: UUID, trial_id: UUID,
         _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
     ) -> object:
-        """One candidate's live/replay fill parity and forward funding evidence (NOT_LOADED / NON_COSTABLE stated)."""
+        """One candidate's fill parity, forward funding, paper economics and paper risk, from stored rows only.
+
+        NOT_LOADED / NON_COSTABLE are stated, never defaulted; economics are a return per unit of
+        notional (never money) and risk assesses only a recorded target under a bound account.
+        """
         return read_dashboard(lambda: queries.terminal_candidate_paper_evidence(study_id, trial_id))
 
     @app.get("/operator-dashboard/research-terminal/compare", response_model=ComparisonView)
@@ -767,7 +771,8 @@ def build_app(
         account_id: str = Query(min_length=3, max_length=64, pattern=r"^[a-z][a-z0-9_-]{2,63}$"),
         _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
     ) -> object:
-        """R10.2 paper account ledger (a simulation under the ACTIVE policy; never execution authority)."""
+        """R10.2 paper account ledger plus its authoritative policy resolution and the paper risk verdict of
+        each candidate's latest recorded target (a simulation; never execution authority)."""
         return read_dashboard(lambda: queries.terminal_paper_account(account_id))
 
     @app.get("/operator-dashboard/research-terminal/commands", response_model=list[CommandView])
