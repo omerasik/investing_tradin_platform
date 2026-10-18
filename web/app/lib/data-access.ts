@@ -1100,11 +1100,16 @@ export type ComparisonRow = {
   tied_with: number;
 };
 
-/** Evidence this read did not load is ``NOT_LOADED`` -- distinct from a loaded ``INCOMPLETE`` verdict. */
+/**
+ * Stored evidence: a loaded row's status verbatim; ``NOT_LOADED`` (nothing stored) -- distinct from a loaded
+ * ``INCOMPLETE`` verdict; ``REFUSED`` (a stored row that does not re-derive; reasons ``STORED_EVIDENCE_REFUSED:*``).
+ */
 export type PaperParityEvidence = {
   status: string; loaded: boolean; reasons: string[]; report_hash: string | null;
   summary: Record<string, unknown>; live_side: { live_signals_recorded?: number; paper_fills_in_cycle?: number;
     fills_by_status?: Record<string, number> };
+  assessment_id?: string | null; evidence_as_of?: string | null; recorded_at?: string | null;
+  window_start?: string | null; window_end?: string | null;
   claim: "READ_ONLY_PARITY_EVIDENCE_NOT_A_PROMOTION_DECISION";
 };
 
@@ -1112,6 +1117,8 @@ export type PaperFundingEvidence = {
   status: string; loaded: boolean; costable: false; cost_status: "NON_COSTABLE"; charge: "NOT_CALCULATED";
   reasons: string[]; completeness_blockers: string[]; economic_blockers: string[]; evidence_hash: string | null;
   section: Record<string, unknown> | null;
+  record_id?: string | null; evidence_as_of?: string | null; recorded_at?: string | null;
+  window_start?: string | null; window_end?: string | null; bridge_hashes?: Record<string, string>;
 };
 
 /** One cost component of paper_economics_v1, verbatim. A figure exists only when VERIFIED. */

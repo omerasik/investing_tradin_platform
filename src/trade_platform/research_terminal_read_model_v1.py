@@ -28,10 +28,13 @@ Every view states its claim and never lifts it:
   verbatim (no composite score, no default ranking, holdout ``NOT_READ``) with
   the search / Decimal rerun / walk-forward / validation stages kept apart
   (:data:`EVIDENCE_STAGES_V1`);
-* per-candidate paper evidence restates the live/replay fill parity status and
-  the forward funding section verbatim; evidence this read does not load is
+* per-candidate paper evidence restates the latest *stored* live/replay fill
+  parity assessment and forward funding record known at the read's ``as_of``
+  (:mod:`trade_platform.paper_evidence_store_v1`) verbatim; nothing stored is
   ``NOT_LOADED`` (never ``INCOMPLETE``, which is a loaded assessment's own
-  verdict), and funding is always ``NON_COSTABLE``;
+  verdict), a stored row that does not re-derive is ``REFUSED`` with its code
+  (never ``NOT_LOADED``, never a 500), and funding is always ``NON_COSTABLE``
+  -- stored funding never becomes an economics cost;
 * per-candidate paper economics restate :mod:`trade_platform.paper_economics_v1`
   verbatim, projected server-side from the cycle's stored fills under the
   cycle's stored OR-6 policy, the owner approval being only the opened
@@ -695,14 +698,32 @@ EVIDENCE_STAGES_V1: list[dict[str, str]] = [
 
 #: No evidence was loaded by this read (distinct from a loaded assessment that is ``INCOMPLETE``).
 NOT_LOADED = "NOT_LOADED"
-PARITY_REPORT_NOT_PERSISTED = "NO_PERSISTED_PARITY_REPORT_REPLAY_NOT_RECONSTRUCTED_BY_THIS_READ"
-FUNDING_BRIDGES_NOT_LOADED = "FORWARD_FUNDING_BRIDGES_NOT_PERSISTED_NOT_LOADED_BY_THIS_READ"
+#: A stored row exists but did not re-derive: refused, never shown as absent nor as its verbatim status.
+STORED_EVIDENCE_REFUSED = "REFUSED"
+STORED_EVIDENCE_REFUSED_PREFIX = "STORED_EVIDENCE_REFUSED:"
+PARITY_REPORT_NOT_PERSISTED = "NO_STORED_PARITY_ASSESSMENT_FOR_CANDIDATE_IN_CYCLE"
+FUNDING_BRIDGES_NOT_LOADED = "NO_STORED_FUNDING_EVIDENCE_FOR_CANDIDATE_IN_CYCLE"
 NO_PAPER_FILL_IN_CYCLE = "CANDIDATE_HAS_NO_PAPER_FILL_IN_THE_CURRENT_CYCLE"
 INCUBATION_REPORT_REFUSED_PREFIX = "INCUBATION_REPORT_REFUSED:"
+_UNLOADED_STATUSES = (NOT_LOADED, STORED_EVIDENCE_REFUSED)
+
+
+def _check_unloaded(status: str, loaded: bool, reasons: list[str], hashes: tuple[object, ...], code: str) -> None:
+    """NOT_LOADED, REFUSED and a loaded verbatim status never mix (shared by the parity and funding views)."""
+    if loaded == (status in _UNLOADED_STATUSES):
+        raise ValueError(code)
+    refused = [reason for reason in reasons if reason.startswith(STORED_EVIDENCE_REFUSED_PREFIX)]
+    if status == STORED_EVIDENCE_REFUSED and (not reasons or len(refused) != len(reasons)):
+        raise ValueError(code)
+    if status != STORED_EVIDENCE_REFUSED and refused:
+        raise ValueError(code)
+    if not loaded and (not reasons or any(item is not None for item in hashes)):
+        raise ValueError(code)
 
 
 class ParityEvidenceView(BaseModel):
-    """Live/replay paper-fill parity for one candidate: the report's own status verbatim, or ``NOT_LOADED``."""
+    """Live/replay paper-fill parity for one candidate: the stored assessment's status verbatim, ``NOT_LOADED``
+    (nothing stored) or ``REFUSED`` (a stored row that does not re-derive)."""
 
     status: str
     loaded: bool
@@ -710,18 +731,25 @@ class ParityEvidenceView(BaseModel):
     report_hash: str | None
     summary: dict[str, Any]
     live_side: dict[str, Any]
+    assessment_id: UUID | None = None
+    evidence_as_of: datetime | None = None
+    recorded_at: datetime | None = None
+    window_start: datetime | None = None
+    window_end: datetime | None = None
     claim: Literal["READ_ONLY_PARITY_EVIDENCE_NOT_A_PROMOTION_DECISION"] = (
         "READ_ONLY_PARITY_EVIDENCE_NOT_A_PROMOTION_DECISION")
 
     @model_validator(mode="after")
     def loaded_is_never_conflated(self) -> ParityEvidenceView:
-        if self.loaded == (self.status == NOT_LOADED) or (not self.loaded and self.report_hash is not None):
-            raise ValueError("parity_not_loaded_must_be_stated_as_not_loaded")
+        _check_unloaded(self.status, self.loaded, self.reasons,
+                        (self.report_hash, self.assessment_id, self.evidence_as_of, self.recorded_at),
+                        "parity_not_loaded_must_be_stated_as_not_loaded")
         return self
 
 
 class FundingEvidenceView(BaseModel):
-    """Forward funding evidence for one candidate: the section's state verbatim, or ``NOT_LOADED``. Never a cost."""
+    """Forward funding evidence for one candidate: the stored section's state verbatim, ``NOT_LOADED`` or
+    ``REFUSED``. Never a cost."""
 
     status: str
     loaded: bool
@@ -733,11 +761,24 @@ class FundingEvidenceView(BaseModel):
     economic_blockers: list[str]
     evidence_hash: str | None
     section: dict[str, Any] | None
+    record_id: UUID | None = None
+    evidence_as_of: datetime | None = None
+    recorded_at: datetime | None = None
+    window_start: datetime | None = None
+    window_end: datetime | None = None
+    bridge_hashes: dict[str, str] = {}
 
     @model_validator(mode="after")
     def loaded_is_never_conflated(self) -> FundingEvidenceView:
-        if self.loaded == (self.status == NOT_LOADED):
-            raise ValueError("funding_not_loaded_must_be_stated_as_not_loaded")
+        # A NOT_LOADED view may keep the cycle report's own section beside it for its blockers; its hash is
+        # then that section's, so only the stored-row identities must be absent when nothing was loaded.
+        _check_unloaded(self.status, self.loaded, self.reasons,
+                        (self.record_id, self.evidence_as_of, self.recorded_at),
+                        "funding_not_loaded_must_be_stated_as_not_loaded")
+        if self.status == STORED_EVIDENCE_REFUSED and (self.section is not None or self.evidence_hash is not None):
+            raise ValueError("funding_refused_carries_no_evidence")
+        if self.loaded and (self.section is None or self.evidence_hash is None or self.record_id is None):
+            raise ValueError("funding_loaded_is_a_stored_record")
         return self
 
 
@@ -1034,27 +1075,70 @@ def parity_evidence_view_v1(report: Any, *, trial_id: str, live_side: dict[str, 
                               live_side=live_side)
 
 
-def funding_evidence_view_v1(section: dict[str, Any] | None, *, bridges_loaded: bool,
-                             not_loaded_reasons: list[str]) -> FundingEvidenceView:
-    """A candidate's ``funding_evidence`` report section as a terminal view; always ``NON_COSTABLE``.
+def _verified_section(section: dict[str, Any]) -> dict[str, Any]:
+    body = {key: value for key, value in section.items() if key != "evidence_hash"}
+    if identity_hash_v1(body) != section.get("evidence_hash"):
+        raise ValueError("funding_evidence_section_does_not_rederive")
+    if section.get("costable") is not False:
+        raise ValueError("funding_evidence_section_claims_to_be_costable")
+    return section
+
+
+def funding_evidence_view_v1(section: dict[str, Any] | None, *, not_loaded_reasons: list[str]) -> FundingEvidenceView:
+    """``NOT_LOADED`` funding (no stored record), keeping the cycle report's own section beside it for its blockers.
 
     The section must re-derive its ``evidence_hash`` and must not claim to be costable
-    (v1 never is; a claim otherwise is refused, not shown). Without loaded bridges the
-    status is ``NOT_LOADED`` and the section is kept beside it for its blockers.
+    (v1 never is; a claim otherwise is refused, not shown). Loaded funding comes only
+    from a stored record (:func:`stored_funding_evidence_view_v1`).
     """
     if section is not None:
-        body = {key: value for key, value in section.items() if key != "evidence_hash"}
-        if identity_hash_v1(body) != section.get("evidence_hash"):
-            raise ValueError("funding_evidence_section_does_not_rederive")
-        if section.get("costable") is not False:
-            raise ValueError("funding_evidence_section_claims_to_be_costable")
-    loaded = section is not None and bridges_loaded
+        _verified_section(section)
     return FundingEvidenceView(
-        status=str(section["state"]) if loaded and section is not None else NOT_LOADED, loaded=loaded,
-        reasons=[] if loaded else sorted(set(not_loaded_reasons)),
+        status=NOT_LOADED, loaded=False, reasons=sorted(set(not_loaded_reasons)),
         completeness_blockers=[] if section is None else [str(item) for item in section["completeness_blockers"]],
         economic_blockers=[] if section is None else [str(item) for item in section["economic_blockers"]],
         evidence_hash=None if section is None else str(section["evidence_hash"]), section=section)
+
+
+def stored_funding_evidence_view_v1(stored: Any, *, study_id: str, trial_id: str,
+                                    cycle_id: str) -> FundingEvidenceView:
+    """A stored, re-derived funding record (``paper_evidence_store_v1``): its state verbatim, always NON_COSTABLE."""
+    if (stored.cycle_id, str(stored.study_id), str(stored.trial_id)) != (cycle_id, study_id, trial_id):
+        return refused_funding_view_v1("STORED_ROW_NOT_OF_THIS_CANDIDATE")
+    section = _verified_section(dict(stored.evidence))
+    if (section.get("state"), section.get("evidence_hash")) != (stored.state, stored.evidence_hash):
+        raise ValueError("stored_funding_record_contradicts_its_section")
+    return FundingEvidenceView(
+        status=str(stored.state), loaded=True, reasons=[],
+        completeness_blockers=[str(item) for item in stored.completeness_blockers],
+        economic_blockers=[str(item) for item in stored.economic_blockers],
+        evidence_hash=str(stored.evidence_hash), section=section, record_id=stored.record_id,
+        evidence_as_of=stored.as_of, recorded_at=stored.recorded_at, window_start=stored.window_start,
+        window_end=stored.window_end, bridge_hashes={str(k): str(v) for k, v in dict(stored.bridge_hashes).items()})
+
+
+def refused_funding_view_v1(code: str) -> FundingEvidenceView:
+    return FundingEvidenceView(status=STORED_EVIDENCE_REFUSED, loaded=False,
+                               reasons=[f"{STORED_EVIDENCE_REFUSED_PREFIX}{code}"], completeness_blockers=[],
+                               economic_blockers=[], evidence_hash=None, section=None)
+
+
+def stored_parity_evidence_view_v1(stored: Any, *, study_id: str, trial_id: str, cycle_id: str,
+                                   live_side: dict[str, Any]) -> ParityEvidenceView:
+    """A stored, re-derived parity assessment (``paper_evidence_store_v1``): its status verbatim with its instants."""
+    if (stored.cycle_id, str(stored.study_id), str(stored.trial_id)) != (cycle_id, study_id, trial_id):
+        return refused_parity_view_v1("STORED_ROW_NOT_OF_THIS_CANDIDATE", live_side=live_side)
+    return ParityEvidenceView(
+        status=str(stored.status), loaded=True, reasons=[str(reason) for reason in stored.reasons],
+        report_hash=str(stored.report_content_hash), summary=dict(dict(stored.identity).get("summary", {})),
+        live_side=live_side, assessment_id=stored.assessment_id, evidence_as_of=stored.as_of,
+        recorded_at=stored.recorded_at, window_start=stored.window_start, window_end=stored.window_end)
+
+
+def refused_parity_view_v1(code: str, *, live_side: dict[str, Any]) -> ParityEvidenceView:
+    return ParityEvidenceView(status=STORED_EVIDENCE_REFUSED, loaded=False,
+                              reasons=[f"{STORED_EVIDENCE_REFUSED_PREFIX}{code}"], report_hash=None, summary={},
+                              live_side=live_side)
 
 
 def _component(raw: dict[str, Any], *, value_key: str | None = "value") -> EconomicsComponentView:
@@ -1332,6 +1416,41 @@ def _candidate_economics(context: _PaperContext, study: str, trial: str,
     return economics_section_view_v1(result, study_id=study, trial_id=trial)
 
 
+def _stored_parity(cursor: _Cursor, context: _PaperContext, study_id: UUID, trial_id: UUID,
+                   live_side: dict[str, Any]) -> ParityEvidenceView:
+    """The latest stored parity assessment known at the read's ``as_of``; absent is NOT_LOADED, unverifiable REFUSED."""
+    from .paper_evidence_store_v1 import PaperEvidenceStoreError, read_fill_parity_v1
+
+    cycle_id = context.cycle.cycle_id
+    try:
+        stored = read_fill_parity_v1(cursor, cycle_id=cycle_id, study_id=study_id, trial_id=trial_id,
+                                     as_of=context.cycle.as_of)
+    except PaperEvidenceStoreError as error:
+        return refused_parity_view_v1(str(error), live_side=live_side)
+    if stored is None:
+        return parity_evidence_view_v1(None, trial_id=str(trial_id), live_side=live_side)
+    return stored_parity_evidence_view_v1(stored, study_id=str(study_id), trial_id=str(trial_id), cycle_id=cycle_id,
+                                          live_side=live_side)
+
+
+def _stored_funding(cursor: _Cursor, context: _PaperContext, study_id: UUID, trial_id: UUID,
+                    entry: dict[str, Any] | None, not_loaded_reasons: list[str]) -> FundingEvidenceView:
+    """The latest stored funding record known at ``as_of``; absent is NOT_LOADED (the report's section kept beside
+    it for its blockers), unverifiable REFUSED. Never fed into economics as a cost."""
+    from .paper_evidence_store_v1 import PaperEvidenceStoreError, read_funding_evidence_v1
+
+    cycle_id = context.cycle.cycle_id
+    try:
+        stored = read_funding_evidence_v1(cursor, cycle_id=cycle_id, study_id=study_id, trial_id=trial_id,
+                                          as_of=context.cycle.as_of)
+    except PaperEvidenceStoreError as error:
+        return refused_funding_view_v1(str(error))
+    if stored is None:
+        return funding_evidence_view_v1(None if entry is None else entry.get("funding_evidence"),
+                                        not_loaded_reasons=not_loaded_reasons)
+    return stored_funding_evidence_view_v1(stored, study_id=str(study_id), trial_id=str(trial_id), cycle_id=cycle_id)
+
+
 def _candidate_paper_evidence(cursor: _Cursor, context: _PaperContext, study_id: UUID,
                               trial_id: UUID) -> CandidatePaperEvidenceView:
     cursor.execute("SELECT content_hash, identity FROM strategy_lab_studies WHERE study_id=%s", (study_id,))
@@ -1371,10 +1490,8 @@ def _candidate_paper_evidence(cursor: _Cursor, context: _PaperContext, study_id:
         study_id=study_id, study_content_hash=str(study[0]).strip(), trial_id=trial_id,
         trial_content_hash=str(trial[0]).strip(), cycle_id=context.cycle.cycle_id,
         symbol=None if entry is None else str(entry["symbol"]), incubation=incubation,
-        # No parity report is persisted and the replay is not reconstructed from sealed T4 by a read.
-        parity=parity_evidence_view_v1(None, trial_id=trial_text, live_side=live_side),
-        funding=funding_evidence_view_v1(None if entry is None else entry.get("funding_evidence"),
-                                         bridges_loaded=False, not_loaded_reasons=funding_reasons),
+        parity=_stored_parity(cursor, context, study_id, trial_id, live_side),
+        funding=_stored_funding(cursor, context, study_id, trial_id, entry, funding_reasons),
         economics=_candidate_economics(context, study_text, trial_text, fills),
         risk=_candidate_risk(cursor, context, study_id, trial_id),
         as_of=context.cycle.as_of)
@@ -1504,4 +1621,8 @@ __all__ = [
     "read_terminal_overview_v1",
     "read_validation_v1",
     "read_walk_forward_v1",
+    "refused_funding_view_v1",
+    "refused_parity_view_v1",
+    "stored_funding_evidence_view_v1",
+    "stored_parity_evidence_view_v1",
 ]

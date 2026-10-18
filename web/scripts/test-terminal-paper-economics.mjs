@@ -9,6 +9,7 @@ import {
   returnFigure,
   sensitivityLabel,
   sizingText,
+  storedEvidenceText,
   targetText,
 } from "../app/(protected)/terminal/paper-economics.ts";
 
@@ -95,6 +96,16 @@ assert.match(targetText({ ...notLoaded, requested_target: target }), /ETHUSDT 0 
 assert.deepEqual(policySummary({ status: "UNRESOLVED", blocking: [], unresolved: ["ACCOUNT_POLICY_UNCONFIGURED", "MISSING_OWNER_PAPER_STARTING_CAPITAL_OR_11"] }),
   { status: "UNRESOLVED", reasons: ["ACCOUNT_POLICY_UNCONFIGURED", "MISSING_OWNER_PAPER_STARTING_CAPITAL_OR_11"] });
 assert.deepEqual(policySummary(null), { status: "NOT_LOADED", reasons: ["NO_ACCOUNT_RESOLVED_FOR_THIS_VIEW"] });
+
+// Stored parity/funding: a loaded row shows its own instants; NOT_LOADED and REFUSED read differently.
+assert.equal(storedEvidenceText({ status: "INCOMPLETE", loaded: true, reasons: ["R"], evidence_as_of: "2026-08-02T00:00:00Z",
+  recorded_at: "2026-08-02T01:00:00Z", window_start: "2026-08-01T00:00:00Z", window_end: "2026-08-01T01:29:00Z" }),
+"stored evidence as of 2026-08-02T00:00:00Z, recorded 2026-08-02T01:00:00Z; window 2026-08-01T00:00:00Z → 2026-08-01T01:29:00Z");
+assert.equal(storedEvidenceText({ status: "NOT_LOADED", loaded: false, reasons: ["NO_STORED_PARITY_ASSESSMENT_FOR_CANDIDATE_IN_CYCLE"] }),
+  "nothing stored for this candidate in the cycle");
+assert.match(storedEvidenceText({ status: "REFUSED", loaded: false, reasons: ["STORED_EVIDENCE_REFUSED:X"] }), /^stored row refused/);
+assert.notEqual(storedEvidenceText({ status: "REFUSED", loaded: false, reasons: [] }),
+  storedEvidenceText({ status: "NOT_LOADED", loaded: false, reasons: [] }));
 
 // The terminal never hard-codes an economic number: no bps scenario literal in the terminal sources.
 for (const file of ["paper-economics.ts", "compare-section.tsx", "page.tsx"]) {

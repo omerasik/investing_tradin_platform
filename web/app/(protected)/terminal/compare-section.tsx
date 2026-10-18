@@ -19,6 +19,7 @@ import {
   returnFigure,
   sensitivityLabel,
   sizingText,
+  storedEvidenceText,
   targetText,
 } from "./paper-economics";
 
@@ -143,7 +144,7 @@ function CompareForm({ studies, selection, metrics }: {
 
 function ParityCell({ paper }: { paper: CandidatePaperEvidence | undefined }) {
   if (!paper) return <Badge label="NOT_LOADED" />;
-  return <><Badge label={paper.parity.status} />{paper.parity.loaded ? null : " no parity evidence loaded"}</>;
+  return <><Badge label={paper.parity.status} />{paper.parity.loaded ? null : paper.parity.status === "REFUSED" ? " stored row refused" : " no stored parity assessment"}</>;
 }
 
 function FundingCell({ paper }: { paper: CandidatePaperEvidence | undefined }) {
@@ -429,7 +430,8 @@ export function PaperEvidenceSection({ items, unavailable }: { items: CandidateP
     <>
       <p>
         Status words: <Badge label="PASS" /> <Badge label="FAIL" /> <Badge label="INCOMPLETE" /> are a loaded parity report&apos;s own verdict;{" "}
-        <Badge label="NOT_LOADED" /> means this read loaded no such evidence, which is not the same as incomplete evidence. Funding is always{" "}
+        <Badge label="NOT_LOADED" /> means nothing is stored for the candidate in the cycle, which is not the same as incomplete evidence;{" "}
+        <Badge label="REFUSED" /> means a stored row did not re-derive and is not shown. Funding is always{" "}
         <Badge label="NON_COSTABLE" />: no funding charge is calculated and no return changes. Economics figures are a{" "}
         {RETURN_UNIT_LABEL}, never money; net is <Badge label="CONFIRMED" />, <Badge label="NOT_COSTABLE" /> or{" "}
         <Badge label="INCOMPLETE" /> as the projection decides. Risk is <Badge label="ALLOWED" />, <Badge label="BLOCKED" /> or{" "}
@@ -463,11 +465,11 @@ export function PaperEvidenceSection({ items, unavailable }: { items: CandidateP
             server-side from stored rows · assessed <time dateTime={item.as_of}>{utc(item.as_of)}</time>.
           </p>
           <h4>Live/replay fill parity: <Badge label={item.parity.status} /></h4>
-          {item.parity.loaded ? <p>Report {short(item.parity.report_hash)}</p> : null}
+          <p data-stored-evidence="parity">{storedEvidenceText(item.parity)}{item.parity.loaded ? <> · report {short(item.parity.report_hash)}</> : null}</p>
           {reasonsList(item.parity.reasons)}
           <h4>Forward funding: <Badge label={item.funding.status} /> <Badge label={item.funding.cost_status} /></h4>
-          <p>Charge {item.funding.charge}; evidence {short(item.funding.evidence_hash)}.</p>
-          <h5>Why not loaded</h5>
+          <p data-stored-evidence="funding">{storedEvidenceText(item.funding)} · charge {item.funding.charge}; evidence {short(item.funding.evidence_hash)}.</p>
+          <h5>{item.funding.status === "REFUSED" ? "Why refused" : item.funding.loaded ? "Load reasons" : "Why not loaded"}</h5>
           {reasonsList(item.funding.reasons)}
           <h5>Completeness blockers</h5>
           {reasonsList(item.funding.completeness_blockers)}

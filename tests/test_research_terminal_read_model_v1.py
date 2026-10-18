@@ -6,7 +6,7 @@ import os
 import subprocess
 import sys
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock
 from uuid import UUID, uuid4
@@ -40,6 +40,7 @@ from trade_platform.research_terminal_read_model_v1 import (
     WalkForwardView,
     funding_evidence_view_v1,
     parity_evidence_view_v1,
+    stored_funding_evidence_view_v1,
 )
 from trade_platform.security import InMemoryRateLimiter, OperatorAuthenticator
 from trade_platform.strategy_lab_study_v1 import identity_hash_v1
@@ -200,7 +201,7 @@ def _paper(study: UUID, trial: UUID) -> CandidatePaperEvidenceView:
     return CandidatePaperEvidenceView(
         study_id=study, study_content_hash="d" * 64, trial_id=trial, trial_content_hash="e" * 64,
         cycle_id="cycle-2026-08-20", symbol=None, incubation=None, parity=_parity(),
-        funding=funding_evidence_view_v1(None, bridges_loaded=False, not_loaded_reasons=["X"]),
+        funding=funding_evidence_view_v1(None, not_loaded_reasons=["X"]),
         economics=PaperEconomicsSectionView(status="NOT_LOADED", reasons=["CANDIDATE_HAS_NO_PAPER_FILL_IN_THE_CURRENT_CYCLE"]),
         risk=_risk_not_loaded(["NO_STORED_INCUBATING_SIGNAL_TARGET_FOR_CANDIDATE_IN_CYCLE"]), as_of=NOW)
 
@@ -321,26 +322,163 @@ class PaperEvidenceViewTests(unittest.TestCase):
 
     def test_funding_is_non_costable_and_its_section_must_rederive(self) -> None:
         section = _funding_section("s", "t")
-        view = funding_evidence_view_v1(section, bridges_loaded=False, not_loaded_reasons=["B", "A", "A"])
+        view = funding_evidence_view_v1(section, not_loaded_reasons=["B", "A", "A"])
         self.assertEqual(("NOT_LOADED", False, ["A", "B"]), (view.status, view.loaded, view.reasons))
         self.assertIn("MISSING_VERIFIED_FEE_SCHEDULE_OR_6", view.economic_blockers)
         self.assertEqual(("NON_COSTABLE", False, "NOT_CALCULATED"), (view.cost_status, view.costable, view.charge))
-        loaded = funding_evidence_view_v1(section, bridges_loaded=True, not_loaded_reasons=["A"])
-        self.assertEqual(("NO_FUNDING_EVIDENCE_SUPPLIED", True, []), (loaded.status, loaded.loaded, loaded.reasons))
-        self.assertEqual("NOT_LOADED", funding_evidence_view_v1(None, bridges_loaded=True,
-                                                                not_loaded_reasons=["A"]).status)
+        self.assertEqual("NOT_LOADED", funding_evidence_view_v1(None, not_loaded_reasons=["A"]).status)
         with self.assertRaises(ValueError):
-            funding_evidence_view_v1({**section, "state": "EVIDENCE_COMPLETE"}, bridges_loaded=True,
-                                     not_loaded_reasons=[])
+            funding_evidence_view_v1({**section, "state": "EVIDENCE_COMPLETE"}, not_loaded_reasons=["A"])
         costable = {key: value for key, value in section.items() if key != "evidence_hash"}
         costable["costable"] = True
         costable["evidence_hash"] = identity_hash_v1(costable)
         with self.assertRaises(ValueError):
-            funding_evidence_view_v1(costable, bridges_loaded=True, not_loaded_reasons=[])
+            funding_evidence_view_v1(costable, not_loaded_reasons=["A"])
+        with self.assertRaises(ValueError):  # a stored record whose section claims to be costable is refused
+            stored_funding_evidence_view_v1(_stored_funding_row("s", "t", costable), study_id="s", trial_id="t",
+                                            cycle_id=CYCLE.cycle_id)
         with self.assertRaises(ValueError):
             FundingEvidenceView(**{**view.model_dump(), "costable": True})
         with self.assertRaises(ValueError):
             ComparisonView(**{**_comparison(uuid4(), uuid4()).model_dump(), "composite_score": "WEIGHTED"})
+
+
+def _stored_parity_row(study: str, trial: str, status: str = "INCOMPLETE") -> object:
+    from trade_platform.paper_evidence_store_v1 import StoredFillParityV1
+
+    at = datetime(2026, 8, 2, tzinfo=UTC)
+    return StoredFillParityV1(
+        assessment_id=uuid4(), report_content_hash="c" * 64, cycle_id=CYCLE.cycle_id, study_id=UUID(study),
+        trial_id=UUID(trial), symbol="BTCUSDT", status=status,
+        reasons=() if status == "PASS" else ("REPLAY_BAR_NOT_OBSERVED",), as_of=at,
+        window_start=at - timedelta(days=1), window_end=at - timedelta(hours=22), source_hashes={},
+        identity={"summary": {"outcomes": {"MATCH": 59}}}, recorded_at=at + timedelta(hours=1), report_id=uuid4(),
+        schema_version="paper-fill-parity-v1", study_content_hash="d" * 64, authority_evidence_hash="v" * 64,
+        holdout_start=datetime(2026, 8, 20, tzinfo=UTC), holdout_end_exclusive=None)
+
+
+def _stored_funding_row(study: str, trial: str, section: dict[str, object] | None = None) -> object:
+    from trade_platform.paper_evidence_store_v1 import StoredFundingEvidenceV1
+
+    section = section or _funding_section(study, trial)
+    at = datetime(2026, 8, 2, tzinfo=UTC)
+    return StoredFundingEvidenceV1(
+        record_id=uuid4(), evidence_hash=str(section["evidence_hash"]), cycle_id=CYCLE.cycle_id,
+        study_id=UUID(study), trial_id=UUID(trial), symbol="ETHUSDT", state=str(section["state"]),
+        completeness_blockers=tuple(section["completeness_blockers"]),  # type: ignore[arg-type]
+        economic_blockers=tuple(section["economic_blockers"]), as_of=at,  # type: ignore[arg-type]
+        window_start=None, window_end=None, bridge_hashes={}, evidence=section, recorded_at=at + timedelta(minutes=5),
+        schema_version="paper-funding-evidence-v1", evidence_validation_hash=None)
+
+
+class StoredPaperEvidencePathTests(unittest.TestCase):
+    """Parity and funding come only from the store: stored -> verbatim, None -> NOT_LOADED, refusal -> REFUSED."""
+
+    def setUp(self) -> None:
+        self.study, self.trial = uuid4(), uuid4()
+        self.identity = {"schema_version": "strategy-lab-study-v1", "label": "x"}
+        self.study_row = (identity_hash_v1(self.identity), self.identity)
+
+    def read(self, parity: object = None, funding: object = None) -> CandidatePaperEvidenceView:
+        from unittest.mock import patch
+
+        from trade_platform.paper_evidence_store_v1 import PaperEvidenceStoreError
+        from trade_platform.research_terminal_read_model_v1 import _candidate_paper_evidence
+
+        def answer(value: object) -> dict[str, object]:
+            if isinstance(value, PaperEvidenceStoreError):
+                return {"side_effect": value}
+            return {"return_value": value}
+
+        cursor = _ScriptedCursor([self.study_row, ("e" * 64,), (0,)])
+        with patch("trade_platform.paper_evidence_store_v1.read_fill_parity_v1", **answer(parity)) as parity_read, \
+                patch("trade_platform.paper_evidence_store_v1.read_funding_evidence_v1", **answer(funding)) as funding_read:
+            view = _candidate_paper_evidence(cursor, _Context([], {"candidates": []}),  # type: ignore[arg-type]
+                                             self.study, self.trial)
+        for read in (parity_read, funding_read):
+            self.assertEqual({"cycle_id": "cycle-2026-08-20", "study_id": self.study, "trial_id": self.trial,
+                              "as_of": NOW}, read.call_args.kwargs)
+        return view
+
+    def test_a_stored_row_is_restated_verbatim_with_its_instants(self) -> None:
+        for status in ("PASS", "FAIL", "INCOMPLETE"):
+            with self.subTest(status=status):
+                parity = _stored_parity_row(str(self.study), str(self.trial), status)
+                funding = _stored_funding_row(str(self.study), str(self.trial))
+                view = self.read(parity, funding)
+                self.assertEqual((status, True, "c" * 64, list(parity.reasons), parity.assessment_id),
+                                 (view.parity.status, view.parity.loaded, view.parity.report_hash, view.parity.reasons,
+                                  view.parity.assessment_id))
+                self.assertEqual((parity.as_of, parity.recorded_at, parity.window_start, parity.window_end),
+                                 (view.parity.evidence_as_of, view.parity.recorded_at, view.parity.window_start,
+                                  view.parity.window_end))
+                self.assertEqual({"outcomes": {"MATCH": 59}}, view.parity.summary)
+                self.assertEqual(("NO_FUNDING_EVIDENCE_SUPPLIED", True, [], funding.evidence_hash, funding.record_id),
+                                 (view.funding.status, view.funding.loaded, view.funding.reasons,
+                                  view.funding.evidence_hash, view.funding.record_id))
+                self.assertEqual(("NON_COSTABLE", False, "NOT_CALCULATED", dict(funding.evidence)),
+                                 (view.funding.cost_status, view.funding.costable, view.funding.charge,
+                                  view.funding.section))
+                self.assertEqual(list(funding.economic_blockers), view.funding.economic_blockers)
+                # Stored funding is evidence only: no cycle fill, nothing projected, never a cost.
+                self.assertEqual(("NOT_LOADED", None), (view.economics.status, view.economics.funding))
+
+    def test_nothing_stored_is_not_loaded_with_its_reason(self) -> None:
+        view = self.read()
+        self.assertEqual(("NOT_LOADED", False, ["NO_STORED_PARITY_ASSESSMENT_FOR_CANDIDATE_IN_CYCLE"], None),
+                         (view.parity.status, view.parity.loaded, view.parity.reasons, view.parity.assessment_id))
+        self.assertEqual(("NOT_LOADED", False, None),
+                         (view.funding.status, view.funding.loaded, view.funding.record_id))
+        self.assertEqual(["CANDIDATE_HAS_NO_PAPER_FILL_IN_THE_CURRENT_CYCLE",
+                          "NO_STORED_FUNDING_EVIDENCE_FOR_CANDIDATE_IN_CYCLE"], view.funding.reasons)
+
+    def test_a_refused_stored_row_is_refused_never_not_loaded_nor_a_500(self) -> None:
+        from trade_platform.paper_evidence_store_v1 import PaperEvidenceStoreError
+
+        view = self.read(PaperEvidenceStoreError("STORED_FILL_PARITY_DOES_NOT_REDERIVE"),
+                         PaperEvidenceStoreError("FUNDING_HOLDINGS_DO_NOT_MATCH_STORED_FILLS"))
+        self.assertEqual(("REFUSED", False, ["STORED_EVIDENCE_REFUSED:STORED_FILL_PARITY_DOES_NOT_REDERIVE"], None),
+                         (view.parity.status, view.parity.loaded, view.parity.reasons, view.parity.report_hash))
+        self.assertEqual(("REFUSED", False, ["STORED_EVIDENCE_REFUSED:FUNDING_HOLDINGS_DO_NOT_MATCH_STORED_FILLS"],
+                          None, None, "NON_COSTABLE"),
+                         (view.funding.status, view.funding.loaded, view.funding.reasons, view.funding.evidence_hash,
+                          view.funding.section, view.funding.cost_status))
+        # A row of another candidate is refused too (the store never returns one; the view does not trust it).
+        other = self.read(_stored_parity_row(str(uuid4()), str(self.trial)),
+                          _stored_funding_row(str(self.study), str(uuid4())))
+        self.assertEqual(("REFUSED", "REFUSED"), (other.parity.status, other.funding.status))
+
+    def test_refused_not_loaded_and_verbatim_statuses_never_mix(self) -> None:
+        from trade_platform.research_terminal_read_model_v1 import (
+            refused_funding_view_v1,
+            refused_parity_view_v1,
+        )
+
+        refused = refused_parity_view_v1("X", live_side={}).model_dump()
+        stored = self.read(_stored_parity_row(str(self.study), str(self.trial)),
+                           _stored_funding_row(str(self.study), str(self.trial)))
+        loaded = stored.parity.model_dump()
+        for payload in ({**refused, "loaded": True}, {**refused, "status": "NOT_LOADED"},
+                        {**refused, "reasons": ["X"]}, {**refused, "reasons": []},
+                        {**refused, "report_hash": "c" * 64},
+                        {**loaded, "status": "REFUSED"}, {**loaded, "status": "NOT_LOADED"},
+                        {**loaded, "loaded": False},
+                        {**_parity().model_dump(), "reasons": ["STORED_EVIDENCE_REFUSED:X"]},
+                        {**_parity().model_dump(), "status": "INCOMPLETE"}):
+            with self.subTest(payload=str(payload)[:70]), self.assertRaises(ValueError):
+                ParityEvidenceView(**payload)
+        refused_f = refused_funding_view_v1("X").model_dump()
+        loaded_f = stored.funding.model_dump()
+        for payload in ({**refused_f, "loaded": True}, {**refused_f, "status": "NOT_LOADED"},
+                        {**refused_f, "evidence_hash": "a" * 64}, {**loaded_f, "status": "NOT_LOADED"},
+                        {**loaded_f, "status": "REFUSED", "loaded": False},
+                        {**loaded_f, "record_id": None}, {**loaded_f, "costable": True}):
+            with self.subTest(payload=str(payload)[:70]), self.assertRaises(ValueError):
+                FundingEvidenceView(**payload)
+
+
+#: Holdout names a paper-evidence read may mention: registry and recorded gate boundaries, never holdout data.
+ALLOWED_HOLDOUT_NAMES = {"strategy_lab_holdout_validations", "holdout_start", "holdout_end_exclusive"}
 
 
 class _ScriptedCursor:
@@ -389,16 +527,16 @@ class CandidatePaperEvidenceReadTests(unittest.TestCase):
                                                                      view.symbol))
         self.assertEqual({"live_signals_recorded": 3, "paper_fills_in_cycle": 1, "fills_by_status": {"FILLED": 1}},
                          view.parity.live_side)
-        self.assertEqual(("NOT_LOADED", ["NO_PERSISTED_PARITY_REPORT_REPLAY_NOT_RECONSTRUCTED_BY_THIS_READ"]),
+        self.assertEqual(("NOT_LOADED", ["NO_STORED_PARITY_ASSESSMENT_FOR_CANDIDATE_IN_CYCLE"]),
                          (view.parity.status, view.parity.reasons))
-        self.assertEqual(("NOT_LOADED", ["FORWARD_FUNDING_BRIDGES_NOT_PERSISTED_NOT_LOADED_BY_THIS_READ"]),
+        self.assertEqual(("NOT_LOADED", ["NO_STORED_FUNDING_EVIDENCE_FOR_CANDIDATE_IN_CYCLE"]),
                          (view.funding.status, view.funding.reasons))
         self.assertEqual("NO_FUNDING_EVIDENCE_SUPPLIED", (view.funding.section or {})["state"])
-        # The holdout is never read: the only holdout table named is the validation registry the cycle's
-        # INCUBATING signals are bound to (as for the cycle's fills), never an opening or holdout data.
+        # The holdout is never read: the only holdout names are the validation registry the cycle's INCUBATING
+        # signals are bound to (as for the cycle's fills) and a stored parity row's recorded gate boundaries.
         for query, _ in cursor.queries:
             self.assertEqual([], [word for word in query.lower().replace(",", " ").split()
-                                  if "holdout" in word and word != "strategy_lab_holdout_validations"])
+                                  if "holdout" in word and word not in ALLOWED_HOLDOUT_NAMES])
         # A fill that is not a stored paper fill identity is refused by the projection, never shown as figures.
         self.assertEqual(("REFUSED", ["PAPER_ECONOMICS_REFUSED:fill_schema_version_unknown"]),
                          (view.economics.status, view.economics.reasons))

@@ -86,6 +86,23 @@ export function sizingText(risk: PaperRiskView): string {
   return `no sizing (${why.join(", ")})`;
 }
 
+type StoredEvidence = {
+  status: string; loaded: boolean; reasons: string[]; evidence_as_of?: string | null; recorded_at?: string | null;
+  window_start?: string | null; window_end?: string | null;
+};
+
+/**
+ * What a stored-evidence status means, never conflated: a loaded row (verbatim status, with its own instants),
+ * NOT_LOADED (nothing stored for the candidate in the cycle) or REFUSED (a stored row that does not re-derive).
+ */
+export function storedEvidenceText(evidence: StoredEvidence): string {
+  if (evidence.status === "REFUSED") return "stored row refused: it does not re-derive (not shown, not treated as absent)";
+  if (!evidence.loaded) return "nothing stored for this candidate in the cycle";
+  const window = evidence.window_start || evidence.window_end
+    ? `; window ${evidence.window_start ?? "—"} → ${evidence.window_end ?? "—"}` : "";
+  return `stored evidence as of ${evidence.evidence_as_of ?? "—"}, recorded ${evidence.recorded_at ?? "—"}${window}`;
+}
+
 /** The recorded target a risk view assessed, or why none was assessed. */
 export function targetText(risk: PaperRiskView): string {
   const target = risk.requested_target;
