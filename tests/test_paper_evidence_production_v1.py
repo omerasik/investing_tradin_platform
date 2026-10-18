@@ -117,10 +117,10 @@ class _ProgressRows:
 
 
 def progress_rows(candidate: WatchedCandidateV1, gate: LiveHoldoutGateV1, bars: Sequence[LiveBarV1],
-                  *, session: UUID = UUID(int=7)) -> list[dict[str, Any]]:
-    """The real recorder's rows for one runner session that processed ``bars`` one poll each."""
+                  *, session: UUID = UUID(int=7), start: datetime = DAY0) -> list[dict[str, Any]]:
+    """The real recorder's rows for one runner session (started at ``start``) that processed ``bars``."""
     store = _ProgressRows()
-    clock = {"wall": DAY0, "mono": 0}
+    clock = {"wall": start, "mono": 0}
     recorder = RunnerProgressRecorderV1(store, runner="paper_incubation", symbol="BTCUSDT",
                                         capture_source_id=UUID(int=99), candidates=[candidate], holdout_gate=gate,
                                         runner_session_id=session, wall_clock=lambda: clock["wall"],
@@ -128,7 +128,7 @@ def progress_rows(candidate: WatchedCandidateV1, gate: LiveHoldoutGateV1, bars: 
     recorder.start()
     for bar in bars:
         clock["wall"] = _at(bar.completed_by_arrival_nanos // 1000 + 500_000)
-        clock["mono"] = (bar.completed_by_arrival_nanos // 1000 + 500_000 - int(DAY0.timestamp() * 1e6)) * 1000
+        clock["mono"] = (bar.completed_by_arrival_nanos // 1000 + 500_000 - int(start.timestamp() * 1e6)) * 1000
         recorder.on_poll([bar])
     return store.rows
 
@@ -149,8 +149,10 @@ class FixtureSources:
     def __init__(self, *, signals: list[dict[str, Any]], fills: list[dict[str, Any]],
                  liveness: list[dict[str, Any]], live_bars: list[LiveBarV1] | None,
                  sealed: list[SealedDatasetBarsV1], funding_store: ForwardSettledFundingStoreV1 | None = None,
-                 funding_price: FundingPriceEvidenceV1 | None = None) -> None:
+                 funding_price: FundingPriceEvidenceV1 | None = None,
+                 cycle_fills: list[dict[str, Any]] | None = None) -> None:
         self.signals, self.fills, self.liveness = signals, fills, liveness
+        self.cycle_fills = cycle_fills or []
         self.bars, self.sealed = live_bars, sealed
         self.funding_store, self.funding_price = funding_store, funding_price
         self.sealed_requests: list[tuple[int, int]] = []
@@ -181,6 +183,9 @@ class FixtureSources:
             raise production.EvidenceInputRefusedV1(production.FUNDING_PRICE_EVIDENCE_NOT_AVAILABLE)
         return self.funding_price
 
+    def cycle_incubation_inputs(self, *, cycle_id: str, as_of: datetime) -> tuple[list[Any], Any, None]:
+        return list(self.cycle_fills), GROSS, None
+
 
 class MemorySink:
     """The verified store's idempotency contract in memory: same content returns the first row unchanged."""
@@ -190,9 +195,10 @@ class MemorySink:
         self.funding: dict[tuple[str, str], SimpleNamespace] = {}
         self.reports: list[FillParityReportV1] = []
         self.evidence: list[CandidateFundingEvidenceV1] = []
+        self.sections: list[dict[str, Any]] = []
         self.refuse = refuse
 
-    def record_fill_parity_v1(self, report: FillParityReportV1, *, cycle_id: str,
+    def record_fill_parity_v1(self, report: FillParityReportV1, *, cycle_id: str, as_of: datetime,
                               recorded_at: datetime) -> tuple[SimpleNamespace, ...]:
         if self.refuse:
             raise ValueError(self.refuse)
@@ -208,13 +214,14 @@ class MemorySink:
             rows.append(row)
         return tuple(rows)
 
-    def record_funding_evidence_v1(self, evidence: CandidateFundingEvidenceV1, *, cycle_id: str,
-                                   recorded_at: datetime) -> SimpleNamespace:
+    def record_funding_evidence_v1(self, evidence: CandidateFundingEvidenceV1 | None, *, section: Any,
+                                   cycle_id: str, as_of: datetime, recorded_at: datetime) -> SimpleNamespace:
         if self.refuse:
             raise ValueError(self.refuse)
         assert isinstance(evidence, CandidateFundingEvidenceV1)
         self.evidence.append(evidence)
-        digest = identity_hash_v1({"bridges": [h for h, _ in evidence.bridges], "trial": evidence.trial_id})
+        self.sections.append(dict(section))
+        digest = str(section["evidence_hash"])
         return self.funding.setdefault((cycle_id, digest), SimpleNamespace(
             record_id=uuid5(UUID(int=2), digest), evidence_hash=digest, recorded_at=recorded_at))
 
@@ -349,6 +356,13 @@ class ProductionTests(unittest.TestCase):
         run = self.run_production(self.sources(live_bars=self.bars),
                                   sink=MemorySink(refuse="CONFLICTING_DUPLICATE_FILL_PARITY"))
         self.assertEqual(("SINK_REFUSED:CONFLICTING_DUPLICATE_FILL_PARITY",), self.outcome(run).reasons)
+
+    def test_a_store_holdout_refusal_names_the_unopened_holdout(self) -> None:
+        run = self.run_production(self.sources(live_bars=self.bars),
+                                  sink=MemorySink(refuse="EVIDENCE_TOUCHES_THE_UNOPENED_HOLDOUT"))
+        self.assertEqual((production.HOLDOUT_UNOPENED_OR_7, "SINK_REFUSED:EVIDENCE_TOUCHES_THE_UNOPENED_HOLDOUT"),
+                         self.outcome(run).reasons)
+        self.assertIn(production.HOLDOUT_UNOPENED_OR_7, run.missing_inputs)
 
     def test_live_bars_of_two_runner_sessions_are_renumbered_never_one_window(self) -> None:
         first = progress_rows(self.candidate, self.gate, self.bars[:45], session=UUID(int=7))

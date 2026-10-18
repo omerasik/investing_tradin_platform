@@ -51,13 +51,25 @@ price convention, the bridge window, the mark tolerance and the capture
 acceptance bound are caller declarations with no default
 (:class:`FundingDeclarationV1`); undeclared is ``FUNDING_PRICE_CONVENTION_NOT_DECLARED``.
 
+The stored record is the candidate's ``funding_evidence`` section, built by the
+unchanged :func:`~trade_platform.paper_incubation_report_v1.incubation_report_v1`
+over the cycle's stored paper fills recorded and decided by ``as_of`` -- loaded
+exactly as the store and the terminal read model load them -- with the bridges
+attached. A candidate the report does not list (no cycle fill as of ``as_of``)
+binds no holding: its section is the funding module's own over no holdings,
+which is what the store re-derives for it.
+
 Persistence
 -----------
-A sink receives only the issued report / evidence object; its refusals are
-reported verbatim (``SINK_REFUSED:<code>``). A stored row whose ``recorded_at``
-is not this run's is the idempotent ``ALREADY_STORED``. With no sink the run is
-a dry run (``DRY_RUN_WOULD_RECORD``). The run result lists, per candidate and
-evidence kind, the outcome, its hashes, its reasons and the missing inputs.
+A sink (:class:`StorePaperEvidenceSinkV1`: the verified
+:mod:`~trade_platform.paper_evidence_store_v1`, bound to the caller's cursor and
+transaction) receives only the issued report / evidence object and the section;
+its refusals are reported verbatim (``SINK_REFUSED:<code>``), and a holdout
+refusal also names the unopened holdout (``HOLDOUT_UNOPENED_OR_7``) as the missing
+input. A stored row whose ``recorded_at`` is not this run's is the idempotent
+``ALREADY_STORED``. With no sink the run is a dry run (``DRY_RUN_WOULD_RECORD``).
+The run result lists, per candidate and evidence kind, the outcome, its hashes,
+its reasons and the missing inputs.
 """
 
 from __future__ import annotations
@@ -155,7 +167,12 @@ AMBIGUOUS_RUNNER_PROGRESS: Final = "AMBIGUOUS_RUNNER_PROGRESS"
 PARITY_INPUT_REFUSED: Final = "PARITY_INPUT_REFUSED"
 FUNDING_EVIDENCE_REFUSED: Final = "FUNDING_EVIDENCE_REFUSED"
 ISSUED_EVIDENCE_DOES_NOT_REDERIVE: Final = "ISSUED_EVIDENCE_DOES_NOT_REDERIVE"
+CYCLE_PAPER_FILLS_DO_NOT_REDERIVE: Final = "CYCLE_PAPER_FILLS_DO_NOT_REDERIVE"
 SINK_REFUSED: Final = "SINK_REFUSED"
+#: Named beside a store holdout refusal: the owner has not opened the cycle's holdout (OR-7).
+HOLDOUT_UNOPENED_OR_7: Final = "HOLDOUT_UNOPENED_OR_7"
+_STORE_HOLDOUT_REFUSALS: Final = frozenset({"EVIDENCE_TOUCHES_THE_UNOPENED_HOLDOUT",
+                                            "HOLDOUT_GATE_OPENING_NOT_REGISTERED"})
 
 #: What the resolvers need and the platform does not persist today (as of migration 0065).
 MISSING_PERSISTED_INPUTS_V1: Final = {
@@ -175,6 +192,9 @@ MISSING_PERSISTED_INPUTS_V1: Final = {
     "WATCHED_CANDIDATE_STUDY_SPEC_NOT_PERSISTED": (
         "The frozen StudySpecV1 behind a WatchedCandidateV1 is rebuilt by the caller (as the runner "
         "script does); it is verified against the stored signals' study id and content hash, never trusted."),
+    HOLDOUT_UNOPENED_OR_7: (
+        "The cycle's holdout is not opened by the owner (OR-7): the store refuses any evidence over a bar at or "
+        "after the holdout start, so forward evidence of this cycle cannot be stored yet."),
 }
 
 _EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
@@ -290,15 +310,48 @@ class PaperEvidenceSourcesV1(Protocol):
     def funding_price_evidence(self, *, symbol: str, declaration: FundingDeclarationV1,
                                as_of: datetime) -> FundingPriceEvidenceV1: ...
 
+    def cycle_incubation_inputs(self, *, cycle_id: str,
+                                as_of: datetime) -> tuple[Sequence[Mapping[str, Any]], CostPolicyV1, Any]:
+        """(the cycle's stored fill identities recorded and decided by ``as_of``, its OR-6 policy, its
+        registry resolution or ``None``) -- what the store re-derives funding holdings from."""
+        ...
+
 
 class PaperEvidenceSinkV1(Protocol):
     """The verified paper evidence store's write API (``paper_evidence_store_v1``), bound to one cursor."""
 
-    def record_fill_parity_v1(self, report: FillParityReportV1, *, cycle_id: str,
+    def record_fill_parity_v1(self, report: FillParityReportV1, *, cycle_id: str, as_of: datetime,
                               recorded_at: datetime) -> Sequence[Any]: ...
 
-    def record_funding_evidence_v1(self, evidence: CandidateFundingEvidenceV1, *, cycle_id: str,
+    def record_funding_evidence_v1(self, evidence: CandidateFundingEvidenceV1 | None, *,
+                                   section: Mapping[str, Any], cycle_id: str, as_of: datetime,
                                    recorded_at: datetime) -> Any: ...
+
+
+class StorePaperEvidenceSinkV1:
+    """:class:`PaperEvidenceSinkV1` over :mod:`~trade_platform.paper_evidence_store_v1`.
+
+    Holds the caller's cursor: every write runs in the caller's transaction, which
+    the caller commits (or not). Refusals are the store's
+    :class:`~trade_platform.paper_evidence_store_v1.PaperEvidenceStoreError`.
+    """
+
+    def __init__(self, cursor: Any) -> None:
+        self._cursor = cursor
+
+    def record_fill_parity_v1(self, report: FillParityReportV1, *, cycle_id: str, as_of: datetime,
+                              recorded_at: datetime) -> Sequence[Any]:
+        from .paper_evidence_store_v1 import record_fill_parity_v1
+
+        return record_fill_parity_v1(self._cursor, report, cycle_id=cycle_id, as_of=as_of, recorded_at=recorded_at)
+
+    def record_funding_evidence_v1(self, evidence: CandidateFundingEvidenceV1 | None, *,
+                                   section: Mapping[str, Any], cycle_id: str, as_of: datetime,
+                                   recorded_at: datetime) -> Any:
+        from .paper_evidence_store_v1 import record_funding_evidence_v1
+
+        return record_funding_evidence_v1(self._cursor, evidence, section=section, cycle_id=cycle_id, as_of=as_of,
+                                          recorded_at=recorded_at)
 
 
 # ---------------------------------------------------------------------------
@@ -713,8 +766,10 @@ def produce_fill_parity_v1(sources: PaperEvidenceSourcesV1, candidate: WatchedCa
 
 def produce_funding_evidence_v1(sources: PaperEvidenceSourcesV1, candidate: WatchedCandidateV1, *, cycle_id: str,
                                 gate: LiveHoldoutGateV1, cost_policy: CostPolicyV1, as_of: datetime,
-                                declaration: FundingDeclarationV1 | None) -> CandidateFundingEvidenceV1:
-    """The candidate's forward funding evidence from already-stored settled funding only, or :class:`_Refusal`."""
+                                declaration: FundingDeclarationV1 | None
+                                ) -> tuple[CandidateFundingEvidenceV1, dict[str, Any]]:
+    """The candidate's forward funding evidence (from already-stored settled funding only) and its report
+    section, or :class:`_Refusal`."""
     from .forward_funding_price_bridge_v1 import (
         ForwardFundingPriceBridgeError,
         bridge_forward_funding_prices_v1,
@@ -751,7 +806,48 @@ def produce_funding_evidence_v1(sources: PaperEvidenceSourcesV1, candidate: Watc
         raise _Refusal([f"{FUNDING_EVIDENCE_REFUSED}:{error}"]) from error
     if any(identity_hash_v1(dict(identity)) != content_hash for content_hash, identity in evidence.bridges):
         raise _Refusal([ISSUED_EVIDENCE_DOES_NOT_REDERIVE])
-    return evidence
+    return evidence, funding_section_v1(sources, candidate, evidence, cycle_id=cycle_id, as_of=as_of)
+
+
+def funding_section_v1(sources: PaperEvidenceSourcesV1, candidate: WatchedCandidateV1,
+                       evidence: CandidateFundingEvidenceV1 | None, *, cycle_id: str,
+                       as_of: datetime) -> dict[str, Any]:
+    """The candidate's ``funding_evidence`` section of the cycle's incubation report at ``as_of``.
+
+    Built by the unchanged report over the cycle's stored fills (recorded and decided
+    by ``as_of``) with ``evidence`` attached. A candidate the report does not list has
+    no cycle fill as of ``as_of``: its section is the funding module's own over no
+    holdings, under the cycle's policy (the store re-derives exactly that).
+    """
+    from .paper_funding_evidence_v1 import funding_evidence_section_v1
+    from .paper_incubation_report_v1 import incubation_report_v1
+
+    study_id, trial_id, symbol = str(candidate.study.study_id), candidate.trial_id, candidate.symbol
+    try:
+        fills, cost, resolution = sources.cycle_incubation_inputs(cycle_id=cycle_id, as_of=as_of)
+        def listed(report: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+            return [item for item in report["candidates"]
+                    if (str(item["study_id"]), str(item["trial_id"]), str(item["symbol"])) == (study_id, trial_id,
+                                                                                              symbol)]
+
+        # The report refuses funding of a candidate it does not list: ask first, as the store does.
+        found = listed(incubation_report_v1(list(fills), cost, as_of=as_of, resolution=resolution))
+        if len(found) > 1:
+            raise _Refusal([CYCLE_PAPER_FILLS_DO_NOT_REDERIVE])
+        if found:
+            if evidence is None:
+                return dict(found[0]["funding_evidence"])
+            (entry,) = listed(incubation_report_v1(list(fills), cost, as_of=as_of, resolution=resolution,
+                                                   funding=[evidence]))
+            return dict(entry["funding_evidence"])
+        return funding_evidence_section_v1(evidence, study_id=study_id, trial_id=trial_id, symbol=symbol,
+                                           holdings=[], fills_skipped=0, as_of_micros=_micros(as_of),
+                                           binding_validation_hash=None,
+                                           fee_schedule_verified=cost.fee_schedule is not None)
+    except EvidenceInputRefusedV1 as refusal:
+        raise _Refusal([refusal.code]) from refusal
+    except (ValueError, KeyError, TypeError) as error:
+        raise _Refusal([f"{CYCLE_PAPER_FILLS_DO_NOT_REDERIVE}:{error}"]) from error
 
 
 def _refused(kind: str, candidate: WatchedCandidateV1, refusal: _Refusal) -> ProductionOutcomeV1:
@@ -760,7 +856,9 @@ def _refused(kind: str, candidate: WatchedCandidateV1, refusal: _Refusal) -> Pro
 
 
 def _sink_error(error: Exception) -> _Refusal:
-    return _Refusal([f"{SINK_REFUSED}:{error}"])
+    code = str(error)
+    holdout = [HOLDOUT_UNOPENED_OR_7] if code in _STORE_HOLDOUT_REFUSALS else []
+    return _Refusal([f"{SINK_REFUSED}:{code}", *holdout], holdout)
 
 
 def run_paper_evidence_production_v1(
@@ -806,7 +904,8 @@ def run_paper_evidence_production_v1(
             status = STATUS_DRY_RUN
             if sink is not None:
                 try:
-                    stored = list(sink.record_fill_parity_v1(report, cycle_id=cycle_id, recorded_at=recorded_at))
+                    stored = list(sink.record_fill_parity_v1(report, cycle_id=cycle_id, as_of=as_of,
+                                                             recorded_at=recorded_at))
                 except ValueError as error:
                     raise _sink_error(error) from error
                 hashes["assessment_ids"] = sorted(str(getattr(row, "assessment_id", "")) for row in stored)
@@ -818,20 +917,23 @@ def run_paper_evidence_production_v1(
             outcomes.append(_refused(KIND_FILL_PARITY, candidate, refusal))
 
         try:
-            evidence = produce_funding_evidence_v1(sources, candidate, cycle_id=cycle_id, gate=holdout_gate,
-                                                   cost_policy=cost_policy, as_of=as_of, declaration=funding)
-            hashes = {"bridge_hashes": [content_hash for content_hash, _ in evidence.bridges]}
+            evidence, section = produce_funding_evidence_v1(sources, candidate, cycle_id=cycle_id,
+                                                            gate=holdout_gate, cost_policy=cost_policy, as_of=as_of,
+                                                            declaration=funding)
+            hashes = {"bridge_hashes": [content_hash for content_hash, _ in evidence.bridges],
+                      "evidence_hash": str(section["evidence_hash"])}
             status = STATUS_DRY_RUN
             if sink is not None:
                 try:
-                    row = sink.record_funding_evidence_v1(evidence, cycle_id=cycle_id, recorded_at=recorded_at)
+                    row = sink.record_funding_evidence_v1(evidence, section=section, cycle_id=cycle_id, as_of=as_of,
+                                                          recorded_at=recorded_at)
                 except ValueError as error:
                     raise _sink_error(error) from error
-                hashes |= {"evidence_hash": str(getattr(row, "evidence_hash", "")),
-                           "record_id": str(getattr(row, "record_id", ""))}
+                hashes["record_id"] = str(getattr(row, "record_id", ""))
                 status = STATUS_PERSISTED if row.recorded_at == recorded_at else STATUS_ALREADY_STORED
             outcomes.append(ProductionOutcomeV1(KIND_FUNDING_EVIDENCE, study_id, candidate.trial_id,
-                                                candidate.symbol, status, (), (), hashes))
+                                                candidate.symbol, status, tuple(section["completeness_blockers"]),
+                                                (), hashes, str(section["state"])))
         except _Refusal as refusal:
             outcomes.append(_refused(KIND_FUNDING_EVIDENCE, candidate, refusal))
     return ProductionRunV1(cycle_id, as_of, recorded_at, sink is None, tuple(outcomes))
@@ -926,6 +1028,37 @@ class PostgresPaperEvidenceSourcesV1:
         return [{"content_hash": str(row[0]).strip(), "identity": _json(row[1]), "recorded_at": row[2]}
                 for row in self._cursor.fetchall()]
 
+    def cycle_incubation_inputs(self, *, cycle_id: str,
+                                as_of: datetime) -> tuple[list[Mapping[str, Any]], CostPolicyV1, Any]:
+        """The read model's (and the store's) loaders: cycle fills recorded and decided by ``as_of``."""
+        from .paper_account_v1 import (
+            cycle_cost_policy_v1,
+            cycle_fill_rows_v1,
+            fills_signals_from_rows,
+        )
+        from .paper_incubation_registry_v1 import (
+            IncubationRegistryError,
+            resolve_incubation_bindings_v1,
+        )
+
+        cost = cycle_cost_policy_v1(self._cursor, cycle_id)
+        try:
+            resolution: Any = resolve_incubation_bindings_v1(self._cursor, cycle_id=cycle_id)
+        except IncubationRegistryError:
+            resolution = None  # as the read model and the store: an unresolved registry binds nothing
+        fill_rows, signal_rows = cycle_fill_rows_v1(self._cursor, cycle_id)
+        identities, _ = fills_signals_from_rows(fill_rows, signal_rows)
+        hashes = [str(row[0]).strip() for row in fill_rows]
+        recorded: dict[str, datetime] = {}
+        if hashes:
+            self._cursor.execute("SELECT content_hash, recorded_at FROM paper_incubation_fills "
+                                 "WHERE content_hash = ANY(%s)", (hashes,))
+            recorded = {str(row[0]).strip(): row[1] for row in self._cursor.fetchall()}
+        known = _micros(as_of)
+        fills = [identity for content_hash, identity in zip(hashes, identities, strict=True)
+                 if recorded[content_hash] <= as_of and int(identity["decided_at_micros"]) <= known]
+        return fills, cost, resolution
+
     def live_bars(self, *, study_id: str, trial_id: str, symbol: str) -> None:
         return None  # not persisted anywhere (MISSING_PERSISTED_INPUTS_V1); never rebuilt from a seal
 
@@ -1006,12 +1139,14 @@ __all__ = [
     "AMBIGUOUS_RUNNER_PROGRESS",
     "AMBIGUOUS_SEALED_BARS",
     "CANDIDATE_NOT_INCUBATING",
+    "CYCLE_PAPER_FILLS_DO_NOT_REDERIVE",
     "FORWARD_FUNDING_ACQUISITION_NOT_AUTHORIZED",
     "FORWARD_FUNDING_STORE_DOES_NOT_REDERIVE",
     "FUNDING_EVIDENCE_REFUSED",
     "FUNDING_PRICE_CONVENTION_NOT_DECLARED",
     "FUNDING_PRICE_EVIDENCE_NOT_AVAILABLE",
     "HOLDOUT_GATE_OF_ANOTHER_CYCLE",
+    "HOLDOUT_UNOPENED_OR_7",
     "ISSUED_EVIDENCE_DOES_NOT_REDERIVE",
     "KIND_FILL_PARITY",
     "KIND_FUNDING_EVIDENCE",
@@ -1047,6 +1182,8 @@ __all__ = [
     "ProductionOutcomeV1",
     "ProductionRunV1",
     "SealedDatasetBarsV1",
+    "StorePaperEvidenceSinkV1",
+    "funding_section_v1",
     "produce_fill_parity_v1",
     "produce_funding_evidence_v1",
     "run_paper_evidence_production_v1",
