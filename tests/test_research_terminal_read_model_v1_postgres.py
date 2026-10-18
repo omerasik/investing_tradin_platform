@@ -287,7 +287,11 @@ class ResearchTerminalReadModelPostgresTests(unittest.TestCase):
                 self.assertEqual("RETURN_PER_UNIT_NOTIONAL_SUMMED_NOT_COMPOUNDED_PENDING_OR_11", paper.economics.units)
                 self.assertEqual((NOT_LOADED, None, None), (paper.risk.status, paper.risk.assessment_hash,
                                                             paper.risk.sizing))
-                self.assertIn("NO_ACCOUNT_BOUND_BY_AUTHORIZED_EXIT_CRITERIA", paper.risk.reasons)
+                self.assertIn("NO_STORED_INCUBATING_SIGNAL_TARGET_FOR_CANDIDATE_IN_CYCLE", paper.risk.reasons)
+                # The shared database may hold another test's AUTHORIZED exit criteria for this candidate,
+                # binding an account with no recorded policy: either way no account is resolved.
+                self.assertTrue({"NO_ACCOUNT_BOUND_BY_AUTHORIZED_EXIT_CRITERIA",
+                                 "BOUND_ACCOUNT_POLICY_VERSION_NOT_RECORDED"} & set(paper.risk.reasons))
 
             ordered = queries.terminal_comparison(
                 study_ids=[study.study_id], sort=ComparisonSortV1(SortDimensionV1.DECIMAL_BASELINE, "trades", "DESC"))
