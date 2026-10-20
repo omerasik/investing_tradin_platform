@@ -265,7 +265,8 @@ class RunnerProgressRecorderV1:
         self._last_write_monotonic = 0
         self._warmup = 0
 
-    def _write(self, kind: str, *, bars: Sequence[Mapping[str, Any]] = (), feed: Any = None) -> RunnerProgressV1:
+    def _write(self, kind: str, *, bars: Sequence[Mapping[str, Any]] = (), feed: Any = None,
+               consumed: Sequence[Mapping[str, Any]] = ()) -> RunnerProgressV1:
         wall, monotonic = _micros(self._wall()), int(self._monotonic())
         identity = {
             "schema_version": RUNNER_PROGRESS_SCHEMA_VERSION_V1,
@@ -284,6 +285,8 @@ class RunnerProgressRecorderV1:
                 "continuity_breaks": int(feed.continuity_breaks), "refusals": len(feed.refusals),
                 "skipped_without_clock_sample": int(feed.skipped_without_clock_sample)},
         }
+        if consumed:
+            identity["consumed_live_bars"] = list(consumed)
         progress = RunnerProgressV1.build(identity)
         self._store.record(progress)
         self._sequence += 1
@@ -302,10 +305,18 @@ class RunnerProgressRecorderV1:
         """Record the poll's live bars (``LiveBarV1``, duck-typed), or a heartbeat when one is due."""
         if self._started_nanos is None:
             raise RunnerLivenessError("runner_progress_session_not_started")
+        from .live_bar_evidence_v1 import live_bar_payload_v1
+        from .live_signals_v1 import LiveBarV1
+
         live = []
+        consumed = []
         for bar in bars:
             if str(bar.symbol) != self._symbol:
                 raise RunnerLivenessError("bar_symbol_is_not_the_runner_symbol")
+            if isinstance(bar, LiveBarV1):
+                consumed.append({"live_bar": live_bar_payload_v1(bar),
+                                 "warmup": bar.completed_by_arrival_nanos < self._started_nanos,
+                                 "admitted": bool(self._gate.admits(bar.bar.bar_open_micros))})
             if int(bar.completed_by_arrival_nanos) < self._started_nanos:
                 self._warmup += 1  # replayed history: warm-up, never forward evidence
                 continue
@@ -316,9 +327,9 @@ class RunnerProgressRecorderV1:
                          "completed_by_arrival_nanos": int(bar.completed_by_arrival_nanos),
                          "admitted": bool(self._gate.admits(int(bar.bar.bar_open_micros)))})
         if live:
-            return self._write(KIND_BARS, bars=live, feed=feed)
-        if int(self._monotonic()) - self._last_write_monotonic >= self._heartbeat:
-            return self._write(KIND_HEARTBEAT, feed=feed)
+            return self._write(KIND_BARS, bars=live, feed=feed, consumed=consumed)
+        if consumed or int(self._monotonic()) - self._last_write_monotonic >= self._heartbeat:
+            return self._write(KIND_HEARTBEAT, feed=feed, consumed=consumed)
         return None
 
 
@@ -828,7 +839,10 @@ class PostgresRunnerLivenessStoreV1:
                  _EPOCH + timedelta(microseconds=int(identity["host_wall_micros"])), len(identity["bars"]),
                  json.dumps(dict(identity), sort_keys=True), datetime.now(UTC)),
             )
-            if cursor.fetchone() is not None:
+            inserted = cursor.fetchone() is not None
+            if inserted:
+                from .live_bar_evidence_v1 import persist_consumed_live_bars_v1
+                persist_consumed_live_bars_v1(cursor, progress)
                 return True
             cursor.execute("SELECT content_hash FROM runner_liveness_progress WHERE idempotency_key=%s",
                            (progress.idempotency_key,))

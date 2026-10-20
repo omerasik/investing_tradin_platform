@@ -144,6 +144,8 @@ class LiveBarV1:
     completed_by_arrival_nanos: int
     #: ``venue_minus_host_upper_nanos`` of the sample bounding the completing record.
     clock_bound_nanos: int
+    latest_clock_sample_hash: str | None = None
+    capture_source_id: UUID | None = None
 
     def row(self) -> tuple[Any, ...]:
         """The bar in the research-bar row shape the SDK reads."""
@@ -275,7 +277,7 @@ class LiveBarFeedV1:
                 bars = state.normalizer.output.bars
                 for bar in bars[state.emitted:]:
                     out.append(LiveBarV1(self._contract.exchange_symbol, self._segment, session_id, bar,
-                                         arrival, prior[-1].venue_minus_host_upper_nanos))
+                                         arrival, prior[-1].venue_minus_host_upper_nanos, prior[-1].sample_hash, self._contract.source_id))
                 state.emitted = len(bars)
         return out
 
