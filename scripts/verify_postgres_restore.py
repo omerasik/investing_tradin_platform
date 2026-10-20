@@ -14,6 +14,7 @@ from trade_platform.postgres_paper_oms import PostgresPaperOms
 from trade_platform.postgres_recovery import PostgresRecoveryGate
 
 CRITICAL_TABLES = (
+    "runner_consumed_live_bars",
     "runtime_signal_proposals",
     "runtime_signal_validations",
     "runtime_signal_lifecycle_events",
