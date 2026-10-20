@@ -17,7 +17,12 @@ from tests.test_paper_fill_parity_v1 import (
     FillParityTests,
     _sealed,
 )
-from trade_platform.first_party_t4_seal_v1 import discover_t4_segments_v1, seal_t4_segment_v1
+from trade_platform.first_party_t4_seal_v1 import (
+    discover_t4_segments_v1,
+    plan_t4_replay_slice_v1,
+    seal_t4_segment_v1,
+    verify_t4_dataset_v1,
+)
 from trade_platform.paper_fill_parity_v1 import (
     PaperFillParityError,
     _signal_facts,
@@ -37,9 +42,16 @@ class SealedContinuityTests(_TempRoots):
         self.archive.session(windows=[(start, start + 600 * SECOND)],
                              samples=[start - 5 * SECOND + n * 60 * SECOND for n in range(12)])
         plan = discover_t4_segments_v1(self.capture).segments[0]
-        left = seal_t4_segment_v1(replace(plan, end_arrival_nanos=start + 390 * SECOND),
+        parent = seal_t4_segment_v1(plan, store=self.store(), sealed_at=SEALED_AT)
+        left_plan = plan_t4_replay_slice_v1(parent.identity, start_arrival_nanos=plan.start_arrival_nanos,
+                                           end_arrival_nanos_inclusive=start + 390 * SECOND,
+                                           capture_root=self.capture)
+        right_plan = plan_t4_replay_slice_v1(parent.identity, start_arrival_nanos=start + 300 * SECOND,
+                                            end_arrival_nanos_inclusive=plan.end_arrival_nanos,
+                                            capture_root=self.capture)
+        left = seal_t4_segment_v1(left_plan,
                                   store=self.store(), sealed_at=SEALED_AT)
-        right = seal_t4_segment_v1(replace(plan, start_arrival_nanos=start + 300 * SECOND),
+        right = seal_t4_segment_v1(right_plan,
                                    store=self.store(), sealed_at=SEALED_AT)
         return left, right
 
@@ -55,6 +67,10 @@ class SealedContinuityTests(_TempRoots):
         self.assertTrue(all(a.bar.bar_close_micros == b.bar.bar_open_micros for a, b in pairwise(bars)))
         self.assertEqual(bars, sealed_replay_bars_from_seals_v1(list(reversed(seals)),
                                                               store=self.store(), as_of=LATER))
+        rebuilt = [verify_t4_dataset_v1(seal.identity, frame_manifests=seal.frame_manifests,
+                                        sealed_at=seal.sealed_at, store=self.store(), capture_root=self.capture)
+                   for seal in seals]
+        self.assertEqual(bars, sealed_replay_bars_from_seals_v1(rebuilt, store=self.store(), as_of=LATER))
 
     def test_future_seals_contribute_nothing(self):
         seals = self.slices()
