@@ -81,7 +81,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Final
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -386,7 +386,25 @@ def _candidate_facts(identity: Mapping[str, Any]) -> dict[str, Any]:
 
 def _signal_facts(identity: Mapping[str, Any]) -> dict[str, Any]:
     evidence = identity["evidence"]
-    return {"explanation": identity["explanation"],
+    explanation = dict(identity["explanation"])
+    # These are the declared numeric outputs of the unchanged SDK explainers.
+    # Sealed decimal128 prices add scale (29993.7 -> 29993.700...); scale is
+    # not a price difference. Strip only insignificant decimal zeros, with
+    # no arithmetic, rounding or ambient-context dependence. Text such as
+    # rule/state, IDs and the "undefined" z sentinel stays exact.
+    for name in ("close", "prior_high", "prior_low", "fast_mean", "slow_mean",
+                 "ratio_minus_one", "band", "mean", "z"):
+        if name not in explanation:
+            continue
+        try:
+            number = Decimal(explanation[name])
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+        if number.is_finite():
+            rendered = format(number, "f")
+            explanation[name] = ("0" if number == 0 else rendered.rstrip("0").rstrip(".")
+                                 if "." in rendered else rendered)
+    return {"explanation": explanation,
             "evidence": {name: evidence[name] for name in (
                 "session_id", "bar_open_micros", "closing_record_hash", "trade_manifest_hash",
                 "window_first_bar_open_micros", "window_bars", "window_session_boundaries")}}
