@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from tests.test_first_party_t4_v1 import BASE, SECOND, FixtureArchive, _standard_samples
 from tests.test_strategy_lab_e2e_fixture import build_window_and_study
@@ -34,7 +36,8 @@ def _bar(minute: int, close: Decimal, previous: Decimal) -> T4MinuteBarV1:
     high, low = max(previous, close) + Decimal("0.5"), min(previous, close) - Decimal("0.5")
     open_micros = int(DAY0.timestamp() * 1_000_000) + minute * 60_000_000
     return T4MinuteBarV1(open_micros, previous, high, low, close, Decimal("1"), Decimal("1"), 2, 0, 0, "f", "l",
-                         open_micros, open_micros + 60_000_000, False, False, f"r{minute}", f"m{minute}")
+                         open_micros, open_micros + 60_000_000, False, False, hashlib.sha256(f"fixture-record:{minute}".encode()).hexdigest(),
+                         hashlib.sha256(f"fixture-trades:{minute}".encode()).hexdigest())
 
 
 def _live_bars(closes: list[Decimal], *, segment_break: int | None = None, bound: int = 0) -> list[LiveBarV1]:
@@ -42,7 +45,11 @@ def _live_bars(closes: list[Decimal], *, segment_break: int | None = None, bound
     for minute, close in enumerate(closes):
         bar = _bar(minute, close, previous)
         segment = 1 if segment_break is not None and minute >= segment_break else 0
-        out.append(LiveBarV1("BTCUSDT", segment, session, bar, (bar.bar_open_micros + 60_000_000) * 1000 + 5, bound))
+        arrival = (bar.bar_open_micros + 60_000_000) * 1000 + 5
+        bar = replace(bar, complete_market_knowledge_micros=max(
+            bar.bar_close_micros, -(-(arrival + bound) // 1000)))
+        out.append(LiveBarV1("BTCUSDT", segment, session, bar, arrival, bound,
+                            hashlib.sha256(b"fixture-clock-sample").hexdigest(), UUID(int=99)))
         previous = close
     return out
 
