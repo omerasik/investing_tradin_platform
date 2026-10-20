@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import unittest
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import MagicMock
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -23,6 +24,7 @@ from tests.test_runner_liveness_v1 import (
 from trade_platform.live_bar_evidence_v1 import (
     PostgresLiveBarStoreV1,
     _observations,
+    _verified_progress_row_v1,
     live_bar_payload_v1,
     restore_live_bar_v1,
 )
@@ -56,14 +58,31 @@ def fixture(*, warmup: bool = False):
     return start, progress, bar
 
 
+def progress_row(progress):
+    identity = progress.identity
+    binding = identity['binding']
+    columns = {
+        'progress_id': str(progress.progress_id), 'idempotency_key': progress.idempotency_key,
+        'content_hash': progress.content_hash, 'runner_session_id': identity['runner_session_id'],
+        'sequence': identity['sequence'], 'kind': identity['kind'], 'binding_hash': identity['binding_hash'],
+        'previous_progress_hash': identity['previous_progress_hash'], 'bar_count': len(identity['bars']),
+        'symbol': None if binding is None else binding['symbol'],
+        'capture_source_id': None if binding is None else binding['capture_source_id'],
+        'host_wall_at': (datetime(1970,1,1,tzinfo=UTC) + timedelta(microseconds=identity['host_wall_micros'])).isoformat(),
+        'recorded_at': at(2).isoformat(),
+    }
+    return progress.content_hash, identity, columns
+
+
 def reader(start, progress, observations=None):
     database = MagicMock()
     cursor = database.transaction.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
     observations = _observations(progress, start.identity) if observations is None else observations
     cursor.fetchall.side_effect = [
-        [(start.content_hash, start.identity), (progress.content_hash, progress.identity)],
+        [progress_row(start), progress_row(progress)],
         [(identity_hash_v1(o), o, uuid5(NAMESPACE_URL, "runner-consumed-live-bar-v1:" + identity_hash_v1(o)),
-          o["runner_session_id"], o["progress_hash"], o["index"]) for o in observations],
+          o["runner_session_id"], o["progress_hash"], o["index"], o["live_bar"]["feed_segment"],
+          o["live_bar"]["bar"]["bar_open_micros"]) for o in observations],
     ]
     return PostgresLiveBarStoreV1(database)
 
@@ -145,9 +164,29 @@ class ConsumedLiveBarsTests(unittest.TestCase):
         cursor = repository._database.transaction.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
         observation = _observations(progress, start.identity)[0]
         cursor.fetchall.side_effect = [
-            [(start.content_hash, start.identity), (progress.content_hash, progress.identity)],
+            [progress_row(start), progress_row(progress)],
             [(identity_hash_v1(observation), observation, uuid4(), observation['runner_session_id'],
-              observation['progress_hash'], observation['index'])],
+              observation['progress_hash'], observation['index'], observation['live_bar']['feed_segment'],
+              observation['live_bar']['bar']['bar_open_micros'])],
         ]
         with self.assertRaisesRegex(RunnerLivenessError, 'hash_mismatch'):
             repository.for_candidate(study_id=str(STUDY), trial_id=TRIAL, symbol=SYMBOL, as_of=at(3))
+
+    def test_progress_scalar_and_as_of_authority_is_verified(self):
+        start, progress, _ = fixture()
+        digest, identity, columns = progress_row(progress)
+        for key, value in [('host_wall_at', at(0).isoformat()), ('sequence', 99),
+                           ('binding_hash', 'e' * 64), ('runner_session_id', str(uuid4())),
+                           ('progress_id', str(uuid4())), ('recorded_at', at(4).isoformat())]:
+            with self.subTest(key=key), self.assertRaisesRegex(RunnerLivenessError, 'scalar_or_as_of'):
+                _verified_progress_row_v1(digest, identity, {**columns, key: value}, at(3))
+        digest, start_identity, start_columns = progress_row(start)
+        with self.assertRaisesRegex(RunnerLivenessError, 'scalar_or_as_of'):
+            _verified_progress_row_v1(digest, start_identity,
+                                      {**start_columns, 'capture_source_id': str(uuid4())}, at(3))
+        # Even self-consistent future identity/scalars cannot bypass the as-of filter.
+        future = copy.deepcopy(identity)
+        future['host_wall_micros'] = int(at(4).timestamp()*1e6)
+        digest, future, columns = progress_row(RunnerProgressV1.build(future))
+        with self.assertRaisesRegex(RunnerLivenessError, 'scalar_or_as_of'):
+            _verified_progress_row_v1(digest, future, columns, at(3))
