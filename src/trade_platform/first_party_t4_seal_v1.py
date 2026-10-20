@@ -37,6 +37,12 @@ because no later clock sample exists *yet* is reported ``SEGMENT_PENDING`` and
 not sealed, so the same raw evidence never yields two overlapping datasets
 depending on when discovery ran.
 
+An explicitly declared replay slice is separate from discovery: it binds the
+entire raw-rederived canonical parent identity and a strict contained range.
+Its minimal clock run and all frames are independently rebuilt on catalogue
+reads. Overlapping slices never create bars across gaps; each normalizes from
+empty state and supplies its own warmup records.
+
 Identity
 --------
 ``content_hash`` covers the source contract, the exact partitions (manifest hash
@@ -62,9 +68,10 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Final
@@ -197,6 +204,9 @@ class T4SegmentPlanV1:
     end_arrival_nanos: int
     clock: SessionClockEvidenceV1
     clock_partitions: tuple[T4PartitionV1, ...]
+    # Explicit replay slices bind a fully raw-rederived canonical parent.
+    # Legacy discovered plans leave this absent, preserving their identities.
+    slice_proof: Mapping[str, Any] | None = None
 
     @property
     def excluded_head_nanos(self) -> int:
@@ -767,7 +777,7 @@ def _identity(
         if item.directory != plan.partition.directory
     )
     partitions.sort(key=lambda item: (item["utc_day"], item["role"]))
-    return {
+    identity = {
         "schema_version": T4_SEAL_SCHEMA_VERSION_V1,
         "normalization_semantic_version": T4_NORMALIZATION_SEMANTIC_VERSION_V1,
         "clock_bound_rule": CLOCK_BOUND_RULE_V1,
@@ -818,6 +828,9 @@ def _identity(
             "distinct_knowledge_time_count": timing.distinct_knowledge_time_count,
         },
     }
+    if plan.slice_proof is not None:
+        identity["replay_slice_proof"] = dict(plan.slice_proof)
+    return identity
 
 
 def _issue(
@@ -886,6 +899,8 @@ def seal_t4_segment_v1(
         # Same host clock as the arrivals: sealing before the last admitted
         # arrival is an ordering violation, not skew.
         raise FirstPartyT4SealError("sealed_before_the_last_admitted_arrival")
+    if plan.slice_proof is not None and sealed_nanos < plan.slice_proof["parent_proof_available_at_nanos"]:
+        raise FirstPartyT4SealError("replay_slice_sealed_before_parent_evidence")
     return _issue(
         identity, timing=timing,
         frame_manifests={kind: item.manifest_hash for kind, item in manifests.items()},
@@ -893,13 +908,16 @@ def seal_t4_segment_v1(
     )
 
 
-def _plan_from_identity(discovery: T4DiscoveryV1, identity: Mapping[str, Any]) -> T4SegmentPlanV1:
+def _plan_from_identity(discovery: T4DiscoveryV1, identity: Mapping[str, Any], *,
+                        contract: FirstPartyCaptureContractV1 | None = None) -> T4SegmentPlanV1:
     """Re-derive the exact segment an identity names from today's COMPLETE evidence.
 
     The bound samples must still be present, contiguous in the session's
     sample series, and must yield -- under the rule -- exactly the sealed
     segment bounds. A wider or narrower claim is refused, never adjusted.
     """
+    if "replay_slice_proof" in identity:
+        return _slice_plan_from_identity(discovery, identity, contract=contract)
     try:
         session_id = UUID(str(identity["session_id"]))
         window_ref = identity["window"]
@@ -949,6 +967,78 @@ def _plan_from_identity(discovery: T4DiscoveryV1, identity: Mapping[str, Any]) -
     return _plan(session_clock, partition, index, window, start, end)
 
 
+def _raw_parent_plan(discovery: T4DiscoveryV1, parent: Mapping[str, Any], *,
+                     contract: FirstPartyCaptureContractV1) -> T4SegmentPlanV1:
+    if not isinstance(parent, Mapping):
+        raise FirstPartyT4SealError("replay_slice_parent_identity_malformed")
+    if "replay_slice_proof" in parent:
+        raise FirstPartyT4SealError("nested_replay_slices_are_not_supported")
+    plan = _plan_from_identity(discovery, parent, contract=contract)
+    output, counts, admitted = normalize_t4_segment_v1(plan, contract=contract)
+    frames = {frame.kind: logical_content_hash_v1(frame, _FRAME_ROWS[frame.kind](output))
+              for frame in T4_FRAMES_V1}
+    rebuilt = _identity(plan, contract=contract, output=output, counts=counts, admitted=admitted,
+                        frames=frames, timing=_timing_facts(output))
+    if canonical_json_v1(rebuilt) != canonical_json_v1(dict(parent)):
+        raise FirstPartyT4SealError("replay_slice_parent_identity_does_not_rederive")
+    return plan
+
+
+def _replay_slice_plan(discovery: T4DiscoveryV1, parent: Mapping[str, Any], start: int, end: int, *,
+                       contract: FirstPartyCaptureContractV1) -> T4SegmentPlanV1:
+    canonical = _raw_parent_plan(discovery, parent, contract=contract)
+    if (type(start) is not int or type(end) is not int
+            or not canonical.start_arrival_nanos <= start <= end <= canonical.end_arrival_nanos
+            or (start, end) == (canonical.start_arrival_nanos, canonical.end_arrival_nanos)):
+        raise FirstPartyT4SealError("replay_slice_must_be_a_strict_contained_parent_range")
+    clock = discovery.session_clocks[canonical.partition.session_id]
+    selected = _plan(clock, canonical.partition, canonical.window_index, canonical.window, start, end)
+    # Parent records and every sample proving its final admissible interval
+    # must already exist when a slice claims to have been sealed.
+    available = max(canonical.end_arrival_nanos,
+                    *(sample.recorded_at_utc_nanos for sample in canonical.clock.samples))
+    proof = {"schema_version": "t4-canonical-parent-replay-slice-v1",
+             "parent_identity": json.loads(canonical_json_v1(dict(parent))),
+             "parent_content_hash": sha256_json_v1(dict(parent)),
+             "parent_proof_available_at_nanos": available}
+    return replace(selected, slice_proof=proof)
+
+
+def _slice_plan_from_identity(discovery: T4DiscoveryV1, identity: Mapping[str, Any], *,
+                             contract: FirstPartyCaptureContractV1 | None) -> T4SegmentPlanV1:
+    authorized = first_party_bybit_capture_contract_v1() if contract is None else contract
+    try:
+        proof = identity["replay_slice_proof"]
+        if proof["schema_version"] != "t4-canonical-parent-replay-slice-v1":
+            raise FirstPartyT4SealError("replay_slice_proof_schema_not_supported")
+        plan = _replay_slice_plan(discovery, proof["parent_identity"],
+                                  identity["segment"]["start_arrival_nanos"],
+                                  identity["segment"]["end_arrival_nanos_inclusive"], contract=authorized)
+        assert plan.slice_proof is not None
+        if canonical_json_v1(proof) != canonical_json_v1(plan.slice_proof):
+            raise FirstPartyT4SealError("replay_slice_proof_does_not_rederive")
+        return plan
+    except (KeyError, TypeError, ValueError) as error:
+        if isinstance(error, FirstPartyT4SealError):
+            raise
+        raise FirstPartyT4SealError("replay_slice_proof_malformed") from error
+
+
+def plan_t4_replay_slice_v1(
+    parent_identity: Mapping[str, Any], *, start_arrival_nanos: int, end_arrival_nanos_inclusive: int,
+    capture_root: Path, contract: FirstPartyCaptureContractV1 | None = None,
+) -> T4SegmentPlanV1:
+    """Declare a strict replay slice of a fully raw-rederived canonical parent.
+
+    This is an explicit, identity-bound selection, never a discovery result or
+    a different finality rule. Each slice normalizes from empty state and needs
+    its own warmup records. Catalogue verification rederives parent and slice.
+    """
+    authorized = first_party_bybit_capture_contract_v1() if contract is None else contract
+    return _replay_slice_plan(discover_t4_segments_v1(capture_root, contract=authorized), parent_identity,
+                              start_arrival_nanos, end_arrival_nanos_inclusive, contract=authorized)
+
+
 def plan_for_sealed_identity_v1(
     identity: Mapping[str, Any],
     *,
@@ -957,7 +1047,8 @@ def plan_for_sealed_identity_v1(
 ) -> T4SegmentPlanV1:
     """The exact segment a sealed identity names, re-derived from today's COMPLETE evidence."""
     authorized = first_party_bybit_capture_contract_v1() if contract is None else contract
-    return _plan_from_identity(discover_t4_segments_v1(capture_root, contract=authorized), identity)
+    return _plan_from_identity(discover_t4_segments_v1(capture_root, contract=authorized), identity,
+                               contract=authorized)
 
 
 def verify_t4_dataset_v1(
@@ -978,9 +1069,14 @@ def verify_t4_dataset_v1(
     rebuilt logical hash. Nothing is written.
     """
     authorized = first_party_bybit_capture_contract_v1() if contract is None else contract
-    plan = _plan_from_identity(discover_t4_segments_v1(capture_root, contract=authorized), identity)
+    plan = _plan_from_identity(discover_t4_segments_v1(capture_root, contract=authorized), identity,
+                               contract=authorized)
     if sealed_at.tzinfo is None or (sealed_at - _EPOCH) // timedelta(microseconds=1) * 1_000 < plan.end_arrival_nanos:
         raise FirstPartyT4SealError("sealed_before_the_last_admitted_arrival")
+    if (plan.slice_proof is not None
+            and (sealed_at - _EPOCH) // timedelta(microseconds=1) * 1_000
+            < plan.slice_proof["parent_proof_available_at_nanos"]):
+        raise FirstPartyT4SealError("replay_slice_sealed_before_parent_evidence")
     output, counts, admitted = normalize_t4_segment_v1(plan, contract=authorized)
     timing = _timing_facts(output)
     frames: dict[str, tuple[str, int]] = {}
@@ -1075,6 +1171,7 @@ __all__ = [
     "iter_frame_rows_v1",
     "normalize_t4_segment_v1",
     "plan_for_sealed_identity_v1",
+    "plan_t4_replay_slice_v1",
     "restore_t4_seal_without_replay_v1",
     "seal_t4_segment_v1",
     "t4_dataset_version_id_v1",
