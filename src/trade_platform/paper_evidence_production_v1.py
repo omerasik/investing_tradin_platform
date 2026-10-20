@@ -21,19 +21,16 @@ Per INCUBATING candidate, from
 * stored runner progress (``runner_liveness_progress``): the sessions that
   watched the candidate under exactly its evidence; a session that does not
   re-derive refuses the candidate;
-* the live bars the runner was fed -- **not persisted today** (see
-  :data:`MISSING_PERSISTED_INPUTS_V1`). Progress records list only each bar's
-  stable identity (capture session, feed segment, closing record and trade
-  manifest hashes, completing arrival), never its prices, trade references,
-  ambiguity flags or provisional knowledge times, and warm-up bars only as a
-  count. So the production source refuses ``LIVE_BARS_NOT_PERSISTED``. A live
-  bar is never inferred from a sealed one. Should a source supply live bars,
-  each must match exactly one progress listing of a bound session, and feed
+* exact persisted consumed live bars, verified by the live-bar repository
+  against immutable progress, watched evidence and point-in-time recording.
+  Legacy rows without payloads refuse ``LIVE_BARS_NOT_PERSISTED``. Actual
+  warm-up history is retained without becoming forward liveness evidence.
+  Each input must match a consumed listing of a bound session, and feed
   segments are renumbered per (runner session, feed segment) so a restart
   never continues a rolling window;
 * sealed T4 datasets, rebuilt from raw capture by the source
-  (:func:`sealed_dataset_from_seal_v1`): one replay segment per dataset, since
-  nothing crosses a sealed segment boundary. Their knowledge times are the
+  through the independently proven continuity adapter. Strategy state crosses
+  a dataset boundary only with verified contiguous same-session provenance. Their knowledge times are the
   finalized bracketed ones; the live side keeps its ``LIVE_PROVISIONAL`` ones.
 
 Point in time: only rows recorded at or before ``as_of`` (and signals decided,
@@ -75,7 +72,8 @@ its reasons and the missing inputs.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -177,12 +175,8 @@ _STORE_HOLDOUT_REFUSALS: Final = frozenset({"EVIDENCE_TOUCHES_THE_UNOPENED_HOLDO
 #: What the resolvers need and the platform does not persist today (as of migration 0065).
 MISSING_PERSISTED_INPUTS_V1: Final = {
     LIVE_BARS_NOT_PERSISTED: (
-        "The completed live bars the R8/R10 runner was fed (LiveBarV1: OHLCV, volumes, trade counts, "
-        "first/last trade references, sequence-ambiguity flags, LIVE_PROVISIONAL open/complete knowledge "
-        "times, clock bound). runner_liveness_progress keeps only each processed bar's capture session, "
-        "feed segment, closing record hash, trade manifest hash, completing arrival and gate admission, "
-        "and warm-up bars only as a count; live_strategy_signals and paper_incubation_fills keep only "
-        "the signal bar's and fill bar's hashes and the fill price. Persisting them needs a schema change."),
+        "Exact consumed live-bar payloads are absent for this candidate/as-of (legacy progress may "
+        "predate immutable consumed-bar storage); no sealed bar is substituted."),
     FORWARD_FUNDING_ACQUISITION_NOT_AUTHORIZED: (
         "Forward settled funding observations: acquisition is unauthorized "
         "(UNRESOLVED_OWNER_AUTHORIZATION), so the append-only forward funding store holds none."),
@@ -243,6 +237,18 @@ class SealedDatasetBarsV1:
     exchange_symbol: str
     sealed_at: datetime
     bars: tuple[T4MinuteBarV1, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PaperPriceDeclarationV1:
+    """Explicit observation and freshness bounds; no latest-price or valuation default."""
+
+    source_id: UUID
+    session_id: UUID
+    instrument: str
+    instant: datetime
+    max_age_micros: int
+    capture_max_unproven_nanos: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -384,6 +390,7 @@ class ProductionRunV1:
     recorded_at: datetime
     dry_run: bool
     outcomes: tuple[ProductionOutcomeV1, ...]
+    economics: tuple[Mapping[str, Any], ...] = ()
 
     @property
     def missing_inputs(self) -> dict[str, str]:
@@ -401,6 +408,7 @@ class ProductionRunV1:
             "recorded_at": self.recorded_at.astimezone(UTC).isoformat(),
             "dry_run": self.dry_run,
             "outcomes": [item.payload() for item in self.outcomes],
+            "economics": [dict(item) for item in self.economics],
             "missing_inputs": self.missing_inputs,
         }
 
@@ -607,9 +615,16 @@ def _processed_bars(sources: PaperEvidenceSourcesV1, candidate: WatchedCandidate
             continue  # another candidate's or another evidence's session proves nothing here
         bound += 1
         for _, record in ordered:
-            if record["kind"] != KIND_BARS:
+            if record["kind"] != KIND_BARS and not record.get("consumed_live_bars"):
                 continue
-            for bar in record["bars"]:
+            # Verified consumed history includes warm-up inputs. This is strategy
+            # history only; the liveness authority still counts forward bars alone.
+            consumed = record.get("consumed_live_bars")
+            bars = record["bars"] if not consumed else [
+                {**item["live_bar"], **item["live_bar"]["bar"],
+                 "capture_session_id": item["live_bar"]["capture_session_id"],
+                 "feed_segment": item["live_bar"]["feed_segment"]} for item in consumed]
+            for bar in bars:
                 try:
                     item = _ProcessedBar(session_id, str(bar["capture_session_id"]), int(bar["feed_segment"]),
                                          str(bar["closing_record_hash"]), str(bar["trade_manifest_hash"]),
@@ -657,8 +672,9 @@ def _bound_live_bars(bars: Sequence[LiveBarV1], processed: Mapping[int, Sequence
     for bar, key in matched:
         first[key] = min(first.get(key, bar.bar.bar_open_micros), bar.bar.bar_open_micros)
     ordinal = {key: index for index, key in enumerate(sorted(first, key=lambda k: (first[k], k)))}
-    return [LiveBarV1(bar.symbol, ordinal[key], bar.session_id, bar.bar, bar.completed_by_arrival_nanos,
-                      bar.clock_bound_nanos) for bar, key in matched]
+    from dataclasses import replace
+
+    return [replace(bar, segment=ordinal[key]) for bar, key in matched]
 
 
 # ---------------------------------------------------------------------------
@@ -677,7 +693,14 @@ def _evidence_window(records: _CandidateRecords, live_bars: Sequence[LiveBarV1])
 
 
 def _replay_bars(sources: PaperEvidenceSourcesV1, *, symbol: str, window: tuple[int, int],
-                 as_of: datetime) -> list[SealedReplayBarV1]:
+                 as_of: datetime, live_bars: Sequence[LiveBarV1] = ()) -> list[SealedReplayBarV1]:
+    verified = getattr(sources, "verified_replay_bars", None)
+    if verified is not None:
+        try:
+            return list(verified(symbol=symbol, start_micros=window[0], end_micros=window[1],
+                                 as_of=as_of, live_bars=live_bars))
+        except EvidenceInputRefusedV1 as refusal:
+            raise _Refusal([refusal.code], [refusal.code] if refusal.code == SEAL_NOT_FOUND else []) from refusal
     try:
         datasets = list(sources.sealed_datasets(symbol=symbol, start_micros=window[0], end_micros=window[1],
                                                 as_of=as_of))
@@ -737,8 +760,14 @@ def produce_fill_parity_v1(sources: PaperEvidenceSourcesV1, candidate: WatchedCa
         reasons += refusal.reasons
         missing += refusal.missing
         processed = None
-    supplied = sources.live_bars(study_id=str(candidate.study.study_id), trial_id=candidate.trial_id,
-                                 symbol=candidate.symbol)
+    try:
+        reader = getattr(sources, "verified_live_bars", None)
+        supplied = (reader(candidate=candidate, as_of=as_of) if reader is not None else
+                    sources.live_bars(study_id=str(candidate.study.study_id), trial_id=candidate.trial_id,
+                                      symbol=candidate.symbol))
+    except EvidenceInputRefusedV1 as refusal:
+        reasons.append(refusal.code)
+        supplied = ()
     if supplied is None:
         reasons.append(LIVE_BARS_NOT_PERSISTED)
         missing.append(LIVE_BARS_NOT_PERSISTED)
@@ -749,7 +778,8 @@ def produce_fill_parity_v1(sources: PaperEvidenceSourcesV1, candidate: WatchedCa
             reasons += refusal.reasons
     replay: list[SealedReplayBarV1] = []
     try:
-        replay = _replay_bars(sources, symbol=candidate.symbol, window=_evidence_window(records, live), as_of=as_of)
+        replay = _replay_bars(sources, symbol=candidate.symbol, window=_evidence_window(records, live), as_of=as_of,
+                              live_bars=live)
     except _Refusal as refusal:
         reasons += refusal.reasons
         missing += refusal.missing
@@ -855,6 +885,39 @@ def _refused(kind: str, candidate: WatchedCandidateV1, refusal: _Refusal) -> Pro
                                STATUS_REFUSED, refusal.reasons, refusal.missing)
 
 
+def produce_paper_economics_v1(
+    sources: PaperEvidenceSourcesV1, candidate: WatchedCandidateV1, *, cycle_id: str,
+    gate: LiveHoldoutGateV1, cost_policy: CostPolicyV1, as_of: datetime,
+    declaration: PaperPriceDeclarationV1 | None,
+) -> Mapping[str, Any]:
+    """Read-only economics with the authoritative sealed-price resolver, never a write."""
+    from .paper_economics_v1 import PaperEconomicsError, paper_economics_v1
+    from .paper_proven_prices_v1 import PaperTradePriceResolutionV1
+
+    named = {"study_id": str(candidate.study.study_id), "trial_id": candidate.trial_id,
+             "symbol": candidate.symbol, "read_only": True}
+    try:
+        records = _candidate_records(sources, candidate, cycle_id=cycle_id, gate=gate,
+                                     cost_policy=cost_policy, as_of=as_of)
+        baseline = paper_economics_v1(records.fills, cost_policy, as_of=as_of)
+        positions = baseline.payload["candidates"]
+        unrealized = positions[0]["gross_unrealized"] if positions else {}
+        entry = unrealized.get("entry_bar_open_micros")
+        resolution = PaperTradePriceResolutionV1("UNAVAILABLE", ("PAPER_PRICE_DECLARATION_NOT_SUPPLIED",))
+        if declaration is not None and entry is not None:
+            reader = getattr(sources, "paper_trade_price", None)
+            resolution = (reader(symbol=candidate.symbol, declaration=declaration,
+                                 entry_bar_open_micros=entry, as_of=as_of) if reader is not None else
+                          PaperTradePriceResolutionV1("UNAVAILABLE", ("PROVEN_PRICE_SOURCE_NOT_CONFIGURED",)))
+        marks = [] if resolution.mark is None else [resolution.mark]
+        result = paper_economics_v1(records.fills, cost_policy, as_of=as_of, marks=marks)
+        return {**named, "status": "PROJECTED", "price_resolution": resolution.payload(),
+                "economics": dict(result.payload), "economics_hash": result.content_hash}
+    except (_Refusal, PaperEconomicsError, EvidenceInputRefusedV1) as error:
+        reasons = list(error.reasons) if isinstance(error, _Refusal) else [str(error)]
+        return {**named, "status": "UNAVAILABLE", "reasons": reasons}
+
+
 def _sink_error(error: Exception) -> _Refusal:
     code = str(error)
     holdout = [HOLDOUT_UNOPENED_OR_7] if code in _STORE_HOLDOUT_REFUSALS else []
@@ -872,6 +935,7 @@ def run_paper_evidence_production_v1(
     recorded_at: datetime,
     funding: FundingDeclarationV1 | None,
     sink: PaperEvidenceSinkV1 | None,
+    prices: Mapping[str, PaperPriceDeclarationV1] | None = None,
 ) -> ProductionRunV1:
     """Produce and (unless ``sink`` is ``None``: a dry run) record each candidate's parity and funding evidence.
 
@@ -889,6 +953,7 @@ def run_paper_evidence_production_v1(
     if len(set(keys)) != len(keys):
         raise PaperEvidenceProductionError("candidate_supplied_twice")
     outcomes: list[ProductionOutcomeV1] = []
+    economics: list[Mapping[str, Any]] = []
     for candidate in sorted(candidates, key=lambda c: (str(c.study.study_id), c.trial_id, c.symbol)):
         study_id = str(candidate.study.study_id)
         if holdout_gate.cycle_id != cycle_id:
@@ -897,6 +962,9 @@ def run_paper_evidence_production_v1(
                          _refused(KIND_FUNDING_EVIDENCE, candidate, refusal)]
             continue
 
+        economics.append(produce_paper_economics_v1(
+            sources, candidate, cycle_id=cycle_id, gate=holdout_gate, cost_policy=cost_policy,
+            as_of=as_of, declaration=(prices or {}).get(candidate.symbol)))
         try:
             report = produce_fill_parity_v1(sources, candidate, cycle_id=cycle_id, gate=holdout_gate,
                                             cost_policy=cost_policy, as_of=as_of)
@@ -936,7 +1004,7 @@ def run_paper_evidence_production_v1(
                                                 (), hashes, str(section["state"])))
         except _Refusal as refusal:
             outcomes.append(_refused(KIND_FUNDING_EVIDENCE, candidate, refusal))
-    return ProductionRunV1(cycle_id, as_of, recorded_at, sink is None, tuple(outcomes))
+    return ProductionRunV1(cycle_id, as_of, recorded_at, sink is None, tuple(outcomes), tuple(economics))
 
 
 # ---------------------------------------------------------------------------
@@ -980,11 +1048,26 @@ def sealed_dataset_from_seal_v1(seal: Any, *, store: Any) -> SealedDatasetBarsV1
 _CATALOG_ARRIVAL_MARGIN_NANOS: Final = 3_600_000_000_000
 
 
+class _CursorDatabase:
+    """Borrow a caller-owned transaction; the authoritative reader cannot commit it."""
+
+    def __init__(self, cursor: Any) -> None:
+        self._cursor = cursor
+
+    @contextmanager
+    def transaction(self) -> Iterator[Any]:
+        yield self
+
+    @contextmanager
+    def cursor(self) -> Iterator[Any]:
+        yield self._cursor
+
+
 class PostgresPaperEvidenceSourcesV1:
     """Persisted forward evidence through one cursor, plus explicitly given frame, capture and funding roots.
 
     Read-only: SELECTs with explicit column lists, frame reads and raw-capture
-    replays. ``live_bars`` always answers ``None`` (not persisted). A sealed
+    replays. ``verified_live_bars`` uses the authoritative consumed-bar repository. A sealed
     dataset is used only after it rebuilds from raw capture
     (:func:`~trade_platform.first_party_t4_dataset_v1.t4_seal_from_catalog_v1`);
     without a frame store and capture root nothing is sealed evidence.
@@ -1060,7 +1143,62 @@ class PostgresPaperEvidenceSourcesV1:
         return fills, cost, resolution
 
     def live_bars(self, *, study_id: str, trial_id: str, symbol: str) -> None:
-        return None  # not persisted anywhere (MISSING_PERSISTED_INPUTS_V1); never rebuilt from a seal
+        # Legacy callers have no as-of instant or watched-evidence binding.
+        return None
+
+    def verified_live_bars(self, *, candidate: WatchedCandidateV1,
+                           as_of: datetime) -> Sequence[LiveBarV1] | None:
+        from .live_bar_evidence_v1 import PostgresLiveBarStoreV1
+        from .runner_liveness_v1 import RunnerLivenessError
+
+        expected = {key: str(candidate_payload_v1(candidate)[key]) for key in WATCHED_AS_KEYS}
+        try:
+            return PostgresLiveBarStoreV1(_CursorDatabase(self._cursor)).for_candidate(
+                study_id=str(candidate.study.study_id), trial_id=candidate.trial_id, symbol=candidate.symbol,
+                as_of=as_of, watched_as=expected)
+        except RunnerLivenessError as error:
+            raise EvidenceInputRefusedV1(RUNNER_LIVENESS_DOES_NOT_REDERIVE, str(error)) from error
+
+    def verified_replay_bars(self, *, symbol: str, start_micros: int, end_micros: int,
+                             as_of: datetime, live_bars: Sequence[LiveBarV1]) -> Sequence[SealedReplayBarV1]:
+        from .sealed_replay_continuity_v1 import sealed_replay_bars_from_seals_v1
+
+        seals = self._seals(symbol=symbol, start_micros=start_micros, end_micros=end_micros, as_of=as_of)
+        if not seals:
+            raise EvidenceInputRefusedV1(SEAL_NOT_FOUND)
+        from .first_party_capture_authority_v1 import (
+            resolve_t4_registered_first_party_capture_contract_v1,
+        )
+        from .first_party_t4_seal_v1 import discover_t4_segments_v1
+
+        if self._capture_root is None or self._frame_store is None:
+            raise EvidenceInputRefusedV1(SEAL_NOT_FOUND)
+        try:
+            plans: list[Any] = []
+            for source_id in sorted({str(seal.source_id) for seal in seals}):
+                contract = resolve_t4_registered_first_party_capture_contract_v1(source_id)
+                if contract is None:
+                    raise ValueError("capture_source_not_registered")
+                plans.extend(discover_t4_segments_v1(self._capture_root, contract=contract).segments)
+        except (ValueError, OSError, KeyError) as error:
+            raise EvidenceInputRefusedV1(SEAL_DOES_NOT_REDERIVE, str(error)) from error
+        samples = {(str(plan.partition.session_id), sample.sample_hash): sample
+                   for plan in plans for sample in plan.clock.samples}
+        for bar in live_bars:
+            matching = [seal for seal in seals if str(seal.identity["session_id"]) == str(bar.session_id)]
+            if not matching or any(str(seal.source_id) != str(bar.capture_source_id) for seal in matching):
+                raise EvidenceInputRefusedV1(LIVE_BAR_NOT_RECORDED_BY_RUNNER, "capture_source_session_mismatch")
+            sample = samples.get((str(bar.session_id), str(bar.latest_clock_sample_hash)))
+            if (sample is None or sample.venue_minus_host_upper_nanos != bar.clock_bound_nanos
+                    or sample.recorded_at_utc_nanos > bar.completed_by_arrival_nanos
+                    or not any(bar.latest_clock_sample_hash in seal.identity["clock_evidence"]["sample_hashes"]
+                               for seal in matching)):
+                raise EvidenceInputRefusedV1(LIVE_BAR_NOT_RECORDED_BY_RUNNER, "capture_clock_sample_mismatch")
+        try:
+            replay = sealed_replay_bars_from_seals_v1(seals, store=self._frame_store, as_of=as_of)
+            return tuple(bar for bar in replay if start_micros <= bar.bar.bar_open_micros <= end_micros)
+        except (ValueError, OSError, KeyError) as error:
+            raise EvidenceInputRefusedV1(SEAL_DOES_NOT_REDERIVE, str(error)) from error
 
     def _seals(self, *, symbol: str, start_micros: int, end_micros: int, as_of: datetime) -> list[Any]:
         from .first_party_t4_dataset_v1 import CataloguedT4DatasetV1, t4_seal_from_catalog_v1
@@ -1092,6 +1230,28 @@ class PostgresPaperEvidenceSourcesV1:
                     self._seals(symbol=symbol, start_micros=start_micros, end_micros=end_micros, as_of=as_of)]
         return [item for item in datasets if any(start_micros <= bar.bar_open_micros <= end_micros
                                                  for bar in item.bars)]
+
+    def paper_trade_price(self, *, symbol: str, declaration: PaperPriceDeclarationV1,
+                          entry_bar_open_micros: int, as_of: datetime) -> Any:
+        from .paper_proven_prices_v1 import (
+            PaperTradePriceResolutionV1,
+            resolve_paper_trade_price_v1,
+        )
+
+        if self._frame_store is None or self._capture_root is None:
+            return PaperTradePriceResolutionV1("UNAVAILABLE", ("PROVEN_PRICE_SOURCE_NOT_CONFIGURED",))
+        try:
+            seals = self._seals(symbol=symbol, start_micros=_micros(declaration.instant),
+                                end_micros=_micros(declaration.instant), as_of=as_of)
+        except EvidenceInputRefusedV1 as error:
+            return PaperTradePriceResolutionV1("UNAVAILABLE", (error.code,))
+        return resolve_paper_trade_price_v1(
+            seals, store=self._frame_store, capture_root=self._capture_root,
+            source_id=declaration.source_id, session_id=declaration.session_id,
+            instrument=declaration.instrument, symbol=symbol, instant=declaration.instant,
+            entry_bar_open_micros=entry_bar_open_micros, as_of=as_of,
+            max_age_micros=declaration.max_age_micros,
+            capture_max_unproven_nanos=declaration.capture_max_unproven_nanos)
 
     def forward_funding_store(self, symbol: str) -> ForwardSettledFundingStoreV1 | None:
         return None if self._funding_root is None else ForwardSettledFundingStoreV1(self._funding_root)
@@ -1178,6 +1338,7 @@ __all__ = [
     "PaperEvidenceProductionError",
     "PaperEvidenceSinkV1",
     "PaperEvidenceSourcesV1",
+    "PaperPriceDeclarationV1",
     "PostgresPaperEvidenceSourcesV1",
     "ProductionOutcomeV1",
     "ProductionRunV1",
@@ -1186,6 +1347,7 @@ __all__ = [
     "funding_section_v1",
     "produce_fill_parity_v1",
     "produce_funding_evidence_v1",
+    "produce_paper_economics_v1",
     "run_paper_evidence_production_v1",
     "sealed_dataset_from_seal_v1",
 ]

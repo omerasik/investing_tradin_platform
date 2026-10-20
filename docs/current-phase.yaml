@@ -2,7 +2,7 @@
 # This is NOT a second roadmap: requirements stay in MASTER_ROADMAP.md, design
 # stays in module docstrings, history stays in git.
 
-updated: 2026-10-16
+updated: 2026-10-20
 
 # Phase naming. Since 2026-09-24 the owner-approved canonical roadmap uses an
 # "R" series (R0-R15, owner review points OR-1..OR-14). It is distinct from the
@@ -102,6 +102,20 @@ r10_paper_incubation: >-
   unless a verified fee schedule (OR-6), funding not modelled, incubation length
   UNRESOLVED (OR-7); restart-safe position chain. scripts/paper_incubation.py
   run|report; strategy_lab.py rerun. Nothing runs until a holdout is opened.
+paper_evidence_continuity: >-
+  Migration 0067 adds exact consumed live bars atomically bound to R8 progress,
+  including warm-up/admission, capture source and provisional clock evidence;
+  legacy runs without these payloads cannot be backfilled from sealed replay.
+  Sealed replay retains strategy windows only across independently proven
+  same-session dataset slices with exact overlapping records and clock evidence.
+  Hourly session rotations, missing minutes and interruptions remain boundaries.
+  Proven sealed T4 first-trade references can supply gross unrealized unit
+  returns only with explicit observation/age/coverage declarations and valid
+  after-entry, as-of evidence; they are not settlement marks or net P&L.
+  The read-only paper-evidence producer consumes these contracts; dry-run stays
+  default and writes still require explicit opt-in and the existing holdout gate.
+  Fixture acceptance does not supply real forward evidence or operational
+  authorization: capture recovery, real holdout and OR-6/7/9/11 remain unresolved.
 ui2_research_terminal: >-
   research_terminal_read_model_v1 + GET /operator-dashboard/research-terminal/
   {overview,reruns,validation,signals,accounts,incubation}; web /terminal walks
