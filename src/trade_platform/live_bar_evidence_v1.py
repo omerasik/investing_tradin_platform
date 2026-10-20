@@ -139,6 +139,33 @@ def persist_consumed_live_bars_v1(cursor: Any, progress: RunnerProgressV1) -> No
                         json.dumps(observation, sort_keys=True), datetime.now(UTC)))
 
 
+def _verified_progress_row_v1(digest: Any, identity: Mapping[str, Any], columns: Mapping[str, Any],
+                              as_of: datetime) -> dict[str, Any]:
+    """Validate scalar query/filter authority against the hashed progress payload."""
+    try:
+        progress = RunnerProgressV1(identity, str(digest).strip())
+        binding = identity['binding']
+        expected = {
+            'progress_id': str(progress.progress_id), 'idempotency_key': progress.idempotency_key,
+            'content_hash': progress.content_hash, 'runner_session_id': identity['runner_session_id'],
+            'sequence': identity['sequence'], 'kind': identity['kind'], 'binding_hash': identity['binding_hash'],
+            'previous_progress_hash': identity['previous_progress_hash'], 'bar_count': len(identity['bars']),
+            'symbol': None if binding is None else binding['symbol'],
+            'capture_source_id': None if binding is None else binding['capture_source_id'],
+        }
+        host_wall = datetime.fromisoformat(columns['host_wall_at'])
+        recorded = datetime.fromisoformat(columns['recorded_at'])
+        if (identity_hash_v1(dict(identity)) != progress.content_hash
+                or any(columns.get(key) != value for key, value in expected.items())
+                or host_wall.tzinfo is None or recorded.tzinfo is None
+                or host_wall != _EPOCH + timedelta(microseconds=identity['host_wall_micros'])
+                or host_wall > as_of or recorded > as_of):
+            raise ValueError('progress scalar or as-of mismatch')
+        return {'content_hash': progress.content_hash, 'identity': identity}
+    except (KeyError, TypeError, ValueError) as error:
+        raise RunnerLivenessError('consumed_live_bars_progress_scalar_or_as_of_mismatch') from error
+
+
 class PostgresLiveBarStoreV1:
     """Verified, as-of reader. None denotes legacy/missing storage, never replay synthesis."""
     def __init__(self, database: Any) -> None:
@@ -150,16 +177,17 @@ class PostgresLiveBarStoreV1:
             raise RunnerLivenessError('as_of_must_be_timezone_aware')
         wanted = json.dumps([{'study_id': study_id, 'trial_id': trial_id}])
         with self._database.transaction() as connection, connection.cursor() as cursor:
-            cursor.execute('SELECT p.content_hash,p.identity FROM runner_liveness_progress p WHERE '
+            cursor.execute('SELECT p.content_hash,p.identity,to_jsonb(p) FROM runner_liveness_progress p WHERE '
                            'p.recorded_at<=%s AND p.host_wall_at<=%s AND p.runner_session_id IN '
                            "(SELECT runner_session_id FROM runner_liveness_progress WHERE kind='STARTED' AND symbol=%s "
                            "AND identity->'binding'->'candidates' @> %s::jsonb) ORDER BY p.runner_session_id,p.sequence",
                            (as_of, as_of, symbol, wanted))
             sessions: dict[str, list[dict[str, Any]]] = {}
-            for digest, identity in cursor.fetchall():
+            for digest, identity, columns in cursor.fetchall():
                 identity = identity if isinstance(identity, dict) else json.loads(identity)
-                sessions.setdefault(identity['runner_session_id'], []).append({'content_hash': str(digest).strip(),
-                                                                             'identity': identity})
+                columns = columns if isinstance(columns, dict) else json.loads(columns)
+                verified = _verified_progress_row_v1(digest, identity, columns, as_of)
+                sessions.setdefault(identity['runner_session_id'], []).append(verified)
             result = []
             for session, rows in sorted(sessions.items(), key=lambda pair: (pair[1][0]['identity']['host_wall_micros'], pair[0])):
                 try:
@@ -173,18 +201,20 @@ class PostgresLiveBarStoreV1:
                     raise RunnerLivenessError('consumed_live_bars_candidate_mismatch')
                 if watched_as is not None and any(entries[0].get(k) != v for k, v in watched_as.items()):
                     continue
-                cursor.execute('SELECT content_hash,identity,observation_id,runner_session_id,progress_hash,observation_index '
+                cursor.execute('SELECT content_hash,identity,observation_id,runner_session_id,progress_hash,observation_index,feed_segment,bar_open_micros '
                                'FROM runner_consumed_live_bars WHERE runner_session_id=%s '
                                'AND recorded_at<=%s ORDER BY progress_hash,observation_index', (UUID(session), as_of))
                 stored = {}
-                for digest, observation, observation_id, stored_session, progress_hash, index in cursor.fetchall():
+                for digest, observation, observation_id, stored_session, progress_hash, index, segment, minute in cursor.fetchall():
                     observation = observation if isinstance(observation, dict) else json.loads(observation)
                     actual_hash = identity_hash_v1(observation)
                     if (actual_hash != str(digest).strip()
                             or str(observation_id) != str(uuid5(NAMESPACE_URL, _SCHEMA + ':' + actual_hash))
                             or str(stored_session) != observation['runner_session_id']
                             or str(progress_hash).strip() != observation['progress_hash']
-                            or index != observation['index']):
+                            or index != observation['index']
+                            or segment != observation['live_bar']['feed_segment']
+                            or minute != observation['live_bar']['bar']['bar_open_micros']):
                         raise RunnerLivenessError('consumed_live_bar_hash_mismatch')
                     stored[(observation['progress_hash'], observation['index'])] = observation
                 expected_keys = set()
