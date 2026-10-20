@@ -18,7 +18,11 @@ from tests.test_paper_fill_parity_v1 import (
     _sealed,
 )
 from trade_platform.first_party_t4_seal_v1 import discover_t4_segments_v1, seal_t4_segment_v1
-from trade_platform.paper_fill_parity_v1 import PaperFillParityError, assess_fill_parity_v1
+from trade_platform.paper_fill_parity_v1 import (
+    PaperFillParityError,
+    _signal_facts,
+    assess_fill_parity_v1,
+)
 from trade_platform.sealed_replay_continuity_v1 import sealed_replay_bars_from_seals_v1
 
 SEALED_AT = datetime(2026, 9, 21, tzinfo=UTC)
@@ -174,3 +178,22 @@ class ContinuityParityTests(TestCase):
                                                    open_price=replay[60].bar.open_price
                                                    + Decimal("0.000000000000000001")))
         self.assertEqual("FAIL", self.assess(replay).status)
+
+    def test_sealed_decimal_scale_preserves_exact_explanation_parity(self):
+        replay = [replace(bar, bar=replace(bar.bar, close_price=bar.bar.close_price.quantize(Decimal("1e-18"))))
+                  for bar in _sealed(self.bars)]
+        self.assertEqual("PASS", self.assess(replay).status)
+
+    def test_explanation_numeric_comparison_keeps_text_and_subquantum_differences(self):
+        signals, _ = self._live(self.bars)
+        identity = signals[0].identity
+        explanation = dict(identity["explanation"])
+        explanation["close"] = "29993.7"
+        left = _signal_facts(dict(identity, explanation=explanation))
+        explanation["close"] = "29993.700000000000000000"
+        self.assertEqual(left, _signal_facts(dict(identity, explanation=explanation)))
+        explanation["close"] = "29993.700000000000000001"
+        self.assertNotEqual(left, _signal_facts(dict(identity, explanation=explanation)))
+        explanation["close"] = "29993.7"
+        explanation["rule"] = str(explanation["rule"]) + "0"
+        self.assertNotEqual(left, _signal_facts(dict(identity, explanation=explanation)))
