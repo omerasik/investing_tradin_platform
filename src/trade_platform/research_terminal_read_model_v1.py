@@ -263,7 +263,14 @@ def read_reruns_v1(cursor: _Cursor, *, limit: int) -> list[RerunView]:
         (limit,))
     out = []
     for row in cursor.fetchall():
-        selection = _json(row[7]).get("authoritative_selection", {})
+        identity = _json(row[7])
+        if identity_hash_v1(identity) != str(row[0]).strip():
+            raise ValueError("stored_rerun_identity_does_not_rederive")
+        selection = identity.get("authoritative_selection", {})
+        if (str(identity.get("study_id")) != str(row[1])
+                or identity.get("candidate_set_hash") != str(row[4]).strip()
+                or selection.get("status") != row[5] or identity.get("rerun_count") != row[6]):
+            raise ValueError("stored_rerun_row_contradicts_its_identity")
         established = row[5] == "ESTABLISHED"
         out.append(RerunView(
             rerun_hash=str(row[0]).strip(), study_id=row[1], study_label=str(row[2]), strategy_family=str(row[3]),
@@ -291,6 +298,8 @@ def _walk_forward_view(row: tuple[Any, ...]) -> WalkForwardView:
     report_hash = str(row[0]).strip()
     if identity_hash_v1(identity) != report_hash:
         raise ValueError("stored_walk_forward_report_does_not_rederive")
+    if str(identity.get("study_id")) != str(row[1]):
+        raise ValueError("stored_walk_forward_row_contradicts_its_identity")
     folds = [WalkForwardFoldView(
         fold=int(fold["fold"]), status=str(fold["status"]), test_start=fold["test_start"],
         test_end_exclusive=fold["test_end_exclusive"],
@@ -365,10 +374,18 @@ def read_validation_v1(cursor: _Cursor, *, limit: int) -> ValidationView:
 def read_live_signals_v1(cursor: _Cursor, *, limit: int) -> list[LiveSignalView]:
     cursor.execute(
         "SELECT signal_id, symbol, authority, target_from, target_to, bar_open_at, decided_at, study_id, trial_id, "
-        "identity FROM live_strategy_signals ORDER BY decided_at DESC, signal_id LIMIT %s", (limit,))
+        "identity, content_hash FROM live_strategy_signals ORDER BY decided_at DESC, signal_id LIMIT %s", (limit,))
     out = []
     for row in cursor.fetchall():
         identity = _json(row[9])
+        if identity_hash_v1(identity) != str(row[10]).strip():
+            raise ValueError("stored_signal_identity_does_not_rederive")
+        candidate = identity.get("candidate") or {}
+        if (identity.get("symbol") != row[1] or identity.get("authority") != row[2]
+                or identity.get("target_from") != row[3] or identity.get("target_to") != row[4]
+                or str(candidate.get("study_id")) != str(row[7])
+                or str(candidate.get("trial_id")) != str(row[8])):
+            raise ValueError("stored_signal_row_contradicts_its_identity")
         out.append(LiveSignalView(
             signal_id=row[0], symbol=str(row[1]), authority=str(row[2]), claim=f"NOT_VALIDATED_{row[2]}",
             target_from=int(row[3]), target_to=int(row[4]), bar_open_at=row[5], decided_at=row[6], study_id=row[7],
@@ -377,14 +394,23 @@ def read_live_signals_v1(cursor: _Cursor, *, limit: int) -> list[LiveSignalView]
 
 
 def read_accounts_v1(cursor: _Cursor) -> list[AccountView]:
+    from .account_policy_v1 import AccountContextV1, AccountKindV1, AccountPolicyV1
+
     cursor.execute(
         "SELECT a.account_id, a.kind, a.display_name, a.base_currency, p.policy_version_id, p.status, p.identity, "
-        "p.recorded_at FROM account_contexts a LEFT JOIN LATERAL (SELECT policy_version_id, status, identity, "
-        "recorded_at FROM account_policy_versions v WHERE v.account_id = a.account_id "
+        "p.recorded_at, p.content_hash FROM account_contexts a LEFT JOIN LATERAL "
+        "(SELECT policy_version_id, status, identity, recorded_at, content_hash "
+        "FROM account_policy_versions v WHERE v.account_id = a.account_id "
         "ORDER BY recorded_at DESC, policy_version_id LIMIT 1) p ON TRUE ORDER BY a.account_id")
     out = []
     for row in cursor.fetchall():
         identity = _json(row[6]) if row[6] is not None else {}
+        if row[4] is not None:
+            account = AccountContextV1(str(row[0]), AccountKindV1(row[1]), str(row[2]), str(row[3]))
+            policy = AccountPolicyV1(account, identity["values"], identity["approved_by"], identity["approved_on"])
+            if (policy.identity() != identity or policy.content_hash != str(row[8]).strip()
+                    or str(policy.policy_version_id) != str(row[4]) or policy.status != row[5]):
+                raise ValueError("stored_account_policy_does_not_rederive")
         out.append(AccountView(
             account_id=str(row[0]), kind=str(row[1]), display_name=str(row[2]), base_currency=str(row[3]),
             policy_status="NO_POLICY" if row[4] is None else str(row[5]),  # type: ignore[arg-type]
@@ -500,6 +526,36 @@ class CandidateLifecycleView(BaseModel):
     as_of: datetime
 
 
+def _require_current_registry_knowledge(cursor: _Cursor, cycle_id: str, as_of: datetime) -> None:
+    """Refuse historical reconstruction across authorities that resolve current rows only.
+
+    Registries do not support temporal resolution. A conservative metadata-only
+    guard checks their prerequisites before invoking them, including study/account
+    registries that are not cycle-scoped. This can refuse otherwise reconstructible
+    history after an unrelated registration; it never substitutes gross defaults
+    or exposes later authority as knowledge available at ``as_of``.
+    """
+    if as_of.tzinfo is None or as_of.utcoffset() is None:
+        raise ValueError("terminal_as_of_must_be_timezone_aware")
+    cursor.execute(
+        "SELECT max(known_at) FROM ("
+        "SELECT max(registered_at) AS known_at FROM strategy_lab_research_cycles WHERE cycle_id=%s "
+        "UNION ALL SELECT max(opened_at) FROM strategy_lab_holdout_openings WHERE cycle_id=%s "
+        "UNION ALL SELECT max(recorded_at) FROM strategy_lab_holdout_validations WHERE cycle_id=%s "
+        "UNION ALL SELECT max(recorded_at) FROM strategy_lab_preregistrations WHERE cycle_id=%s "
+        "UNION ALL SELECT max(recorded_at) FROM strategy_lab_incubation_exit_criteria WHERE cycle_id=%s "
+        "UNION ALL SELECT max(registered_at) FROM strategy_lab_studies "
+        "UNION ALL SELECT max(recorded_at) FROM strategy_lab_authority_reruns "
+        "UNION ALL SELECT max(recorded_at) FROM strategy_lab_walk_forward_reports "
+        "UNION ALL SELECT max(recorded_at) FROM strategy_lab_candidate_states "
+        "UNION ALL SELECT max(created_at) FROM account_contexts "
+        "UNION ALL SELECT max(recorded_at) FROM account_policy_versions) prerequisites",
+        (cycle_id,) * 5)
+    row = cursor.fetchone()
+    if row is not None and row[0] is not None and row[0] > as_of:
+        raise ValueError("terminal_historical_registry_knowledge_unavailable")
+
+
 class _CycleContext:
     """Cycle-wide inputs read once per request: opening, OR-6 policy, registry resolution, fills."""
 
@@ -512,6 +568,7 @@ class _CycleContext:
 
         self.cycle_id = current_cycle_id_v1()
         self.as_of = as_of
+        _require_current_registry_knowledge(cursor, self.cycle_id, as_of)
         cursor.execute("SELECT cycle_id, preregistration_hash FROM strategy_lab_holdout_openings "
                        "WHERE cycle_id=%s AND opened_at <= %s", (self.cycle_id, as_of))
         row = cursor.fetchone()

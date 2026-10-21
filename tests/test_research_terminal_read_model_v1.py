@@ -890,7 +890,179 @@ class PaperRiskViewTests(unittest.TestCase):
                 AccountPolicyResolutionView(**payload)
 
 
+class TerminalStoredIdentityAcceptanceTests(unittest.TestCase):
+    """List views must verify the same immutable identities as detailed financial reads."""
+
+    def assert_refused(self, reader: object, row: tuple, changed: dict[int, object], **kwargs: object) -> None:
+        cursor = Mock()
+        cursor.fetchall.return_value = [row]
+        self.assertEqual(1, len(reader(cursor, **kwargs)))  # type: ignore[operator]
+        for index, value in changed.items():
+            with self.subTest(column=index):
+                corrupted = list(row)
+                corrupted[index] = value
+                cursor.fetchall.return_value = [tuple(corrupted)]
+                with self.assertRaises(ValueError):
+                    reader(cursor, **kwargs)  # type: ignore[operator]
+
+    def test_rerun_list_rejects_tampering_and_cross_study_claims(self) -> None:
+        from trade_platform.research_terminal_read_model_v1 import read_reruns_v1
+
+        study, trial = uuid4(), uuid4()
+        identity = {"study_id": str(study), "candidate_set_hash": "b" * 64, "rerun_count": 1,
+                    "authoritative_selection": {"status": "ESTABLISHED", "rule": {"metric": "total_return"},
+                                                "selected": [{"rank": 1, "trial_id": str(trial), "metric_value": "0.1"}]}}
+        row = (identity_hash_v1(identity), study, "fixture", "trend_ma_cross", "b" * 64,
+               "ESTABLISHED", 1, identity, NOW)
+        self.assert_refused(read_reruns_v1, row, {0: "0" * 64, 1: uuid4(), 4: "c" * 64,
+                                                5: "FAIL", 6: 2, 7: {**identity, "rerun_count": 2}}, limit=10)
+
+    def test_signal_list_rejects_tampering_and_cross_candidate_targets(self) -> None:
+        from trade_platform.research_terminal_read_model_v1 import read_live_signals_v1
+
+        study, trial = uuid4(), uuid4()
+        identity = {"candidate": {"study_id": str(study), "trial_id": str(trial)}, "symbol": "BTCUSDT",
+                    "authority": "RESEARCH_WATCH", "target_from": 0, "target_to": 1}
+        row = (uuid4(), "BTCUSDT", "RESEARCH_WATCH", 0, 1, NOW, NOW, study, trial,
+               identity, identity_hash_v1(identity))
+        self.assert_refused(read_live_signals_v1, row, {1: "ETHUSDT", 2: "INCUBATING", 3: -1, 4: -1,
+                                                      7: uuid4(), 8: uuid4(), 10: "0" * 64}, limit=10)
+
+    def test_account_list_rejects_tampering_and_unearned_active_policy(self) -> None:
+        from tests.test_paper_risk_assessment_v1 import PAPER
+        from trade_platform.account_policy_v1 import AccountPolicyV1
+        from trade_platform.research_terminal_read_model_v1 import read_accounts_v1
+
+        policy = AccountPolicyV1(PAPER, {})
+        row = (PAPER.account_id, PAPER.kind.value, PAPER.display_name, PAPER.base_currency,
+               policy.policy_version_id, policy.status, policy.identity(), NOW, policy.content_hash)
+        self.assert_refused(read_accounts_v1, row, {0: "other-account", 3: "USD", 4: uuid4(),
+                                                   5: "ACTIVE", 8: "0" * 64})
+
+    def test_walk_forward_hash_cannot_be_navigated_under_another_study(self) -> None:
+        from trade_platform.research_terminal_read_model_v1 import read_walk_forward_v1
+
+        study = uuid4()
+        identity = {"study_id": str(study), "study_content_hash": "a" * 64,
+                    "dataset": {"content_hash": "b" * 64}, "split_hash": "c" * 64,
+                    "evaluation_class": "WALK_FORWARD_DEVELOPMENT", "numeric_tier": "SEARCH_NON_AUTHORITATIVE",
+                    "cost_mode": "GROSS_NON_PROMOTABLE", "promotable": False, "rule": {},
+                    "multiple_testing_trial_count": 1, "plan": {"evaluation_end_exclusive": NOW.isoformat()},
+                    "folds": [], "authority_reasons": ["SEARCH_TIER"]}
+        row = (identity_hash_v1(identity), study, "fixture", identity, NOW)
+        self.assert_refused(read_walk_forward_v1, row, {0: "0" * 64, 1: uuid4()}, limit=10)
+
+
+class TerminalHistoricalRegistryAcceptanceTests(unittest.TestCase):
+    def test_dashboard_reads_guard_and_authorities_in_one_read_only_snapshot(self) -> None:
+        from unittest.mock import MagicMock
+
+        from trade_platform.operator_dashboard import PostgresOperatorDashboardQueries
+
+        database = MagicMock()
+        cursor = database.transaction.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
+        operation = Mock(return_value="fixture-evidence")
+        queries = PostgresOperatorDashboardQueries(database)
+        self.assertEqual("fixture-evidence", queries._read(operation))
+        cursor.execute.assert_called_once_with("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        operation.assert_called_once_with(cursor)
+
+    def test_later_registry_knowledge_refuses_before_any_current_authority_is_called(self) -> None:
+        from unittest.mock import patch
+
+        from trade_platform.research_terminal_read_model_v1 import _CycleContext
+
+        cursor = Mock()
+        cursor.fetchone.return_value = (NOW + timedelta(microseconds=1),)
+        with (
+            patch("trade_platform.paper_account_v1.cycle_cost_policy_v1") as cost,
+            patch("trade_platform.paper_incubation_registry_v1.resolve_incubation_bindings_v1") as registry,
+            self.assertRaisesRegex(ValueError, "^terminal_historical_registry_knowledge_unavailable$"),
+        ):
+            _CycleContext(cursor, NOW)
+        cost.assert_not_called()
+        registry.assert_not_called()
+        self.assertEqual(1, cursor.execute.call_count)
+
+    def test_metadata_boundary_is_inclusive_and_absent_rows_add_no_authority(self) -> None:
+        from trade_platform.research_terminal_read_model_v1 import (
+            _require_current_registry_knowledge,
+        )
+
+        for row in ((NOW,), (NOW - timedelta(microseconds=1),), (None,), None):
+            with self.subTest(row=row):
+                cursor = Mock()
+                cursor.fetchone.return_value = row
+                _require_current_registry_knowledge(cursor, "cycle-2026-08-20", NOW)
+        with self.assertRaisesRegex(ValueError, "^terminal_as_of_must_be_timezone_aware$"):
+            _require_current_registry_knowledge(Mock(), "cycle-2026-08-20", NOW.replace(tzinfo=None))
+
+
 class RuntimeImageImportTests(unittest.TestCase):
+    def test_configured_prices_are_explicitly_unavailable_without_analytical_dependencies(self) -> None:
+        code = '''
+import sys
+for name in ('numpy', 'polars', 'duckdb', 'pyarrow'):
+    sys.modules[name] = None
+from datetime import UTC, datetime
+from pathlib import Path
+from unittest.mock import Mock
+from fastapi.testclient import TestClient
+from tests.test_research_terminal_read_model_v1 import _paper
+from trade_platform.api import build_app
+from trade_platform.strategy_lab_policies_v1 import gross_cost_policy_v2
+from trade_platform.research_terminal_read_model_v1 import _candidate_economics
+from trade_platform.security import OperatorAuthenticator
+from trade_platform.strategy_lab_study_v1 import identity_hash_v1
+from trade_platform.terminal_paper_prices_v1 import TerminalPaperPricesV1
+from uuid import uuid4
+now = datetime.now(UTC)
+paper = _paper(uuid4(), uuid4())
+STUDY, TRIAL = str(paper.study_id), str(paper.trial_id)
+GROSS = gross_cost_policy_v2()
+entry = {"schema_version": "paper-incubation-fill-v1", "signal_id": str(uuid4()),
+         "study_id": STUDY, "trial_id": TRIAL, "symbol": "BTCUSDT", "status": "FILLED",
+         "target_from": 0, "target_to": 1, "previous_signal_id": None,
+         "decided_at_micros": 1788220770000000, "fill_bar_open_micros": 1788220800000000,
+         "fill_price": "100", "cost_policy_hash": GROSS.policy().content_hash,
+         "evidence": {"session_id": "fixture-session"}}
+selection = {"cycle_id": paper.cycle_id, "study_id": str(paper.study_id),
+             "trial_id": str(paper.trial_id), "symbol": "BTCUSDT", "session_id": "fixture-session",
+             "entry_fill_hash": identity_hash_v1(entry), "max_age_micros": 1000000,
+             "capture_max_unproven_nanos": 0}
+policy = {"schema_version": "terminal-paper-price-selection-v1", "policy_reference": "fixture-policy",
+          "declared_at": now.isoformat(), "selections": [selection]}
+prices = TerminalPaperPricesV1(policy, expected_hash=identity_hash_v1(policy),
+                               research_root=Path("unused-research"), capture_root=Path("unused-capture"))
+prices.installed_at = now
+resolution = prices.resolve(Mock(), cycle_id=paper.cycle_id, study_id=str(paper.study_id),
+                            trial_id=str(paper.trial_id), entry=entry, as_of=now)
+assert resolution.payload() == {"status": "UNAVAILABLE", "mark": None, "evidence": None,
+                                "reasons": ["PROVEN_PRICE_RUNTIME_DEPENDENCIES_UNAVAILABLE"]}
+context = Mock(cycle=Mock(cost=GROSS, resolution=None, as_of=now, cycle_id=paper.cycle_id),
+               refusal=None, cost_approval=None, prices=prices, cursor=Mock())
+paper.economics = _candidate_economics(context, STUDY, TRIAL, [entry])
+assert paper.economics.gross_unrealized.status == "UNAVAILABLE"
+assert paper.economics.gross_unrealized.reasons == resolution.payload()["reasons"]
+assert paper.economics.net.status == "NOT_COSTABLE"
+queries = Mock()
+queries.terminal_candidate_paper_evidence.return_value = paper
+client = TestClient(build_app(authenticator=OperatorAuthenticator("fixture-token"),
+                             operator_dashboard_queries=queries))
+path = f"/operator-dashboard/research-terminal/candidates/{paper.study_id}/{paper.trial_id}/paper-evidence"
+assert client.get(path).status_code == 401
+response = client.get(path, headers={"Authorization": "Bearer fixture-token"})
+assert response.status_code == 200, response.text
+economics = response.json()["economics"]
+assert economics["price_resolution"]["status"] == "UNAVAILABLE"
+assert economics["price_resolution"]["reasons"] == resolution.payload()["reasons"]
+assert economics["gross_unrealized"]["value"] is None
+assert economics["net"]["status"] == "NOT_COSTABLE"
+'''
+        result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=30, check=False,
+                                env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")})
+        self.assertEqual(0, result.returncode, result.stderr[-2000:])
+
     def test_the_api_imports_without_numerical_libraries(self) -> None:
         # The runtime image installs requirements-runtime.txt only: no numpy, polars or duckdb.
         code = ("import sys\n"
