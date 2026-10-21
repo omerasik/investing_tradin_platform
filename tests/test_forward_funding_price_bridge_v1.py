@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from tests.test_bybit_forward_settled_funding_v1 import _interval
 from tests.test_first_party_t4_forward_bars_v1 import _acceptance as t4_acceptance
 from tests.test_first_party_t4_forward_bars_v1 import _ForwardFixture, _venue_minute
 from trade_platform import forward_funding_price_bridge_v1 as bridge
@@ -105,7 +106,7 @@ DAY0 = datetime(2026, 6, 1, tzinfo=UTC)
 D0 = (DAY0 - _EPOCH) // timedelta(milliseconds=1)
 END = D0 + 24 * _H
 BOUND = ObservationClockBoundV1(9_470_000_000, "clock-bound-v1:prior=fixture:next=fixture")
-INTERVAL_8H = PublishedFundingIntervalV1(8, "t4-funding:fixture:fundingIntervalHour", D0 * 1000 - 1)
+INTERVAL_8H = _interval().interval()
 RATES = {D0: "0.0001", D0 + 8 * _H: "-0.00005", D0 + 16 * _H: "0.000125"}
 RECEIVED = END + 5_000  # received 5 s after the window closes
 AS_OF = DAY0 + timedelta(hours=25)
@@ -474,7 +475,7 @@ class SealedPriceEvidenceTests(_ForwardFixture):
         store.append(observation, body)
         return bridge_forward_funding_prices_v1(
             store, symbol="BTCUSDT", start_ms=start, end_ms=end, as_of=_EPOCH + timedelta(milliseconds=received + 60_000),
-            published_interval=PublishedFundingIntervalV1(8, "t4-funding:fixture", start * 1000),
+            published_interval=_interval(at_ms=start - 60_000).interval(),
             datasets=[dataset], acceptance=t4_acceptance(dataset.session_id), convention=convention,
             mark_evidence=list(marks), mark_nearby_tolerance_ms=None)
 
