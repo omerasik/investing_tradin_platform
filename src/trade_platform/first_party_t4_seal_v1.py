@@ -1014,7 +1014,8 @@ def _slice_plan_from_identity(discovery: T4DiscoveryV1, identity: Mapping[str, A
         plan = _replay_slice_plan(discovery, proof["parent_identity"],
                                   identity["segment"]["start_arrival_nanos"],
                                   identity["segment"]["end_arrival_nanos_inclusive"], contract=authorized)
-        assert plan.slice_proof is not None
+        if plan.slice_proof is None:
+            raise FirstPartyT4SealError("replay_slice_requires_rederived_parent_proof")
         if canonical_json_v1(proof) != canonical_json_v1(plan.slice_proof):
             raise FirstPartyT4SealError("replay_slice_proof_does_not_rederive")
         return plan
