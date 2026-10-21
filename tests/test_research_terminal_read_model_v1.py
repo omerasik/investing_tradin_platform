@@ -602,10 +602,10 @@ class PaperEconomicsSectionTests(unittest.TestCase):
         self.assertEqual(("PROJECTED", [], UNITS_V1), (view.status, view.reasons, view.units))
         self.assertEqual("0.1", view.gross_realized["value"].rstrip("0"))
         # The open short has no stored proven mark: UNAVAILABLE with the module's own reason, never a guess.
-        self.assertEqual(("UNAVAILABLE", None, ["NO_PROVEN_MARK_SUPPLIED"], -1, False),
+        self.assertEqual(("UNAVAILABLE", None, ["PRICE_SELECTION_POLICY_NOT_CONFIGURED"], -1, False),
                          (view.gross_unrealized.status, view.gross_unrealized.value, view.gross_unrealized.reasons,
                           view.gross_unrealized.exposure, view.gross_unrealized.in_net))
-        self.assertEqual("NO_STORED_PROVEN_T4_MARK_SOURCE_READ_BY_THIS_TERMINAL", view.unrealized_mark_source)
+        self.assertEqual("SEALED_T4_PUBLIC_TRADE_REFERENCE_NOT_VENUE_SETTLEMENT_MARK", view.unrealized_mark_source)
         self.assertEqual(("MISSING", None, ["MISSING_VERIFIED_FEE_SCHEDULE_OR_6"]),
                          (view.fees.status, view.fees.value, view.fees.reasons))
         self.assertEqual(("MISSING", None, ["NO_SLIPPAGE_SCENARIO_DECLARED"]),

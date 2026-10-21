@@ -46,7 +46,7 @@ export function economicsRows(economics: PaperEconomicsSection): EconomicsRow[] 
     {
       component: "Unrealized evidence (not in net)", status: unrealized.status,
       figure: unrealized.status === "AVAILABLE" ? returnFigure(unrealized.value) : "—",
-      reasons: unrealized.status === "UNAVAILABLE" ? [...unrealized.reasons, economics.unrealized_mark_source] : unrealized.reasons,
+      reasons: unrealized.reasons,
     },
     componentRow("Fees", economics.fees),
     componentRow("Slippage", economics.slippage),

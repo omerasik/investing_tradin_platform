@@ -143,6 +143,7 @@ def resolve_paper_trade_price_v1(
                     "host_arrival_utc_nanos": int(trade["arrival_utc_nanos"]),
                     "entry_bar_open_micros": entry_bar_open_micros, "as_of_micros": now,
                     "max_age_micros": max_age_micros,
+                    "capture_max_unproven_nanos": capture_max_unproven_nanos,
                     "price_class": "T4_PUBLIC_TRADE_NOT_VENUE_SETTLEMENT_MARK"}
         mark = ProvenMarkV1(symbol, format(reference.price, "f"), observed,
                            max(bar.complete_market_knowledge_micros, _micros(selected.sealed_at)),

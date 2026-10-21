@@ -190,6 +190,15 @@ function EconomicsDetail({ item }: { item: CandidatePaperEvidence }) {
           ))}
         </tbody>
       </DataTable>
+      {economics.price_resolution ? (
+        <details data-price-resolution={economics.price_resolution.status}>
+          <summary>Public trade-price reference: {economics.price_resolution.status} (not a venue settlement mark)</summary>
+          <p>The server resolves the exact declared observation against sealed T4 evidence and capture acceptance.
+            Freshness and coverage bounds are explicit policy declarations. This reference never costs funding or net.</p>
+          {reasonsList(economics.price_resolution.reasons)}
+          <pre>{JSON.stringify(economics.price_resolution, null, 2)}</pre>
+        </details>
+      ) : null}
       {economics.sensitivity_rows.length ? (
         <>
           <h5>Proposed sensitivity scenarios (not owner-approved, never in net)</h5>

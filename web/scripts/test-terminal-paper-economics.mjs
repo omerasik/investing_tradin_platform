@@ -52,7 +52,7 @@ assert.deepEqual(rows.map((row) => [row.component, row.status]), [
 ]);
 assert.equal(rows[0].figure, `0.012300000000 (${RETURN_UNIT_LABEL})`);
 assert.ok(rows.slice(1).every((row) => row.figure === "—"));
-assert.deepEqual(rows[1].reasons, ["NO_PROVEN_MARK_SUPPLIED", "NO_STORED_PROVEN_T4_MARK_SOURCE_READ_BY_THIS_TERMINAL"]);
+assert.deepEqual(rows[1].reasons, ["NO_PROVEN_MARK_SUPPLIED"]);
 for (const row of rows.slice(2)) assert.ok(row.reasons.length, `${row.component} states its reasons`);
 
 // A verified component shows its figure (per scenario for slippage); a confirmed net shows per-scenario figures.

@@ -39,9 +39,9 @@ Every view states its claim and never lifts it:
   verbatim, projected server-side from the cycle's stored fills under the
   cycle's stored OR-6 policy, the owner approval being only the opened
   ``AUTHORIZED`` preregistration packet. Realized gross and unrealized evidence
-  stay apart; unrealized is ``AVAILABLE`` only with a proven T4 mark, and no
-  stored proven-mark source is read here, so an open position's unrealized
-  figure is ``UNAVAILABLE`` with the module's reason. Fees, slippage, funding,
+  stay apart; unrealized is ``AVAILABLE`` only with a proven T4 mark and a
+  server-installed explicit price policy; without it an open position's unrealized
+  figure is ``UNAVAILABLE`` with its exact reason. Fees, slippage, funding,
   proposed sensitivity rows (``in_net: false``, only from the stored policy)
   and net are each shown with their own status; every figure is
   :data:`~trade_platform.paper_economics_v1.UNITS_V1`, never money. No caller
@@ -64,7 +64,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
-from typing import Any, Final, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, model_validator
@@ -81,8 +81,11 @@ from .paper_economics_v1 import (
     UNITS_V1,
     UNREALIZED_AVAILABLE,
 )
-from .paper_incubation_report_v1 import incubation_report_v1
+from .paper_incubation_report_v1 import FILL_STATUS_FILLED, incubation_report_v1
 from .strategy_lab_study_v1 import UNTOUCHED_HOLDOUT_BOUNDARY_V1, identity_hash_v1
+
+if TYPE_CHECKING:
+    from .terminal_paper_prices_v1 import TerminalPaperPricesV1
 
 
 class _Cursor(Protocol):
@@ -509,8 +512,8 @@ class _CycleContext:
 
         self.cycle_id = current_cycle_id_v1()
         self.as_of = as_of
-        cursor.execute("SELECT cycle_id, preregistration_hash FROM strategy_lab_holdout_openings WHERE cycle_id=%s",
-                       (self.cycle_id,))
+        cursor.execute("SELECT cycle_id, preregistration_hash FROM strategy_lab_holdout_openings "
+                       "WHERE cycle_id=%s AND opened_at <= %s", (self.cycle_id, as_of))
         row = cursor.fetchone()
         self.opening = None if row is None else {"cycle_id": str(row[0]), "preregistration_hash": str(row[1]).strip()}
         self.cost = cycle_cost_policy_v1(cursor, self.cycle_id)
@@ -521,10 +524,21 @@ class _CycleContext:
         except IncubationRegistryError as error:
             self.resolution_refusal = f"INCUBATION_REGISTRY_REFUSED:{error}"
         self.fills: list[dict[str, Any]] = []
-        for content_hash, raw in cycle_fill_rows_v1(cursor, self.cycle_id)[0]:
+        fill_rows = cycle_fill_rows_v1(cursor, self.cycle_id)[0]
+        hashes = [str(row[0]).strip() for row in fill_rows]
+        recorded = {}
+        if hashes:
+            cursor.execute("SELECT content_hash, recorded_at FROM paper_incubation_fills "
+                           "WHERE content_hash = ANY(%s)", (hashes,))
+            recorded = {str(row[0]).strip(): row[1] for row in cursor.fetchall()}
+        for content_hash, raw in fill_rows:
             identity = _json(raw)
             if identity_hash_v1(identity) != str(content_hash).strip():
                 raise ValueError("stored_fill_identity_does_not_rederive")
+            if str(content_hash).strip() not in recorded:
+                raise ValueError("stored_fill_recording_time_missing")
+            if recorded[str(content_hash).strip()] > as_of:
+                continue
             self.fills.append(identity)
 
 
@@ -890,6 +904,7 @@ class PaperEconomicsSectionView(BaseModel):
     gross_realized: dict[str, Any] | None = None
     gross_unrealized: UnrealizedEvidenceView | None = None
     unrealized_mark_source: str = NO_STORED_PROVEN_MARK
+    price_resolution: dict[str, Any] | None = None
     fees: EconomicsComponentView | None = None
     slippage: EconomicsComponentView | None = None
     funding: EconomicsComponentView | None = None
@@ -1375,11 +1390,13 @@ def read_account_risk_v1(cursor: _Cursor, account_id: str, *, now: datetime | No
 class _PaperContext:
     """The cycle's incubation report, built once per request from the stored fills (no caller input)."""
 
-    def __init__(self, cursor: _Cursor, as_of: datetime) -> None:
+    def __init__(self, cursor: _Cursor, as_of: datetime, prices: TerminalPaperPricesV1 | None = None) -> None:
         from .paper_economics_v1 import OwnerCostApprovalV1
         from .paper_incubation_report_v1 import PaperIncubationError
 
         self.cycle = _CycleContext(cursor, as_of)
+        self.prices = prices
+        self.cursor = cursor
         self.report: dict[str, Any] | None = None
         self.refusal: str | None = None
         try:
@@ -1413,7 +1430,34 @@ def _candidate_economics(context: _PaperContext, study: str, trial: str,
             as_of=context.cycle.as_of, cost_approval=context.cost_approval, resolution=context.cycle.resolution)
     except PaperEconomicsError as error:
         return _economics_not_projected(ECONOMICS_REFUSED, [f"{PAPER_ECONOMICS_REFUSED_PREFIX}{error}"])
-    return economics_section_view_v1(result, study_id=study, trial_id=trial)
+    view = economics_section_view_v1(result, study_id=study, trial_id=trial)
+    prices = getattr(context, "prices", None)
+    if view.gross_unrealized is None or view.gross_unrealized.status != "UNAVAILABLE":
+        return view
+    if (view.exposure or {}).get("open_position_signed") is None:
+        return view
+    entries = [item for item in fills if item["status"] == FILL_STATUS_FILLED]
+    if not entries:
+        return view
+    if prices is None:
+        resolution_payload: dict[str, Any] = {"status": "UNAVAILABLE", "reasons": ["PRICE_SELECTION_POLICY_NOT_CONFIGURED"],
+                              "mark": None, "evidence": None}
+    else:
+        resolution = prices.resolve(context.cursor, cycle_id=context.cycle.cycle_id,
+                                    study_id=study, trial_id=trial, entry=entries[-1], as_of=context.cycle.as_of)
+        resolution_payload = {**resolution.payload(), "selection_policy": prices.provenance()}
+        if resolution.status == "AVAILABLE" and resolution.mark is not None:
+            result = paper_economics_v1(
+                [{"identity": item, "content_hash": identity_hash_v1(item)} for item in fills], context.cycle.cost,
+                as_of=context.cycle.as_of, cost_approval=context.cost_approval, resolution=context.cycle.resolution,
+                marks=[resolution.mark])
+            view = economics_section_view_v1(result, study_id=study, trial_id=trial)
+    view.price_resolution = resolution_payload
+    view.unrealized_mark_source = "SEALED_T4_PUBLIC_TRADE_REFERENCE_NOT_VENUE_SETTLEMENT_MARK"
+    if view.gross_unrealized is not None and resolution_payload["status"] == "UNAVAILABLE":
+        view.gross_unrealized.detail["projection_reasons"] = view.gross_unrealized.reasons
+        view.gross_unrealized.reasons = list(resolution_payload["reasons"])
+    return view
 
 
 def _stored_parity(cursor: _Cursor, context: _PaperContext, study_id: UUID, trial_id: UUID,
@@ -1498,13 +1542,15 @@ def _candidate_paper_evidence(cursor: _Cursor, context: _PaperContext, study_id:
 
 
 def read_candidate_paper_evidence_v1(cursor: _Cursor, study_id: UUID, trial_id: UUID, *,
-                                     now: datetime | None = None) -> CandidatePaperEvidenceView:
+                                     now: datetime | None = None,
+                                     prices: TerminalPaperPricesV1 | None = None) -> CandidatePaperEvidenceView:
     """One candidate's paper evidence in the current cycle, resolved from stored rows only (read-only)."""
-    return _candidate_paper_evidence(cursor, _PaperContext(cursor, now or datetime.now(UTC)), study_id, trial_id)
+    return _candidate_paper_evidence(cursor, _PaperContext(cursor, now or datetime.now(UTC), prices), study_id, trial_id)
 
 
 def read_terminal_comparison_v1(cursor: _Cursor, *, study_ids: list[UUID], sort: Any,
-                                now: datetime | None = None) -> ComparisonView:
+                                now: datetime | None = None,
+                                prices: TerminalPaperPricesV1 | None = None) -> ComparisonView:
     """The recorded comparison of the selected studies' frozen sets plus each row's paper evidence.
 
     Identities are resolved server-side: each study's latest recorded frozen set,
@@ -1525,7 +1571,7 @@ def read_terminal_comparison_v1(cursor: _Cursor, *, study_ids: list[UUID], sort:
         raise TerminalObjectNotFound(str(error)) from error
     payload = result.payload()
     as_of = now or datetime.now(UTC)
-    context = _PaperContext(cursor, as_of)
+    context = _PaperContext(cursor, as_of, prices)
     paper = [_candidate_paper_evidence(cursor, context, UUID(row["identity"]["study_id"]),
                                        UUID(row["identity"]["trial_id"])) for row in payload["rows"]]
     return ComparisonView(claim=payload["claim"], composite_score=payload["composite_score"],

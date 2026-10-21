@@ -1152,6 +1152,11 @@ export type PaperEconomicsSection = {
     exposure: number | null; mark: Record<string, unknown> | null; detail: Record<string, unknown>; in_net: false;
   } | null;
   unrealized_mark_source: string;
+  price_resolution?: {
+    status: "AVAILABLE" | "UNAVAILABLE"; reasons: string[];
+    evidence: Record<string, unknown> | null;
+    selection_policy?: { policy_hash: string; installed_at: string; identity: Record<string, unknown> };
+  } | null;
   fees: EconomicsComponent | null; slippage: EconomicsComponent | null; funding: EconomicsComponent | null;
   sensitivity_rows: EconomicsSensitivityRow[];
   net: { status: "CONFIRMED" | "NOT_COSTABLE" | "INCOMPLETE"; scope: string; by_scenario: Record<string, string> | null;

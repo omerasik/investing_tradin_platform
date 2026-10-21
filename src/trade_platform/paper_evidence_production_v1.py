@@ -72,7 +72,7 @@ its reasons and the missing inputs.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -1078,11 +1078,12 @@ class PostgresPaperEvidenceSourcesV1:
     """
 
     def __init__(self, cursor: Any, *, frame_store: Any | None, capture_root: Path | None,
-                 funding_root: Path | None) -> None:
+                 funding_root: Path | None, catalogue_seal_guard: Callable[[Any], None] | None = None) -> None:
         self._cursor = cursor
         self._frame_store = frame_store
         self._capture_root = capture_root
         self._funding_root = funding_root
+        self._catalogue_seal_guard = catalogue_seal_guard
 
     def signal_rows(self, *, study_id: str, trial_id: str, symbol: str) -> list[dict[str, Any]]:
         self._cursor.execute(
@@ -1224,6 +1225,8 @@ class PostgresPaperEvidenceSourcesV1:
             catalogued = CataloguedT4DatasetV1(
                 dataset_version_id=UUID(str(row[0])), content_hash=str(row[1]).strip(), identity=_json(row[2]),
                 frame_manifests={str(k): str(v) for k, v in _json(row[3]).items()}, sealed_at=row[4])
+            if self._catalogue_seal_guard is not None:
+                self._catalogue_seal_guard(catalogued)
             try:
                 seals.append(t4_seal_from_catalog_v1(catalogued, store=self._frame_store,
                                                      capture_root=self._capture_root))
