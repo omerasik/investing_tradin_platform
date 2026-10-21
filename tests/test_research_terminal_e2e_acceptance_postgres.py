@@ -20,7 +20,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 REAL_CYCLE = "cycle-2026-08-20"
 DAY0 = datetime(2026, 6, 1, tzinfo=UTC)
@@ -76,7 +76,10 @@ class ResearchTerminalAcceptancePostgresTests(unittest.TestCase):
         )
         from trade_platform.paper_incubation_report_v1 import UNRESOLVED_OR7_INCUBATION_DAYS
         from trade_platform.persistence import PostgresDatabase
-        from trade_platform.research_terminal_read_model_v1 import read_walk_forward_v1
+        from trade_platform.research_terminal_read_model_v1 import (
+            read_candidate_lifecycle_v1,
+            read_walk_forward_v1,
+        )
         from trade_platform.runner_liveness_v1 import (
             PostgresRunnerLivenessStoreV1,
             derive_runner_liveness_v1,
@@ -327,6 +330,43 @@ class ResearchTerminalAcceptancePostgresTests(unittest.TestCase):
             self.assertGreaterEqual(overview["cycle"]["preregistrations"].get("DRAFT", 0), 1)
             self.assertEqual("NONE_VALIDATED", get("research-terminal/validation?limit=500")["validated_claim"])
             self.assertIsNone(registry.opening(REAL_CYCLE), "the real holdout must stay closed")
+
+            # Historical registry reconstruction is unsupported. Valid evidence learned later
+            # must produce the precise refusal, never a current authority or a gross fallback.
+            with database.transaction() as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT min(recorded_at) FROM ("
+                    "SELECT recorded_at FROM strategy_lab_authority_reruns WHERE rerun_hash=%s "
+                    "UNION ALL SELECT recorded_at FROM strategy_lab_preregistrations WHERE preregistration_hash=%s "
+                    "UNION ALL SELECT recorded_at FROM strategy_lab_walk_forward_reports WHERE report_hash=%s) fixture",
+                    (rerun.rerun_hash, draft.content_hash, report.report_hash))
+                earliest = cursor.fetchone()[0]
+                with self.assertRaisesRegex(ValueError, "^terminal_historical_registry_knowledge_unavailable$"):
+                    read_candidate_lifecycle_v1(
+                        cursor, study.study_id, UUID(selected[0]), now=earliest - timedelta(microseconds=1))
+
+                # These registries resolve current rows and can depend on other studies/accounts.
+                # At the latest prerequisite's exact recording boundary, the stored chain is readable.
+                cursor.execute(
+                    "SELECT max(known_at) FROM ("
+                    "SELECT max(registered_at) AS known_at FROM strategy_lab_research_cycles WHERE cycle_id=%s "
+                    "UNION ALL SELECT max(opened_at) FROM strategy_lab_holdout_openings WHERE cycle_id=%s "
+                    "UNION ALL SELECT max(recorded_at) FROM strategy_lab_holdout_validations WHERE cycle_id=%s "
+                    "UNION ALL SELECT max(recorded_at) FROM strategy_lab_preregistrations WHERE cycle_id=%s "
+                    "UNION ALL SELECT max(recorded_at) FROM strategy_lab_incubation_exit_criteria WHERE cycle_id=%s "
+                    "UNION ALL SELECT max(registered_at) FROM strategy_lab_studies "
+                    "UNION ALL SELECT max(recorded_at) FROM strategy_lab_authority_reruns "
+                    "UNION ALL SELECT max(recorded_at) FROM strategy_lab_walk_forward_reports "
+                    "UNION ALL SELECT max(recorded_at) FROM strategy_lab_candidate_states "
+                    "UNION ALL SELECT max(created_at) FROM account_contexts "
+                    "UNION ALL SELECT max(recorded_at) FROM account_policy_versions) prerequisites",
+                    (REAL_CYCLE,) * 5)
+                boundary = cursor.fetchone()[0]
+                at_boundary = read_candidate_lifecycle_v1(cursor, study.study_id, UUID(selected[0]), now=boundary)
+            self.assertEqual((boundary, rerun.rerun_hash, draft.content_hash),
+                             (at_boundary.as_of, at_boundary.links.rerun_hash, at_boundary.links.preregistration_hash))
+            self.assertIn(report.report_hash, {item.report_hash for item in at_boundary.links.walk_forward})
+            self.assertFalse(at_boundary.links.holdout_opened_for_this_preregistration)
 
         finally:
             database.close()
