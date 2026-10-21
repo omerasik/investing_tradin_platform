@@ -80,6 +80,11 @@ class ResearchTerminalAcceptancePostgresTests(unittest.TestCase):
             read_candidate_lifecycle_v1,
             read_walk_forward_v1,
         )
+        from trade_platform.research_watchlist_v1 import (
+            ResearchWatchlistV1,
+            WatchEntryV1,
+            read_latest_active_watchlist_v1,
+        )
         from trade_platform.runner_liveness_v1 import (
             PostgresRunnerLivenessStoreV1,
             derive_runner_liveness_v1,
@@ -325,8 +330,32 @@ class ResearchTerminalAcceptancePostgresTests(unittest.TestCase):
             gates = {gate["gate"]: gate for gate in overview["owner_gates"]}
             self.assertEqual("OPEN", gates["OR-7"]["status"])
             self.assertEqual("OPEN", gates["OR-6 fee schedule"]["status"])
-            self.assertEqual("OPEN", gates["OR-9"]["status"])
-            self.assertEqual("OPEN", gates["OR-11"]["status"])
+            # Overview gates are global: preceding shared-database tests may have explicitly
+            # approved a watch list or another account. Bind each answer to stored authority,
+            # while this scenario's unapproved proposal and unique account stay unresolved.
+            proposal = ResearchWatchlistV1("ui2-unapproved", (
+                WatchEntryV1(study.study_id, rerun.rerun_hash, UUID(selected[0]), "BTCUSDT"),))
+            self.assertEqual("DRAFT", proposal.status)
+            self.assertIn("MISSING_OWNER_APPROVAL_OR_9", proposal.unresolved)
+            with database.transaction() as connection, connection.cursor() as cursor:
+                watchlist = read_latest_active_watchlist_v1(cursor)
+            if watchlist is None:
+                self.assertEqual(("OPEN", "no ACTIVE watch list recorded"),
+                                 (gates["OR-9"]["status"], gates["OR-9"]["evidence"]))
+            else:
+                self.assertTrue(watchlist.approved_by)
+                self.assertTrue(watchlist.approved_on)
+                self.assertEqual((), watchlist.unresolved)
+                self.assertNotIn((study.study_id, UUID(unselected)),
+                                 {(entry.study_id, entry.trial_id) for entry in watchlist.entries})
+                self.assertEqual(("SATISFIED", f"watch list {watchlist.watchlist_id} ({len(watchlist.entries)} candidates)"),
+                                 (gates["OR-9"]["status"], gates["OR-9"]["evidence"]))
+            all_accounts = get("research-terminal/accounts")
+            self.assertEqual("UNCONFIGURED", next(item for item in all_accounts
+                                                  if item["account_id"] == account.account_id)["policy_status"])
+            active_accounts = sum(item["policy_status"] == "ACTIVE" for item in all_accounts)
+            self.assertEqual(("SATISFIED" if active_accounts else "OPEN", f"{active_accounts} active account policies"),
+                             (gates["OR-11"]["status"], gates["OR-11"]["evidence"]))
             self.assertGreaterEqual(overview["cycle"]["preregistrations"].get("DRAFT", 0), 1)
             self.assertEqual("NONE_VALIDATED", get("research-terminal/validation?limit=500")["validated_claim"])
             self.assertIsNone(registry.opening(REAL_CYCLE), "the real holdout must stay closed")
