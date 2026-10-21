@@ -49,6 +49,7 @@ from .postgres_paper_oms import PostgresPaperOms
 from .research_terminal_commands_v1 import PostgresTerminalCommandLedgerV1
 from .secrets_manager import FileSecretProvider, SecretUnavailableError
 from .security import AuthorizationDecisionSink, InMemoryRateLimiter, OperatorAuthenticator
+from .terminal_paper_prices_v1 import terminal_paper_prices_from_environment_v1
 
 __all__ = [
     "ProductionIdentityAuthorities",
@@ -240,7 +241,8 @@ def compose_protected_postgres_app(
             database=database,
             paper_oms=PostgresPaperOms(database),
             alert_store=PostgresOperationalAlertStore(database),
-            operator_dashboard_queries=PostgresOperatorDashboardQueries(database),
+            operator_dashboard_queries=PostgresOperatorDashboardQueries(
+                database, terminal_paper_prices=terminal_paper_prices_from_environment_v1()),
         )
     except Exception as error:
         database.close()

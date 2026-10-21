@@ -1123,8 +1123,10 @@ class PostgresOperatorDashboardQueries:
     def __init__(
         self, database: PostgresDatabase,
         provenance_authority: PostgresRealMarketDataProvenanceAuthorityV1 | None = None,
+        *, terminal_paper_prices: Any = None,
     ) -> None:
         self._database = database
+        self._terminal_paper_prices = terminal_paper_prices
         self._read_lock = RLock()
         self._provenance_authority = (
             PostgresRealMarketDataProvenanceAuthorityV1(database)
@@ -1417,7 +1419,8 @@ class PostgresOperatorDashboardQueries:
         """Recorded comparison of the studies' frozen sets with per-row paper evidence (no score, no default sort)."""
         def operation(cursor: _Cursor) -> ComparisonView:
             try:
-                return read_terminal_comparison_v1(cursor, study_ids=study_ids, sort=sort)
+                return read_terminal_comparison_v1(cursor, study_ids=study_ids, sort=sort,
+                                                   prices=self._terminal_paper_prices)
             except TerminalObjectNotFound as error:
                 raise DashboardObjectNotFound(str(error)) from error
         return self._read(operation)
@@ -1426,7 +1429,7 @@ class PostgresOperatorDashboardQueries:
         """One candidate's live/replay parity and forward funding evidence (NOT_LOADED when not loaded)."""
         def operation(cursor: _Cursor) -> CandidatePaperEvidenceView:
             try:
-                return read_candidate_paper_evidence_v1(cursor, study_id, trial_id)
+                return read_candidate_paper_evidence_v1(cursor, study_id, trial_id, prices=self._terminal_paper_prices)
             except TerminalObjectNotFound as error:
                 raise DashboardObjectNotFound(str(error)) from error
         return self._read(operation)

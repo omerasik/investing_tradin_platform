@@ -229,6 +229,26 @@ test.describe("Module 2B-1 Professional Market & Data Workspaces", () => {
         await expect(compared).toContainText("Composite score: NONE");
         // Parity and funding not loaded by this read are NOT_LOADED, never INCOMPLETE.
         await expect(page.getByRole("region", { name: "Paper evidence" })).toContainText("NOT_LOADED");
+        // P7.1: any exposed price resolution keeps the server's exact status/reasons and provenance.
+        for (const reference of await page.locator("[data-price-resolution]").all()) {
+          const status = await reference.getAttribute("data-price-resolution");
+          expect(["AVAILABLE", "UNAVAILABLE"]).toContain(status);
+          await expect(reference.locator("summary")).toContainText(
+            `Public trade-price reference: ${status} (not a venue settlement mark)`,
+          );
+          const resolution = JSON.parse((await reference.locator("pre").textContent()) ?? "{}");
+          expect(resolution.status).toBe(status);
+          if (status === "UNAVAILABLE") {
+            expect(resolution.reasons.length).toBeGreaterThan(0);
+            expect(resolution.mark).toBeNull();
+          } else {
+            expect(resolution.reasons).toEqual([]);
+            expect(resolution.evidence.price_class).toBe("T4_PUBLIC_TRADE_NOT_VENUE_SETTLEMENT_MARK");
+            expect(resolution.evidence.as_of_micros).toBeGreaterThanOrEqual(resolution.mark.knowable_at_micros);
+            expect(resolution.selection_policy.policy_hash).toMatch(/^[a-f0-9]{64}$/);
+          }
+          for (const reason of resolution.reasons) await expect(reference).toContainText(reason);
+        }
       }
     }
     // Activation readiness: every next action answered READY/BLOCKED with its owner gate.
