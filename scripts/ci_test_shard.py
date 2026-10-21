@@ -34,6 +34,7 @@ HEAVY_MODULES = frozenset({
     "test_live_signals_v1",
     "test_live_signals_v1_postgres",
     "test_paper_incubation_v1",
+    "test_paper_evidence_pipeline_v1",
     "test_paper_incubation_v1_postgres",
     "test_strategy_lab_validation_v1",
     "test_crypto_liquidity_capacity_v1_postgres",

@@ -10,8 +10,12 @@ datasets (rebuilt from raw capture when ``--frame-root`` and ``--capture-root`` 
 given) and the forward funding store (``--funding-root``), rebuilds the evidence with
 the unchanged resolvers and prints the run report as JSON -- per candidate and kind
 PERSISTED / ALREADY_STORED / REFUSED / DRY_RUN_WOULD_RECORD with reason codes, plus
-the missing inputs. Only ``--persist`` writes, through the verified paper evidence
-store, in one transaction. No runner, capture, acquisition or network call; no
+the missing inputs. Only ``--persist`` writes parity/funding, through the verified paper evidence
+store, in one transaction. Economics is always a read-only projection. Proven
+unrealized prices require all six explicit declarations: ``--paper-price-source``,
+``--paper-price-session``, ``--paper-price-instrument``, ``--paper-price-instant``,
+``--paper-price-max-age-micros`` and ``--paper-price-capture-max-unproven-nanos``.
+None defaults to a market source, a latest observation or a valuation convention. No runner, capture, acquisition or network call; no
 order, no account, no capital. The funding price convention has no default.
 """
 
@@ -31,6 +35,7 @@ from trade_platform.first_party_t4_forward_bars_v1 import T4PriceConventionV1
 from trade_platform.live_signals_v1 import LiveHoldoutGateV1, watched_from_states_v1
 from trade_platform.paper_evidence_production_v1 import (
     FundingDeclarationV1,
+    PaperPriceDeclarationV1,
     PostgresPaperEvidenceSourcesV1,
     StorePaperEvidenceSinkV1,
     run_paper_evidence_production_v1,
@@ -72,12 +77,27 @@ def main() -> None:
     parser.add_argument("--funding-end-ms", type=int, default=None)
     parser.add_argument("--mark-tolerance-ms", type=int, default=None)
     parser.add_argument("--capture-max-unproven-nanos", type=int, default=None)
+    parser.add_argument("--paper-price-source", type=UUID, default=None)
+    parser.add_argument("--paper-price-session", type=UUID, default=None)
+    parser.add_argument("--paper-price-instrument", default=None)
+    parser.add_argument("--paper-price-instant", type=_aware, default=None)
+    parser.add_argument("--paper-price-max-age-micros", type=int, default=None)
+    parser.add_argument("--paper-price-capture-max-unproven-nanos", type=int, default=None)
     parser.add_argument("--as-of", type=_aware, default=None, help="reading instant (default: now)")
     parser.add_argument("--persist", action="store_true", help="write through the verified store (default: dry run)")
     args = parser.parse_args()
     if not args.dsn:
         raise SystemExit("--dsn or TRADE_PLATFORM_RESEARCH_DSN is required")
     declaration = _declaration(args)
+    price_values = (args.paper_price_source, args.paper_price_session, args.paper_price_instrument,
+                    args.paper_price_instant, args.paper_price_max_age_micros,
+                    args.paper_price_capture_max_unproven_nanos)
+    prices = None
+    if any(value is not None for value in price_values):
+        if any(value is None for value in price_values):
+            raise SystemExit("paper price requires explicit source, session, instrument, instant, "
+                             "max-age-micros and capture-max-unproven-nanos")
+        prices = {args.symbol: PaperPriceDeclarationV1(*price_values)}
 
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import psycopg
@@ -108,7 +128,7 @@ def main() -> None:
         run = run_paper_evidence_production_v1(
             sources, cycle_id=CURRENT_CYCLE_V1.cycle_id, candidates=candidates, holdout_gate=gate,
             cost_policy=cycle_cost_policy_v1(cursor, CURRENT_CYCLE_V1.cycle_id), as_of=as_of,
-            recorded_at=recorded_at, funding=declaration,
+            recorded_at=recorded_at, funding=declaration, prices=prices,
             sink=StorePaperEvidenceSinkV1(cursor) if args.persist else None)
         if not args.persist:
             raise psycopg.Rollback()  # a dry run leaves nothing behind, not even a read's transaction

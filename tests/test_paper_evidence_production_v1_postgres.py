@@ -191,6 +191,18 @@ class PaperEvidenceProductionPostgresTests(unittest.TestCase):
         bars = self.bars
 
         class Injected(PostgresPaperEvidenceSourcesV1):
+            # Legacy injected contract regression only. The independent raw-pipeline
+            # tests exercise the unmodified authoritative production hooks.
+            def verified_live_bars(self, **_: Any) -> Any:
+                return list(bars)
+
+            def verified_replay_bars(self, **_: Any) -> Any:
+                from trade_platform.paper_fill_parity_v1 import SealedReplayBarV1
+
+                dataset = sealed_dataset(bars, sealed_at=PARITY_AS_OF)
+                return [SealedReplayBarV1(dataset.exchange_symbol, 0, dataset.session_id, bar, dataset.content_hash)
+                        for bar in dataset.bars]
+
             def live_bars(self, **_: Any) -> Any:  # type: ignore[override]
                 return list(bars)
 
@@ -241,11 +253,11 @@ class PaperEvidenceProductionPostgresTests(unittest.TestCase):
         run = self._run(self._production, funding=self._declaration())
         parity = self._pick(run, production.KIND_FILL_PARITY)
         funding = self._pick(run, production.KIND_FUNDING_EVIDENCE)
-        self.assertEqual((production.STATUS_REFUSED, (production.LIVE_BARS_NOT_PERSISTED, production.SEAL_NOT_FOUND)),
+        self.assertEqual((production.STATUS_REFUSED, (production.RUNNER_LIVENESS_DOES_NOT_REDERIVE, production.SEAL_NOT_FOUND)),
                          (parity.status, parity.reasons))
         self.assertEqual(production.STATUS_REFUSED, funding.status)
         self.assertIn(production.FORWARD_FUNDING_ACQUISITION_NOT_AUTHORIZED, funding.reasons)
-        self.assertIn(production.LIVE_BARS_NOT_PERSISTED, run.missing_inputs)
+        self.assertIn(production.RUNNER_LIVENESS_DOES_NOT_REDERIVE, parity.reasons)
         self.assertIn(production.FORWARD_FUNDING_ACQUISITION_NOT_AUTHORIZED, run.missing_inputs)
         self.assertEqual(before, self._stored_counts())
 
