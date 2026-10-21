@@ -181,8 +181,9 @@ MISSING_PERSISTED_INPUTS_V1: Final = {
         "Forward settled funding observations: acquisition is unauthorized "
         "(UNRESOLVED_OWNER_AUTHORIZATION), so the append-only forward funding store holds none."),
     "PUBLISHED_FUNDING_INTERVAL_NOT_PERSISTED": (
-        "The venue-published funding interval (PublishedFundingIntervalV1) has no store; without it a "
-        "forward funding window is IRREGULAR (PUBLISHED_INTERVAL_EVIDENCE_MISSING), never COMPLETE."),
+        "No independently verified venue-published interval was supplied for this window/as-of. "
+        "PublishedFundingIntervalStoreV1 retains raw source observations and re-verifies them on read; "
+        "missing, contradictory or later-known metadata cannot make an earlier window COMPLETE."),
     "WATCHED_CANDIDATE_STUDY_SPEC_NOT_PERSISTED": (
         "The frozen StudySpecV1 behind a WatchedCandidateV1 is rebuilt by the caller (as the runner "
         "script does); it is verified against the stored signals' study id and content hash, never trusted."),

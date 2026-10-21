@@ -52,6 +52,14 @@ is a no-op, a different observation is a new record. :class:`ForwardSettledFundi
 is append-only (create-exclusive files, raw bodies content-addressed) and
 re-derives every record from its raw body on load.
 
+``PublishedFundingIntervalStoreV1`` independently preserves supplied REST
+ticker ``fundingIntervalHour`` metadata, raw content and both clocks. Its
+``window_as_of`` loads and verifies interval history before calling the existing
+window resolver. Direct callers supply ``item.interval()``; bare assertions are
+unverified. Corrupt evidence raises ``ForwardFundingError``. Ticker metadata
+is documented at https://bybit-exchange.github.io/docs/v5/market/tickers .
+No ticker rate is settled evidence; no interval is settlement-price authority.
+
 As-of windows (:func:`forward_funding_window_as_of_v1`)
 -------------------------------------------------------
 Only observations whose knowledge instant is at or before ``as_of`` are seen;
@@ -59,8 +67,13 @@ nothing about a later observation (not even a count) enters the result, so
 later acquisition can never change or back-date an earlier answer. The window
 ``[start, end)`` is ``COMPLETE`` only if it has closed as of ``as_of``, the
 available observations' coverage (request window capped at the published
-server time) spans it, a published-interval evidence item is known as of
-``as_of``, every spacing equals that interval and both edges are tight.
+server time) spans it, a verified published interval was already known at the
+window start, every spacing equals that interval and both edges are tight.
+Publication snapshots claim no historical effective date: pre-window knowledge
+prevents backfilling an earlier window even at a later ``as_of``. Store
+resolution refuses changes/contradictions, selects by publication then knowledge
+(delayed older snapshots never supersede newer publications), and binds every
+relevant history item in the result identity.
 Anything else is ``IRREGULAR_REFUSED`` with reasons -- never interpolated,
 never filled with a constant. Two available observations that publish
 different rate text for one instant are refused as a conflict.
@@ -248,6 +261,7 @@ class PublishedFundingIntervalV1:
     hours: int
     source_reference: str
     knowledge_at_micros: int
+    evidence: PublishedFundingIntervalObservationV1 | None = None
 
     def __post_init__(self) -> None:
         if _strict_int(self.hours, "published_interval_hours") <= 0:
@@ -255,6 +269,184 @@ class PublishedFundingIntervalV1:
         _strict_int(self.knowledge_at_micros, "published_interval_knowledge_at_micros")
         if not isinstance(self.source_reference, str) or not self.source_reference.strip():
             raise ForwardFundingError("published_interval_source_reference_missing")
+
+
+@dataclass(frozen=True, slots=True)
+class PublishedFundingIntervalObservationV1:
+    """Published metadata only; no settled-rate or settlement-price authority.
+
+    Server time is the publication snapshot instant, not a claimed historical
+    effective date. No interval snapshot may be backdated to a prior window.
+    """
+
+    identity: Mapping[str, Any]
+    content_hash: str
+    provenance: Mapping[str, Any]
+    provenance_hash: str
+    idempotency_key: str
+    raw_body: bytes
+
+    @property
+    def observation_id(self) -> UUID:
+        return uuid5(_NAMESPACE, f"published-interval:{self.idempotency_key}")
+
+    @property
+    def symbol(self) -> str:
+        return str(self.identity["symbol"]["symbol"])
+
+    def interval(self) -> PublishedFundingIntervalV1:
+        """Rebuild from the original bytes before exposing the existing contract."""
+        rebuilt = _rebuild_interval(self)
+        if self != rebuilt:
+            raise ForwardFundingError("published_interval_observation_does_not_reproduce")
+        known = rebuilt.provenance["knowledge_at_micros"]
+        if known is None:
+            raise ForwardFundingError("published_interval_clock_uncertainty_missing")
+        return PublishedFundingIntervalV1(
+            rebuilt.identity["hours"], f"{rebuilt.provenance['url']}#observation={rebuilt.observation_id}",
+            known, rebuilt)
+
+
+def observe_published_funding_interval_v1(
+    body: bytes, *, symbol: str, source_reference: str, observed_at_host_utc_nanos: int,
+    clock_bound: ObservationClockBoundV1 | None,
+) -> PublishedFundingIntervalObservationV1:
+    """Parse already supplied REST ticker interval metadata offline.
+
+    The ticker's indicative fundingRate, markPrice and nextFundingTime never
+    enter the interval content identity or provide any settled evidence.
+    """
+    canonical = canonical_symbol_identity_v1(symbol)
+    url = f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={symbol}"
+    if source_reference != url:
+        raise ForwardFundingError("published_interval_source_reference_mismatch")
+    if _strict_int(observed_at_host_utc_nanos, "observed_at_host_utc_nanos") <= 0:
+        raise ForwardFundingError("observed_at_host_utc_nanos_must_be_positive")
+    if clock_bound is not None and not isinstance(clock_bound, ObservationClockBoundV1):
+        raise ForwardFundingError("clock_bound_must_be_observation_clock_bound_evidence")
+    try:
+        payload = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ForwardFundingError("published_interval_payload_malformed") from error
+    if not isinstance(payload, dict) or type(payload.get("retCode")) is not int or payload["retCode"] != 0:
+        raise ForwardFundingError("published_interval_response_not_successful")
+    result = payload.get("result")
+    if not isinstance(result, dict) or result.get("category") != "linear":
+        raise ForwardFundingError("published_interval_category_mismatch")
+    rows = result.get("list")
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+        raise ForwardFundingError("published_interval_requires_one_unambiguous_instrument")
+    row = rows[0]
+    if row.get("symbol") != symbol:
+        raise ForwardFundingError("published_interval_symbol_mismatch")
+    hours = row.get("fundingIntervalHour")
+    if not isinstance(hours, str) or not hours.isascii() or not hours.isdecimal() or str(int(hours)) != hours:
+        raise ForwardFundingError("published_interval_hours_malformed")
+    if int(hours) <= 0:
+        raise ForwardFundingError("published_interval_hours_must_be_positive")
+    published = _strict_int(payload.get("time"), "published_server_time_ms")
+    if published <= 0:
+        raise ForwardFundingError("published_server_time_must_be_positive")
+    known = None if clock_bound is None else market_knowledge_micros_v1(
+        observed_at_host_utc_nanos, clock_bound.venue_minus_host_upper_bound_nanos)
+    if known is not None and published * 1000 > known:
+        raise ForwardFundingError("server_time_contradicts_the_observation_clock_bound")
+    identity = {"schema_version": "bybit-published-funding-interval-v1", "symbol": canonical,
+                "hours": int(hours), "field": "fundingIntervalHour", "semantics": "PUBLISHED_INTERVAL_METADATA"}
+    content_hash = identity_hash_v1(identity)
+    provenance = {"content_hash": content_hash, "url": url, "raw_sha256": _sha256(body),
+                  "published_server_time_ms": published, "observed_at_host_utc_nanos": observed_at_host_utc_nanos,
+                  "clock_bound_nanos": None if clock_bound is None else clock_bound.venue_minus_host_upper_bound_nanos,
+                  "clock_bound_evidence": None if clock_bound is None else clock_bound.evidence_reference,
+                  "knowledge_at_micros": known}
+    provenance_hash = identity_hash_v1(provenance)
+    key = identity_hash_v1({"content_hash": content_hash, "provenance_hash": provenance_hash})
+    return PublishedFundingIntervalObservationV1(identity, content_hash, provenance, provenance_hash, key, body)
+
+
+def _rebuild_interval(item: PublishedFundingIntervalObservationV1) -> PublishedFundingIntervalObservationV1:
+    p = item.provenance
+    bound = None if p["clock_bound_nanos"] is None else ObservationClockBoundV1(
+        p["clock_bound_nanos"], p["clock_bound_evidence"])
+    return observe_published_funding_interval_v1(
+        item.raw_body, symbol=item.symbol, source_reference=p["url"],
+        observed_at_host_utc_nanos=p["observed_at_host_utc_nanos"], clock_bound=bound)
+
+
+class PublishedFundingIntervalStoreV1:
+    """Append-only source history; every read independently reproduces every field."""
+
+    def __init__(self, root: Path) -> None:
+        self._root = root / "published-funding-interval" / "bybit-v5"
+
+    def _symbol_root(self, symbol: str) -> Path:
+        canonical_symbol_identity_v1(symbol)
+        return self._root / f"symbol={symbol}"
+
+    def append(self, item: PublishedFundingIntervalObservationV1) -> bool:
+        if item != _rebuild_interval(item):
+            raise ForwardFundingError("published_interval_observation_does_not_reproduce")
+        base = self._symbol_root(item.symbol)
+        _write_once(base / "raw" / f"{item.provenance['raw_sha256']}.json", item.raw_body)
+        return _write_once(base / "observations" / f"{item.observation_id}.json", _record(item))
+
+    def load(self, symbol: str) -> list[PublishedFundingIntervalObservationV1]:
+        base = self._symbol_root(symbol)
+        items = []
+        try:
+            for path in sorted((base / "observations").glob("*.json")):
+                record = json.loads(path.read_bytes())
+                digest = record["provenance"]["raw_sha256"]
+                if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+                    raise ForwardFundingError("published_interval_raw_hash_malformed")
+                item = PublishedFundingIntervalObservationV1(**record, raw_body=(base / "raw" / f"{digest}.json").read_bytes())
+                if item != _rebuild_interval(item) or item.symbol != symbol or path.stem != str(item.observation_id):
+                    raise ForwardFundingError("published_interval_observation_does_not_reproduce")
+                items.append(item)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise ForwardFundingError(f"published_interval_load_refused:{error}") from error
+        return items
+
+    def window_as_of(self, observations: Iterable[ForwardFundingObservationV1], *, symbol: str,
+                     start_ms: int, end_ms: int, as_of_micros: int) -> ForwardFundingWindowV1:
+        """Select the last pre-window snapshot, refusing conflicting/changing history.
+
+        Publication is a snapshot, not retrospective effective-time authority.
+        A newly observed interval cannot prove any earlier window. Different
+        intervals observed during a window are retained and refuse that window;
+        a later window can use the independently published new value.
+        """
+        visible = [item.interval() for item in self.load(symbol)
+                   if item.provenance["knowledge_at_micros"] is not None
+                   and item.provenance["knowledge_at_micros"] <= as_of_micros]
+        prior = [item for item in visible if item.knowledge_at_micros <= start_ms * 1000]
+        selected = max(prior, key=lambda item: (
+            item.evidence.provenance["published_server_time_ms"] if item.evidence else -1,
+            item.knowledge_at_micros), default=None)
+        conflict = False
+        if selected is not None:
+            # Equal-publication contradictions remain contradictions even if received later.
+            published = selected.evidence.provenance["published_server_time_ms"] if selected.evidence else None
+            conflict = any(item.hours != selected.hours and (
+                (item.evidence is not None and published is not None
+                 and published <= item.evidence.provenance["published_server_time_ms"] < end_ms)
+                or (item.evidence is not None and item.evidence.provenance["published_server_time_ms"] == published)
+            ) for item in visible)
+        window = forward_funding_window_as_of_v1(
+            observations, symbol=symbol, start_ms=start_ms, end_ms=end_ms,
+            as_of_micros=as_of_micros, published_interval=selected)
+        identity = dict(window.identity)
+        identity["published_interval_observations"] = sorted([
+            {"observation_id": str(item.evidence.observation_id),
+             "content_hash": item.evidence.content_hash, "provenance_hash": item.evidence.provenance_hash}
+            for item in visible if item.evidence is not None
+            and item.evidence.provenance["published_server_time_ms"] < end_ms
+            and (item.knowledge_at_micros <= start_ms * 1000 or selected is not None)
+        ], key=lambda item: item["observation_id"])
+        if conflict:
+            identity["completeness"] = {"status": IRREGULAR_REFUSED, "interval_ms": None,
+                "irregularities": [*window.irregularities, "PUBLISHED_INTERVAL_CHANGED_OR_CONTRADICTORY"]}
+        return ForwardFundingWindowV1(identity, identity_hash_v1(identity))
 
 
 # ---------------------------------------------------------------------------
@@ -376,7 +568,7 @@ def observe_forward_settled_funding_v1(
 # ---------------------------------------------------------------------------
 
 
-def _record(observation: ForwardFundingObservationV1) -> bytes:
+def _record(observation: ForwardFundingObservationV1 | PublishedFundingIntervalObservationV1) -> bytes:
     return json.dumps({"identity": observation.identity, "content_hash": observation.content_hash,
                        "provenance": observation.provenance, "provenance_hash": observation.provenance_hash,
                        "idempotency_key": observation.idempotency_key},
@@ -520,6 +712,14 @@ def forward_funding_window_as_of_v1(
         irregular.append("PUBLISHED_INTERVAL_EVIDENCE_MISSING")
     elif published_interval.knowledge_at_micros > as_of_micros:
         irregular.append("PUBLISHED_INTERVAL_NOT_KNOWN_AS_OF")
+    elif published_interval.evidence is None:
+        irregular.append("PUBLISHED_INTERVAL_SOURCE_EVIDENCE_UNVERIFIED")
+    elif published_interval != published_interval.evidence.interval():
+        irregular.append("PUBLISHED_INTERVAL_SOURCE_EVIDENCE_MISMATCH")
+    elif published_interval.evidence.symbol != symbol:
+        irregular.append("PUBLISHED_INTERVAL_SYMBOL_MISMATCH")
+    elif published_interval.knowledge_at_micros > start_ms * 1000:
+        irregular.append("PUBLISHED_INTERVAL_NOT_KNOWN_AT_WINDOW_START")
     else:
         interval_ms = published_interval.hours * _HOUR_MS
     if not events:
@@ -541,9 +741,11 @@ def forward_funding_window_as_of_v1(
         "start_ms": start_ms,
         "end_ms_exclusive": end_ms,
         "as_of_micros": as_of_micros,
-        "published_interval": None if published_interval is None else {
+        "published_interval": None if published_interval is None or published_interval.knowledge_at_micros > as_of_micros else {
             "hours": published_interval.hours, "source_reference": published_interval.source_reference,
-            "knowledge_at_micros": published_interval.knowledge_at_micros},
+            "knowledge_at_micros": published_interval.knowledge_at_micros,
+            "evidence_content_hash": None if published_interval.evidence is None else published_interval.evidence.content_hash,
+            "evidence_provenance": None if published_interval.evidence is None else published_interval.evidence.provenance},
         "observations": [str(o.observation_id) for o in available],
         "events": [{"settled_at_ms": e.settled_at_ms, "settled_at": _iso_ms(e.settled_at_ms), "rate": e.rate_text}
                    for e in events],
@@ -574,12 +776,15 @@ __all__ = [
     "ForwardFundingWindowV1",
     "ForwardSettledFundingStoreV1",
     "ObservationClockBoundV1",
+    "PublishedFundingIntervalObservationV1",
+    "PublishedFundingIntervalStoreV1",
     "PublishedFundingIntervalV1",
     "acquire_forward_settled_funding_v1",
     "canonical_symbol_identity_v1",
     "classify_bybit_funding_payload_v1",
     "forward_funding_window_as_of_v1",
     "observe_forward_settled_funding_v1",
+    "observe_published_funding_interval_v1",
     "require_forward_funding_acquisition_authorized_v1",
     "resolve_forward_funding_acquisition_authorization_v1",
 ]
