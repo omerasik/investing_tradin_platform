@@ -27,6 +27,7 @@ export function CommandConsole({ blocked }: { blocked: Record<string, string[]> 
   const [inputs, setInputs] = useState(JSON.stringify(TEMPLATES.STRATEGY_SEARCH.inputs, null, 1));
   const [key, setKey] = useState(newKey);
   const [result, setResult] = useState<string>();
+  const [submitting, setSubmitting] = useState(false);
   const reasons = blocked[kind] ?? [];
 
   function choose(next: string) {
@@ -38,45 +39,58 @@ export function CommandConsole({ blocked }: { blocked: Record<string, string[]> 
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (submitting || reasons.length) return;
     let parsed: unknown;
     try { parsed = JSON.parse(inputs); } catch { setResult("Inputs are not valid JSON."); return; }
     setResult("Submitting…");
-    const response = await fetch("/api/terminal/commands", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind, inputs: parsed, idempotency_key: key }),
-    });
-    const body: unknown = await response.json().catch(() => ({}));
-    const record = (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
-    const detail = record.detail;
-    if (response.ok) {
-      setResult(`Command ${String(record.command_id)}: ${String(record.state)}.`);
-      setKey(newKey());
-    } else if (detail && typeof detail === "object" && "reasons" in detail) {
-      setResult(`Blocked: ${(detail as { reasons: string[] }).reasons.join(", ")}`);
-    } else {
-      setResult(`Refused (${response.status}): ${typeof detail === "string" ? detail : "invalid command"}`);
+    setSubmitting(true);
+    try {
+      const response = await fetch("/api/terminal/commands", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind, inputs: parsed, idempotency_key: key }),
+      });
+      const body: unknown = await response.json().catch(() => ({}));
+      const record = (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
+      const detail = record.detail;
+      if (response.ok) {
+        if (typeof record.command_id === "string" && record.command_id.length > 0
+          && typeof record.state === "string" && record.state.length > 0) {
+          setResult(`Command ${record.command_id}: ${record.state}.`);
+          setKey(newKey());
+        } else {
+          setResult("Command outcome unavailable: the acknowledgement is incomplete. Check recent commands before retrying with the same idempotency key.");
+        }
+      } else if (detail && typeof detail === "object" && "reasons" in detail) {
+        setResult(`Blocked: ${(detail as { reasons: string[] }).reasons.join(", ")}`);
+      } else {
+        setResult(`Refused (${response.status}): ${typeof detail === "string" ? detail : "invalid command"}`);
+      }
+    } catch {
+      setResult("Command outcome unavailable: the connection failed. Check recent commands before retrying with the same idempotency key.");
+    } finally {
+      setSubmitting(false);
     }
   }
 
   return (
     <form onSubmit={submit} aria-label="Terminal command console">
       <label>Command
-        <select aria-label="Command kind" value={kind} onChange={(event) => choose(event.target.value)}>
+        <select aria-label="Command kind" value={kind} disabled={submitting} onChange={(event) => choose(event.target.value)}>
           {Object.entries(TEMPLATES).map(([value, template]) => (
             <option key={value} value={value}>{template.label} ({value})</option>
           ))}
         </select>
       </label>
       <label>Inputs (every field explicit)
-        <textarea aria-label="Command inputs" rows={8} value={inputs} onChange={(event) => setInputs(event.target.value)} spellCheck={false} />
+        <textarea aria-label="Command inputs" disabled={submitting} rows={8} value={inputs} onChange={(event) => setInputs(event.target.value)} spellCheck={false} />
       </label>
       <label>Idempotency key
-        <input aria-label="Command idempotency key" value={key} onChange={(event) => setKey(event.target.value)} required />
+        <input aria-label="Command idempotency key" disabled={submitting} value={key} onChange={(event) => setKey(event.target.value)} required />
       </label>
       {reasons.length ? (
         <p role="status">Waiting on: {reasons.map((reason) => <code key={reason}>{reason} </code>)}</p>
       ) : null}
-      <button type="submit" disabled={reasons.length > 0}>{reasons.length ? "Queue command (blocked)" : "Queue command"}</button>
+      <button type="submit" disabled={submitting || reasons.length > 0}>{submitting ? "Submitting…" : reasons.length ? "Queue command (blocked)" : "Queue command"}</button>
       <p aria-live="polite">{result ?? "No command submitted."}</p>
     </form>
   );

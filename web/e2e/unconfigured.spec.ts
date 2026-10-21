@@ -24,3 +24,17 @@ test("unconfigured dashboard has no automated WCAG A or AA violations", async ({
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
   expect(results.violations).toEqual([]);
 });
+
+test("unconfigured terminal distinguishes unavailable reads from empty evidence", async ({ page }) => {
+  await page.goto("/terminal");
+  await expect(page.getByRole("heading", { name: "Research Terminal", level: 1 })).toBeVisible();
+  const monitoring = page.getByRole("article", { name: "Monitoring", exact: true });
+  await expect(monitoring).toContainText("Latest live signal: EXTERNAL_BLOCKED: Research terminal overview is unavailable.");
+  await expect(monitoring).toContainText("Paper fills: EXTERNAL_BLOCKED: Research terminal overview is unavailable.");
+  await expect(monitoring).not.toContainText("none recorded");
+  const comparison = page.getByRole("form", { name: "Candidate comparison selection" });
+  await expect(comparison).toContainText("EXTERNAL_BLOCKED");
+  await expect(comparison).not.toContainText("No study registered");
+  const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+  expect(results.violations).toEqual([]);
+});
