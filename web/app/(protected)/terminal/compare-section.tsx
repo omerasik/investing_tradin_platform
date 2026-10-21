@@ -95,10 +95,11 @@ function walkForward(row: ComparisonRow, metric: string | undefined): React.Reac
 export type CompareSelection = { studies: string[]; metric?: string; sort?: ComparisonSort };
 
 /** The operator's selection form. Plain GET: nothing is written, nothing runs. */
-function CompareForm({ studies, selection, metrics }: {
+function CompareForm({ studies, selection, metrics, unavailable }: {
   studies: { study_id: string; label: string; strategy_family: string }[];
   selection: CompareSelection;
   metrics: string[];
+  unavailable?: string;
 }) {
   return (
     <form method="get" action="/terminal#compare" aria-label="Candidate comparison selection" className="margin-bottom-24">
@@ -111,7 +112,7 @@ function CompareForm({ studies, selection, metrics }: {
               {study.label} <small>({study.strategy_family})</small>
             </label>
           </div>
-        )) : <p>No study registered.</p>}
+        )) : <p>{unavailable ?? "No study registered."}</p>}
       </fieldset>
       <fieldset>
         <legend>Metric and optional sort (your explicit choice; no default ranking, no composite score)</legend>
@@ -239,8 +240,9 @@ function RiskDetail({ item }: { item: CandidatePaperEvidence }) {
 }
 
 /** Selected studies' frozen candidates side by side, one column per candidate. */
-export function ComparisonSection({ studies, selection, comparison, unavailable }: {
+export function ComparisonSection({ studies, studiesUnavailable, selection, comparison, unavailable }: {
   studies: { study_id: string; label: string; strategy_family: string }[] | undefined;
+  studiesUnavailable?: string;
   selection: CompareSelection;
   comparison: TerminalComparison | undefined;
   unavailable: string | undefined;
@@ -251,7 +253,7 @@ export function ComparisonSection({ studies, selection, comparison, unavailable 
   return (
     <section aria-label="Candidate comparison">
       <h3>Side-by-side candidates</h3>
-      <CompareForm studies={studies ?? []} selection={selection} metrics={metricKeys(rows)} />
+      <CompareForm studies={studies ?? []} unavailable={studiesUnavailable} selection={selection} metrics={metricKeys(rows)} />
       {!selection.studies.length ? (
         <p className="empty-notice">Select one or more studies to compare their frozen candidates. Nothing is ranked until you choose a metric and a direction.</p>
       ) : unavailable ? <p className="empty-notice">{unavailable}</p> : comparison ? (
