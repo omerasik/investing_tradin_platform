@@ -81,7 +81,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Final
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -172,6 +172,9 @@ class SealedReplayBarV1:
     session_id: UUID
     bar: T4MinuteBarV1
     seal_content_hash: str
+    # Set by the verified multi-dataset adapter; legacy single-segment callers
+    # retain their existing contract. Binds the exact seals and continuity rule.
+    continuity_hash: str | None = None
 
     def __post_init__(self) -> None:
         if not self.seal_content_hash:
@@ -332,6 +335,7 @@ def _bar_observations(live: Mapping[tuple[str, int], T4MinuteBarV1], live_sessio
                       replay: Mapping[tuple[str, int], SealedReplayBarV1],
                       windows: Mapping[str, tuple[int, int]]) -> list[FillParityObservationV1]:
     first_sealed, last_sealed = _sealed_span(replay)
+    verified_symbols = {item.symbol for item in replay.values() if item.continuity_hash is not None}
     keys = set(live) | {key for key in replay if key[0] in windows
                         and windows[key[0]][0] <= key[1] <= windows[key[0]][1]}
     out = []
@@ -352,12 +356,15 @@ def _bar_observations(live: Mapping[tuple[str, int], T4MinuteBarV1], live_sessio
                                     {"knowledge": knowledge}))
             continue
         if sealed is None:
-            outside = not first_sealed.get(key[0], -1) <= key[1] <= last_sealed.get(key[0], -1)
+            outside = (key[0] in verified_symbols
+                       or not first_sealed.get(key[0], -1) <= key[1] <= last_sealed.get(key[0], -1))
             out.append(_observation(KIND_BAR, payload, OUTCOME_UNAVAILABLE if outside else OUTCOME_DIVERGED,
                                     [REPLAY_BAR_NOT_SEALED if outside else BAR_ABSENT_FROM_SEALED_REPLAY],
                                     {"knowledge": knowledge}))
             continue
         live_values = {name: getattr(live_bar, name) for name in _BAR_FIELDS} | {"session_id": live_sessions[key]}
+        if sealed.continuity_hash is not None:
+            knowledge["sealed_finalized"]["continuity_hash"] = sealed.continuity_hash
         sealed_values = {name: getattr(sealed.bar, name) for name in _BAR_FIELDS} | {"session_id": sealed.session_id}
         differing = sorted(name for name in live_values if live_values[name] != sealed_values[name])
         facts = {"knowledge": knowledge, "differing_fields": differing,
@@ -379,7 +386,25 @@ def _candidate_facts(identity: Mapping[str, Any]) -> dict[str, Any]:
 
 def _signal_facts(identity: Mapping[str, Any]) -> dict[str, Any]:
     evidence = identity["evidence"]
-    return {"explanation": identity["explanation"],
+    explanation = dict(identity["explanation"])
+    # These are the declared numeric outputs of the unchanged SDK explainers.
+    # Sealed decimal128 prices add scale (29993.7 -> 29993.700...); scale is
+    # not a price difference. Strip only insignificant decimal zeros, with
+    # no arithmetic, rounding or ambient-context dependence. Text such as
+    # rule/state, IDs and the "undefined" z sentinel stays exact.
+    for name in ("close", "prior_high", "prior_low", "fast_mean", "slow_mean",
+                 "ratio_minus_one", "band", "mean", "z"):
+        if name not in explanation:
+            continue
+        try:
+            number = Decimal(explanation[name])
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+        if number.is_finite():
+            rendered = format(number, "f")
+            explanation[name] = ("0" if number == 0 else rendered.rstrip("0").rstrip(".")
+                                 if "." in rendered else rendered)
+    return {"explanation": explanation,
             "evidence": {name: evidence[name] for name in (
                 "session_id", "bar_open_micros", "closing_record_hash", "trade_manifest_hash",
                 "window_first_bar_open_micros", "window_bars", "window_session_boundaries")}}
@@ -615,11 +640,31 @@ def assess_fill_parity_v1(
     replay_fill_by_signal = {str(fill.identity["signal_id"]): fill for fill in replay_fills}
     replay_first, replay_last = _sealed_span(replay_map)
     dependencies = _LiveDependencies(live_bars, holdout_gate)
+    # The verified adapter resets at every missing minute or unproven dataset
+    # boundary. A live dependency crossing such a reset cannot be compared,
+    # even when there is an earlier seal somewhere in the supplied collection.
+    replay_run_starts: dict[tuple[str, int], int] = {}
+    run_starts: dict[tuple[str, int], int] = {}
+    verified_symbols = {item.symbol for item in replay_bars if item.continuity_hash is not None}
+    for item in sorted(replay_bars, key=lambda bar: (bar.symbol, bar.bar.bar_open_micros)):
+        if item.continuity_hash is not None:
+            run = (item.symbol, item.segment)
+            start = run_starts.setdefault(run, item.bar.bar_open_micros)
+            replay_run_starts[(item.symbol, item.bar.bar_open_micros)] = start
 
     def unsealed_window(symbol: str, bar_open: int) -> dict[str, int | None] | None:
         """The coverage facts when the live decision's inputs begin before the first sealed bar."""
         depends_from = dependencies.start(symbol, bar_open)
         first = replay_first.get(symbol)
+        run_start = replay_run_starts.get((symbol, bar_open))
+        if symbol in verified_symbols and run_start is None:
+            return {"live_inputs_first_bar_open_micros": depends_from,
+                    "first_sealed_bar_open_micros": first,
+                    "replay_contiguous_run_first_bar_open_micros": None}
+        if run_start is not None and depends_from < run_start:
+            return {"live_inputs_first_bar_open_micros": depends_from,
+                    "first_sealed_bar_open_micros": first,
+                    "replay_contiguous_run_first_bar_open_micros": run_start}
         if first is not None and first <= depends_from:
             return None
         return {"live_inputs_first_bar_open_micros": depends_from, "first_sealed_bar_open_micros": first}
