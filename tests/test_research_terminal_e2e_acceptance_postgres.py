@@ -1,7 +1,8 @@
 """UI-2 acceptance -- one read-only path through the terminal over the real R4-R10 tables (real PostgreSQL).
 
-Market Data -> Strategy Lab -> Walk-Forward -> Candidate Readiness -> Risk Preview
--> Paper Incubation Report -> Monitoring, each step read from what the previous one
+Market Data -> Strategy Lab -> Decimal Rerun -> Walk-Forward -> Comparison
+-> Validation -> Signals -> Risk -> Paper Economics/Parity/Funding -> Monitoring,
+each step read from what the previous one
 recorded, with its identity carried across the handoff and its claim restated.
 
 Fixture archive days only (2026-06, before the holdout). The real cycle-2026-08-20
@@ -165,6 +166,26 @@ class ResearchTerminalAcceptancePostgresTests(unittest.TestCase):
             self.assertTrue(all(fold.selected_trial_id in trial_ids for fold in walk.folds
                                 if fold.selected_trial_id is not None))
 
+            # Follow the operator's persisted HTTP links, not only the repository projection.
+            walked = get(f"research-terminal/walk-forward/{report.report_hash}")
+            self.assertEqual((str(study.study_id), study.content_hash, binding.content_hash),
+                             (walked["study_id"], walked["study_content_hash"], walked["dataset_content_hash"]))
+            listed = get(f"research-terminal/walk-forward?study_id={study.study_id}")
+            self.assertIn(report.report_hash, {item["report_hash"] for item in listed})
+            comparison = get(f"research-terminal/compare?study_id={study.study_id}")
+            self.assertEqual(("RESEARCH_COMPARISON_NON_AUTHORITATIVE", "NOT_READ", "NONE_VALIDATED"),
+                             (comparison["claim"], comparison["holdout"], comparison["validated_claim"]))
+            compared = comparison["comparison"]["rows"]
+            self.assertEqual(len(candidates.candidates), len(compared))
+            self.assertEqual({str(study.study_id)}, {row["identity"]["study_id"] for row in compared})
+            for row in compared:
+                self.assertEqual((study.content_hash, candidates.candidate_set_hash, rerun.rerun_hash),
+                                 (row["identity"]["study_content_hash"], row["identity"]["candidate_set_hash"],
+                                  row["decimal_rerun"]["rerun_hash"]))
+                self.assertEqual(binding.content_hash, row["provenance"]["datasets"][0]["content_hash"])
+                self.assertIn(report.report_hash, {item["report_hash"] for item in row["walk_forward"]["reports"]})
+                self.assertFalse(row["promotable"])
+
             # 3. Candidate readiness from the stored rows: the prepared DRAFT packet re-derives and
             #    names each owner gap; the unopened holdout is a blocker, never a default.
             draft = PreregistrationV1(study=study, rerun=rerun, symbol="BTCUSDT")
@@ -219,6 +240,12 @@ class ResearchTerminalAcceptancePostgresTests(unittest.TestCase):
             self.assertEqual("BLOCKED", activation["holdout_open"]["status"])
             self.assertIn("OR-7", activation["holdout_open"]["owner_gates"])
 
+            candidate = get(f"research-terminal/candidates/{study.study_id}/{selected[0]}")
+            self.assertEqual((str(study.study_id), selected[0], rerun.rerun_hash, draft.content_hash),
+                             (candidate["links"]["study_id"], candidate["links"]["trial_id"],
+                              candidate["links"]["rerun_hash"], candidate["links"]["preregistration_hash"]))
+            self.assertFalse(candidate["links"]["holdout_opened_for_this_preregistration"])
+
             # 4. Risk preview: an UNCONFIGURED policy yields no risk policy and no paper ledger.
             self.assertEqual("UNCONFIGURED", account_view["policy_status"])
             self.assertTrue(account_view["unresolved"])
@@ -236,6 +263,29 @@ class ResearchTerminalAcceptancePostgresTests(unittest.TestCase):
             for reason in account_view["unresolved"]:
                 self.assertIn(reason, risk["current_policy"]["unresolved"])
             self.assertTrue(all(item["sizing"] is None for item in risk["candidates"]))
+
+            # No fill, parity assessment, forward funding, target or authorized account binding
+            # exists for this candidate. Every projection must carry that absence through HTTP.
+            paper = get(f"research-terminal/candidates/{study.study_id}/{selected[0]}/paper-evidence")
+            chosen = next(row for row in compared if row["identity"]["trial_id"] == selected[0])
+            self.assertEqual((str(study.study_id), study.content_hash, selected[0],
+                              chosen["identity"]["trial_content_hash"], REAL_CYCLE),
+                             (paper["study_id"], paper["study_content_hash"], paper["trial_id"],
+                              paper["trial_content_hash"], paper["cycle_id"]))
+            self.assertEqual(("NONE", "NONE_VALIDATED"),
+                             (paper["execution_authority"], paper["validated_claim"]))
+            self.assertEqual(("NOT_LOADED", False), (paper["parity"]["status"], paper["parity"]["loaded"]))
+            self.assertEqual(("NOT_LOADED", False, "NON_COSTABLE", False, "NOT_CALCULATED"),
+                             (paper["funding"]["status"], paper["funding"]["loaded"],
+                              paper["funding"]["cost_status"], paper["funding"]["costable"],
+                              paper["funding"]["charge"]))
+            self.assertEqual(("NOT_LOADED", None), (paper["economics"]["status"], paper["economics"]["net"]))
+            self.assertEqual("RETURN_PER_UNIT_NOTIONAL_SUMMED_NOT_COMPOUNDED_PENDING_OR_11",
+                             paper["economics"]["units"])
+            self.assertEqual(("NOT_LOADED", None, None),
+                             (paper["risk"]["status"], paper["risk"]["assessment_hash"], paper["risk"]["sizing"]))
+            for section in ("parity", "funding", "economics", "risk"):
+                self.assertTrue(paper[section]["reasons"], section)
 
             # 5. Paper incubation report: registry-resolved, unopened, gross, never cost-complete.
             incubation = get("research-terminal/incubation")["report"]
@@ -272,9 +322,12 @@ class ResearchTerminalAcceptancePostgresTests(unittest.TestCase):
             gates = {gate["gate"]: gate for gate in overview["owner_gates"]}
             self.assertEqual("OPEN", gates["OR-7"]["status"])
             self.assertEqual("OPEN", gates["OR-6 fee schedule"]["status"])
+            self.assertEqual("OPEN", gates["OR-9"]["status"])
+            self.assertEqual("OPEN", gates["OR-11"]["status"])
             self.assertGreaterEqual(overview["cycle"]["preregistrations"].get("DRAFT", 0), 1)
             self.assertEqual("NONE_VALIDATED", get("research-terminal/validation?limit=500")["validated_claim"])
             self.assertIsNone(registry.opening(REAL_CYCLE), "the real holdout must stay closed")
+
         finally:
             database.close()
 
