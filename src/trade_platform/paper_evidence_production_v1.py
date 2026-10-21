@@ -172,7 +172,7 @@ HOLDOUT_UNOPENED_OR_7: Final = "HOLDOUT_UNOPENED_OR_7"
 _STORE_HOLDOUT_REFUSALS: Final = frozenset({"EVIDENCE_TOUCHES_THE_UNOPENED_HOLDOUT",
                                             "HOLDOUT_GATE_OPENING_NOT_REGISTERED"})
 
-#: What the resolvers need and the platform does not persist today (as of migration 0065).
+#: Missing prerequisites remain explicit even when their storage capability now exists.
 MISSING_PERSISTED_INPUTS_V1: Final = {
     LIVE_BARS_NOT_PERSISTED: (
         "Exact consumed live-bar payloads are absent for this candidate/as-of (legacy progress may "
@@ -619,11 +619,14 @@ def _processed_bars(sources: PaperEvidenceSourcesV1, candidate: WatchedCandidate
                 continue
             # Verified consumed history includes warm-up inputs. This is strategy
             # history only; the liveness authority still counts forward bars alone.
-            consumed = record.get("consumed_live_bars")
-            bars = record["bars"] if not consumed else [
-                {**item["live_bar"], **item["live_bar"]["bar"],
-                 "capture_session_id": item["live_bar"]["capture_session_id"],
-                 "feed_segment": item["live_bar"]["feed_segment"]} for item in consumed]
+            try:
+                consumed = record.get("consumed_live_bars")
+                bars = record["bars"] if not consumed else [
+                    {**item["live_bar"], **item["live_bar"]["bar"],
+                     "capture_session_id": item["live_bar"]["capture_session_id"],
+                     "feed_segment": item["live_bar"]["feed_segment"]} for item in consumed]
+            except (KeyError, TypeError, ValueError) as error:
+                raise _Refusal([RUNNER_LIVENESS_DOES_NOT_REDERIVE]) from error
             for bar in bars:
                 try:
                     item = _ProcessedBar(session_id, str(bar["capture_session_id"]), int(bar["feed_segment"]),
@@ -648,7 +651,8 @@ def _bound_live_bars(bars: Sequence[LiveBarV1], processed: Mapping[int, Sequence
         if not isinstance(bar, LiveBarV1) or bar.symbol != symbol:
             reasons.append(LIVE_BAR_NOT_RECORDED_BY_RUNNER)
             continue
-        if bar.completed_by_arrival_nanos > as_of_nanos:
+        if (bar.completed_by_arrival_nanos > as_of_nanos
+                or bar.bar.complete_market_knowledge_micros > _micros(as_of)):
             continue
         opened = bar.bar.bar_open_micros
         if opened in seen:
@@ -1189,8 +1193,11 @@ class PostgresPaperEvidenceSourcesV1:
             if not matching or any(str(seal.source_id) != str(bar.capture_source_id) for seal in matching):
                 raise EvidenceInputRefusedV1(LIVE_BAR_NOT_RECORDED_BY_RUNNER, "capture_source_session_mismatch")
             sample = samples.get((str(bar.session_id), str(bar.latest_clock_sample_hash)))
-            if (sample is None or sample.venue_minus_host_upper_nanos != bar.clock_bound_nanos
-                    or sample.recorded_at_utc_nanos > bar.completed_by_arrival_nanos
+            prior = [value for (session, _), value in samples.items()
+                     if session == str(bar.session_id) and value.host_receive_utc_nanos <= bar.completed_by_arrival_nanos]
+            latest = max(prior, key=lambda value: value.host_receive_utc_nanos, default=None)
+            if (sample is None or latest is None or sample.sample_hash != latest.sample_hash
+                    or sample.venue_minus_host_upper_nanos != bar.clock_bound_nanos
                     or not any(bar.latest_clock_sample_hash in seal.identity["clock_evidence"]["sample_hashes"]
                                for seal in matching)):
                 raise EvidenceInputRefusedV1(LIVE_BAR_NOT_RECORDED_BY_RUNNER, "capture_clock_sample_mismatch")
@@ -1208,10 +1215,10 @@ class PostgresPaperEvidenceSourcesV1:
         self._cursor.execute(
             "SELECT dataset_version_id, content_hash, identity, frame_manifests, sealed_at "
             "FROM first_party_t4_datasets WHERE identity->>'exchange_symbol' = %s "
-            "AND end_arrival_nanos_inclusive >= %s AND start_arrival_nanos <= %s AND sealed_at <= %s "
+            "AND end_arrival_nanos_inclusive >= %s AND start_arrival_nanos <= %s AND sealed_at <= %s AND registered_at <= %s "
             "ORDER BY start_arrival_nanos, dataset_version_id",
             (symbol, start_micros * 1000 - _CATALOG_ARRIVAL_MARGIN_NANOS,
-             (end_micros + _MINUTE) * 1000 + _CATALOG_ARRIVAL_MARGIN_NANOS, as_of))
+             (end_micros + _MINUTE) * 1000 + _CATALOG_ARRIVAL_MARGIN_NANOS, as_of, as_of))
         seals = []
         for row in self._cursor.fetchall():
             catalogued = CataloguedT4DatasetV1(

@@ -67,7 +67,7 @@ class ProducerAdapterTests(unittest.TestCase):
         seal = SimpleNamespace(source_id=bar.capture_source_id, identity={"session_id": str(bar.session_id),
             "clock_evidence": {"sample_hashes": [bar.latest_clock_sample_hash]}})
         sample = SimpleNamespace(sample_hash=bar.latest_clock_sample_hash,
-            venue_minus_host_upper_nanos=bar.clock_bound_nanos + 1, recorded_at_utc_nanos=0)
+            venue_minus_host_upper_nanos=bar.clock_bound_nanos + 1, host_receive_utc_nanos=0)
         plan = SimpleNamespace(partition=SimpleNamespace(session_id=bar.session_id), clock=SimpleNamespace(samples=[sample]))
         with (patch.object(source, "_seals", return_value=[seal]),
               patch("trade_platform.first_party_capture_authority_v1.resolve_t4_registered_first_party_capture_contract_v1", return_value=object()),
@@ -76,3 +76,16 @@ class ProducerAdapterTests(unittest.TestCase):
                 with self.assertRaisesRegex(production.EvidenceInputRefusedV1, "LIVE_BAR_NOT_RECORDED_BY_RUNNER"):
                     source.verified_replay_bars(symbol="BTCUSDT", start_micros=0, end_micros=1,
                                                as_of=fixtures.AS_OF, live_bars=[changed])
+
+    def test_catalogue_source_excludes_registrations_after_the_reading(self):
+        class Cursor:
+            def execute(inner, query, parameters):
+                self.assertIn("sealed_at <= %s AND registered_at <= %s", query)
+                self.assertEqual((fixtures.AS_OF, fixtures.AS_OF), parameters[-2:])
+
+            def fetchall(inner):
+                return []
+
+        source = production.PostgresPaperEvidenceSourcesV1(Cursor(), frame_store=object(),
+            capture_root=Path("fixture"), funding_root=None)
+        self.assertEqual([], source._seals(symbol="BTCUSDT", start_micros=0, end_micros=1, as_of=fixtures.AS_OF))

@@ -15,7 +15,11 @@ from tests.test_paper_evidence_production_v1 import fill_row, signal_row
 from tests.test_paper_incubation_v1 import _run
 from tests.test_strategy_lab_e2e_fixture import build_window_and_study
 from tests.test_strategy_sdk_v1 import _walk
-from trade_platform.first_party_t4_seal_v1 import discover_t4_segments_v1, seal_t4_segment_v1
+from trade_platform.first_party_t4_seal_v1 import (
+    discover_t4_segments_v1,
+    plan_t4_replay_slice_v1,
+    seal_t4_segment_v1,
+)
 from trade_platform.live_signals_v1 import (
     LiveBarFeedV1,
     LiveHoldoutGateV1,
@@ -55,11 +59,14 @@ class RawPipelineTests(_TempRoots):
                 day=START.date(), session_id=uuid5(NS, "capture"), tamper=change_price)
         self.bars = LiveBarFeedV1(self.capture, raw.CONTRACT).poll()[:51]
         plan = discover_t4_segments_v1(self.capture).segments[0]
-        self.seals = [seal_t4_segment_v1(replace(plan, end_arrival_nanos=BASE + 30 * 60 * SECOND),
-                        store=self.store(), sealed_at=START + timedelta(hours=2)),
-                      seal_t4_segment_v1(replace(plan, start_arrival_nanos=BASE + 28 * 60 * SECOND),
-                        store=self.store(), sealed_at=START + timedelta(hours=2))]
-        self.catalogue_seals = [seal_t4_segment_v1(plan, store=self.store(), sealed_at=START + timedelta(hours=2))]
+        parent = seal_t4_segment_v1(plan, store=self.store(), sealed_at=START + timedelta(hours=2))
+        left = plan_t4_replay_slice_v1(parent.identity, start_arrival_nanos=plan.start_arrival_nanos,
+            end_arrival_nanos_inclusive=BASE + 30 * 60 * SECOND, capture_root=self.capture)
+        right = plan_t4_replay_slice_v1(parent.identity, start_arrival_nanos=BASE + 28 * 60 * SECOND,
+            end_arrival_nanos_inclusive=plan.end_arrival_nanos, capture_root=self.capture)
+        self.seals = [seal_t4_segment_v1(selected, store=self.store(), sealed_at=START + timedelta(hours=2))
+                      for selected in (left, right)]
+        self.catalogue_seals = self.seals
         self.study, _ = build_window_and_study(self.temp / "study", family="mean_reversion_z")
         self.study = replace(self.study, search=replace(self.study.search, max_trials=self.study.search.max_trials + 17))
         trial = next(str(t.trial_id) for t in self.study.trials()
@@ -151,6 +158,10 @@ class RawPipelineTests(_TempRoots):
                     ",".join("%s::jsonb" if n == "identity" else "%s" for n in names) + ") ON CONFLICT DO NOTHING",
                     tuple(json.dumps(row[n]) if n == "identity" else row[n] for n in names))
             source = PostgresPaperEvidenceSourcesV1(cursor, frame_store=self.store(), capture_root=self.capture, funding_root=None)
+            # Sealing is historical, but this catalogue was registered now.
+            # An earlier reading must not discover that later persisted evidence.
+            self.assertEqual([], source._seals(symbol="BTCUSDT",
+                start_micros=self.bars[0].bar.bar_open_micros, end_micros=self.bars[-1].bar.bar_open_micros, as_of=AS_OF))
             report = produce_fill_parity_v1(source, self.candidate, cycle_id=CURRENT_CYCLE_V1.cycle_id,
                 gate=self.gate, cost_policy=gross_cost_policy_v1(), as_of=known)
             self.assertEqual("PASS", report.status, report.reasons)
