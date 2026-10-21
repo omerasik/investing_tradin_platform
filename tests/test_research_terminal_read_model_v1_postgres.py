@@ -315,6 +315,7 @@ class ResearchTerminalReadModelPostgresTests(unittest.TestCase):
         NOT_LOADED and only the stored parity/funding rows are read.
         """
         from datetime import timedelta
+        from types import SimpleNamespace
 
         from tests.test_paper_evidence_store_v1 import PARITY_AS_OF, PARITY_DAY0, Fixtures
         from trade_platform.paper_evidence_store_v1 import (
@@ -324,6 +325,8 @@ class ResearchTerminalReadModelPostgresTests(unittest.TestCase):
         from trade_platform.persistence import PostgresDatabase
         from trade_platform.research_terminal_read_model_v1 import (
             NOT_LOADED,
+            _stored_funding,
+            _stored_parity,
             read_candidate_paper_evidence_v1,
         )
         from trade_platform.strategy_lab_ledger_v1 import PostgresStrategyLabLedgerV1
@@ -343,29 +346,38 @@ class ResearchTerminalReadModelPostgresTests(unittest.TestCase):
                                                recorded_at=recorded_at)
             study_id, trial_id = fx.study.study_id, UUID(fx.trial)
             read_at = PARITY_AS_OF + timedelta(hours=5)
+            # The full historical workflow cannot resolve registries registered later. The stored
+            # parity/funding adapters independently support historical reads and retain that coverage.
+            def context(instant):
+                return SimpleNamespace(cycle=SimpleNamespace(cycle_id="cycle-2026-08-20", as_of=instant))
+
             with database.transaction() as connection, connection.cursor() as cursor:
                 cursor.execute("SET TRANSACTION READ ONLY")
-                view = read_candidate_paper_evidence_v1(cursor, study_id, trial_id, now=read_at)
+                with self.assertRaisesRegex(ValueError, "^terminal_historical_registry_knowledge_unavailable$"):
+                    read_candidate_paper_evidence_v1(cursor, study_id, trial_id, now=read_at)
+                parity = _stored_parity(cursor, context(read_at), study_id, trial_id, live_side={})
+                funding_view = _stored_funding(cursor, context(read_at), study_id, trial_id, None,
+                                              ["NO_STORED_FUNDING_EVIDENCE_FOR_CANDIDATE_IN_CYCLE"])
                 funding = read_funding_evidence_v1(cursor, cycle_id="cycle-2026-08-20", study_id=study_id,
                                                    trial_id=trial_id, as_of=read_at)
             self.assertEqual(("INCOMPLETE", True, report.content_hash, list(report.reasons), row.assessment_id),
-                             (view.parity.status, view.parity.loaded, view.parity.report_hash, view.parity.reasons,
-                              view.parity.assessment_id))
+                             (parity.status, parity.loaded, parity.report_hash, parity.reasons,
+                              parity.assessment_id))
             # An identical report already stored (same process, the store test's fixture) keeps its earliest row.
             self.assertEqual((row.as_of, row.recorded_at, PARITY_DAY0),
-                             (view.parity.evidence_as_of, view.parity.recorded_at, view.parity.window_start))
+                             (parity.evidence_as_of, parity.recorded_at, parity.window_start))
             # Point in time: before it was recorded the read does not see it; before any record nothing is stored.
             with database.transaction() as connection, connection.cursor() as cursor:
-                before = read_candidate_paper_evidence_v1(cursor, study_id, trial_id,
-                                                          now=row.recorded_at - timedelta(minutes=30))
-                earlier = read_candidate_paper_evidence_v1(cursor, study_id, trial_id,
-                                                           now=PARITY_AS_OF - timedelta(seconds=1))
-            self.assertNotEqual(row.assessment_id, before.parity.assessment_id)
+                before = _stored_parity(cursor, context(row.recorded_at - timedelta(minutes=30)),
+                                        study_id, trial_id, live_side={})
+                earlier = _stored_parity(cursor, context(PARITY_AS_OF - timedelta(seconds=1)),
+                                         study_id, trial_id, live_side={})
+            self.assertNotEqual(row.assessment_id, before.assessment_id)
             self.assertEqual((NOT_LOADED, ["NO_STORED_PARITY_ASSESSMENT_FOR_CANDIDATE_IN_CYCLE"]),
-                             (earlier.parity.status, earlier.parity.reasons))
+                             (earlier.status, earlier.reasons))
             # Funding is whatever the store holds at that instant (another test may have recorded some): verbatim.
-            self.assertEqual(NOT_LOADED if funding is None else funding.state, view.funding.status)
-            self.assertEqual(("NON_COSTABLE", NOT_LOADED), (view.funding.cost_status, view.economics.status))
+            self.assertEqual(NOT_LOADED if funding is None else funding.state, funding_view.status)
+            self.assertEqual("NON_COSTABLE", funding_view.cost_status)
         finally:
             database.close()
 

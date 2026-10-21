@@ -1136,7 +1136,7 @@ class PostgresOperatorDashboardQueries:
     def _read(self, operation: Any) -> Any:
         try:
             with self._read_lock, self._database.transaction() as connection, connection.cursor() as cursor:
-                cursor.execute("SET TRANSACTION READ ONLY")
+                cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
                 return operation(cursor)
         except DashboardObjectNotFound:
             raise

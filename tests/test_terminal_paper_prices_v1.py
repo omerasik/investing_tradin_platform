@@ -154,7 +154,7 @@ class TerminalPricesTests(_ForwardFixture):
         self.assertIsNone(economics["net"]["by_scenario"])
 
     def test_later_recorded_entry_is_excluded_from_historical_context(self):
-        from trade_platform.research_terminal_read_model_v1 import _CycleContext
+        from trade_platform.research_terminal_read_model_v1 import _CycleContext, read_incubation_v1
 
         cursor = Mock()
         cursor.fetchone.return_value = None
@@ -164,4 +164,7 @@ class TerminalPricesTests(_ForwardFixture):
                 patch("trade_platform.paper_account_v1.cycle_cost_policy_v1", return_value=GROSS), \
                 patch("trade_platform.paper_incubation_registry_v1.resolve_incubation_bindings_v1", return_value=None):
             context = _CycleContext(cursor, LATER)
+            incubation = read_incubation_v1(cursor, now=LATER)
         self.assertEqual([], context.fills)
+        self.assertEqual("NO_FILLS", incubation.state)
+        self.assertEqual([], incubation.report["candidates"])
