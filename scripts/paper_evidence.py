@@ -10,8 +10,12 @@ datasets (rebuilt from raw capture when ``--frame-root`` and ``--capture-root`` 
 given) and the forward funding store (``--funding-root``), rebuilds the evidence with
 the unchanged resolvers and prints the run report as JSON -- per candidate and kind
 PERSISTED / ALREADY_STORED / REFUSED / DRY_RUN_WOULD_RECORD with reason codes, plus
-the missing inputs. Only ``--persist`` writes, through the verified paper evidence
-store, in one transaction. No runner, capture, acquisition or network call; no
+the missing inputs. Only ``--persist`` writes parity/funding, through the verified paper evidence
+store, in one transaction. Economics is always a read-only projection. Proven
+unrealized prices require all six explicit declarations: ``--paper-price-source``,
+``--paper-price-session``, ``--paper-price-instrument``, ``--paper-price-instant``,
+``--paper-price-max-age-micros`` and ``--paper-price-capture-max-unproven-nanos``.
+None defaults to a market source, a latest observation or a valuation convention. No runner, capture, acquisition or network call; no
 order, no account, no capital. The funding price convention has no default.
 """
 

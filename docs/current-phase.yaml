@@ -2,7 +2,7 @@
 # This is NOT a second roadmap: requirements stay in MASTER_ROADMAP.md, design
 # stays in module docstrings, history stays in git.
 
-updated: 2026-10-20
+updated: 2026-10-21
 
 # Phase naming. Since 2026-09-24 the owner-approved canonical roadmap uses an
 # "R" series (R0-R15, owner review points OR-1..OR-14). It is distinct from the
@@ -107,7 +107,9 @@ paper_evidence_continuity: >-
   including warm-up/admission, capture source and provisional clock evidence;
   legacy runs without these payloads cannot be backfilled from sealed replay.
   Sealed replay retains strategy windows only across independently proven
-  same-session dataset slices with exact overlapping records and clock evidence.
+  same-session dataset slices with exact overlapping records and clock evidence;
+  explicit slice proofs rederive the canonical parent and selected raw frames
+  through the existing catalogue reader, including proof availability time.
   Hourly session rotations, missing minutes and interruptions remain boundaries.
   Proven sealed T4 first-trade references can supply gross unrealized unit
   returns only with explicit observation/age/coverage declarations and valid
