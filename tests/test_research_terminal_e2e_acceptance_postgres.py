@@ -345,23 +345,9 @@ class ResearchTerminalAcceptancePostgresTests(unittest.TestCase):
                     read_candidate_lifecycle_v1(
                         cursor, study.study_id, UUID(selected[0]), now=earliest - timedelta(microseconds=1))
 
-                # These registries resolve current rows and can depend on other studies/accounts.
-                # At the latest prerequisite's exact recording boundary, the stored chain is readable.
-                cursor.execute(
-                    "SELECT max(known_at) FROM ("
-                    "SELECT max(registered_at) AS known_at FROM strategy_lab_research_cycles WHERE cycle_id=%s "
-                    "UNION ALL SELECT max(opened_at) FROM strategy_lab_holdout_openings WHERE cycle_id=%s "
-                    "UNION ALL SELECT max(recorded_at) FROM strategy_lab_holdout_validations WHERE cycle_id=%s "
-                    "UNION ALL SELECT max(recorded_at) FROM strategy_lab_preregistrations WHERE cycle_id=%s "
-                    "UNION ALL SELECT max(recorded_at) FROM strategy_lab_incubation_exit_criteria WHERE cycle_id=%s "
-                    "UNION ALL SELECT max(registered_at) FROM strategy_lab_studies "
-                    "UNION ALL SELECT max(recorded_at) FROM strategy_lab_authority_reruns "
-                    "UNION ALL SELECT max(recorded_at) FROM strategy_lab_walk_forward_reports "
-                    "UNION ALL SELECT max(recorded_at) FROM strategy_lab_candidate_states "
-                    "UNION ALL SELECT max(created_at) FROM account_contexts "
-                    "UNION ALL SELECT max(recorded_at) FROM account_policy_versions) prerequisites",
-                    (REAL_CYCLE,) * 5)
-                boundary = cursor.fetchone()[0]
+                # The UNCONFIGURED account policy was this scenario's last write. Its
+                # independently returned recording instant must include the whole stored chain.
+                boundary = datetime.fromisoformat(account_view["recorded_at"])
                 at_boundary = read_candidate_lifecycle_v1(cursor, study.study_id, UUID(selected[0]), now=boundary)
             self.assertEqual((boundary, rerun.rerun_hash, draft.content_hash),
                              (at_boundary.as_of, at_boundary.links.rerun_hash, at_boundary.links.preregistration_hash))
