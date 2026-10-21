@@ -65,7 +65,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import BaseModel, model_validator
 
@@ -381,10 +381,18 @@ def read_live_signals_v1(cursor: _Cursor, *, limit: int) -> list[LiveSignalView]
         if identity_hash_v1(identity) != str(row[10]).strip():
             raise ValueError("stored_signal_identity_does_not_rederive")
         candidate = identity.get("candidate") or {}
+        evidence = identity.get("evidence") or {}
+        # The existing live-signal UUID contract, mirrored here to keep the thin API import-light.
+        namespace = uuid5(NAMESPACE_URL, "trade_platform.live_signals_v1")
+        bar_open = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(microseconds=int(evidence["bar_open_micros"]))
+        knowledge = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(
+            microseconds=int(evidence["complete_market_knowledge_micros"]))
         if (identity.get("symbol") != row[1] or identity.get("authority") != row[2]
                 or identity.get("target_from") != row[3] or identity.get("target_to") != row[4]
                 or str(candidate.get("study_id")) != str(row[7])
-                or str(candidate.get("trial_id")) != str(row[8])):
+                or str(candidate.get("trial_id")) != str(row[8])
+                or uuid5(namespace, f"live-signal:{str(row[10]).strip()}") != row[0]
+                or bar_open != row[5] or row[6] < max(bar_open, knowledge)):
             raise ValueError("stored_signal_row_contradicts_its_identity")
         out.append(LiveSignalView(
             signal_id=row[0], symbol=str(row[1]), authority=str(row[2]), claim=f"NOT_VALIDATED_{row[2]}",
@@ -425,20 +433,11 @@ def read_incubation_v1(cursor: _Cursor, *, now: datetime | None = None) -> Incub
     The OR-7 incubation bindings are resolved from the persisted registry rows of
     the same cycle; no caller-supplied packet or length reaches the report.
     """
-    from .paper_account_v1 import cycle_cost_policy_v1, cycle_fill_rows_v1
-    from .paper_incubation_registry_v1 import resolve_incubation_bindings_v1
-
-    cycle_id = current_cycle_id_v1()
-    fills = []
-    for content_hash, raw in cycle_fill_rows_v1(cursor, cycle_id)[0]:
-        identity = _json(raw)
-        if identity_hash_v1(identity) != str(content_hash).strip():
-            raise ValueError("stored_fill_identity_does_not_rederive")
-        fills.append(identity)
-    cost = cycle_cost_policy_v1(cursor, cycle_id)
-    resolution = resolve_incubation_bindings_v1(cursor, cycle_id=cycle_id)
-    report = incubation_report_v1(fills, cost, as_of=now or datetime.now(UTC), resolution=resolution)
-    return IncubationView(state="AVAILABLE" if fills else "NO_FILLS", report=report)
+    context = _CycleContext(cursor, now or datetime.now(UTC))
+    if context.resolution_refusal is not None:
+        raise ValueError(context.resolution_refusal)
+    report = incubation_report_v1(context.fills, context.cost, as_of=context.as_of, resolution=context.resolution)
+    return IncubationView(state="AVAILABLE" if context.fills else "NO_FILLS", report=report)
 
 
 #: Evidence the per-candidate read does not derive, so its blockers stay listed (never assumed satisfied).

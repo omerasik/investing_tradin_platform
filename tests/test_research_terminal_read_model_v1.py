@@ -918,14 +918,21 @@ class TerminalStoredIdentityAcceptanceTests(unittest.TestCase):
                                                 5: "FAIL", 6: 2, 7: {**identity, "rerun_count": 2}}, limit=10)
 
     def test_signal_list_rejects_tampering_and_cross_candidate_targets(self) -> None:
+        from uuid import NAMESPACE_URL, uuid5
+
         from trade_platform.research_terminal_read_model_v1 import read_live_signals_v1
 
         study, trial = uuid4(), uuid4()
         identity = {"candidate": {"study_id": str(study), "trial_id": str(trial)}, "symbol": "BTCUSDT",
-                    "authority": "RESEARCH_WATCH", "target_from": 0, "target_to": 1}
-        row = (uuid4(), "BTCUSDT", "RESEARCH_WATCH", 0, 1, NOW, NOW, study, trial,
-               identity, identity_hash_v1(identity))
+                    "authority": "RESEARCH_WATCH", "target_from": 0, "target_to": 1,
+                    "evidence": {"bar_open_micros": int(NOW.timestamp()) * 1_000_000,
+                                 "complete_market_knowledge_micros": int(NOW.timestamp()) * 1_000_000}}
+        content_hash = identity_hash_v1(identity)
+        signal_id = uuid5(uuid5(NAMESPACE_URL, "trade_platform.live_signals_v1"), f"live-signal:{content_hash}")
+        row = (signal_id, "BTCUSDT", "RESEARCH_WATCH", 0, 1, NOW, NOW, study, trial, identity, content_hash)
         self.assert_refused(read_live_signals_v1, row, {1: "ETHUSDT", 2: "INCUBATING", 3: -1, 4: -1,
+                                                      0: uuid4(), 5: NOW + timedelta(seconds=1),
+                                                      6: NOW - timedelta(microseconds=1),
                                                       7: uuid4(), 8: uuid4(), 10: "0" * 64}, limit=10)
 
     def test_account_list_rejects_tampering_and_unearned_active_policy(self) -> None:
@@ -996,6 +1003,16 @@ class TerminalHistoricalRegistryAcceptanceTests(unittest.TestCase):
                 _require_current_registry_knowledge(cursor, "cycle-2026-08-20", NOW)
         with self.assertRaisesRegex(ValueError, "^terminal_as_of_must_be_timezone_aware$"):
             _require_current_registry_knowledge(Mock(), "cycle-2026-08-20", NOW.replace(tzinfo=None))
+
+    def test_incubation_report_preserves_registry_refusal(self) -> None:
+        from unittest.mock import patch
+
+        from trade_platform.research_terminal_read_model_v1 import read_incubation_v1
+
+        context = Mock(resolution_refusal="INCUBATION_REGISTRY_REFUSED:fixture-invalid")
+        with patch("trade_platform.research_terminal_read_model_v1._CycleContext", return_value=context), \
+                self.assertRaisesRegex(ValueError, "^INCUBATION_REGISTRY_REFUSED:fixture-invalid$"):
+            read_incubation_v1(Mock(), now=NOW)
 
 
 class RuntimeImageImportTests(unittest.TestCase):
