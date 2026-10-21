@@ -113,6 +113,74 @@ the `web` dashboard as four independently built and deployed services. Copy
 `docker compose -f docker-compose.staging.yml up -d --build`. A successful staging
 deployment is not, and must never be represented as, live-trading readiness.
 
+## Read-only terminal runtime smoke
+
+The existing `analytics` extra is the supported local/staging analytical Python
+environment: install the repository with `python -m pip install -e '.[dev,analytics]'`
+in an isolated environment. `dev` supplies the in-process HTTP smoke client;
+`analytics` supplies NumPy, DuckDB and PyArrow. Use the same reviewed source revision
+for the smoke and the process that will serve it. This is a local/staging preparation
+path, not a separately scanned analytical container or a production release artifact.
+The thin API image and `requirements-runtime.txt` deliberately exclude these packages.
+
+| Capability | Thin API | Analytical environment |
+| --- | --- | --- |
+| Protected PostgreSQL terminal reads and stored research reports | Available with migrated DB and authentication | Same |
+| Search/rerun/columnar research tooling | Not installed | Existing analytics extra and explicit research data required |
+| Sealed T4 proven-price resolution | Explicit `UNAVAILABLE` when analytical imports are absent | Requires pinned selection policy and admissible stored/raw evidence |
+| Net economics, forward validation, owner authority | Existing evidence/owner gates apply | Same; dependencies confer no authority |
+
+Run the smoke from the repository root in the intended environment. Inject
+`POSTGRES_DSN` and `TRADE_PLATFORM_OPERATOR_TOKEN` through the existing local/staging
+secret mechanism; do not put their values in commands, logs or policy files. Set
+`TRADE_PLATFORM_ENVIRONMENT=paper` explicitly and `PYTHONPATH=src`. Apply existing
+Alembic migrations separately before running the smoke. It never migrates, seeds,
+fetches, starts workers or calls write endpoints.
+
+```text
+python scripts/smoke_terminal_runtime.py --profile analytical
+python scripts/smoke_terminal_runtime.py --profile thin
+```
+
+Both commands test the canonical ASGI app, protected PostgreSQL readiness,
+unauthenticated rejection and an authenticated terminal overview read. `thin` checks
+the core path without importing analytics and reports installed modules honestly;
+running it in an analytical environment does not prove the thin container's package
+boundary. CI's existing hardened-container checks own that boundary. `analytical`
+additionally imports all three analytics packages and the real frame/price resolver
+modules. `PASS` means `RUNTIME_SMOKE_ONLY`: an empty registry, unopened holdout and
+missing price policy remain explicit facts, never successful research validation.
+The paper composition uses the existing temporary bearer boundary; this check makes
+only read requests and makes no least-privilege or production identity claim.
+
+For an existing, separately authorized candidate, add `--study-id <UUID> --trial-id
+<UUID>` to validate its protected paper-evidence response and report its actual
+unrealized availability/reasons. Add `--require-proven-price` only when testing an
+installed proven-price deployment; it exits nonzero unless the returned unrealized
+mark is `AVAILABLE`. Missing candidate/evidence/configuration never becomes a price.
+
+Minimal proven-price configuration consists of all four existing environment settings:
+`TRADE_PLATFORM_TERMINAL_PRICE_SELECTION_PATH`,
+`TRADE_PLATFORM_TERMINAL_PRICE_SELECTION_HASH`,
+`TRADE_PLATFORM_RESEARCH_DATA_ROOT` and
+`TRADE_PLATFORM_UNIVERSE_CAPTURE_ARCHIVE_ROOT`. The JSON policy's canonical identity
+hash must match the pin. Its schema is `terminal-paper-price-selection-v1`, with a
+nonempty `policy_reference`, aware `declared_at`, and a unique candidate selection
+binding `cycle_id`, `study_id`, `trial_id`, stored `entry_fill_hash`, `symbol`,
+`source_id`, `session_id`, `instrument`, observation `instant`, explicit integer
+`max_age_micros` and `capture_max_unproven_nanos`. These declarations select evidence;
+they never contain a supplied price. Consult `terminal_paper_prices_v1.py` for the
+existing contract; do not invent age/clock policy values for deployment convenience.
+
+Both roots must contain the exact catalogued frames and independently verifiable
+capture partitions referenced by the stored seal. Filesystem access, hash identity,
+capture continuity, holdout scope and clock/as-of checks must all succeed. Merely
+creating directories is insufficient. Server installation time is an additional
+knowledge bound; restarting/reinstalling a policy does not establish its historical
+availability. Keep application/DB clocks aligned and retain each market source's
+separate clock evidence. Without these prerequisites, keep the truthful refusal or
+`UNAVAILABLE` result and leave operator/owner activation gates closed.
+
 Alert routing currently ends at immutable `LOCAL_OUTBOX` rows whose status is
 `PENDING_EXTERNAL_DELIVERY`. Destination references are opaque allowlisted names,
 not endpoints. Do not configure network delivery, credentials or a claim of
