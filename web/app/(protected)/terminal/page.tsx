@@ -333,7 +333,7 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
           This is forward capture from our own recorder, not the historical research data studies are searched on. To inspect the
           historical bars, open the <a href="/chart">Market Chart</a> (historical research bars, never live prices).
         </p>
-        {capture ? (
+        {capture?.sources.length ? (
           <DataTable caption="First-party capture by source" ariaLabel="Capture by source">
             <thead><tr><th scope="col">Symbol</th><th scope="col">Purpose</th><th scope="col">Archive</th><th scope="col">Proven</th><th scope="col">Finalized windows</th><th scope="col">Gaps</th><th scope="col">Partitions proving nothing</th></tr></thead>
             <tbody>
@@ -345,7 +345,7 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
               ))}
             </tbody>
           </DataTable>
-        ) : <p className="empty-notice">{stateText(captureResult)}</p>}
+        ) : <p className="empty-notice">{capture ? "No capture source recorded." : stateText(captureResult)}</p>}
       </Step>
 
       <Step id="opportunities" title="Opportunities" claim="NOT VALIDATED">
@@ -397,6 +397,7 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
         </p>
         <ComparisonSection
           studies={studies?.items}
+          studiesUnavailable={studiesResult.state !== "AVAILABLE" ? stateText(studiesResult) : undefined}
           selection={selection}
           comparison={comparison}
           unavailable={comparisonResult && comparisonResult.state !== "AVAILABLE" ? stateText(comparisonResult) : undefined}
@@ -517,8 +518,8 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
 
       <Step id="monitoring" title="Monitoring">
         <ul>
-          <li>Latest live signal: {overview?.latest_signal_at ? <time dateTime={overview.latest_signal_at}>{utc(overview.latest_signal_at)}</time> : "none"}</li>
-          <li>Paper fills: {counts(overview?.incubation_fills)}</li>
+          <li>Latest live signal: {overview ? overview.latest_signal_at ? <time dateTime={overview.latest_signal_at}>{utc(overview.latest_signal_at)}</time> : "none recorded" : stateText(overviewResult)}</li>
+          <li>Paper fills: {overview ? counts(overview.incubation_fills) : stateText(overviewResult)}</li>
           <li>Capture state: {capture ? capture.state : stateText(captureResult)} — details on <a href="/evidence">Evidence &amp; Data</a> and <a href="/data-health">Data Health</a>.</li>
         </ul>
         <QualityStateBadge status={overview ? "AVAILABLE" : overviewResult.state} />

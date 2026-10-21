@@ -272,6 +272,58 @@ test.describe("Module 2B-1 Professional Market & Data Workspaces", () => {
     await context.close();
   });
 
+  test("/terminal reports a command connection failure without claiming an outcome or losing its retry identity", async ({ browser }) => {
+    const context = await browser.newContext({ baseURL: dashboardUrl, extraHTTPHeaders: {} });
+    const page = await context.newPage();
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    await page.goto("/login");
+    await page.getByLabel("Operator Access Credential").fill(viewToken);
+    await page.getByRole("button", { name: "Sign In" }).click();
+    await expect(page).toHaveURL(/\/dashboard/);
+    await page.goto("/terminal");
+    const command = page.getByRole("form", { name: "Terminal command console" });
+    // Intercept before submitting: this fixture never reaches a command authority or changes a runner.
+    let release: () => void = () => {};
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const submitted: unknown[] = [];
+    await page.route("**/api/terminal/commands", async (route) => {
+      submitted.push(route.request().postDataJSON());
+      if (submitted.length === 1) {
+        await pending;
+        await route.abort("connectionfailed");
+      } else {
+        await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+      }
+    });
+    // A change is usable only once hydration has installed the interactive handlers.
+    await expect(async () => {
+      await command.getByLabel("Command kind").selectOption("RESEARCH_WATCH_STOP");
+      await expect(command.getByLabel("Command inputs")).toHaveValue(JSON.stringify({ start_command_id: "" }, null, 1));
+    }).toPass({ timeout: 10_000 });
+    const key = await command.getByLabel("Command idempotency key").inputValue();
+    await command.getByRole("button", { name: "Queue command", exact: true }).focus();
+    await page.keyboard.press("Enter");
+    try {
+      await expect(command.getByRole("button", { name: "Submitting…", exact: true })).toBeDisabled();
+      await expect(command.getByLabel("Command kind")).toBeDisabled();
+      await expect(command.getByLabel("Command inputs")).toBeDisabled();
+      await expect(command.getByLabel("Command idempotency key")).toBeDisabled();
+    } finally { release(); }
+    await expect(command.locator('[aria-live="polite"]')).toContainText("Command outcome unavailable");
+    await expect(command).toContainText("Check recent commands before retrying with the same idempotency key");
+    await expect(command.getByRole("button", { name: "Queue command", exact: true })).toBeEnabled();
+    await expect(command.getByLabel("Command idempotency key")).toHaveValue(key);
+    expect(submitted).toEqual([{ kind: "RESEARCH_WATCH_STOP", inputs: { start_command_id: "" }, idempotency_key: key }]);
+    await command.getByRole("button", { name: "Queue command", exact: true }).click();
+    await expect(command.locator('[aria-live="polite"]')).toContainText("the acknowledgement is incomplete");
+    await expect(command).not.toContainText("Command undefined");
+    await expect(command.getByLabel("Command idempotency key")).toHaveValue(key);
+    expect(submitted[1]).toEqual(submitted[0]);
+    expect(pageErrors).toEqual([]);
+    await context.close();
+  });
+
   test("/instruments workstation supports filtering, search, and deep interactive inspector", async ({
     browser,
   }) => {
