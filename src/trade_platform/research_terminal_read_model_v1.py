@@ -525,31 +525,50 @@ class CandidateLifecycleView(BaseModel):
     as_of: datetime
 
 
-def _require_current_registry_knowledge(cursor: _Cursor, cycle_id: str, as_of: datetime) -> None:
-    """Refuse historical reconstruction across authorities that resolve current rows only.
+def _require_current_registry_knowledge(cursor: _Cursor, cycle_id: str, as_of: datetime,
+                                        *, study_ids: list[UUID] | None = None) -> None:
+    """Prove the knowledge boundary of the current-only authorities actually consumed.
 
-    Registries do not support temporal resolution. A conservative metadata-only
-    guard checks their prerequisites before invoking them, including study/account
-    registries that are not cycle-scoped. This can refuse otherwise reconstructible
-    history after an unrelated registration; it never substitutes gross defaults
-    or exposes later authority as knowledge available at ``as_of``.
+    A candidate read consumes its study and the opened cycle's study, rather than
+    every registered study. Account authority is only the immutable policy hash
+    bound by those candidates' exit criteria; unrelated accounts or later policy
+    versions cannot change that binding. Aggregate reads still consume all studies.
+    Future relevant authority remains an explicit refusal: this does not infer
+    missing versions or reconstruct current-only registries across later changes.
     """
     if as_of.tzinfo is None or as_of.utcoffset() is None:
         raise ValueError("terminal_as_of_must_be_timezone_aware")
     cursor.execute(
+        "WITH relevant_studies AS (SELECT study_id FROM strategy_lab_studies "
+        "WHERE %s::uuid[] IS NULL OR study_id=ANY(%s::uuid[]) "
+        "OR study_id IN (SELECT p.study_id FROM strategy_lab_holdout_openings o "
+        "JOIN strategy_lab_preregistrations p ON p.preregistration_hash=o.preregistration_hash "
+        "WHERE o.cycle_id=%s)), "
+        "relevant_criteria AS (SELECT e.identity, e.status, e.recorded_at FROM strategy_lab_incubation_exit_criteria e "
+        "WHERE e.cycle_id=%s AND e.study_id IN (SELECT study_id FROM relevant_studies)), "
+        "bound_policies AS (SELECT p.account_id, p.recorded_at FROM account_policy_versions p "
+        "WHERE p.content_hash IN (SELECT identity->'criteria'->>'required_account_policy_hash' "
+        "FROM relevant_criteria WHERE status='AUTHORIZED')) "
         "SELECT max(known_at) FROM ("
         "SELECT max(registered_at) AS known_at FROM strategy_lab_research_cycles WHERE cycle_id=%s "
         "UNION ALL SELECT max(opened_at) FROM strategy_lab_holdout_openings WHERE cycle_id=%s "
         "UNION ALL SELECT max(recorded_at) FROM strategy_lab_holdout_validations WHERE cycle_id=%s "
         "UNION ALL SELECT max(recorded_at) FROM strategy_lab_preregistrations WHERE cycle_id=%s "
-        "UNION ALL SELECT max(recorded_at) FROM strategy_lab_incubation_exit_criteria WHERE cycle_id=%s "
+        "AND study_id IN (SELECT study_id FROM relevant_studies) "
+        "UNION ALL SELECT max(recorded_at) FROM relevant_criteria "
         "UNION ALL SELECT max(registered_at) FROM strategy_lab_studies "
+        "WHERE study_id IN (SELECT study_id FROM relevant_studies) "
         "UNION ALL SELECT max(recorded_at) FROM strategy_lab_authority_reruns "
+        "WHERE study_id IN (SELECT study_id FROM relevant_studies) "
         "UNION ALL SELECT max(recorded_at) FROM strategy_lab_walk_forward_reports "
+        "WHERE study_id IN (SELECT study_id FROM relevant_studies) "
         "UNION ALL SELECT max(recorded_at) FROM strategy_lab_candidate_states "
+        "WHERE study_id IN (SELECT study_id FROM relevant_studies) "
+        "OR evidence_hash IN (SELECT validation_hash FROM strategy_lab_holdout_validations WHERE cycle_id=%s) "
         "UNION ALL SELECT max(created_at) FROM account_contexts "
-        "UNION ALL SELECT max(recorded_at) FROM account_policy_versions) prerequisites",
-        (cycle_id,) * 5)
+        "WHERE account_id IN (SELECT account_id FROM bound_policies) "
+        "UNION ALL SELECT max(recorded_at) FROM bound_policies) prerequisites",
+        (study_ids, study_ids, cycle_id, cycle_id, cycle_id, cycle_id, cycle_id, cycle_id, cycle_id))
     row = cursor.fetchone()
     if row is not None and row[0] is not None and row[0] > as_of:
         raise ValueError("terminal_historical_registry_knowledge_unavailable")
@@ -558,7 +577,7 @@ def _require_current_registry_knowledge(cursor: _Cursor, cycle_id: str, as_of: d
 class _CycleContext:
     """Cycle-wide inputs read once per request: opening, OR-6 policy, registry resolution, fills."""
 
-    def __init__(self, cursor: _Cursor, as_of: datetime) -> None:
+    def __init__(self, cursor: _Cursor, as_of: datetime, *, study_ids: list[UUID] | None = None) -> None:
         from .paper_account_v1 import cycle_cost_policy_v1, cycle_fill_rows_v1
         from .paper_incubation_registry_v1 import (
             IncubationRegistryError,
@@ -567,7 +586,7 @@ class _CycleContext:
 
         self.cycle_id = current_cycle_id_v1()
         self.as_of = as_of
-        _require_current_registry_knowledge(cursor, self.cycle_id, as_of)
+        _require_current_registry_knowledge(cursor, self.cycle_id, as_of, study_ids=study_ids)
         cursor.execute("SELECT cycle_id, preregistration_hash FROM strategy_lab_holdout_openings "
                        "WHERE cycle_id=%s AND opened_at <= %s", (self.cycle_id, as_of))
         row = cursor.fetchone()
@@ -730,7 +749,8 @@ def read_candidate_lifecycle_v1(cursor: _Cursor, study_id: UUID, trial_id: UUID,
     :mod:`trade_platform.incubation_exit_criteria_v1`. Runner liveness and live/replay
     parity are not derived here; their blockers stay and ``evidence_not_loaded`` says so.
     """
-    return _candidate_lifecycle(cursor, _CycleContext(cursor, now or datetime.now(UTC)), study_id, trial_id)
+    return _candidate_lifecycle(
+        cursor, _CycleContext(cursor, now or datetime.now(UTC), study_ids=[study_id]), study_id, trial_id)
 
 
 def read_candidate_lifecycles_v1(cursor: _Cursor, *, limit: int,
