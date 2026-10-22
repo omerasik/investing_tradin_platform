@@ -10,6 +10,7 @@ import importlib
 import importlib.util
 import json
 import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -17,6 +18,52 @@ from uuid import UUID
 
 class SmokeRefused(ValueError):
     """A required runtime assertion could not be demonstrated."""
+
+
+def describe_clock_sample(app_before: datetime, db_at: datetime,
+                          app_after: datetime) -> dict[str, Any]:
+    """Describe one DB time sample within an application wall-clock bracket."""
+    if any(value.tzinfo is None or value.utcoffset() is None
+           for value in (app_before, db_at, app_after)):
+        raise SmokeRefused("CLOCK_SAMPLE_REQUIRES_AWARE_TIMES")
+    if app_after < app_before:
+        raise SmokeRefused("CLOCK_SAMPLE_APP_TIME_REVERSED")
+    lower = db_at - app_after
+    upper = db_at - app_before
+    lower_us = lower // timedelta(microseconds=1)
+    upper_us = upper // timedelta(microseconds=1)
+    relation = ("DB_AHEAD_OF_APP_BRACKET" if lower_us > 0 else
+                "DB_BEHIND_APP_BRACKET" if upper_us < 0 else
+                "OVERLAPS_APP_BRACKET")
+    return {
+        "app_before_utc": app_before.astimezone(UTC).isoformat(),
+        "postgres_sample_utc": db_at.astimezone(UTC).isoformat(),
+        "app_after_utc": app_after.astimezone(UTC).isoformat(),
+        "app_bracket_width_us": upper_us - lower_us,
+        "db_minus_app_interval_us": [lower_us, upper_us],
+        "observed_relation": relation,
+        "scope": "ONE_READ_ONLY_SAMPLE_NOT_CONTINUOUS_CLOCK_HEALTH",
+    }
+
+
+def _application_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def sample_postgres_clock(app: Any) -> dict[str, Any]:
+    """Use the canonical app's PostgreSQL connection; do not open another runtime."""
+    authorities = getattr(app.state, "postgres_authorities", None)
+    if authorities is None:
+        raise SmokeRefused("POSTGRES_CLOCK_SOURCE_UNAVAILABLE")
+    with authorities.database.transaction() as connection, connection.cursor() as cursor:
+        cursor.execute("SET TRANSACTION READ ONLY")
+        app_before = _application_now()
+        cursor.execute("SELECT clock_timestamp()")
+        row = cursor.fetchone()
+        app_after = _application_now()
+    if not isinstance(row, (tuple, list)) or len(row) != 1 or not isinstance(row[0], datetime):
+        raise SmokeRefused("POSTGRES_CLOCK_SAMPLE_UNAVAILABLE")
+    return describe_clock_sample(app_before, row[0], app_after)
 
 
 def configuration(profile: str, *, require_proven_price: bool) -> dict[str, Any]:
@@ -98,6 +145,7 @@ def probe(app: Any, *, token: str, study_id: UUID | None, trial_id: UUID | None,
                 raise SmokeRefused("PROVEN_PRICE_EVIDENCE_UNAVAILABLE")
         elif require_proven_price:
             raise SmokeRefused("PROVEN_PRICE_REQUIRES_EXISTING_STUDY_AND_TRIAL")
+        result["application_postgres_clock"] = sample_postgres_clock(app)
         return result
 
 

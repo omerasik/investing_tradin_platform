@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 
 
@@ -39,6 +40,20 @@ class TerminalRuntimeSmokePostgresTests(unittest.TestCase):
         self.assertEqual(result["proven_price"], "NOT_ASSESSED")
         self.assertEqual(result["research_validation"], "NOT_ASSESSED")
         self.assertEqual(result["price_policy"], "NOT_CONFIGURED")
+        clock = result["application_postgres_clock"]
+        before = datetime.fromisoformat(clock["app_before_utc"])
+        after = datetime.fromisoformat(clock["app_after_utc"])
+        db_at = datetime.fromisoformat(clock["postgres_sample_utc"])
+        self.assertLessEqual(before, after)
+        self.assertEqual(clock["app_bracket_width_us"],
+                         (after - before) // timedelta(microseconds=1))
+        self.assertEqual(clock["db_minus_app_interval_us"], [
+            (db_at - after) // timedelta(microseconds=1),
+            (db_at - before) // timedelta(microseconds=1),
+        ])
+        self.assertIn(clock["observed_relation"], (
+            "DB_AHEAD_OF_APP_BRACKET", "DB_BEHIND_APP_BRACKET", "OVERLAPS_APP_BRACKET"))
+        self.assertEqual(clock["scope"], "ONE_READ_ONLY_SAMPLE_NOT_CONTINUOUS_CLOCK_HEALTH")
 
 
 if __name__ == "__main__":
