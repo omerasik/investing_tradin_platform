@@ -2,7 +2,7 @@
 # This is NOT a second roadmap: requirements stay in MASTER_ROADMAP.md, design
 # stays in module docstrings, history stays in git.
 
-updated: 2026-10-21
+updated: 2026-10-22
 
 # Phase naming. Since 2026-09-24 the owner-approved canonical roadmap uses an
 # "R" series (R0-R15, owner review points OR-1..OR-14). It is distinct from the
@@ -125,6 +125,14 @@ ui2_research_terminal: >-
   Validation -> Risk Preview -> Paper -> Monitoring, restating every claim
   (SEARCH_NON_AUTHORITATIVE / CONDITIONAL / INCUBATING / REJECTED / UNCONFIGURED)
   and listing open owner gates. Read-only: no search, holdout, sizing or order.
+terminal_runtime_smoke: >-
+  The read-only paper smoke (PR #261) keeps protected PostgreSQL readiness,
+  unauthenticated rejection and a natural authenticated terminal read. It now
+  brackets one read-only PostgreSQL clock_timestamp() sample with application
+  UTC before/after times and reports bracket uncertainty plus the observed DB/app
+  time relation. This is one diagnostic sample, not market knowledge time,
+  network latency, an approved tolerance or continuous clock-health proof; it
+  changes no timestamp, readiness gate, proven-price refusal or owner decision.
 first_real_studies: >-
   2026-10-08 SOLUSDT window cacd0ea5 (2025-08-20..2026-08-18, 524,159 bars, no
   day gap): trend_ma_cross 480, mean_reversion_z 240, breakout_channel 84 trials,

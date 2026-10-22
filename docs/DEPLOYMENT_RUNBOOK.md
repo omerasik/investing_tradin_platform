@@ -152,6 +152,17 @@ modules. `PASS` means `RUNTIME_SMOKE_ONLY`: an empty registry, unopened holdout 
 missing price policy remain explicit facts, never successful research validation.
 The paper composition uses the existing temporary bearer boundary; this check makes
 only read requests and makes no least-privilege or production identity claim.
+After that authenticated read, the smoke samples `clock_timestamp()` once through
+the canonical app's PostgreSQL connection in a read-only transaction. It reports
+`app_before_utc`, `postgres_sample_utc` and `app_after_utc`, plus the application
+bracket width and the possible `DB - app` offset interval in microseconds. A strictly
+positive interval is observed DB-ahead; a strictly negative one is observed
+DB-behind; an interval containing zero overlaps the application bracket. The bracket
+width is the measurement uncertainty from this query path, including local work and
+database round trip; it is not a separately measured network latency. This single
+observation is diagnostic only: it is not market knowledge time, an owner-approved
+tolerance, or a continuous clock-health guarantee. No timestamp is corrected and no
+readiness or evidence gate is relaxed by this measurement.
 
 For an existing, separately authorized candidate, add `--study-id <UUID> --trial-id
 <UUID>` to validate its protected paper-evidence response and report its actual
@@ -177,9 +188,10 @@ capture partitions referenced by the stored seal. Filesystem access, hash identi
 capture continuity, holdout scope and clock/as-of checks must all succeed. Merely
 creating directories is insufficient. Server installation time is an additional
 knowledge bound; restarting/reinstalling a policy does not establish its historical
-availability. Keep application/DB clocks aligned and retain each market source's
-separate clock evidence. Without these prerequisites, keep the truthful refusal or
-`UNAVAILABLE` result and leave operator/owner activation gates closed.
+availability. Inspect the smoke's application/DB time observation and retain each
+market source's separate clock evidence. Without these prerequisites, keep the
+truthful refusal or `UNAVAILABLE` result and leave operator/owner activation gates
+closed.
 
 Alert routing currently ends at immutable `LOCAL_OUTBOX` rows whose status is
 `PENDING_EXTERNAL_DELIVERY`. Destination references are opaque allowlisted names,

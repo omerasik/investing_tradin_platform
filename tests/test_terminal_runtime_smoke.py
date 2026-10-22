@@ -4,10 +4,20 @@ import io
 import json
 import os
 import unittest
-from unittest.mock import patch
+from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import MagicMock, Mock, patch
 from uuid import uuid4
 
-from scripts.smoke_terminal_runtime import SmokeRefused, configuration, main, probe
+from scripts.smoke_terminal_runtime import (
+    SmokeRefused,
+    configuration,
+    describe_clock_sample,
+    main,
+    probe,
+    sample_postgres_clock,
+)
 
 
 class TerminalRuntimeSmokeTests(unittest.TestCase):
@@ -65,6 +75,90 @@ class TerminalRuntimeSmokeTests(unittest.TestCase):
             self.assertEqual(main(), 1)
         self.assertEqual(json.loads(output.getvalue()), {"status": "FAIL", "reason": "RuntimeError"})
 
+    def test_clock_sample_reports_bracket_uncertainty_and_observed_relation(self):
+        before = datetime(2026, 10, 22, tzinfo=UTC)
+        after = before + timedelta(microseconds=200)
+        for offset, expected, bounds in (
+            (300, "DB_AHEAD_OF_APP_BRACKET", [100, 300]),
+            (-100, "DB_BEHIND_APP_BRACKET", [-300, -100]),
+            (100, "OVERLAPS_APP_BRACKET", [-100, 100]),
+        ):
+            with self.subTest(offset=offset):
+                result = describe_clock_sample(before, before + timedelta(microseconds=offset), after)
+                self.assertEqual(result["app_bracket_width_us"], 200)
+                self.assertEqual(result["db_minus_app_interval_us"], bounds)
+                self.assertEqual(result["observed_relation"], expected)
+                self.assertEqual(result["scope"], "ONE_READ_ONLY_SAMPLE_NOT_CONTINUOUS_CLOCK_HEALTH")
+        shifted = before.astimezone(timezone(timedelta(hours=2)))
+        self.assertEqual(describe_clock_sample(shifted, before, after)["app_before_utc"],
+                         before.isoformat())
+
+    def test_clock_sample_refuses_invalid_time_evidence(self):
+        now = datetime(2026, 10, 22, tzinfo=UTC)
+        with self.assertRaisesRegex(SmokeRefused, "CLOCK_SAMPLE_REQUIRES_AWARE_TIMES"):
+            describe_clock_sample(now, now.replace(tzinfo=None), now)
+        with self.assertRaisesRegex(SmokeRefused, "CLOCK_SAMPLE_APP_TIME_REVERSED"):
+            describe_clock_sample(now, now, now - timedelta(microseconds=1))
+
+    def test_clock_query_uses_existing_app_connection_in_read_only_transaction(self):
+        before = datetime(2026, 10, 22, tzinfo=UTC)
+        cursor = Mock()
+        cursor.fetchone.return_value = (before + timedelta(microseconds=80),)
+        connection = MagicMock()
+        connection.cursor.return_value.__enter__.return_value = cursor
+        transaction_exited = False
+
+        @contextmanager
+        def transaction():
+            nonlocal transaction_exited
+            yield connection
+            transaction_exited = True
+
+        def application_now():
+            if cursor.execute.call_count == 1:
+                cursor.fetchone.assert_not_called()
+                return before
+            self.assertEqual(cursor.execute.call_count, 2)
+            cursor.fetchone.assert_called_once_with()
+            self.assertFalse(transaction_exited)
+            return before + timedelta(microseconds=100)
+
+        database = SimpleNamespace(transaction=Mock(side_effect=transaction))
+        app = SimpleNamespace(state=SimpleNamespace(
+            postgres_authorities=SimpleNamespace(database=database)))
+        with patch("scripts.smoke_terminal_runtime._application_now", side_effect=application_now) as now:
+            result = sample_postgres_clock(app)
+        self.assertEqual(now.call_count, 2)
+        self.assertTrue(transaction_exited)
+        self.assertEqual(result["db_minus_app_interval_us"], [-20, 80])
+        self.assertEqual(cursor.execute.call_args_list[0].args, ("SET TRANSACTION READ ONLY",))
+        self.assertEqual(cursor.execute.call_args_list[1].args, ("SELECT clock_timestamp()",))
+        self.assertEqual(cursor.execute.call_count, 2)
+        database.transaction.assert_called_once_with()
+
+    def test_clock_query_refuses_missing_canonical_source(self):
+        app = SimpleNamespace(state=SimpleNamespace())
+        with self.assertRaisesRegex(SmokeRefused, "POSTGRES_CLOCK_SOURCE_UNAVAILABLE"):
+            sample_postgres_clock(app)
+
+    def test_clock_query_refuses_invalid_result_shape(self):
+        cursor = Mock()
+        connection = MagicMock()
+        connection.cursor.return_value.__enter__.return_value = cursor
+
+        @contextmanager
+        def transaction():
+            yield connection
+
+        app = SimpleNamespace(state=SimpleNamespace(
+            postgres_authorities=SimpleNamespace(
+                database=SimpleNamespace(transaction=transaction))))
+        for row in (None, (), ("invalid",), (datetime(2026, 10, 22, tzinfo=UTC), None)):
+            with self.subTest(row=row):
+                cursor.fetchone.return_value = row
+                with self.assertRaisesRegex(SmokeRefused, "POSTGRES_CLOCK_SAMPLE_UNAVAILABLE"):
+                    sample_postgres_clock(app)
+
     def test_proven_requirement_refuses_successful_read_with_no_stored_mark(self):
         from fastapi import FastAPI, Request
         from fastapi.responses import JSONResponse
@@ -99,6 +193,20 @@ class TerminalRuntimeSmokeTests(unittest.TestCase):
         with self.assertRaisesRegex(SmokeRefused, "PROVEN_PRICE_EVIDENCE_UNAVAILABLE"):
             probe(app, token="fixture-token", study_id=study, trial_id=trial,
                   require_proven_price=True)
+        with patch("scripts.smoke_terminal_runtime.sample_postgres_clock",
+                   return_value={"observed_relation": "OVERLAPS_APP_BRACKET"}) as sample:
+            result = probe(app, token="fixture-token", study_id=study, trial_id=trial,
+                           require_proven_price=False)
+        sample.assert_called_once_with(app)
+        self.assertEqual(result["authenticated_evidence_read"], "PASS")
+        self.assertEqual(result["application_postgres_clock"]["observed_relation"],
+                         "OVERLAPS_APP_BRACKET")
+        with patch("scripts.smoke_terminal_runtime.sample_postgres_clock",
+                   return_value={"observed_relation": "OVERLAPS_APP_BRACKET"}) as sample:
+            default_result = probe(app, token="fixture-token", study_id=None, trial_id=None,
+                                   require_proven_price=False)
+        sample.assert_called_once_with(app)
+        self.assertEqual(default_result["proven_price"], "NOT_ASSESSED")
 
 
 if __name__ == "__main__":
