@@ -13,6 +13,7 @@ import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 
 @unittest.skipUnless(os.environ.get("POSTGRES_TEST_DSN"), "POSTGRES_TEST_DSN not configured")
@@ -61,6 +62,27 @@ class WalkForwardPostgresTests(unittest.TestCase):
             store.record(report)
             self.assertFalse(store.record(report))  # idempotent by hash
             self.assertIn(report.report_hash, {item.report_hash for item in store.reports(str(study.study_id))})
+            # The CLI export uses the same report but only reads the ledger. Verify
+            # actual server enforcement, not just a mocked read-only declaration.
+            from scripts.strategy_lab import run_read_only_walk_forward_command
+
+            lookup = PostgresStrategyLabLedgerV1.stored_study
+
+            def read_only_lookup(ledger, study_id):
+                with database.connection.cursor() as cursor:
+                    cursor.execute("SHOW transaction_read_only")
+                    self.assertEqual("on", cursor.fetchone()[0])
+                return lookup(ledger, study_id)
+
+            with patch.object(PostgresStrategyLabLedgerV1, "stored_study", read_only_lookup), \
+                    patch("scripts.strategy_lab.PostgresWalkForwardStoreV1", side_effect=AssertionError("no registration")):
+                exported = run_read_only_walk_forward_command(
+                    study=study, database=database, data_root=data_root, plan=_plan(), rule=RULE,
+                    export_dir=self.temp / "exports")
+            self.assertEqual("CALCULATED", exported["outcome"])
+            self.assertEqual(report.report_hash, exported["report_hash"])
+            self.assertEqual("NOT_REGISTERED", exported["registration_status"])
+            self.assertEqual([item.report_hash for item in store.reports(str(study.study_id))], [report.report_hash])
             # PostgresDatabase.transaction re-raises driver errors as PersistenceError; the cause is the trigger's.
             with self.assertRaises(PersistenceError) as refused, database.transaction() as connection, \
                     connection.cursor() as cursor:
