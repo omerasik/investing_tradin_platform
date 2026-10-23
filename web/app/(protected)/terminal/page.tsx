@@ -2,6 +2,7 @@ import React from "react";
 import {
   getCaptureAvailability,
   getStrategyLabStudies,
+  getStrategyLabStudy,
   getTerminalAccounts,
   getTerminalActivation,
   getTerminalCandidates,
@@ -32,6 +33,8 @@ import { WorkspaceToolbar } from "../../components/workspace-toolbar";
 import { QualityStateBadge } from "../../components/quality-state-badge";
 import { DataTable } from "../../components/data-table";
 import { ResearchWorkflowNav } from "../../components/research-workflow-nav";
+
+import { SymbolNavigation, terminalSymbol, matchesSymbol } from "./symbol-navigation";
 
 export const dynamic = "force-dynamic";
 
@@ -218,7 +221,7 @@ function compareSelection(raw: RawParams): CompareSelection {
   const direction = one(raw.compare_direction);
   const sort: ComparisonSort | undefined = metric && (dimension === "SEARCH" || dimension === "DECIMAL_BASELINE")
     && (direction === "ASC" || direction === "DESC") ? { dimension, metric, direction } : undefined;
-  return { studies, metric, sort };
+  return { studies, metric, sort, symbol: terminalSymbol(one(raw.symbol)) };
 }
 
 export default async function ResearchTerminalPage({ searchParams }: { searchParams?: Promise<RawParams> }) {
@@ -228,18 +231,29 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
   const paperTrial = one(raw.paper_trial);
   const paperTarget = paperStudy && paperTrial && UUID.test(paperStudy) && UUID.test(paperTrial) ? [paperStudy, paperTrial] as const : undefined;
   const ctx = await getWorkspaceContext();
-  const selectedReads = Promise.all([
-    selection.studies.length ? getTerminalComparison(ctx, selection.studies, selection.sort) : Promise.resolve(undefined),
-    paperTarget ? getTerminalPaperEvidence(ctx, paperTarget[0], paperTarget[1]) : Promise.resolve(undefined),
-  ]);
   const [overviewResult, captureResult, signalsResult, studiesResult, rerunsResult, validationResult, accountsResult, incubationResult,
     activationResult, commandsResult, walkForwardResult, candidatesResult] =
     await Promise.all([
-      getTerminalOverview(ctx), getCaptureAvailability(ctx), getTerminalSignals(ctx), getStrategyLabStudies(ctx),
+      getTerminalOverview(ctx), getCaptureAvailability(ctx), getTerminalSignals(ctx), getStrategyLabStudies(ctx, { instrument: selection.symbol }),
       getTerminalReruns(ctx), getTerminalValidation(ctx), getTerminalAccounts(ctx), getTerminalIncubation(ctx),
       getTerminalActivation(ctx), getTerminalCommands(ctx), getTerminalWalkForward(ctx), getTerminalCandidates(ctx),
     ]);
-  const [comparisonResult, paperResult] = await selectedReads;
+  // Validate every explicit comparison selection against stored catalogue bindings,
+  // including IDs outside the first study-list page. Never infer from names.
+  const symbol = terminalSymbol(selection.symbol);
+  const chosenStudies = symbol ? await Promise.all(selection.studies.map((id) => getStrategyLabStudy(ctx, id))) : [];
+  const excludedStudies = symbol ? selection.studies.filter((_, index) => {
+    const read = chosenStudies[index];
+    return read.state !== "AVAILABLE" || !matchesSymbol(read.value.summary, symbol);
+  }) : [];
+  selection.studies = selection.studies.filter((id) => !excludedStudies.includes(id));
+  const [comparisonResult, selectedPaperResult] = await Promise.all([
+    selection.studies.length ? getTerminalComparison(ctx, selection.studies, selection.sort) : Promise.resolve(undefined),
+    paperTarget ? getTerminalPaperEvidence(ctx, paperTarget[0], paperTarget[1]) : Promise.resolve(undefined),
+  ]);
+  const paperResult = selectedPaperResult?.state === "AVAILABLE" && symbol && selectedPaperResult.value.symbol !== symbol
+    ? { state: "EMPTY" as const, detail: "Selected candidate does not have a matching stored symbol. Choose a candidate from the filtered comparison." }
+    : selectedPaperResult;
   const comparison = comparisonResult?.state === "AVAILABLE" ? comparisonResult.value : undefined;
   const paperItems: CandidatePaperEvidence[] = [];
   if (paperResult?.state === "AVAILABLE") paperItems.push(paperResult.value);
@@ -255,7 +269,7 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
   const ledgers = activeAccounts.map((account) => accountReads[registeredAccounts.indexOf(account)]);
   const overview = overviewResult.state === "AVAILABLE" ? overviewResult.value : undefined;
   const capture = captureResult.state === "AVAILABLE" ? captureResult.value : undefined;
-  const signals = signalsResult.state === "AVAILABLE" ? signalsResult.value : undefined;
+  const signals = signalsResult.state === "AVAILABLE" ? signalsResult.value.filter((item) => !symbol || item.symbol === symbol) : undefined;
   const studies = studiesResult.state === "AVAILABLE" ? studiesResult.value : undefined;
   const reruns = rerunsResult.state === "AVAILABLE" ? rerunsResult.value : undefined;
   const validation = validationResult.state === "AVAILABLE" ? validationResult.value : undefined;
@@ -329,6 +343,8 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
       </Step>
 
       <Step id="market-scan" title="Market Scan" claim="T4 FORWARD CAPTURE">
+        <SymbolNavigation symbol={symbol} catalogue={studies?.facets.instrument_catalogue}
+          unavailable={studiesResult.state !== "AVAILABLE" ? stateText(studiesResult) : undefined} />
         <p>What first-party capture has proven per source. Gaps are shown as gaps, never bridged.</p>
         <p>
           This is forward capture from our own recorder, not the historical research data studies are searched on. To inspect the
@@ -340,7 +356,7 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
             <tbody>
               {capture.sources.map((source) => (
                 <tr key={`${source.archive}-${source.source_id}`}>
-                  <td>{source.exchange_symbol}</td><td>{source.purpose}</td><td>{source.archive}</td><td className="tabular-num">{hours(source.proven_seconds)}</td>
+                  <td>{terminalSymbol(source.exchange_symbol) ? <a href={`/terminal?symbol=${source.exchange_symbol}#strategy-lab`}>{source.exchange_symbol}</a> : source.exchange_symbol}</td><td>{source.purpose}</td><td>{source.archive}</td><td className="tabular-num">{hours(source.proven_seconds)}</td>
                   <td className="tabular-num">{source.windows.length}</td><td className="tabular-num">{source.gaps.length}</td><td className="tabular-num">{source.not_finalized.length}</td>
                 </tr>
               ))}
@@ -371,9 +387,11 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
       </Step>
 
       <Step id="strategy-lab" title="Strategy Lab" claim="SEARCH_NON_AUTHORITATIVE">
+        <p>{symbol ? `Catalogue-associated research for ${symbol}.` : "Research for all markets."} Associations come from stored dataset identities, never labels.</p>
+        {studies?.page.has_more ? <p>Showing the first {studies.items.length} studies. <a href={symbol ? `/strategy-lab?instrument=${symbol}` : "/strategy-lab"}>Browse all matching studies in the Explorer</a>.</p> : null}
         <p>
           Browse every persisted trial, its parameters, stored metrics and Decimal rerun reconciliation in the{" "}
-          <a href="/strategy-lab">Strategy Lab Explorer</a> (read-only).
+          <a href={symbol ? `/strategy-lab?instrument=${symbol}` : "/strategy-lab"}>Strategy Lab Explorer</a> (read-only).
         </p>
         {studies && studies.items.length ? (
           <DataTable caption="Registered studies" ariaLabel="Strategy Lab studies">
@@ -381,25 +399,27 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
             <tbody>
               {studies.items.map((study) => (
                 <tr key={study.study_id}>
-                  <td><a href={`/strategy-lab?study=${study.study_id}`}>{study.label}</a></td><td>{study.strategy_family}</td><td className="tabular-num">{study.planned_trial_count}</td>
+                  <td><a href={`/strategy-lab?${new URLSearchParams({ study: study.study_id, ...(symbol ? { instrument: symbol } : {}) })}`}>{study.label}</a></td><td>{study.strategy_family}</td><td className="tabular-num">{study.planned_trial_count}</td>
                   <td>{counts(study.queue_states)}</td><td>{study.authority.reasons.join(", ")}</td>
-                  <td><a href={`/terminal?${new URLSearchParams({ compare_study: study.study_id }).toString()}#compare`}>Compare its frozen candidates</a></td>
+                  <td><a href={`/terminal?${new URLSearchParams({ compare_study: study.study_id, ...(symbol ? { symbol } : {}) }).toString()}#compare`}>Compare its frozen candidates</a></td>
                 </tr>
               ))}
             </tbody>
           </DataTable>
-        ) : <p className="empty-notice">{studies ? "No study registered." : stateText(studiesResult)}</p>}
+        ) : <p className="empty-notice">{studies ? (symbol ? `No catalogue-associated study recorded for ${symbol}.` : "No study registered.") : stateText(studiesResult)}</p>}
       </Step>
 
       <Step id="compare" title="Compare" claim="GROSS · CONDITIONAL">
+        <p>Market scope: {symbol ?? "all markets"}. Only stored research is compared.</p>
         <p>
           Frozen candidates side by side from recorded evidence only: the search tier, the Decimal rerun, walk-forward development
           evidence and holdout validation stay in separate rows, and none of them is a validation. You choose the studies, the metric
           shown and any sort; there is no composite score and no default ranking.
         </p>
+        {excludedStudies.length ? <p className="empty-notice">Excluded {excludedStudies.length} selected study/studies: their stored symbol association is unavailable or does not match {symbol}. Select a matching study below.</p> : null}
         <ComparisonSection
           studies={studies?.items}
-          studiesUnavailable={studiesResult.state !== "AVAILABLE" ? stateText(studiesResult) : undefined}
+          studiesUnavailable={studiesResult.state !== "AVAILABLE" ? stateText(studiesResult) : symbol ? `No catalogue-associated study recorded for ${symbol}.` : undefined}
           selection={selection}
           comparison={comparison}
           unavailable={comparisonResult && comparisonResult.state !== "AVAILABLE" ? stateText(comparisonResult) : undefined}
