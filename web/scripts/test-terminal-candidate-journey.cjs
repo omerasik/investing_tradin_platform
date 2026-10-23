@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports -- CommonJS loader hooks compile isolated server components for browser assertions. */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const ts = require('typescript');
