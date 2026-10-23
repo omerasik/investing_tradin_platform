@@ -141,3 +141,32 @@ class AccountFeeTests(unittest.TestCase):
                 result = read_candidate_comparison_v1(Mock(), studies=[StudySelectionV1(UUID(evidence.study_id))],
                                                       sort=None, fee_bindings=installed)
                 self.assertEqual(status, result.rows[0].cost_fragility.verified_account_fees)
+
+
+    def test_terminal_server_clock_refuses_future_verification(self):
+        from datetime import datetime
+        from unittest.mock import Mock, patch
+        from uuid import UUID
+
+        from trade_platform.research_terminal_read_model_v1 import read_terminal_comparison_v1
+
+        evidence = _evidence({"a": {}}, rerun="ESTABLISHED", decimal={"a": BASE})
+        binding = binding_for(evidence.study_content_hash, evidence.candidate_set_hash,
+            tuple(d["content_hash"] for d in evidence.study_identity["datasets"]))
+        class Projected(Exception):
+            pass
+
+        def check_reader(*args, **kwargs):
+            installed = kwargs["fee_bindings"][evidence.study_content_hash]
+            result = compare_candidates_v1([replace(evidence, fee_binding=installed)], sort=None)
+            self.assertEqual("2026-09-01T00:00:00+00:00", installed.assessed_at)
+            self.assertEqual("UNAVAILABLE", result.rows[0].cost_fragility.verified_account_fees)
+            self.assertIn("FEE_EVIDENCE_STALE_OR_OUTSIDE_OBSERVATION_PERIOD",
+                          result.rows[0].cost_fragility.account_fee_evidence.reasons)
+            raise Projected
+
+        with patch("trade_platform.research_candidate_comparison_v1.read_candidate_comparison_v1",
+                   side_effect=check_reader), self.assertRaises(Projected):
+            read_terminal_comparison_v1(Mock(), study_ids=[UUID(evidence.study_id)], sort=None,
+                now=datetime.fromisoformat("2026-09-01T00:00:00+00:00"),
+                fee_bindings={evidence.study_content_hash: binding})

@@ -119,7 +119,8 @@ new evidence store, migration or default account selection.
 Each binding declares the intended opaque account identifier, exact venue,
 product and VIP/tier independently of the fee statement, plus the study hash,
 frozen candidate set hash, all dataset hashes, full observation start/exclusive
-end and an explicit assessment instant. The operator must establish the full
+end and an explicit assessment instant. Terminal reads use their server-side `as_of`
+as the assessment instant, so an installed binding cannot confer future verification. The operator must establish the full
 observation interval from those exact source datasets when preparing the binding;
 there is no inferred first bar or fee coverage from a study's upper bound alone.
 These are retrospective development assessments, not a claim that the fee was
@@ -170,7 +171,7 @@ The 1 / 2.5 / 5 bps slippage rows remain proposals. This integration makes no ne
 profitability or independent validation claim and does not resolve owner gates.
 
 
-Focused validation for the integration: 104 deterministic calculation, comparison,
+Focused validation for the integration: 105 deterministic calculation, comparison,
 terminal API/read-model, OR-6 policy and paper economics tests; TypeScript and
 scoped ESLint/Ruff; both existing terminal browser scripts including verified and
 unavailable fee provenance rendering, exact decimal text and BTC/ETH/SOL navigation.

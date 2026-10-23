@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -1650,13 +1651,17 @@ def read_terminal_comparison_v1(cursor: _Cursor, *, study_ids: list[UUID], sort:
         read_candidate_comparison_v1,
     )
 
+    as_of = now or datetime.now(UTC)
+    # The read's server clock is authoritative: installed evidence cannot choose
+    # a future assessment instant to make future verification look available.
+    effective_fees = {key: replace(binding, assessed_at=as_of.isoformat())
+                      for key, binding in (fee_bindings or {}).items()}
     try:
         result = read_candidate_comparison_v1(cursor, studies=[StudySelectionV1(study) for study in study_ids],
-                                              sort=sort, fee_bindings=fee_bindings)
+                                              sort=sort, fee_bindings=effective_fees)
     except CandidateComparisonNotFound as error:
         raise TerminalObjectNotFound(str(error)) from error
     payload = result.payload()
-    as_of = now or datetime.now(UTC)
     context = _PaperContext(cursor, as_of, prices)
     paper = [_candidate_paper_evidence(cursor, context, UUID(row["identity"]["study_id"]),
                                        UUID(row["identity"]["trial_id"])) for row in payload["rows"]]
