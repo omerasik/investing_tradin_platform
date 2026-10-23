@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import os
 import re
 import sys
 from datetime import datetime, timedelta
@@ -175,7 +176,8 @@ def run_strategy_lab_command(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("search", "status", "freeze", "rerun", "walk-forward"))
-    parser.add_argument("--dsn", required=True)
+    parser.add_argument("--dsn", default=os.environ.get("TRADE_PLATFORM_RESEARCH_DSN"),
+                        help="PostgreSQL DSN (default: TRADE_PLATFORM_RESEARCH_DSN, so it stays out of argv)")
     parser.add_argument("--family", required=True, choices=sorted(FAMILIES_V1))
     parser.add_argument("--dataset", required=True, type=UUID)
     parser.add_argument("--data-root", type=Path, default=None)
@@ -195,6 +197,8 @@ def main() -> None:
     parser.add_argument("--selection-metric")
     parser.add_argument("--selection-direction", choices=("HIGHER_IS_BETTER", "LOWER_IS_BETTER"))
     args = parser.parse_args()
+    if not args.dsn:
+        parser.error("--dsn or TRADE_PLATFORM_RESEARCH_DSN is required")
     if args.command == "walk-forward":
         missing = [name for name in ("mode", "test_duration", "step", "embargo", "first_test_start",
                                      "evaluation_end", "selection_metric", "selection_direction")

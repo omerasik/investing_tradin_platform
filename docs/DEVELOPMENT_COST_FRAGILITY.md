@@ -179,3 +179,120 @@ The three calculation/evidence/comparison modules pass scoped mypy. Broader loca
 mypy also reports two pre-existing literal-type errors in unrelated read-model
 branches; those lines are unchanged. Broad checks and disposable PostgreSQL
 integration are delegated to the repository CI.
+
+## Bounded robustness subset and execution disposition — 2026-10-23
+
+Rechecked at base `dfd4bc5` using a READ ONLY / REPEATABLE READ transaction
+against the named development ledger: nine studies, nine frozen sets and nine
+reruns. All 90 full study/content, frozen-set, trial/content/result and rerun
+identities and all 360 baseline/5s/30s/60s thresholds match the assessment above. No market bars or
+holdout were queried. The exact development dataset metadata files for ETH and
+BTC exist locally; their Parquet bytes were not reverified in this inspection.
+
+A deterministic **research triage rule**, chosen after inspecting development
+results, retains every frozen candidate whose recorded 2-second Decimal gross
+threshold is strictly above the existing **proposed** 5 bps/side scenario. It
+retains six of 90, ordered by study UUID then trial UUID, with no top-N selection.
+This is an exploratory subset subject to selection bias, not a profitability
+ranking, cost approval or preregistration. Fees, spread and funding are excluded.
+Keep all six, including the lag failure below; do not reselect after seeing folds.
+Study/frozen-set/rerun hashes are pinned in the source table above.
+
+| Study UUID | Trial UUID | Baseline bps/side | 5s / 30s / 60s bps/side |
+| --- | --- | --- | --- |
+| `566bdfb8-301b-544c-93ce-ea6c9cfb5d77` | `e275f278-35dc-5553-926f-b727ea45ed48` | 6.541229107968154677 | 6.541229107968154677 / 6.541229107968154677 / 7.378693862343957352 |
+| `7bcff171-17eb-5f32-a1d3-b7e93f406d20` | `01e0595f-8d61-5966-888f-7ab5b10d8b3d` | 6.326579663852785380 | 6.326579663852785380 / 6.326579663852785380 / 5.444871635558185191 |
+| `7bcff171-17eb-5f32-a1d3-b7e93f406d20` | `1c68e620-60ec-54e0-8628-c0c20c2afce3` | 5.325382362125764218 | 5.325382362125764218 / 5.325382362125764218 / 4.851656303942644375 |
+| `c2af1fd3-efd6-50b1-b66a-f3309586f107` | `71473077-062a-5ab7-a716-aa1b0d90a8fd` | 6.621815776814796620 | 6.621815776814796620 / 6.621815776814796620 / 5.794619185282964714 |
+| `c2af1fd3-efd6-50b1-b66a-f3309586f107` | `ba88bde8-b2e9-57cf-a3d7-201cf4d27cbc` | 6.735103397980238525 | 6.735103397980238525 / 6.735103397980238525 / 6.911843853348793386 |
+| `c2af1fd3-efd6-50b1-b66a-f3309586f107` | `da93b287-fe0c-5d9f-a370-7197f0a360d0` | 6.476926043049263241 | 6.476926043049263241 / 6.476926043049263241 / 7.449786152921295759 |
+
+The ETH trend trial `1c68e620-60ec-54e0-8628-c0c20c2afce3` drops below
+5 bps at 60 seconds (4.851656303942644375). Five of the six remain above 5
+across all four recorded lags; this is timing sensitivity, not OOS stability.
+There are no fold results, fold exclusions or train-selected identities to report
+because no walk-forward run occurred. No favorable fold was substituted.
+
+The other 84 candidates remain visible: 18 nonpositive gross thresholds; 55
+positive thresholds at or below 2.5 bps; 11 above 2.5 and at or below 5 bps.
+All mean-reversion families top out near 1.05 bps. BTC breakout is entirely
+negative; SOL breakout has eight nonpositive and two small positive thresholds.
+SOL trend has four above 2.5 but none above 5; its absence from the six is the
+explicit rule's result, not a conclusion that SOL cannot work. Development
+windows differ by symbol and do not support cross-symbol performance ranking.
+
+Reproduce the subset with the SQL above, retaining only
+`proposed_scenario = 'conservative_medium_5bps'` and
+`recorded_threshold_bps_per_side::numeric > 5`, ordered by study/trial UUID.
+For lag sensitivity join **all** results of each same pinned rerun/trial at
+`lag_micros IN (2000000,5000000,30000000,60000000)`; preserve absent or refused
+results as unavailable, never as zero. Do not replace the pinned source snapshot
+with a later favorable rerun.
+
+### Exact walk-forward blocker and reproducible development-only path
+
+The read-only recheck returned `alembic_version = 20261009_0062` and
+`to_regclass('strategy_lab_walk_forward_reports') = NULL`. The existing authority
+requires migration `20261016_0063`. This is a schema blocker before execution;
+no execution was attempted, no existing database was migrated, and no fixture
+was substituted. Available host RAM was about 2.27 GiB at inspection; that is
+not proof a full study fits beside capture. No new database or host service was
+started. An authorized, migrated development clone with an explicit resource
+budget was not established in this sprint.
+
+Use a separate development host/isolated clone, never the paper authority or an
+in-place upgrade of this ledger. The operator must create the clone by the
+existing backup/restore procedure, verify the pinned study/set/rerun identities,
+and apply existing migrations there under the deployment process. Before
+`python -m alembic current` / `python -m alembic upgrade head`, ensure
+`POSTGRES_TEST_DSN`, `POSTGRES_DSN`, `DATABASE_URL` resolve only to that disposable
+clone: Alembic prefers them in that order and does **not** read
+`TRADE_PLATFORM_RESEARCH_DSN`. Do not print their values. Check resulting revision
+against `python -m alembic heads` and confirm the reports table exists.
+
+Install `.[dev,analytics]` in an isolated environment; copy only the bound
+pre-holdout dataset objects/manifests with identity verification. The exact ETH
+window is `da5bca46-8e14-506e-96db-44c039cfd7f2`, content hash
+`9d465533eb2e7e39ce15fac9d774b663f8f98f360bda8bb9e7ebf68cd2a373d2`,
+2025-08-20..2026-08-18 (524,160 bars). BTC uses
+`b97e3889-f21e-5098-be63-b29fde3e69ad`, hash
+`a2679be654469b451a6ee42c222bbfbee2b9804359ce073a6de51935d5f6bfcc`,
+2025-11-28..2026-08-18 (380,160 bars). Both declare exclusive knowledge bound
+`2026-08-19T00:01:00.000001+00:00`; study end is
+`2026-08-20T00:00:00+00:00`. Verify bytes with the existing dataset loader before
+execution; stop if missing or changed. Do not acquire missing holdout days.
+
+One bounded first execution is the **existing ETH breakout study**, 84 planned
+trials, two non-overlapping seven-day test folds, 30-day rolling training and
+one-day embargo. These are recorded research experiment choices, not financial
+owner decisions. The selection metric is train-side gross `total_return`, higher
+is better, with trial-content-hash ascending ties. The existing implementation
+purges label availability at the embargo edge, censors unavailable test labels,
+and clips input by knowledge time before computing targets. It selects from
+all original 84 trials, **not just the six exploratory candidates**; changing the
+study to those six would change identity and the multiple-testing denominator.
+Thus this tests the existing family's selection procedure, not independent
+validation of the selected six. No new family or parameter sweep is introduced.
+
+With the clone DSN injected as `TRADE_PLATFORM_RESEARCH_DSN`, run from the reviewed
+repository root (PowerShell; replace only the verified development data root):
+
+```powershell
+python scripts/strategy_lab.py walk-forward --family breakout_channel --dataset da5bca46-8e14-506e-96db-44c039cfd7f2 --data-root <VERIFIED_DEV_DATA_ROOT> --mode ROLLING --train-duration 30d --test-duration 7d --step 7d --embargo 1d --first-test-start 2026-07-01T00:00:00Z --evaluation-end 2026-07-15T00:00:00Z --selection-metric total_return --selection-direction HIGHER_IS_BETTER
+```
+
+This CLI runs walk-forward serially; `--workers` does not bound this path. Budget
+one process with an external wall-clock/RAM limit on the isolated host; retain a
+resource-limit failure as unavailable and stop rather than expand the campaign.
+`build_study` must reproduce `566bdfb8-301b-544c-93ce-ea6c9cfb5d77`; the existing
+ledger check rejects a different declaration. Save stdout/stderr/exit code and
+read the persisted full report by its returned `report_hash`: split/observation
+hashes, plan/rule, all fold statuses, selected trial identities, purge/censor
+counts, ineligible trials, day-gap flags, ties and every test metric. CLI output
+alone omits some identity details. Report both folds even if negative or
+`EXCLUDED_NO_ELIGIBLE_TRIAL_ON_TRAIN`; a refused empty split is a failed run,
+not a fold to silently remove. Do not aggregate only favorable folds.
+
+Every result remains `WALK_FORWARD_DEVELOPMENT`, `SEARCH_NON_AUTHORITATIVE`,
+gross and development-only. It is neither Decimal net returns nor independent
+validation. Holdout opening and paper promotion remain unauthorized.
