@@ -239,3 +239,71 @@ automatic deletion: verify current policy, legal hold, artifact hash, backup
 topology and named human authorization in a separately approved lifecycle
 system. Until that system exists, retain the object and append no deletion
 claim.
+
+
+## Forward funding research calculation (offline, hypothetical only)
+
+`paper_funding_calculation_v1.calculate_paper_funding_v1` adds an opt-in Python
+calculation beside the unchanged v1 evidence/economics projections. It does not
+install a terminal/API route, write a charge, change v1 hashes or start a runner.
+Use the existing source loaders to obtain hashed paper fills and issued
+`CandidateFundingEvidenceV1` from the verified forward funding store/price bridge.
+Load only records available by the explicit `as_of`; retain source/recording
+provenance. No acquisition is performed or authorized by this calculation.
+
+Declare every assumption explicitly, for example this **research hypothesis**:
+
+```python
+from trade_platform.paper_funding_calculation_v1 import (
+    FundingCalculationAssumptionsV1, calculate_paper_funding_v1,
+)
+
+assumptions = FundingCalculationAssumptionsV1(
+    price_reference_kind="TRADE_PRICE_PROXY",
+    price_convention="LAST_TRADE_OF_MINUTE_ENDING_AT_INSTANT",
+    settlement_authority="PUBLISHED_RATE_HYPOTHESIS_NOT_ACCOUNT_SETTLEMENT",
+    holding_at_settlement="STRICT_INTERIOR_REFUSE_FILL_INSTANT",
+    position_value_basis="ONE_UNIT_ENTRY_NOTIONAL_FIXED_QUANTITY",
+)
+result = calculate_paper_funding_v1(
+    hashed_fills, recorded_cost_policy, funding=issued_candidate_evidence,
+    assumptions=assumptions, as_of=aware_reading_instant,
+    # resolution=registry_issued_incubation_resolution, if one exists
+)
+# Retain result.payload and result.content_hash together.
+```
+
+The first-trade convention `FIRST_TRADE_OF_MINUTE_STARTING_AT_INSTANT` is also
+supported when the bridge proves that exact reference; there is no fallback
+between conventions. Venue marks, including EXACT ticker timestamp matches,
+remain distinct unused evidence and cannot be selected as settlement prices.
+Undeclared/unsupported assumptions, another candidate/symbol/validation, future
+knowledge, invalid prices, missing coverage, open/broken chains, ambiguous or
+unfilled signals, and any settlement exactly at an entry/exit/reversal refuse
+the whole calculation. No partial total or favorable holding subset is returned.
+
+Each signed funding contribution is `-direction * published_rate * proxy_price /
+entry_price`. Quantity is fixed at one unit of entry notional divided by entry
+price: the figure is a return, not account money. Positive is a receipt, negative
+a payment. Decimal precision is 50; each settlement is half-even rounded to
+1e-12 before summing, without compounding. Prices must be exact at 1e-18 within
+NUMERIC(38,18). Zero with no settlements is possible only for a fully covered,
+closed holding. Retain candidate/holding identities, entry/exit fill hashes,
+raw rate text and payer rule, all settlement/knowledge instants, source window,
+bridge, proxy/bar/dataset hashes and separate unused mark evidence. Verify
+`identity_hash_v1(result.payload) == result.content_hash`; this proves content
+consistency, not the truth of a venue/account settlement claim.
+
+Every successful result is `HYPOTHETICAL_RESEARCH_ONLY`, `in_paper_net: false`;
+net remains NOT_COSTABLE with no value. An approval boolean/object is not an
+input and cannot grant authority. The existing registries issue no forward
+settlement economic authorization, so there is deliberately no verified mode.
+For verified costs the owner must separately decide the actual settlement-price
+reference (and any nearby-mark rule/tolerance), published-settlement applicability
+to the specified account, holding treatment at a simultaneous fill and acquisition
+permission, with scope/effective time and registered approval evidence. Genuine
+venue settlement-price authority, complete causally known published-rate/interval
+and price coverage, proven fill/holding parity, applicable actual-account fees,
+approved slippage and remaining account/risk gates are still required. Implemented
+v1 approval contracts cannot represent all those decisions; a declaration alone
+does not implement them. None of these requirements is fulfilled by this example.
