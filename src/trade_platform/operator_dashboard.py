@@ -7,6 +7,7 @@ calculation, provider access, job trigger, order path, or mutation authority.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import date, datetime
 from decimal import Decimal
 from threading import RLock
@@ -32,6 +33,7 @@ from .real_market_data_provenance_v1 import (
     PostgresRealMarketDataProvenanceAuthorityV1,
     RealMarketDataProvenanceV1,
 )
+from .research_account_fee_evidence_v1 import DevelopmentFeeBindingV1
 from .research_terminal_commands_v1 import CommandView, read_commands_v1
 from .research_terminal_read_model_v1 import (
     AccountView,
@@ -1123,10 +1125,11 @@ class PostgresOperatorDashboardQueries:
     def __init__(
         self, database: PostgresDatabase,
         provenance_authority: PostgresRealMarketDataProvenanceAuthorityV1 | None = None,
-        *, terminal_paper_prices: Any = None,
+        *, terminal_paper_prices: Any = None, terminal_fee_bindings: Mapping[str, DevelopmentFeeBindingV1] | None = None,
     ) -> None:
         self._database = database
         self._terminal_paper_prices = terminal_paper_prices
+        self._terminal_fee_bindings = terminal_fee_bindings
         self._read_lock = RLock()
         self._provenance_authority = (
             PostgresRealMarketDataProvenanceAuthorityV1(database)
@@ -1420,7 +1423,8 @@ class PostgresOperatorDashboardQueries:
         def operation(cursor: _Cursor) -> ComparisonView:
             try:
                 return read_terminal_comparison_v1(cursor, study_ids=study_ids, sort=sort,
-                                                   prices=self._terminal_paper_prices)
+                                                   prices=self._terminal_paper_prices,
+                                                   fee_bindings=self._terminal_fee_bindings)
             except TerminalObjectNotFound as error:
                 raise DashboardObjectNotFound(str(error)) from error
         return self._read(operation)

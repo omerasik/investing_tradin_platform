@@ -73,6 +73,38 @@ const item = {
         } else assert.match(text,/remainder unavailable bps\/side/);
       } else assert.equal(await page.textContent('body'),'UNAVAILABLE');
     }
+    const feeAssessment = {...fragility, verified_account_fees:'VERIFIED',
+      account_fee_evidence:{status:'VERIFIED',reasons:[],evidence_hash:'fixture-evidence-identity',
+        taker_fee_bps_per_side:'0.123456789012345678901234567890123456789',
+        remaining_after_fee_bps_per_side:'2.376543210987654322098765432109876543211',
+        context:{account_id:'fixture-account',venue:'BYBIT',product:'USDT_PERPETUAL',tier:'fixture-vip',
+          observation_start:'2025-08-20T00:00:00Z',observation_end_exclusive:'2026-08-19T00:00:00Z',assessed_at:'2026-10-23T00:00:00Z'},
+        evidence:{verification_source:'ACTUAL_ACCOUNT_FEE_STATEMENT',valid_from:'2025-01-01T00:00:00Z',
+          valid_until_exclusive:'2026-09-01T00:00:00Z',fee_schedule:{verified_by:'fixture-verifier',
+            verified_on:'2026-10-01',source_reference:'fixture-statement'}}},
+      scenarios:[{...fragility.scenarios[0],remaining_after_verified_fee_and_scenario_bps_per_side:'-0.123456789012345677901234567890123456789'}]};
+    for (const verified of [true,false]) {
+      const assessment = verified ? feeAssessment : {...feeAssessment,verified_account_fees:'UNAVAILABLE',
+        account_fee_evidence:{...feeAssessment.account_fee_evidence,status:'UNAVAILABLE',
+          taker_fee_bps_per_side:null,remaining_after_fee_bps_per_side:null,reasons:['FEE_ACCOUNT_MISMATCH_OR_MISSING']},
+        scenarios:[{...feeAssessment.scenarios[0],remaining_after_verified_fee_and_scenario_bps_per_side:null}]};
+      await page.setContent(renderToStaticMarkup(React.createElement(CostFragilityCell,{row:{
+        identity:{trial_id:'fee-candidate'},decimal_rerun:{rerun_hash:'fixture-rerun'},provenance:{},cost_fragility:assessment}})));
+      await page.getByText('Proposed slippage sensitivity and evidence limits',{exact:true}).click();
+      const text = await page.locator('[data-account-fee-evidence]').textContent();
+      assert.match(text,/Fee verification asserts no owner approval/);
+      assert.match(text,/Slippage remains a proposed scenario/);
+      assert.match(text,/fixture-evidence-identity/);
+      assert.match(text,/fixture-verifier/);
+      assert.match(text,/fixture-vip/);
+      if (verified) {
+        assert.match(text,/2\.376543210987654322098765432109876543211/);
+        assert.match(text,/-0\.123456789012345677901234567890123456789/);
+      } else {
+        assert.match(text,/FEE_ACCOUNT_MISMATCH_OR_MISSING/);
+        assert.match(text,/After verified taker fee only: unavailable/);
+      }
+    }
     for (const symbol of ['BTCUSDT','ETHUSDT','SOLUSDT']) {
       await page.setContent(renderToStaticMarkup(React.createElement(SymbolNavigation,{symbol,catalogue:true})));
       assert.equal(await page.getByRole('link',{name:symbol,exact:true}).getAttribute('aria-current'),'page');

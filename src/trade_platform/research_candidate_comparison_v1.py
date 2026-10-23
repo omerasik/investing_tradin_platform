@@ -99,13 +99,14 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass, replace
 from datetime import datetime
 from decimal import Decimal, Inexact, InvalidOperation, localcontext
 from enum import StrEnum
 from typing import Any, Final, Literal, Protocol
 from uuid import UUID
 
+from .research_account_fee_evidence_v1 import DevelopmentFeeBindingV1
 from .research_cost_fragility_v1 import CostFragilityV1, cost_fragility_v1
 from .strategy_lab_read_model_v1 import _authority as _study_authority
 from .strategy_lab_read_model_v1 import economics_v1
@@ -192,6 +193,7 @@ class StudyComparisonEvidenceV1:
     walk_forward: Sequence[tuple[str, Mapping[str, Any]]] = ()
     #: ``{"trial_id", "state", "evidence_hash", "reasons"}`` in recorded order (the latest wins).
     candidate_states: Sequence[Mapping[str, Any]] = ()
+    fee_binding: DevelopmentFeeBindingV1 | None = None
 
 
 # --- outputs -----------------------------------------------------------------------------------
@@ -682,7 +684,11 @@ def _study_rows(evidence: StudyComparisonEvidenceV1, search_keys: Sequence[str])
                 lag_micros=decimal.baseline.lag_micros if decimal.baseline else None,
                 cost_policy=(evidence.study_identity.get("policies") or {}).get("cost") or {},
                 selection_established=decimal.selection_status == "ESTABLISHED",
-                before_holdout=provenance.evaluation_before_holdout),
+                before_holdout=provenance.evaluation_before_holdout,
+                fee_binding=evidence.fee_binding, study_content_hash=evidence.study_content_hash,
+                candidate_set_hash=evidence.candidate_set_hash,
+                dataset_content_hashes=tuple(d.content_hash for d in provenance.datasets),
+                evaluation_end_exclusive=provenance.evaluation_upper_bound_exclusive),
             candidate_state=None if state is None else CandidateStateFactV1(
                 state=str(state["state"]), evidence_hash=str(state.get("evidence_hash")),
                 reasons=[str(r) for r in state.get("reasons", [])]),
@@ -851,6 +857,7 @@ def _load_study(cursor: _Cursor, selection: StudySelectionV1) -> StudyComparison
 
 def read_candidate_comparison_v1(
     cursor: _Cursor, *, studies: Sequence[StudySelectionV1], sort: ComparisonSortV1 | None,
+    fee_bindings: Mapping[str, DevelopmentFeeBindingV1] | None = None,
 ) -> CandidateComparisonV1:
     """Load each selected study's recorded evidence and project it (read-only, bounded)."""
     if not studies:
@@ -866,7 +873,7 @@ def read_candidate_comparison_v1(
         if loaded is None:
             without.append(str(selection.study_id))
         else:
-            evidence.append(loaded)
+            evidence.append(replace(loaded, fee_binding=(fee_bindings or {}).get(loaded.study_content_hash)))
     return compare_candidates_v1(evidence, sort=sort, studies_without_frozen_set=without)
 
 

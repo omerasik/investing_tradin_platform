@@ -63,6 +63,7 @@ Open owner gates are listed as gates (``OPEN``), never as defaults.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -82,6 +83,7 @@ from .paper_economics_v1 import (
     UNREALIZED_AVAILABLE,
 )
 from .paper_incubation_report_v1 import FILL_STATUS_FILLED, incubation_report_v1
+from .research_account_fee_evidence_v1 import DevelopmentFeeBindingV1
 from .strategy_lab_study_v1 import UNTOUCHED_HOLDOUT_BOUNDARY_V1, identity_hash_v1
 
 if TYPE_CHECKING:
@@ -1633,7 +1635,8 @@ def read_candidate_paper_evidence_v1(cursor: _Cursor, study_id: UUID, trial_id: 
 
 def read_terminal_comparison_v1(cursor: _Cursor, *, study_ids: list[UUID], sort: Any,
                                 now: datetime | None = None,
-                                prices: TerminalPaperPricesV1 | None = None) -> ComparisonView:
+                                prices: TerminalPaperPricesV1 | None = None,
+                                fee_bindings: Mapping[str, DevelopmentFeeBindingV1] | None = None) -> ComparisonView:
     """The recorded comparison of the selected studies' frozen sets plus each row's paper evidence.
 
     Identities are resolved server-side: each study's latest recorded frozen set,
@@ -1649,7 +1652,7 @@ def read_terminal_comparison_v1(cursor: _Cursor, *, study_ids: list[UUID], sort:
 
     try:
         result = read_candidate_comparison_v1(cursor, studies=[StudySelectionV1(study) for study in study_ids],
-                                              sort=sort)
+                                              sort=sort, fee_bindings=fee_bindings)
     except CandidateComparisonNotFound as error:
         raise TerminalObjectNotFound(str(error)) from error
     payload = result.payload()

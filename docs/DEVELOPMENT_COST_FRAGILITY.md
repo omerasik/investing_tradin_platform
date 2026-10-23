@@ -97,3 +97,84 @@ The historical L1 full-spread summary in `docs/current-phase.yaml` is diagnostic
 Forward funding settlement-price authority, admissible acquisition, fee/slippage approval, OR-7/9/11 and genuine forward continuity remain separate blockers. The existing paper economics and owner gates are unchanged; funding remains non-costable there, and net cannot be inferred. Holdout and paper promotion states are untouched.
 
 Validation: 55 focused Python calculation/comparison/API tests; TypeScript, scoped Ruff/mypy and ESLint; terminal browser checks for exact decimal text, missing assessments, candidate identity, scenario separation and existing BTC/ETH/SOL navigation. PostgreSQL integration checks run in CI against its disposable service, never against this research ledger.
+
+
+## Actual-account fee integration — 2026-10-23
+
+The comparison now has a separate `account_fee_evidence` assessment. Existing
+`FeeScheduleV1` payloads and OR-6 identities are unchanged. A schedule's venue,
+product, tier, exact maker/taker bps, verifier, verification date and source
+reference are reused, but a schedule alone is **not actual-account evidence**.
+Neither an active paper account policy nor an authorized preregistration supplies
+missing actual-account or historical fee coverage evidence.
+
+The reusable server integration is `DevelopmentFeeBindingV1` in
+`research_account_fee_evidence_v1.py`. Install an explicitly reviewed binding via
+`PostgresOperatorDashboardQueries(..., terminal_fee_bindings={study_content_hash: binding})`. The existing
+`read_terminal_comparison_v1` and `read_candidate_comparison_v1` readers also
+accept `fee_bindings`. Pure callers can set `StudyComparisonEvidenceV1.fee_binding`.
+There is no browser/API input for asserting verification, provider acquisition,
+new evidence store, migration or default account selection.
+
+Each binding declares the intended opaque account identifier, exact venue,
+product and VIP/tier independently of the fee statement, plus the study hash,
+frozen candidate set hash, all dataset hashes, full observation start/exclusive
+end and an explicit assessment instant. The operator must establish the full
+observation interval from those exact source datasets when preparing the binding;
+there is no inferred first bar or fee coverage from a study's upper bound alone.
+These are retrospective development assessments, not a claim that the fee was
+known during the historical period or is applicable to execution today.
+
+The content-addressed evidence envelope is canonical JSON with:
+
+- `schema_version: actual-account-fee-evidence-v1`;
+- `account_id`, `verification_status: VERIFIED` and
+  `verification_source: ACTUAL_ACCOUNT_FEE_STATEMENT`;
+- timezone-aware `valid_from` and `valid_until_exclusive` covering the **entire**
+  declared observation interval;
+- `fee_schedule`: the existing `FeeScheduleV1.payload()`, including a nonblank
+  statement source reference, verifier and ISO verification date.
+
+`evidence_hash` must equal `identity_hash_v1(evidence)`. This checks identity and
+binding; the operator remains responsible for the truth of the verification
+attestation and statement source. Public tables, hypothetical fees and fixtures
+are never a substitute. No fixture in the tests constitutes financial evidence.
+The projection rejects mismatched account/venue/product/tier or source hashes,
+invalid/unverified evidence, incomplete coverage, expired coverage relative to
+the observation period, future verification relative to the assessment, and
+missing or malformed verification metadata. It retains the evidence identity,
+source, verifier, date, coverage interval and intended context in the read model.
+A fixed input produces a fixed comparison output hash.
+
+The original gross threshold and proposed-slippage-only remainders stay intact.
+Two additional exact Decimal fields provide:
+
+- `remaining_after_fee_bps_per_side = recorded gross threshold - verified taker fee`;
+- each scenario's `remaining_after_verified_fee_and_scenario_bps_per_side = recorded
+  gross threshold - verified taker fee - that named proposed slippage`.
+
+No browser floating-point arithmetic, compounded net-return calculation or
+spread conversion is used. Missing gross authority still blocks every remainder,
+even when fee evidence is verified. Missing fee evidence returns `UNAVAILABLE`
+with specific missing requirements while preserving available gross development
+and proposed-slippage-only results. The terminal displays fee-only and
+fee-plus-proposed-slippage fields separately, with verification provenance and
+no owner approval assertion. Paper economics, funding costability, risk,
+preregistration, promotion and execution authority remain unchanged.
+
+No matching real actual-account evidence was found in the repository's existing
+contracts or documented ledger assessment. The historical gross figures above
+remain as recorded; all fee-adjusted figures for that assessment remain
+**UNAVAILABLE** until independently verified account/period evidence is installed.
+The 1 / 2.5 / 5 bps slippage rows remain proposals. This integration makes no net
+profitability or independent validation claim and does not resolve owner gates.
+
+
+Focused validation for the integration: 104 deterministic calculation, comparison,
+terminal API/read-model, OR-6 policy and paper economics tests; TypeScript and
+scoped ESLint/Ruff; both existing terminal browser scripts including verified and
+unavailable fee provenance rendering, exact decimal text and BTC/ETH/SOL navigation.
+The three calculation/evidence/comparison modules pass scoped mypy. Broader local
+mypy also reports two pre-existing literal-type errors in unrelated read-model
+branches; those lines are unchanged. Broad checks and disposable PostgreSQL
+integration are delegated to the repository CI.

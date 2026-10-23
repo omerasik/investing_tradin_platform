@@ -2,16 +2,21 @@
 
 The threshold is the rerun's stored sum-of-step-returns / turnover * 10,000,
 quantized there to 1e-18. It is NOT the zero of compounded total_return.
-No rerun, fee, spread conversion, execution assumption or approval is created.
+No rerun, fee evidence, spread conversion, execution assumption or approval is created.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation, localcontext
 from typing import Any
 
+from .research_account_fee_evidence_v1 import (
+    AccountFeeAssessmentV1,
+    DevelopmentFeeBindingV1,
+    assess_account_fees_v1,
+)
 from .strategy_lab_policies_v1 import SlippageScenarioV1, StrategyLabPolicyError
 
 # Existing prepared proposal, not a new cost estimate or an approved envelope.
@@ -32,6 +37,7 @@ class ScenarioHeadroomV1:
     status: str
     remaining_bps_per_side: str | None
     relation: str
+    remaining_after_verified_fee_and_scenario_bps_per_side: str | None = None
     in_net: bool = False
 
 
@@ -43,6 +49,7 @@ class CostFragilityV1:
     lag_micros: int | None
     scenarios: list[ScenarioHeadroomV1]
     reasons: list[str]
+    account_fee_evidence: AccountFeeAssessmentV1
     claim: str = "DEVELOPMENT_GROSS_COST_SENSITIVITY_NOT_VALIDATED"
     units: str = "BPS_PER_SIDE"
     metric: str = "break_even_bps_per_side"
@@ -68,10 +75,14 @@ def _decimal(raw: Any) -> Decimal | None:
 
 def cost_fragility_v1(*, baseline: Mapping[str, Any], search: Mapping[str, Any],
                       lag_micros: int | None, cost_policy: Mapping[str, Any],
-                      before_holdout: bool | None, selection_established: bool) -> CostFragilityV1:
-    """Restate a stored baseline; subtract only explicitly named proposed slippage.
+                      before_holdout: bool | None, selection_established: bool,
+                      fee_binding: DevelopmentFeeBindingV1 | None = None,
+                      study_content_hash: str | None = None, candidate_set_hash: str | None = None,
+                      dataset_content_hashes: tuple[str, ...] = (),
+                      evaluation_end_exclusive: str | None = None) -> CostFragilityV1:
+    """Restate a gross baseline with separate fee-only and fee-plus-proposal fields.
 
-    Remainder excludes fees, spread and funding and is never called net or a
+    The original scenario remainder excludes fees, spread and funding; no field is a
     total execution-cost estimate. Search numbers are visible but never used
     as the numerical authority for a headroom decision.
     """
@@ -106,6 +117,12 @@ def cost_fragility_v1(*, baseline: Mapping[str, Any], search: Mapping[str, Any],
             reasons.append("MALFORMED_BOUND_SCENARIO_UNAVAILABLE")
             continue
         scenarios.append((item, "STUDY_BOUND_COST_POLICY_NOT_APPROVAL"))
+    fees = assess_account_fees_v1(fee_binding, study_content_hash=study_content_hash,
+        candidate_set_hash=candidate_set_hash, dataset_content_hashes=dataset_content_hashes,
+        evaluation_end_exclusive=evaluation_end_exclusive)
+    fee = _decimal(fees.taker_fee_bps_per_side)
+    if available and threshold is not None and fee is not None:
+        fees = replace(fees, remaining_after_fee_bps_per_side=_subtract(threshold, fee))
     rows = []
     for item, source in scenarios:
         cost = _decimal(item.cost_bps_per_side)
@@ -119,10 +136,15 @@ def cost_fragility_v1(*, baseline: Mapping[str, Any], search: Mapping[str, Any],
                 remainder = format(threshold - cost, "f")
             relation = "ABOVE" if threshold > cost else "EQUAL" if threshold == cost else "BELOW"
         rows.append(ScenarioHeadroomV1(item.name, item.cost_bps_per_side, item.rationale, source,
-                                      "PROPOSED_SENSITIVITY_SCENARIO", remainder, relation))
+                                      "PROPOSED_SENSITIVITY_SCENARIO", remainder, relation,
+                                      _subtract(threshold, fee, cost) if available and threshold is not None
+                                      and fee is not None and cost is not None else None))
     fee_reason = ("MISSING_VERIFIED_ACCOUNT_FEES" if cost_policy.get("venue_fees") is None
                   else "ACCOUNT_FEES_NOT_VERIFIED_BY_THIS_PROJECTION")
-    reasons.extend([fee_reason, "SPREAD_IS_DIAGNOSTIC_NEVER_A_SLIPPAGE_MODEL",
+    if fees.status != "VERIFIED":
+        reasons.append(fee_reason)
+    reasons.extend(fees.reasons)
+    reasons.extend(["SPREAD_IS_DIAGNOSTIC_NEVER_A_SLIPPAGE_MODEL",
                     "SCENARIO_REMAINDER_EXCLUDES_FEES_SPREAD_AND_FUNDING"])
     return CostFragilityV1(
         status=("POSITIVE_GROSS_HEADROOM" if threshold is not None and threshold > 0
@@ -131,4 +153,16 @@ def cost_fragility_v1(*, baseline: Mapping[str, Any], search: Mapping[str, Any],
         search_threshold_bps_per_side=(str(search["break_even_bps_per_side"])
                                       if search.get("break_even_bps_per_side") is not None else None),
         lag_micros=lag_micros, scenarios=rows, reasons=reasons,
+        account_fee_evidence=fees, verified_account_fees=fees.status,
     )
+
+
+def _subtract(*values: Decimal) -> str:
+    """Exact subtraction including all supplied digits, regardless of ambient precision."""
+    with localcontext() as ctx:
+        ctx.prec = max(v.adjusted() for v in values) - min(
+            int(v.as_tuple().exponent) for v in values) + 5
+        result = values[0]
+        for value in values[1:]:
+            result -= value
+        return format(result, "f")
