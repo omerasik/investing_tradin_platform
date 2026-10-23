@@ -1,8 +1,9 @@
 # CODEOWNERS — Module 3B governance & security hardening
 #
-# Requires reviews from the listed owner before merge, once branch protection
-# ("Require review from Code Owners") is enabled on `main`. As of this module,
-# branch protection is NOT yet enabled — see docs/MODULE_3B_GOVERNANCE_SECURITY.md.
+# Ownership mappings remain mandatory. CONTRIBUTING.md defines the documented
+# solo-maintainer self-review procedure and protected scopes requiring separate
+# human owner authorization. Self-review is not a formal GitHub approval and
+# never overrides enforced branch protection or required checks.
 #
 # All paths below were verified to exist in this repository at the time this
 # file was written.
