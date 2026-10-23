@@ -99,7 +99,7 @@ Forward funding settlement-price authority, admissible acquisition, fee/slippage
 Validation: 55 focused Python calculation/comparison/API tests; TypeScript, scoped Ruff/mypy and ESLint; terminal browser checks for exact decimal text, missing assessments, candidate identity, scenario separation and existing BTC/ETH/SOL navigation. PostgreSQL integration checks run in CI against its disposable service, never against this research ledger.
 
 
-## Actual-account fee integration — 2026-10-23
+## Actual-account fee integration â€” 2026-10-23
 
 The comparison now has a separate `account_fee_evidence` assessment. Existing
 `FeeScheduleV1` payloads and OR-6 identities are unchanged. A schedule's venue,

@@ -231,16 +231,16 @@ export function CostFragilityCell({ row }: { row: ComparisonRow }) {
         <p>After verified taker fee only: {assessment.account_fee_evidence?.remaining_after_fee_bps_per_side ?? "unavailable"} bps/side.
           Verified taker fee: {assessment.account_fee_evidence?.taker_fee_bps_per_side ?? "unavailable"} bps/side.</p>
         {assessment.account_fee_evidence?.context ? <p>
-          Account: {assessment.account_fee_evidence.context.account_id} · {assessment.account_fee_evidence.context.venue} ·
-          {assessment.account_fee_evidence.context.product} · VIP/tier {assessment.account_fee_evidence.context.tier}.
+          Account: {assessment.account_fee_evidence.context.account_id} Â· {assessment.account_fee_evidence.context.venue} Â·
+          {assessment.account_fee_evidence.context.product} Â· VIP/tier {assessment.account_fee_evidence.context.tier}.
           Observation: {assessment.account_fee_evidence.context.observation_start} to {assessment.account_fee_evidence.context.observation_end_exclusive} (exclusive).
           Assessed at: {assessment.account_fee_evidence.context.assessed_at}.
         </p> : null}
         <p>Fee evidence identity: {assessment.account_fee_evidence?.evidence_hash ?? "unavailable"}.</p>
         {assessment.account_fee_evidence?.evidence ? <p>
-          Verification source: {assessment.account_fee_evidence.evidence.verification_source} ·
-          {assessment.account_fee_evidence.evidence.fee_schedule?.source_reference} ·
-          verifier {assessment.account_fee_evidence.evidence.fee_schedule?.verified_by} ·
+          Verification source: {assessment.account_fee_evidence.evidence.verification_source} Â·
+          {assessment.account_fee_evidence.evidence.fee_schedule?.source_reference} Â·
+          verifier {assessment.account_fee_evidence.evidence.fee_schedule?.verified_by} Â·
           verified on {assessment.account_fee_evidence.evidence.fee_schedule?.verified_on}.
           Applicable: {assessment.account_fee_evidence.evidence.valid_from} to {assessment.account_fee_evidence.evidence.valid_until_exclusive} (exclusive).
         </p> : null}
