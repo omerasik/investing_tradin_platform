@@ -296,3 +296,73 @@ not a fold to silently remove. Do not aggregate only favorable folds.
 Every result remains `WALK_FORWARD_DEVELOPMENT`, `SEARCH_NON_AUTHORITATIVE`,
 gross and development-only. It is neither Decimal net returns nor independent
 validation. Holdout opening and paper promotion remain unauthorized.
+
+### Read-only local export without a database clone
+
+The existing plan above can now run with `walk-forward --read-only --export-dir
+<LOCAL_EXPORT_DIRECTORY> --workers 1` added to that exact command. Inject the
+existing research connection via `TRADE_PLATFORM_RESEARCH_DSN`. This alternative
+does not need migration 0063: it reads the registered study ID/content hash/trial
+count in a server-enforced READ ONLY / REPEATABLE READ transaction and never
+accesses `strategy_lab_walk_forward_reports`. No clone, migration, registration,
+queue transition or database write is performed. The normal persisted command
+is unchanged and still needs its documented migrated disposable environment.
+
+Study construction and the existing dataset loader reverify the dataset UUID,
+identity hash, manifest, object bytes and logical rows. Read-only export repeats
+the byte proof even if the SDK has cached bars. The existing `run_walk_forward_v1`
+is called unchanged for every planned trial; no exploratory candidate filtering
+or test-side reselection is added.
+
+The output directory receives `<export_hash>.json`, containing the canonical
+`strategy-lab-walk-forward-export-v1` envelope. It retains the complete original
+`report_identity` and `report_hash` unchanged, the study identity, verified dataset
+identity, declared plan/rule and registration status `NOT_REGISTERED`. It is
+`WALK_FORWARD_DEVELOPMENT` / `SEARCH_NON_AUTHORITATIVE` / `GROSS_NON_PROMOTABLE`,
+with `promotable: false`. A content hash proves reproducibility, not PostgreSQL
+registration or financial authority. All original folds, exclusions, selected
+identities, ties, purge/censor counts and test metrics are retained.
+
+Independently reverify with the existing helpers:
+
+```python
+import json
+from pathlib import Path
+from trade_platform.strategy_lab_study_v1 import canonical_identity_json_v1, identity_hash_v1
+
+path = Path("<LOCAL_EXPORT_DIRECTORY>/<export_hash>.json")
+raw = path.read_bytes()
+envelope = json.loads(raw)
+assert raw == canonical_identity_json_v1(envelope).encode("ascii")
+assert identity_hash_v1(envelope) == path.stem
+if envelope["outcome"] == "CALCULATED":
+    assert identity_hash_v1(envelope["report_identity"]) == envelope["report_hash"]
+```
+
+Missing/mismatched evidence or unavailable splits export `UNAVAILABLE`; a Python
+`MemoryError` exports `RESOURCE_LIMITED`. Both have null report/hash and no partial
+total; CLI exit is nonzero. Failure during initial study construction/connection
+or an external process termination may leave no export: retain stderr/exit code
+and the preflight receipt, never treat file absence as success. Existing files
+are byte-compared, never silently overwritten. Use one fresh process under an
+external RAM and wall-clock limit; `--workers 1` does not itself enforce either.
+
+On 2026-10-24 (Europe/Brussels), a read-only source query reconfirmed schema 0062,
+the exact study `566bdfb8-301b-544c-93ce-ea6c9cfb5d77`, hash
+`451c1ac7c536e8c1c39cd3a97d64777498555487849e511e1c40ba8df8538d8e`
+and 84 planned trials. The streaming existing loader reverified the exact ETH
+dataset/hash above, 524,160 rows and manifest
+`19051e6cb15f524a0e517a60f0af94fe541211836d11e55abeee2c0d65e81c6a`
+in 14.422 seconds. All source days precede the untouched holdout boundary.
+
+No real evaluation was started: only 2,448 MiB RAM was available, with Windows
+commit 27,647,725,568 / 32,830,644,224 bytes (84%); WSL/Docker and browser workloads
+were competing. The eager full-window loader retains Python rows, Decimal OHLC
+and NumPy arrays, then the engine constructs observation/split objects. A
+conservative first-run admission budget is a 2 GiB process cap plus at least
+1 GiB free host reserve (3 GiB available RAM), at least 4 GiB commit headroom and
+an external 30-minute wall-clock cap. This is an engineering safety budget, not
+a measured peak or a guarantee the run fits. Current RAM fails that budget;
+no unsafe attempt, favorable subset or repeated retry was made. Fold outcomes
+and selected trials therefore remain unavailable. The old schema no longer
+blocks this read-only path; resource headroom remains the execution prerequisite.

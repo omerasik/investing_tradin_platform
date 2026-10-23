@@ -22,6 +22,11 @@ purged walk-forward plan and selection rule and records the report
 (WALK_FORWARD_DEVELOPMENT, never validation). Every duration, the embargo and
 the selection rule are required: the example values above are syntax, not
 recommendations, and nothing here supplies a default.
+
+``walk-forward --read-only --export-dir <directory> --workers 1`` verifies
+the registered study in a READ ONLY transaction and exports the complete
+canonical report without accessing the reports table (0063 is not required).
+Exports are NOT_REGISTERED development evidence, never promotion authority.
 """
 
 from __future__ import annotations
@@ -39,7 +44,7 @@ from uuid import UUID
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from trade_platform.evidence_tier_authority_v1 import EvidenceTierV1
-from trade_platform.persistence import PostgresDatabase
+from trade_platform.persistence import PersistenceError, PostgresDatabase
 from trade_platform.public_archive_research_bars_v1 import load_research_bar_dataset_v1
 from trade_platform.research_data_plane_v1 import ResearchFrameStoreV1
 from trade_platform.strategy_lab_authority_rerun_v1 import (
@@ -67,9 +72,12 @@ from trade_platform.strategy_lab_study_v1 import (
     SearchModeV1,
     SearchPlanV1,
     StudySpecV1,
+    canonical_identity_json_v1,
+    identity_hash_v1,
 )
 from trade_platform.strategy_lab_walk_forward_v1 import (
     PostgresWalkForwardStoreV1,
+    WalkForwardReportV1,
     WalkForwardSelectionRuleV1,
     run_walk_forward_v1,
 )
@@ -110,6 +118,70 @@ def run_walk_forward_command(
     return {"study_id": str(study.study_id), "label": study.label, "report_hash": report.report_hash,
             "recorded_now": recorded, "evaluation_class": report.identity["evaluation_class"],
             "authority": report.identity["authority_reasons"], "folds": report.folds}
+
+
+def run_read_only_walk_forward_command(
+    *, study: StudySpecV1, database: PostgresDatabase, data_root: Path | None, plan: WalkForwardPlanV1,
+    rule: WalkForwardSelectionRuleV1, export_dir: Path,
+) -> dict[str, object]:
+    """Same calculation, no registration; failures export no partial report.
+
+    Only stored_study's SELECT is issued, inside a server-enforced read-only
+    transaction. No reports table or migration is needed. File name hashes the
+    canonical export envelope; the unchanged original report has its own hash.
+    Run in one fresh process under an external RAM/wall-clock budget.
+    """
+    registered = False
+    dataset_identity = None
+    report: WalkForwardReportV1 | None = None
+    outcome, reason = "CALCULATED", None
+    try:
+        with database.transaction() as connection:
+            connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            stored_hash, planned = PostgresStrategyLabLedgerV1(database).stored_study(study.study_id)
+            if stored_hash != study.content_hash or planned != study.planned_trial_count:
+                raise ValueError("study_declaration_differs_from_the_ledger")
+        registered = True
+        (binding,) = study.datasets
+        # Re-prove bytes even if load_bars_v1 has a process-local cache entry.
+        dataset = load_research_bar_dataset_v1(ResearchFrameStoreV1(data_root), binding.dataset_version_id)
+        if dataset.content_hash != binding.content_hash:
+            raise ValueError("bound_dataset_content_hash_mismatch")
+        dataset_identity = dict(dataset.identity)
+        bars = load_bars_v1(data_root, binding.dataset_version_id, expected_content_hash=binding.content_hash)
+        report = run_walk_forward_v1(study, plan, rule, bars=bars)
+        if identity_hash_v1(report.identity) != report.report_hash:
+            raise ValueError("report_hash_mismatch")
+    except MemoryError:
+        outcome, reason = "RESOURCE_LIMITED", "memory_budget_exhausted_no_complete_report"
+    except (ValueError, PersistenceError, FileNotFoundError) as error:
+        outcome, reason = "UNAVAILABLE", str(error)
+    if outcome != "CALCULATED":
+        report = None
+    envelope = {
+        "schema_version": "strategy-lab-walk-forward-export-v1",
+        "registration_status": "NOT_REGISTERED", "outcome": outcome, "reason": reason,
+        "evaluation_class": "WALK_FORWARD_DEVELOPMENT", "numeric_tier": "SEARCH_NON_AUTHORITATIVE",
+        "cost_mode": "GROSS_NON_PROMOTABLE", "promotable": False,
+        "study_id": str(study.study_id), "study_content_hash": study.content_hash,
+        "planned_trial_count": study.planned_trial_count, "study_identity": study.identity(),
+        "registered_study_verified": registered, "verified_dataset_identity": dataset_identity,
+        "plan": plan.payload(), "rule": rule.payload(),
+        "report_hash": report.report_hash if report is not None else None,
+        "report_identity": dict(report.identity) if report is not None else None,
+    }
+    export_hash = identity_hash_v1(envelope)
+    content = canonical_identity_json_v1(envelope).encode("ascii")
+    export_dir.mkdir(parents=True, exist_ok=True)
+    path = export_dir / f"{export_hash}.json"
+    try:
+        with path.open("xb") as output:
+            output.write(content)
+    except FileExistsError:
+        if path.read_bytes() != content:
+            raise ValueError("existing_export_content_mismatch") from None
+    return {"outcome": outcome, "registration_status": "NOT_REGISTERED", "export_hash": export_hash,
+            "export_path": str(path.resolve()), "report_hash": envelope["report_hash"], "reason": reason}
 
 
 def build_study(family: str, dataset_id: UUID, data_root: Path | None) -> StudySpecV1:
@@ -196,9 +268,14 @@ def main() -> None:
     parser.add_argument("--evaluation-end", type=parse_instant)
     parser.add_argument("--selection-metric")
     parser.add_argument("--selection-direction", choices=("HIGHER_IS_BETTER", "LOWER_IS_BETTER"))
+    parser.add_argument("--read-only", action="store_true", help="walk-forward only; never record in PostgreSQL")
+    parser.add_argument("--export-dir", type=Path, help="read-only walk-forward canonical export directory")
     args = parser.parse_args()
     if not args.dsn:
         parser.error("--dsn or TRADE_PLATFORM_RESEARCH_DSN is required")
+    if (args.read_only or args.export_dir is not None) and (
+            args.command != "walk-forward" or not args.read_only or args.export_dir is None or args.workers != 1):
+        parser.error("read-only export requires walk-forward --read-only --export-dir <dir> --workers 1")
     if args.command == "walk-forward":
         missing = [name for name in ("mode", "test_duration", "step", "embargo", "first_test_start",
                                      "evaluation_end", "selection_metric", "selection_direction")
@@ -214,13 +291,21 @@ def main() -> None:
                 first_test_start=args.first_test_start, evaluation_end_exclusive=args.evaluation_end,
                 train_duration=args.train_duration, train_anchor=args.train_anchor)
             rule = WalkForwardSelectionRuleV1(args.selection_metric, RankDirectionV1(args.selection_direction))
-            out = run_walk_forward_command(study=study, database=database, data_root=args.data_root,
-                                           plan=plan, rule=rule)
+            if args.read_only:
+                assert args.export_dir is not None  # enforced before loading any data or opening PostgreSQL
+                out = run_read_only_walk_forward_command(
+                    study=study, database=database, data_root=args.data_root, plan=plan, rule=rule,
+                    export_dir=args.export_dir)
+            else:
+                out = run_walk_forward_command(study=study, database=database, data_root=args.data_root,
+                                               plan=plan, rule=rule)
         else:
             out = run_strategy_lab_command(args.command, study=study, dsn=args.dsn, database=database,
                                            data_root=args.data_root, workers=args.workers, metric=args.metric,
                                            direction=args.direction, top_k=args.top_k)
         print(json.dumps(out, indent=1, default=str))
+        if args.read_only and out["outcome"] != "CALCULATED":
+            raise SystemExit(2)
     finally:
         database.close()
 
