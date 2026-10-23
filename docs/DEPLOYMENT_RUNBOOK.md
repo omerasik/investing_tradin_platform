@@ -164,6 +164,20 @@ observation is diagnostic only: it is not market knowledge time, an owner-approv
 tolerance, or a continuous clock-health guarantee. No timestamp is corrected and no
 readiness or evidence gate is relaxed by this measurement.
 
+Validation on 2026-10-23: the focused pure smoke tests passed locally (13/13),
+and the PostgreSQL integration test passed on the disposable PostgreSQL service
+in [PR #263's core CI job](https://github.com/omerasik/investing_tradin_platform/actions/runs/39837356817/job/120029048350).
+The workstation had no `POSTGRES_TEST_DSN`; a separate local database was not
+started because available physical memory was about 278 MB and other running
+containers were not identified as disposable for this task. Its Windows Time
+service was stopped (`Manual`), and no authorized application/database runtime
+was available for an actual clock-offset observation. The CI pass verifies the
+query and output contract, not the current deployment's clock alignment. The
+next operational check is to repeat this smoke in the authorized deployment
+and assess its reported interval alongside that host's time-service status and
+the separate market-source clock evidence; one sample cannot establish ongoing
+clock health.
+
 For an existing, separately authorized candidate, add `--study-id <UUID> --trial-id
 <UUID>` to validate its protected paper-evidence response and report its actual
 unrealized availability/reasons. Add `--require-proven-price` only when testing an
