@@ -131,7 +131,7 @@ function CompareForm({ studies, selection, metrics, unavailable, studyPage }: {
   studyPage?: StrategyLabPageInfo;
 }) {
   return (
-    <form method="get" action="/terminal#compare" aria-label="Candidate comparison selection" className="margin-bottom-24">
+    <form id="terminal-comparison-selection" method="get" action="/terminal#compare" aria-label="Candidate comparison selection" className="margin-bottom-24">
       {selection.studies.filter((id) => !studies.some((study) => study.study_id === id)).map((id) =>
         <input key={id} type="hidden" name="compare_study" value={id} />)}
       {selection.symbol ? <input type="hidden" name="symbol" value={selection.symbol} /> : null}

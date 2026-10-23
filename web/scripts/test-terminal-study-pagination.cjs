@@ -45,14 +45,14 @@ for (const extension of ['.tsx','.ts']) require.extensions[extension] = (module,
   module._compile(ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,esModuleInterop:true}}).outputText,file);
 };
 const Terminal = require('../app/(protected)/terminal/page.tsx').default;
-const {studyOffset,studyPageHref,StudyPagination} = require('../app/(protected)/terminal/study-pagination.tsx');
-const {candidateHref} = require('../app/(protected)/terminal/compare-section.tsx');
+const {studyOffset,StudyPagination} = require('../app/(protected)/terminal/study-pagination.tsx');
+const {candidateHref,terminalQuery} = require('../app/(protected)/terminal/compare-section.tsx');
 for (const value of [undefined,'-1','1.5','1e3','10001','9999999999']) assert.equal(studyOffset(value),0);
 assert.equal(studyOffset('10000'),10000);
 const selection = {symbol:'BTCUSDT',studies:[ids[0]],metric:'total_return',sort:{dimension:'SEARCH',metric:'total_return',direction:'DESC'},paperStudy:ids[0],paperTrial:ids[1],studyOffset:50};
 assert.equal(new URL(candidateHref(ids[0],ids[1],selection),'http://fixture').searchParams.get('study_offset'),'50');
-assert.equal(new URL(studyPageHref(selection,0),'http://fixture').searchParams.get('paper_trial'),ids[1]);
-const initial = new URL(studyPageHref(selection,0),'http://terminal.test');
+assert.equal(terminalQuery(selection).get('paper_trial'),ids[1]);
+const initial = new URL('/terminal?' + terminalQuery({...selection,studyOffset:0}),'http://terminal.test');
 const render = async url => {
   const raw = {};
   for (const key of url.searchParams.keys()) {const values=url.searchParams.getAll(key);raw[key]=values.length>1?values:values[0];}
@@ -63,12 +63,18 @@ const render = async url => {
   try {
     const page = await browser.newPage();
     await page.route('http://terminal.test/**',async route => route.fulfill({contentType:'text/html; charset=utf-8',body:await render(new URL(route.request().url()))}));
+    await page.goto(initial.href);
+    await page.getByRole('checkbox').nth(1).check();
+    await page.locator('select[name=compare_dimension]').selectOption('DECIMAL_BASELINE');
+    await page.getByRole('button',{name:'Next study page',exact:true}).click();
+    assert.deepEqual(new URL(page.url()).searchParams.getAll('compare_study'),[ids[0],ids[1]]);
+    assert.equal(new URL(page.url()).searchParams.get('compare_dimension'),'DECIMAL_BASELINE');
     for (const symbol of ['BTCUSDT','ETHUSDT','SOLUSDT']) {
       initial.searchParams.set('symbol',symbol);
       await page.goto(initial.href);
       assert.equal(lastFilters.instrument,symbol);
       assert.equal(lastFilters.limit,50);
-      const next = page.getByRole('link',{name:'Next study page',exact:true});
+      const next = page.getByRole('button',{name:'Next study page',exact:true});
       await next.click();
       assert.equal(lastFilters.offset,50);
       assert.equal(new URL(page.url()).searchParams.get('symbol'),symbol);
@@ -93,7 +99,7 @@ const render = async url => {
     assert.match(await page.locator('#selected-paper').textContent(),/NOT_LOADED/);
     initial.searchParams.delete('symbol');
     await page.goto(initial.href);
-    await page.getByRole('link',{name:'Next study page',exact:true}).click();
+    await page.getByRole('button',{name:'Next study page',exact:true}).click();
     assert.equal(lastFilters.instrument,undefined);
     assert.equal(lastFilters.offset,50);
     assert.equal(await page.locator('input[type=hidden][name=compare_study]').inputValue(),ids[0]);
@@ -101,7 +107,7 @@ const render = async url => {
     initial.searchParams.set('study_offset','100');
     await page.goto(initial.href);
     assert.match(await page.locator('#strategy-lab').textContent(),/out of range/);
-    await page.getByRole('link',{name:'First study page'}).click();
+    await page.getByRole('button',{name:'First study page'}).click();
     assert.equal(lastFilters.offset,0);
     initial.searchParams.set('study_offset','10001');
     await page.goto(initial.href);
@@ -110,19 +116,13 @@ const render = async url => {
     for (const state of ['empty','unavailable','inner-unavailable']) {
       mode=state;
       initial.searchParams.set('study_offset','0'); initial.searchParams.set('fixture_state',state); await page.goto(initial.href);
-      assert.equal(await page.getByRole('link',{name:'Next study page',exact:true}).count(),0);
+      assert.equal(await page.getByRole('button',{name:'Next study page',exact:true}).count(),0);
       assert.match(await page.locator('#strategy-lab').textContent(),state==='empty'?/No catalogue-associated study/:/unavailable/i);
       assert.equal(await page.locator('input[type=hidden][name=compare_study]').count(),1, await page.locator('#compare').textContent()); assert.equal(await page.locator('input[type=hidden][name=compare_study]').inputValue(),ids[0]);
     }
     await page.setContent(renderToStaticMarkup(React.createElement(StudyPagination,{selection,page:{limit:50,offset:10000,returned:50,has_more:true}})));
-    assert.equal(await page.getByRole('link',{name:'Next study page',exact:true}).count(),0);
+    assert.equal(await page.getByRole('button',{name:'Next study page',exact:true}).count(),0);
     assert.match(await page.textContent('body'),/offset limit is reached/);
-    console.log('Terminal pagination: server read limit/offset, browser links and GET submissions, three symbols, off-page selections, comparison sort, candidate/risk/paper context, empty/unavailable/out-of-range and offset bound passed.');
+    console.log('Terminal pagination: server read limit/offset, browser GET navigation, unsaved and off-page selections, three symbols, comparison sort, candidate/risk/paper context, empty/unavailable/out-of-range and offset bound passed.');
   } finally {await browser.close();}
 })().catch(error => {console.error(error);process.exitCode=1;});
-
-
-
-
-
-

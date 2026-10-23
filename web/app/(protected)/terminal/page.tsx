@@ -397,7 +397,7 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
       <Step id="strategy-lab" title="Strategy Lab" claim="SEARCH_NON_AUTHORITATIVE">
         {invalidStudyOffset ? <p className="empty-notice">Invalid or unsupported study offset. Showing the first study page; supported offsets are 0–{MAX_STUDY_OFFSET}.</p> : null}
         <p>{symbol ? `Catalogue-associated research for ${symbol}.` : "Research for all markets."} Associations come from stored dataset identities, never labels.</p>
-        {studies ? <StudyPagination page={studies.page} selection={selection} /> : null}
+        {studies ? <StudyPagination page={studies.page} /> : null}
         <p>
           Browse every persisted trial, its parameters, stored metrics and Decimal rerun reconciliation in the{" "}
           <a href={symbol ? `/strategy-lab?instrument=${symbol}` : "/strategy-lab"}>Strategy Lab Explorer</a> (read-only).
