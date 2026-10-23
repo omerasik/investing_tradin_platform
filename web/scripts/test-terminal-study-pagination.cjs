@@ -9,6 +9,13 @@ const {chromium} = require('@playwright/test');
 const ids = Array.from({length: 51}, (_, i) => `00000000-0000-0000-0000-${String(i + 1).padStart(12, '0')}`);
 let mode = 'available';
 let lastFilters;
+let lastSignalTarget;
+let signalMode = 'available';
+let signalAccess;
+const storedSignals = ['BTCUSDT','ETHUSDT','SOLUSDT'].flatMap((symbol,market) =>
+  Array.from({length:51},(_,i) => ({signal_id:`signal-${symbol}-${i}`,symbol,study_id:ids[0],trial_id:ids[1],
+    decided_at:'2026-06-01T00:00:00Z',target_from:0,target_to:1,claim:'NOT_VALIDATED_RESEARCH_WATCH',
+    explanation:{stored_sequence:String(market*51+i)}}))).reverse();
 const absent = {state:'UNAVAILABLE', detail:'Fixture evidence unavailable'};
 const study = id => ({study_id:id,label:`Stored ${id}`,strategy_family:'trend',planned_trial_count:1,queue_states:{},authority:{reasons:['SEARCH_ONLY']},instrument:lastFilters?.instrument ?? 'BTCUSDT',instrument_source:'RESEARCH_WINDOW_CATALOGUE'});
 const paper = {
@@ -21,7 +28,8 @@ const paper = {
 };
 const data = new Proxy({
   utc: value => value, stateText: result => result.detail ?? result.state,
-  getWorkspaceContext: async () => ({evidenceTime:'2026-10-23T00:00:00Z'}),
+  getWorkspaceContext: async () => ({origin:'http://terminal.test',protectedApi:true,evidenceTime:'2026-10-23T00:00:00Z'}),
+  getTerminalSignals: async (ctx,symbol) => signalAccess(ctx,symbol),
   getStrategyLabStudy: async (_ctx,id) => ({state:'AVAILABLE',value:{summary:study(id)}}),
   getTerminalPaperEvidence: async () => ({state:'AVAILABLE',value:{...paper,symbol:lastFilters?.instrument ?? 'BTCUSDT'}}),
   getStrategyLabStudies: async (_ctx,filters) => {
@@ -45,6 +53,18 @@ for (const extension of ['.tsx','.ts']) require.extensions[extension] = (module,
   module._compile(ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,esModuleInterop:true}}).outputText,file);
 };
 const Terminal = require('../app/(protected)/terminal/page.tsx').default;
+// Exercise the actual data-access URL builder and EvidenceResult mapping, then the complete terminal render.
+signalAccess = require('../app/lib/data-access.ts').getTerminalSignals;
+const {allowedAuthorityTarget} = require('../app/authority-targets.ts');
+global.fetch = async url => {
+  lastSignalTarget = new URL(new URL(url).searchParams.get('target'),'http://authority.test');
+  assert.equal(allowedAuthorityTarget(lastSignalTarget.pathname+lastSignalTarget.search),true);
+  assert.equal(lastSignalTarget.searchParams.get('limit'),'50');
+  if (signalMode === 'unavailable') return new Response('{}',{status:503});
+  const symbol = lastSignalTarget.searchParams.get('symbol');
+  const items = signalMode === 'empty' ? [] : storedSignals.filter(item => !symbol || item.symbol===symbol).slice(0,50);
+  return Response.json(items);
+};
 const {studyOffset,StudyPagination} = require('../app/(protected)/terminal/study-pagination.tsx');
 const {candidateHref,terminalQuery} = require('../app/(protected)/terminal/compare-section.tsx');
 for (const value of [undefined,'-1','1.5','1e3','10001','9999999999']) assert.equal(studyOffset(value),0);
@@ -73,6 +93,24 @@ const render = async url => {
       initial.searchParams.set('symbol',symbol);
       await page.goto(initial.href);
       assert.equal(lastFilters.instrument,symbol);
+      assert.equal(lastSignalTarget.searchParams.get('symbol'),symbol);
+      assert.equal(await page.locator('#opportunities tbody tr').count(),50);
+      assert.match(await page.locator('#opportunities').textContent(),new RegExp(symbol));
+      const candidate = page.getByRole('link',{name:'Review candidate, risk and paper',exact:true}).first();
+      const candidateUrl = new URL(await candidate.getAttribute('href'),'http://terminal.test');
+      assert.equal(candidateUrl.searchParams.get('symbol'),symbol);
+      assert.deepEqual(candidateUrl.searchParams.getAll('compare_study'),[ids[0]]);
+      assert.equal(candidateUrl.searchParams.get('compare_metric'),'total_return');
+      assert.equal(candidateUrl.searchParams.get('compare_dimension'),'SEARCH');
+      assert.equal(candidateUrl.searchParams.get('compare_direction'),'DESC');
+      assert.equal(candidateUrl.searchParams.get('paper_study'),ids[0]);
+      assert.equal(candidateUrl.searchParams.get('paper_trial'),ids[1]);
+      await candidate.click();
+      await page.getByRole('link',{name:'Review risk',exact:true}).click();
+      assert.match(await page.locator('#selected-risk').textContent(),/MISSING_OWNER_POLICY/);
+      await page.getByRole('link',{name:'Review paper evidence',exact:true}).click();
+      assert.match(await page.locator('#selected-paper').textContent(),/NOT_LOADED/);
+      await page.goto(initial.href);
       assert.equal(lastFilters.limit,50);
       const next = page.getByRole('button',{name:'Next study page',exact:true});
       await next.click();
@@ -99,6 +137,12 @@ const render = async url => {
     assert.match(await page.locator('#selected-paper').textContent(),/NOT_LOADED/);
     initial.searchParams.delete('symbol');
     await page.goto(initial.href);
+    assert.equal(lastSignalTarget.searchParams.has('symbol'),false);
+    assert.equal(await page.locator('#opportunities tbody tr').count(),50);
+    initial.searchParams.set('symbol','DOGEUSDT');
+    await page.goto(initial.href);
+    assert.equal(lastSignalTarget.searchParams.has('symbol'),false);
+    initial.searchParams.delete('symbol');
     await page.getByRole('button',{name:'Next study page',exact:true}).click();
     assert.equal(lastFilters.instrument,undefined);
     assert.equal(lastFilters.offset,50);
@@ -120,9 +164,16 @@ const render = async url => {
       assert.match(await page.locator('#strategy-lab').textContent(),state==='empty'?/No catalogue-associated study/:/unavailable/i);
       assert.equal(await page.locator('input[type=hidden][name=compare_study]').count(),1, await page.locator('#compare').textContent()); assert.equal(await page.locator('input[type=hidden][name=compare_study]').inputValue(),ids[0]);
     }
+    for (const state of ['empty','unavailable']) {
+      signalMode=state;
+      await page.goto(initial.href);
+      assert.equal(await page.locator('#opportunities tbody tr').count(),0);
+      assert.match(await page.locator('#opportunities').textContent(),state==='empty'?/No live signal recorded/:/Evidence source responded 503/);
+      if (state==='unavailable') assert.doesNotMatch(await page.locator('#opportunities').textContent(),/No live signal recorded/);
+    }
     await page.setContent(renderToStaticMarkup(React.createElement(StudyPagination,{selection,page:{limit:50,offset:10000,returned:50,has_more:true}})));
     assert.equal(await page.getByRole('button',{name:'Next study page',exact:true}).count(),0);
     assert.match(await page.textContent('body'),/offset limit is reached/);
-    console.log('Terminal pagination: server read limit/offset, browser GET navigation, unsaved and off-page selections, three symbols, comparison sort, candidate/risk/paper context, empty/unavailable/out-of-range and offset bound passed.');
+    console.log('Terminal pagination and signals: actual scoped data-access, 153 mixed-symbol signals, all markets, invalid UI symbol, candidate/risk/paper links, study pagination and selections, distinct empty/unavailable states passed.');
   } finally {await browser.close();}
 })().catch(error => {console.error(error);process.exitCode=1;});

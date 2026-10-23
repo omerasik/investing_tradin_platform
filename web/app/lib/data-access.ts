@@ -1028,8 +1028,10 @@ export function getTerminalCandidates(ctx: WorkspaceContext): Promise<EvidenceRe
   return terminal(ctx, authorityUrl(ctx.origin, "/operator-dashboard/research-terminal/candidates?limit=50"), "Candidate readiness is unavailable.");
 }
 
-export function getTerminalSignals(ctx: WorkspaceContext): Promise<EvidenceResult<TerminalSignal[]>> {
-  return terminal(ctx, authorityUrl(ctx.origin, "/operator-dashboard/research-terminal/signals?limit=50"), "Live signals are unavailable.");
+export function getTerminalSignals(ctx: WorkspaceContext, symbol?: string): Promise<EvidenceResult<TerminalSignal[]>> {
+  const query = new URLSearchParams({ limit: "50" });
+  if (symbol !== undefined) query.set("symbol", symbol);
+  return terminal(ctx, authorityUrl(ctx.origin, `/operator-dashboard/research-terminal/signals?${query}`), "Live signals are unavailable.");
 }
 
 export function getTerminalAccounts(ctx: WorkspaceContext): Promise<EvidenceResult<TerminalAccount[]>> {

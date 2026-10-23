@@ -4,6 +4,9 @@ import { readFileSync } from "node:fs";
 import { allowedAuthorityTarget } from "../app/authority-targets.ts";
 
 const uuid = "00000000-0000-0000-0000-000000000001";
+for (const symbol of ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']) {
+  assert.equal(allowedAuthorityTarget(`/operator-dashboard/research-terminal/signals?limit=50&symbol=${symbol}`), true);
+}
 
 // Every target lib/data-access.ts requests, built the way it builds them. A target
 // the proxy refuses renders as UNAVAILABLE, which reads like "no evidence exists".
@@ -102,7 +105,7 @@ const refused = [
   "/paper-oms/orders/x",
   `/operator-dashboard/paper-orders/${uuid}?x=1`,
   "/operator-dashboard/research-terminal/overview?limit=5",
-  "/operator-dashboard/research-terminal/signals?symbol=BTCUSDT",
+  "/operator-dashboard/research-terminal/signals?symbol=BTCUSDT&authority=INCUBATING",
   "/operator-dashboard/research-terminal/holdout",
   "/operator-dashboard/research-terminal/walk-forward?symbol=BTCUSDT",
   `/operator-dashboard/research-terminal/walk-forward/${"A".repeat(64)}`,

@@ -86,7 +86,7 @@ const queryTargets: Record<string, { allowed: string[]; required?: string[] }> =
     allowed: ["study_id", "sort_dimension", "sort_metric", "sort_direction"],
     required: ["study_id"],
   },
-  "/operator-dashboard/research-terminal/signals": { allowed: ["limit"] },
+  "/operator-dashboard/research-terminal/signals": { allowed: ["limit", "symbol"] },
   "/operator-dashboard/research-terminal/commands": { allowed: ["limit"] },
   "/operator-dashboard/research-terminal/paper-account": { allowed: ["account_id"], required: ["account_id"] },
 };
