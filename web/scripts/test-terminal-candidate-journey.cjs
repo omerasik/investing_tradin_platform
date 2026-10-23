@@ -17,7 +17,7 @@ for (const extension of ['.tsx', '.ts']) require.extensions[extension] = (module
     module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true,
   }}).outputText, file);
 };
-const {CandidateJourney, candidateHref, ComparisonSection} = require('../app/(protected)/terminal/compare-section.tsx');
+const {CandidateJourney, candidateHref, ComparisonSection, CostFragilityCell} = require('../app/(protected)/terminal/compare-section.tsx');
 const {SymbolNavigation, terminalSymbol, matchesSymbol} = require('../app/(protected)/terminal/symbol-navigation.tsx');
 assert.equal(terminalSymbol('BTCUSDT'), 'BTCUSDT');
 assert.equal(terminalSymbol('BTC'), undefined);
@@ -45,6 +45,34 @@ const item = {
   const browser = await chromium.launch({headless:true});
   try {
     const page = await browser.newPage();
+    const fragility = {
+      status:'POSITIVE_GROSS_HEADROOM',threshold_bps_per_side:'2.500000000000000001',
+      search_threshold_bps_per_side:'99',lag_micros:2000000,verified_account_fees:'UNAVAILABLE',
+      net_profitability:'UNAVAILABLE',observed_spread_comparison:'UNAVAILABLE_NO_CANDIDATE_AND_WINDOW_BOUND_SPREAD_EVIDENCE',
+      scenarios:[{name:'conservative_medium_2_5bps',cost_bps_per_side:'2.5',relation:'ABOVE',
+        remaining_bps_per_side:'0.000000000000000001',status:'PROPOSED_SENSITIVITY_SCENARIO',source:'prepared proposal'}],
+      reasons:['MISSING_VERIFIED_ACCOUNT_FEES'],
+    };
+    for (const assessment of [fragility,{...fragility,status:'UNAVAILABLE',threshold_bps_per_side:null,
+      scenarios:[{...fragility.scenarios[0],remaining_bps_per_side:null,relation:'UNAVAILABLE'}]},undefined]) {
+      await page.setContent(renderToStaticMarkup(React.createElement(CostFragilityCell,{row:{
+        identity:{trial_id:'exact-candidate-id'},decimal_rerun:{rerun_hash:'rerun-hash'},
+        provenance:{evaluation_upper_bound_exclusive:'2026-08-19T00:00:00+00:00',holdout_boundary:'2026-08-20T00:00:00+00:00'},
+        cost_fragility:assessment,
+      }})));
+      if (assessment) {
+        assert.equal(await page.locator('[data-cost-fragility]').getAttribute('data-cost-fragility'),'exact-candidate-id');
+        await page.getByText('Proposed slippage sensitivity and evidence limits',{exact:true}).click();
+        const text = await page.textContent('body');
+        assert.match(text,/Fees, observed spread and funding are excluded/);
+        assert.match(text,/No net profitability or independent validation is inferred/);
+        assert.match(text,/2026-08-19T00:00:00\+00:00/);
+        if (assessment.status === 'POSITIVE_GROSS_HEADROOM') {
+          assert.match(text,/2\.500000000000000001/);
+          assert.match(text,/0\.000000000000000001/);
+        } else assert.match(text,/remainder unavailable bps\/side/);
+      } else assert.equal(await page.textContent('body'),'UNAVAILABLE');
+    }
     for (const symbol of ['BTCUSDT','ETHUSDT','SOLUSDT']) {
       await page.setContent(renderToStaticMarkup(React.createElement(SymbolNavigation,{symbol,catalogue:true})));
       assert.equal(await page.getByRole('link',{name:symbol,exact:true}).getAttribute('aria-current'),'page');
