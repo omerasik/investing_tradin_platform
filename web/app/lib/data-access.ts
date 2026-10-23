@@ -1060,10 +1060,20 @@ export type ComparisonDispersion = {
 export type CostFragility = {
   status: string; threshold_bps_per_side: string | null; search_threshold_bps_per_side: string | null;
   lag_micros: number | null; claim: string; units: string; basis: string; threshold_precision: string;
+  account_fee_evidence?: {
+    status: string; reasons: string[]; evidence_hash: string | null;
+    taker_fee_bps_per_side: string | null; remaining_after_fee_bps_per_side: string | null;
+    owner_approval: string; applicability: string;
+    context: {account_id: string; venue: string; product: string; tier: string;
+      observation_start: string; observation_end_exclusive: string; assessed_at: string} | null;
+    evidence: {verification_source: string; valid_from: string; valid_until_exclusive: string;
+      fee_schedule: {verified_by: string; verified_on: string; source_reference: string}} | null;
+  };
   verified_account_fees: string; observed_spread_comparison: string; funding: string;
   net_profitability: string; independent_validation: string; reasons: string[];
   scenarios: { name: string; cost_bps_per_side: string; rationale: string; source: string; status: string;
-    remaining_bps_per_side: string | null; relation: string; in_net: false }[];
+    remaining_bps_per_side: string | null; relation: string; in_net: false;
+    remaining_after_verified_fee_and_scenario_bps_per_side?: string | null }[];
 };
 
 export type ComparisonRow = {

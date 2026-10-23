@@ -74,6 +74,24 @@ class CandidateComparisonPostgresTests(unittest.TestCase):
                     cursor, studies=[StudySelectionV1(study.study_id, candidates.candidate_set_hash)], sort=sort)
                 again = read_candidate_comparison_v1(
                     cursor, studies=[StudySelectionV1(study.study_id, candidates.candidate_set_hash)], sort=sort)
+                from dataclasses import replace
+
+                from tests.test_research_account_fee_evidence_v1 import binding_for
+
+                fee_binding = replace(binding_for(study.content_hash, candidates.candidate_set_hash,
+                    tuple(d.content_hash for d in study.datasets)), observation_start=DAY0.isoformat(),
+                    observation_end_exclusive=study.evaluation_upper_bound_exclusive.isoformat())
+                with_fees = read_candidate_comparison_v1(cursor,
+                    studies=[StudySelectionV1(study.study_id, candidates.candidate_set_hash)], sort=sort,
+                    fee_bindings={study.content_hash: fee_binding})
+                self.assertEqual([row.identity for row in result.rows], [row.identity for row in with_fees.rows])
+                for row in with_fees.rows:
+                    self.assertEqual("VERIFIED", row.cost_fragility.verified_account_fees)
+                    self.assertEqual(fee_binding.evidence_hash, row.cost_fragility.account_fee_evidence.evidence_hash)
+                    self.assertIsNotNone(row.cost_fragility.account_fee_evidence.remaining_after_fee_bps_per_side)
+                    self.assertEqual("NOT_ASSERTED", row.cost_fragility.account_fee_evidence.owner_approval)
+                    self.assertFalse(row.promotable)
+                    self.assertEqual("NONE", row.execution_authority)
                 with self.assertRaises(CandidateComparisonNotFound):
                     read_candidate_comparison_v1(cursor, studies=[StudySelectionV1(uuid4())], sort=None)
             self.assertEqual(result.output_hash, again.output_hash)

@@ -227,6 +227,32 @@ export function CostFragilityCell({ row }: { row: ComparisonRow }) {
         remainder <span className="tabular-num">{scenario.remaining_bps_per_side ?? "unavailable"}</span> bps/side
         <div>{scenario.status} · {scenario.source} · {scenario.rationale}</div>
       </li>)}</ul>
+      <div data-account-fee-evidence>
+        <p>After verified taker fee only: {assessment.account_fee_evidence?.remaining_after_fee_bps_per_side ?? "unavailable"} bps/side.
+          Verified taker fee: {assessment.account_fee_evidence?.taker_fee_bps_per_side ?? "unavailable"} bps/side.</p>
+        {assessment.account_fee_evidence?.context ? <p>
+          Account: {assessment.account_fee_evidence.context.account_id} · {assessment.account_fee_evidence.context.venue} ·
+          {assessment.account_fee_evidence.context.product} · VIP/tier {assessment.account_fee_evidence.context.tier}.
+          Observation: {assessment.account_fee_evidence.context.observation_start} to {assessment.account_fee_evidence.context.observation_end_exclusive} (exclusive).
+          Assessed at: {assessment.account_fee_evidence.context.assessed_at}.
+        </p> : null}
+        <p>Fee evidence identity: {assessment.account_fee_evidence?.evidence_hash ?? "unavailable"}.</p>
+        {assessment.account_fee_evidence?.evidence ? <p>
+          Verification source: {assessment.account_fee_evidence.evidence.verification_source} ·
+          {assessment.account_fee_evidence.evidence.fee_schedule?.source_reference} ·
+          verifier {assessment.account_fee_evidence.evidence.fee_schedule?.verified_by} ·
+          verified on {assessment.account_fee_evidence.evidence.fee_schedule?.verified_on}.
+          Applicable: {assessment.account_fee_evidence.evidence.valid_from} to {assessment.account_fee_evidence.evidence.valid_until_exclusive} (exclusive).
+        </p> : null}
+        <p>Retrospective development sensitivity only. Fee verification asserts no owner approval.
+          Spread and funding remain excluded.</p>
+        <ul>{assessment.scenarios.map((scenario, index) => <li key={`fee/${scenario.source}/${scenario.name}/${index}`}>
+          After verified fee plus proposed <code>{scenario.name}</code>: <span className="tabular-num">{
+            scenario.remaining_after_verified_fee_and_scenario_bps_per_side ?? "unavailable"}</span> bps/side.
+          Slippage remains a proposed scenario; no net return is calculated.
+        </li>)}</ul>
+        {reasonsList(assessment.account_fee_evidence?.reasons ?? [])}
+      </div>
       <p>Verified account fees: {assessment.verified_account_fees}. Net profitability: {assessment.net_profitability}.</p>
       <p>Observed full spread: {assessment.observed_spread_comparison}. Diagnostic spread is never converted to slippage.</p>
       <p>Development evaluation ends (exclusive): {row.provenance.evaluation_upper_bound_exclusive ?? "unavailable"}.

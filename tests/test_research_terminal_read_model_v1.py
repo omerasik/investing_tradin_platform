@@ -304,6 +304,32 @@ class CompareAndPaperEvidenceApiTests(unittest.TestCase):
         self.assertEqual("UNAVAILABLE", b["cost_fragility"]["status"])
         self.assertEqual("NON_COSTABLE", response.json()["paper_evidence"][0]["funding"]["cost_status"])
 
+    def test_verified_account_fee_evidence_survives_existing_api_without_approval(self) -> None:
+        from dataclasses import replace
+
+        from tests.test_research_account_fee_evidence_v1 import binding_for
+        from tests.test_research_candidate_comparison_v1 import _evidence
+        from tests.test_research_cost_fragility_v1 import BASE
+        from trade_platform.research_candidate_comparison_v1 import compare_candidates_v1
+
+        source = _evidence({"a": {}}, rerun="ESTABLISHED", decimal={"a": BASE})
+        binding = binding_for(source.study_content_hash, source.candidate_set_hash,
+                              tuple(d["content_hash"] for d in source.study_identity["datasets"]))
+        projection = compare_candidates_v1([replace(source, fee_binding=binding)], sort=None).payload()
+        self.queries.terminal_comparison.return_value = _comparison(self.study, self.trial).model_copy(
+            update={"comparison": projection})
+        response = self.client.get(f"{self.base}/compare?study_id={source.study_id}", headers=self.headers)
+        self.assertEqual(200, response.status_code)
+        row = response.json()["comparison"]["rows"][0]
+        fees = row["cost_fragility"]["account_fee_evidence"]
+        self.assertEqual("VERIFIED", fees["status"])
+        self.assertEqual(binding.evidence_hash, fees["evidence_hash"])
+        self.assertEqual("2.376543210987654322098765432109876543211", fees["remaining_after_fee_bps_per_side"])
+        self.assertEqual("NOT_ASSERTED", fees["owner_approval"])
+        self.assertEqual("UNAVAILABLE", row["economics"]["net_profitability"])
+        self.assertFalse(row["promotable"])
+        self.assertEqual("NONE", row["execution_authority"])
+
     def test_no_default_sort_and_a_sort_is_explicit_and_complete(self) -> None:
         from trade_platform.research_candidate_comparison_v1 import (
             ComparisonSortV1,
