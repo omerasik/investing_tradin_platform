@@ -145,6 +145,10 @@ jobs:
         env:
           PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: 60000
         run: pnpm exec playwright install --only-shell chromium
+      - name: Terminal candidate context and study pagination browser checks
+        if: matrix.shard == 'core'
+        working-directory: web
+        run: pnpm test:terminal
       - name: Browser E2E against protected PostgreSQL authorities
         if: matrix.shard == 'core'
         env:

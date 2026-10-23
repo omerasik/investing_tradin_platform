@@ -125,6 +125,10 @@ ui2_research_terminal: >-
   Validation -> Risk Preview -> Paper -> Monitoring, restating every claim
   (SEARCH_NON_AUTHORITATIVE / CONDITIONAL / INCUBATING / REJECTED / UNCONFIGURED)
   and listing open owner gates. Read-only: no search, holdout, sizing or order.
+  Terminal Strategy Lab pages reuse the stored limit/offset read contract (50
+  studies, offset <= 10000), retaining market, off-page comparison selections,
+  metric/sort and selected candidate/paper context. Empty, unavailable and
+  out-of-range pages are explicit; no totals or symbol associations are inferred.
 terminal_runtime_smoke: >-
   The read-only paper smoke (PR #261; clock diagnostic PR #263) keeps protected PostgreSQL readiness,
   unauthenticated rejection and a natural authenticated terminal read. It now
