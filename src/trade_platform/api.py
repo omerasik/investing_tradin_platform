@@ -736,10 +736,15 @@ def build_app(
     @app.get("/operator-dashboard/research-terminal/signals", response_model=list[LiveSignalView])
     def dashboard_terminal_signals(
         limit: int = Query(default=100, ge=1, le=500),
+        symbol: str | None = Query(default=None, min_length=1, max_length=32, pattern=r"^[A-Z0-9]+$"),
         _: None = Depends(protected_operator), queries: PostgresOperatorDashboardQueries = Depends(dashboard_queries),
     ) -> object:
         """UI-2: recent live signals; every one a NOT_VALIDATED proposal."""
-        return read_dashboard(lambda: queries.terminal_signals(limit=limit))
+        from .bybit_forward_settled_funding_v1 import CANONICAL_SYMBOLS_V1
+
+        if symbol is not None and symbol not in CANONICAL_SYMBOLS_V1:
+            raise HTTPException(status_code=422, detail="Unsupported terminal signal symbol.")
+        return read_dashboard(lambda: queries.terminal_signals(limit=limit, symbol=symbol))
 
     @app.get("/operator-dashboard/research-terminal/accounts", response_model=list[AccountView])
     def dashboard_terminal_accounts(

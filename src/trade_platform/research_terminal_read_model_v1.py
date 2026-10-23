@@ -371,10 +371,17 @@ def read_validation_v1(cursor: _Cursor, *, limit: int) -> ValidationView:
     return ValidationView(cycle=cycle, candidates=candidates)
 
 
-def read_live_signals_v1(cursor: _Cursor, *, limit: int) -> list[LiveSignalView]:
+def read_live_signals_v1(cursor: _Cursor, *, limit: int, symbol: str | None = None) -> list[LiveSignalView]:
+    """Recent stored proposals, optionally scoped to an exact supported symbol before the limit."""
+    from .bybit_forward_settled_funding_v1 import CANONICAL_SYMBOLS_V1
+
+    if symbol is not None and symbol not in CANONICAL_SYMBOLS_V1:
+        raise ValueError("unsupported_terminal_signal_symbol")
     cursor.execute(
         "SELECT signal_id, symbol, authority, target_from, target_to, bar_open_at, decided_at, study_id, trial_id, "
-        "identity, content_hash FROM live_strategy_signals ORDER BY decided_at DESC, signal_id LIMIT %s", (limit,))
+        "identity, content_hash FROM live_strategy_signals "
+        "WHERE (CAST(%s AS text) IS NULL OR symbol = %s) ORDER BY decided_at DESC, signal_id LIMIT %s",
+        (symbol, symbol, limit))
     out = []
     for row in cursor.fetchall():
         identity = _json(row[9])

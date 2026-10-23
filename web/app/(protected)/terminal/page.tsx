@@ -240,7 +240,7 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
   const [overviewResult, captureResult, signalsResult, studiesResult, rerunsResult, validationResult, accountsResult, incubationResult,
     activationResult, commandsResult, walkForwardResult, candidatesResult] =
     await Promise.all([
-      getTerminalOverview(ctx), getCaptureAvailability(ctx), getTerminalSignals(ctx), getStrategyLabStudies(ctx, { instrument: selection.symbol, limit: STUDY_PAGE_LIMIT, offset: selection.studyOffset }),
+      getTerminalOverview(ctx), getCaptureAvailability(ctx), getTerminalSignals(ctx, selection.symbol), getStrategyLabStudies(ctx, { instrument: selection.symbol, limit: STUDY_PAGE_LIMIT, offset: selection.studyOffset }),
       getTerminalReruns(ctx), getTerminalValidation(ctx), getTerminalAccounts(ctx), getTerminalIncubation(ctx),
       getTerminalActivation(ctx), getTerminalCommands(ctx), getTerminalWalkForward(ctx), getTerminalCandidates(ctx),
     ]);
@@ -275,7 +275,7 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
   const ledgers = activeAccounts.map((account) => accountReads[registeredAccounts.indexOf(account)]);
   const overview = overviewResult.state === "AVAILABLE" ? overviewResult.value : undefined;
   const capture = captureResult.state === "AVAILABLE" ? captureResult.value : undefined;
-  const signals = signalsResult.state === "AVAILABLE" ? signalsResult.value.filter((item) => !symbol || item.symbol === symbol) : undefined;
+  const signals = signalsResult.state === "AVAILABLE" ? signalsResult.value : undefined;
   const studies = studiesResult.state === "AVAILABLE" && studiesResult.value.state === "AVAILABLE" ? studiesResult.value : undefined;
   const studiesUnavailable = studiesResult.state !== "AVAILABLE" ? stateText(studiesResult)
     : !studies ? "Strategy Lab studies are unavailable." : undefined;

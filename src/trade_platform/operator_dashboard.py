@@ -1438,9 +1438,9 @@ class PostgresOperatorDashboardQueries:
         """UI-2: the current cycle's holdout state and recorded candidate states."""
         return self._read(lambda cursor: read_validation_v1(cursor, limit=limit))
 
-    def terminal_signals(self, *, limit: int = 100) -> list[LiveSignalView]:
+    def terminal_signals(self, *, limit: int = 100, symbol: str | None = None) -> list[LiveSignalView]:
         """UI-2: recent live signals; every one NOT_VALIDATED."""
-        return self._read(lambda cursor: read_live_signals_v1(cursor, limit=limit))
+        return self._read(lambda cursor: read_live_signals_v1(cursor, limit=limit, symbol=symbol))
 
     def terminal_accounts(self) -> list[AccountView]:
         """UI-2: account contexts and their latest policy status (OR-11)."""

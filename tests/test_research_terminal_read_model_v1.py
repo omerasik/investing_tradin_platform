@@ -133,6 +133,30 @@ class ResearchTerminalApiTests(unittest.TestCase):
             ValidationView(cycle=CYCLE, candidates=[], validated_claim="VALIDATED")  # type: ignore[arg-type]
         self.assertNotIn("VALIDATED", [key for key in AUTHORITY_LEGEND_V1 if not key.startswith("NOT_")])
 
+    def test_signal_symbol_is_exact_optional_protected_and_bounded(self) -> None:
+        url = "/operator-dashboard/research-terminal/signals"
+        for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT"):
+            with self.subTest(symbol=symbol):
+                self.queries.terminal_signals.reset_mock()
+                self.assertEqual(self.client.get(url, params={"symbol": symbol}).status_code, 401)
+                self.queries.terminal_signals.assert_not_called()
+                response = self.client.get(url, params={"symbol": symbol, "limit": 50}, headers=self.headers)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.queries.terminal_signals.assert_called_once_with(limit=50, symbol=symbol)
+                self.assertIsInstance(response.json(), list)
+        self.client.get(url, headers=self.headers)
+        self.queries.terminal_signals.assert_called_with(limit=100, symbol=None)
+        for symbol in ("BTC", "btcusdt", "BTCUSDT ", "DOGEUSDT", "", "BTCUSDT,ETHUSDT", "BTC%", "' OR 1=1--"):
+            with self.subTest(invalid=symbol):
+                self.queries.terminal_signals.reset_mock()
+                self.assertEqual(self.client.get(url, params={"symbol": symbol}, headers=self.headers).status_code, 422)
+                self.queries.terminal_signals.assert_not_called()
+        for limit in (0, -1, 501):
+            self.assertEqual(self.client.get(url, params={"limit": limit, "symbol": "BTCUSDT"},
+                                             headers=self.headers).status_code, 422)
+        for limit in (1, 500):
+            self.assertEqual(self.client.get(url, params={"limit": limit}, headers=self.headers).status_code, 200)
+
     def test_walk_forward_and_candidate_routes_are_protected_bounded_and_404_when_absent(self) -> None:
         from trade_platform.operator_dashboard import DashboardObjectNotFound
 
@@ -934,6 +958,25 @@ class TerminalStoredIdentityAcceptanceTests(unittest.TestCase):
                                                       0: uuid4(), 5: NOW + timedelta(seconds=1),
                                                       6: NOW - timedelta(microseconds=1),
                                                       7: uuid4(), 8: uuid4(), 10: "0" * 64}, limit=10)
+        self.assert_refused(read_live_signals_v1, row, {1: "ETHUSDT", 0: uuid4(), 7: uuid4(), 8: uuid4(),
+                                                      10: "0" * 64}, limit=50, symbol="BTCUSDT")
+
+    def test_signal_scope_precedes_limit_and_invalid_scope_never_executes(self) -> None:
+        from trade_platform.research_terminal_read_model_v1 import read_live_signals_v1
+
+        cursor = Mock()
+        cursor.fetchall.return_value = []
+        for symbol in (None, "BTCUSDT", "ETHUSDT", "SOLUSDT"):
+            read_live_signals_v1(cursor, limit=50, symbol=symbol)
+            query, params = cursor.execute.call_args.args
+            self.assertIn("ORDER BY decided_at DESC, signal_id LIMIT %s", query)
+            self.assertIn("WHERE (CAST(%s AS text) IS NULL OR symbol = %s) ORDER BY", query)
+            self.assertEqual(params, (symbol, symbol, 50))
+        for symbol in ("", "BTC", "btcusdt", "DOGEUSDT", "BTCUSDT%"):
+            cursor.reset_mock()
+            with self.assertRaisesRegex(ValueError, "unsupported_terminal_signal_symbol"):
+                read_live_signals_v1(cursor, limit=50, symbol=symbol)
+            cursor.execute.assert_not_called()
 
     def test_account_list_rejects_tampering_and_unearned_active_policy(self) -> None:
         from tests.test_paper_risk_assessment_v1 import PAPER
