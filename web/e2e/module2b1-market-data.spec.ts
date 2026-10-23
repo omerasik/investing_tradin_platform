@@ -191,12 +191,29 @@ test.describe("Module 2B-1 Professional Market & Data Workspaces", () => {
     await expect(sidebar.getByRole("link", { name: /Market Chart/ })).toHaveAttribute("href", "/chart");
     await expect(sidebar.getByRole("link", { name: /Strategy Lab/ })).toHaveAttribute("href", "/strategy-lab");
     await expect(page.getByRole("article", { name: "Market Scan", exact: true }).getByRole("link", { name: "Market Chart" })).toHaveAttribute("href", "/chart");
-    const steps = ["Command Center", "Market Scan", "Opportunities", "Strategy Lab", "Compare", "Validation",
-      "Candidate readiness", "Paper evidence", "Risk Preview", "Paper", "Monitoring"];
+    const steps = [
+      ["Command Center", "command-center"],
+      ["Market Scan", "market-scan"],
+      ["Opportunities", "opportunities"],
+      ["Strategy Lab", "strategy-lab"],
+      ["Compare", "compare"],
+      ["Selected candidate", "opportunity-detail"],
+      ["Validation", "validation"],
+      ["Candidate readiness", "candidate-readiness"],
+      ["Paper evidence", "paper-evidence"],
+      ["Risk Preview", "risk-preview"],
+      ["Paper", "paper"],
+      ["Monitoring", "monitoring"],
+    ];
     const nav = page.getByRole("navigation", { name: "Research workflow steps" });
-    for (const [index, step] of steps.entries()) {
-      await expect(nav.getByRole("link", { name: `${index + 1}. ${step}` })).toBeVisible();
-      await expect(page.getByRole("article", { name: step, exact: true })).toBeVisible();
+    for (const [label, destination] of steps) {
+      const link = nav.getByRole("link", { name: new RegExp(`${label}$`) });
+      await expect(link).toBeVisible();
+      await expect(link).toHaveAttribute("href", `#${destination}`);
+    }
+    await expect(page.getByRole("region", { name: "Selected candidate review" })).toBeVisible();
+    for (const [label] of steps.filter(([label]) => label !== "Selected candidate")) {
+      await expect(page.getByRole("article", { name: label, exact: true })).toBeVisible();
     }
     // Claims are restated on their steps; nothing on the page can validate, size or trade.
     await expect(page.getByRole("article", { name: "Strategy Lab", exact: true })).toContainText("SEARCH_NON_AUTHORITATIVE");
