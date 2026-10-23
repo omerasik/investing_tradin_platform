@@ -286,6 +286,24 @@ class CompareAndPaperEvidenceApiTests(unittest.TestCase):
                           paper["risk"]["execution_authority"]))
         self.queries.terminal_candidate_paper_evidence.assert_called_with(self.study, self.trial)
 
+    def test_cost_fragility_preserves_exact_text_and_identity_through_existing_api(self) -> None:
+        from tests.test_research_candidate_comparison_v1 import _evidence
+        from tests.test_research_cost_fragility_v1 import BASE
+        from trade_platform.research_candidate_comparison_v1 import compare_candidates_v1
+
+        evidence = _evidence({"a": {}, "b": {}}, rerun="ESTABLISHED", decimal={"a": BASE})
+        projection = compare_candidates_v1([evidence], sort=None).payload()
+        view = _comparison(self.study, self.trial).model_copy(update={"comparison": projection})
+        self.queries.terminal_comparison.return_value = view
+        response = self.client.get(f"{self.base}/compare?study_id={evidence.study_id}", headers=self.headers)
+        self.assertEqual(200, response.status_code)
+        a, b = response.json()["comparison"]["rows"]
+        self.assertEqual(projection["rows"][0]["identity"], a["identity"])
+        self.assertEqual("2.500000000000000001", a["cost_fragility"]["threshold_bps_per_side"])
+        self.assertEqual("0.000000000000000001", a["cost_fragility"]["scenarios"][1]["remaining_bps_per_side"])
+        self.assertEqual("UNAVAILABLE", b["cost_fragility"]["status"])
+        self.assertEqual("NON_COSTABLE", response.json()["paper_evidence"][0]["funding"]["cost_status"])
+
     def test_no_default_sort_and_a_sort_is_explicit_and_complete(self) -> None:
         from trade_platform.research_candidate_comparison_v1 import (
             ComparisonSortV1,

@@ -89,6 +89,11 @@ class CandidateComparisonPostgresTests(unittest.TestCase):
                 self.assertEqual([], row.decimal_rerun.sweep_lags_missing)
                 self.assertIn(report.report_hash, {r.report_hash for r in row.walk_forward.reports})
                 self.assertEqual("GROSS_ONLY", row.economics.completeness)
+                baseline_metrics = {m.key: m.value for m in row.decimal_rerun.baseline.metrics}
+                self.assertEqual(baseline_metrics["break_even_bps_per_side"],
+                                 row.cost_fragility.threshold_bps_per_side)
+                self.assertEqual("UNAVAILABLE", row.cost_fragility.verified_account_fees)
+                self.assertTrue(all(not s.in_net for s in row.cost_fragility.scenarios))
                 self.assertEqual(binding.content_hash, row.provenance.datasets[0].content_hash)
                 self.assertFalse(row.promotable)
                 self.assertEqual("VALUE", row.sort_state)

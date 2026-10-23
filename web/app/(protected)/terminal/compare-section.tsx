@@ -206,6 +206,37 @@ function EconomicsCell({ paper }: { paper: CandidatePaperEvidence | undefined })
   );
 }
 
+/** Text comes from the authoritative read model; no browser arithmetic or cost defaults. */
+export function CostFragilityCell({ row }: { row: ComparisonRow }) {
+  const assessment = row.cost_fragility;
+  if (!assessment) return <Badge label="UNAVAILABLE" />;
+  return <div data-cost-fragility={row.identity.trial_id}>
+    <Badge label={assessment.status} />
+    <div>Decimal gross threshold: <span className="tabular-num">{assessment.threshold_bps_per_side ?? "unavailable"}</span> bps/side</div>
+    <div>Baseline lag: {assessment.lag_micros ?? "unavailable"} µs · rerun {short(row.decimal_rerun.rerun_hash)}</div>
+    <div>Search threshold (non-authoritative): {assessment.search_threshold_bps_per_side ?? "unavailable"} bps/side</div>
+    <details><summary>Proposed slippage sensitivity and evidence limits</summary>
+      <p>Threshold of summed gross step returns, divided by turnover, times 10,000; not compounded return break-even.
+        Recorded Decimal precision: 1e-18. Positive headroom is development evidence only.</p>
+      <div>Recorded turnover: {recorded(row.decimal_rerun.baseline?.metrics, "turnover")};
+        gross total return (compounded): {recorded(row.decimal_rerun.baseline?.metrics, "total_return")}.</div>
+      <p>Each remainder subtracts only the named proposed slippage. Fees, observed spread and funding are excluded.
+        No net profitability or independent validation is inferred.</p>
+      <ul>{assessment.scenarios.map((scenario, index) => <li key={`${scenario.source}/${scenario.name}/${index}`}>
+        <code>{scenario.name}</code>: {scenario.cost_bps_per_side} bps/side · threshold {scenario.relation.toLowerCase()} scenario ·
+        remainder <span className="tabular-num">{scenario.remaining_bps_per_side ?? "unavailable"}</span> bps/side
+        <div>{scenario.status} · {scenario.source} · {scenario.rationale}</div>
+      </li>)}</ul>
+      <p>Verified account fees: {assessment.verified_account_fees}. Net profitability: {assessment.net_profitability}.</p>
+      <p>Observed full spread: {assessment.observed_spread_comparison}. Diagnostic spread is never converted to slippage.</p>
+      <p>Development evaluation ends (exclusive): {row.provenance.evaluation_upper_bound_exclusive ?? "unavailable"}.
+        Holdout boundary: {row.provenance.holdout_boundary ?? "unavailable"}.</p>
+      <p>Missing walk-forward or sweep research remains visible in its own evidence row.</p>
+      {reasonsList(assessment.reasons)}
+    </details>
+  </div>;
+}
+
 function RiskCell({ paper }: { paper: CandidatePaperEvidence | undefined }) {
   if (!paper) return <Badge label="NOT_LOADED" />;
   return <><Badge label={paper.risk.status} /> <div>{sizingText(paper.risk)}</div></>;
@@ -362,6 +393,10 @@ export function ComparisonSection({ studies, studiesUnavailable, selection, comp
                 <tr data-stage-row="WALK_FORWARD">
                   <th scope="row">Walk-forward development <Badge label="NOT VALIDATION" /></th>
                   {rows.map((row) => <td key={key(row)}>{walkForward(row, metric)}</td>)}
+                </tr>
+                <tr data-stage-row="COST_FRAGILITY">
+                  <th scope="row">Development cost fragility <Badge label="GROSS / NOT VALIDATED" /></th>
+                  {rows.map((row) => <td key={key(row)}><CostFragilityCell row={row} /></td>)}
                 </tr>
                 <tr data-stage-row="VALIDATION">
                   <th scope="row">Holdout validation <Badge label={comparison.validated_claim} /></th>

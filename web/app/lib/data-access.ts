@@ -1057,6 +1057,15 @@ export type ComparisonDispersion = {
 };
 
 /** One frozen candidate with every evidence dimension kept apart (research_candidate_comparison_v1). */
+export type CostFragility = {
+  status: string; threshold_bps_per_side: string | null; search_threshold_bps_per_side: string | null;
+  lag_micros: number | null; claim: string; units: string; basis: string; threshold_precision: string;
+  verified_account_fees: string; observed_spread_comparison: string; funding: string;
+  net_profitability: string; independent_validation: string; reasons: string[];
+  scenarios: { name: string; cost_bps_per_side: string; rationale: string; source: string; status: string;
+    remaining_bps_per_side: string | null; relation: string; in_net: false }[];
+};
+
 export type ComparisonRow = {
   identity: {
     study_id: string; study_content_hash: string; study_label: string; strategy_family: string; manifest_hash: string;
@@ -1087,9 +1096,11 @@ export type ComparisonRow = {
     completeness: "GROSS_ONLY" | "COST_SCENARIO_APPLIED_UNVERIFIED"; study_cost_mode: string;
     verified_costs: "UNAVAILABLE"; net_profitability: "UNAVAILABLE"; reasons: string[];
   };
+  cost_fragility?: CostFragility;
   provenance: {
     datasets: { role: string; content_hash: string; evidence_tier: string; tier_claim: string }[];
     baseline_lag_micros: number | null; timing_claim_ceiling: string | null; evaluation_before_holdout: boolean | null;
+    evaluation_upper_bound_exclusive?: string | null; holdout_boundary?: string;
   };
   candidate_state: { state: string; evidence_hash: string; reasons: string[] } | null;
   restated_claims: string[];

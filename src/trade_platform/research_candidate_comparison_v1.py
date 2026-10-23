@@ -1,7 +1,7 @@
 """Evidence-based comparison of frozen Strategy Lab candidates (read-only projection).
 
 ``RESEARCH_ONLY``. One row per frozen candidate of one or more studies, built
-only from recorded, content-addressed evidence: the frozen candidate set
+from recorded, content-addressed performance evidence: the frozen candidate set
 (R4.4), the stored search result, the Decimal authority rerun of that set
 (R4.7), the study's C.1.1 walk-forward reports and recorded R6 candidate
 states. Nothing here writes, runs a search, opens or reads the holdout,
@@ -10,7 +10,7 @@ emits a signal or touches a migration.
 What it is not
 --------------
 It is not a ranking of quality. It computes no composite score, applies no
-weight or threshold, and makes no profitability or trade-readiness claim.
+weight or acceptance threshold, and makes no profitability or trade-readiness claim.
 Every row restates ``SEARCH_NON_AUTHORITATIVE``, ``GROSS_NON_PROMOTABLE``,
 ``NOT_VALIDATED`` and ``NO_EXECUTION_AUTHORITY`` with the study's own
 authority reasons, carries ``promotable = False`` and
@@ -38,6 +38,12 @@ A row never blends one kind of evidence into another:
   recorded cost and funding modes, and verified costs / net profitability,
   which this projection can only state as ``UNAVAILABLE`` (no verified fee
   schedule, OR-6).
+* ``cost_fragility`` -- the recorded Decimal baseline's gross break-even cost
+  per side and exact proposed-slippage remainders. The existing prepared
+  CONSERVATIVE_MEDIUM grid is explicitly sourced, proposed and never in net;
+  study-bound scenarios remain distinct. Missing authoritative development
+  evidence yields UNAVAILABLE, never a search-tier substitute. The metric is
+  based on summed step returns, not compounded total-return break-even.
 * ``provenance`` -- every dataset binding with its evidence tier and the
   claim that tier allows (T2 ``CONDITIONAL``, T1 descriptive, T0 engineering,
   T3/T4 professional tier yet not validated), the OR-5 baseline lag and
@@ -100,6 +106,7 @@ from enum import StrEnum
 from typing import Any, Final, Literal, Protocol
 from uuid import UUID
 
+from .research_cost_fragility_v1 import CostFragilityV1, cost_fragility_v1
 from .strategy_lab_read_model_v1 import _authority as _study_authority
 from .strategy_lab_read_model_v1 import economics_v1
 from .strategy_lab_study_v1 import UNTOUCHED_HOLDOUT_BOUNDARY_V1, identity_hash_v1
@@ -354,6 +361,7 @@ class CandidateComparisonRowV1:
     decimal_rerun: DecimalRerunDimensionV1
     walk_forward: WalkForwardDimensionV1
     economics: EconomicsDimensionV1
+    cost_fragility: CostFragilityV1
     provenance: ProvenanceDimensionV1
     #: The latest recorded R6 state; ``None`` = none recorded (never inferred).
     candidate_state: CandidateStateFactV1 | None
@@ -668,6 +676,13 @@ def _study_rows(evidence: StudyComparisonEvidenceV1, search_keys: Sequence[str])
             decimal_rerun=decimal,
             walk_forward=_walk_forward_dimension(trial_id, evidence.walk_forward),
             economics=_economics(evidence.study_identity, decimal), provenance=provenance,
+            cost_fragility=cost_fragility_v1(
+                baseline={m.key: m.value for m in decimal.baseline.metrics} if decimal.baseline else {},
+                search=result.get("metrics") or {},
+                lag_micros=decimal.baseline.lag_micros if decimal.baseline else None,
+                cost_policy=(evidence.study_identity.get("policies") or {}).get("cost") or {},
+                selection_established=decimal.selection_status == "ESTABLISHED",
+                before_holdout=provenance.evaluation_before_holdout),
             candidate_state=None if state is None else CandidateStateFactV1(
                 state=str(state["state"]), evidence_hash=str(state.get("evidence_hash")),
                 reasons=[str(r) for r in state.get("reasons", [])]),
