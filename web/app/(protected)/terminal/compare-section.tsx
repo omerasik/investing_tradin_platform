@@ -8,6 +8,7 @@ import {
   type PaperAccountLedger,
   type TerminalAccount,
   type TerminalComparison,
+  type StrategyLabPageInfo,
 } from "../../lib/data-access";
 import type { EvidenceResult } from "../../operator-contracts";
 import { DataTable } from "../../components/data-table";
@@ -61,7 +62,20 @@ export function paperEvidenceHref(studyId: string, trialId: string): string {
 
 /** Carry the comparison context through candidate review. */
 export function candidateHref(studyId: string, trialId: string, selection?: CompareSelection): string {
-  const query = new URLSearchParams({ paper_study: studyId, paper_trial: trialId });
+  const query = terminalQuery(selection);
+  query.set("paper_study", studyId);
+  query.set("paper_trial", trialId);
+  return `/terminal?${query.toString()}#opportunity-detail`;
+}
+
+/** One URL context for study paging, comparison and candidate review. */
+export function terminalQuery(selection?: CompareSelection): URLSearchParams {
+  const query = new URLSearchParams();
+  if (selection?.studyOffset) query.set("study_offset", String(selection.studyOffset));
+  if (selection?.paperStudy && selection.paperTrial) {
+    query.set("paper_study", selection.paperStudy);
+    query.set("paper_trial", selection.paperTrial);
+  }
   if (selection?.symbol) query.set("symbol", selection.symbol);
   for (const id of selection?.studies ?? []) query.append("compare_study", id);
   if (selection?.metric) query.set("compare_metric", selection.metric);
@@ -69,7 +83,7 @@ export function candidateHref(studyId: string, trialId: string, selection?: Comp
     query.set("compare_dimension", selection.sort.dimension);
     query.set("compare_direction", selection.sort.direction);
   }
-  return `/terminal?${query.toString()}#opportunity-detail`;
+  return query;
 }
 
 /** Every recorded metric key a row carries, for the operator's explicit choice (never a preset). */
@@ -105,20 +119,26 @@ function walkForward(row: ComparisonRow, metric: string | undefined): React.Reac
   );
 }
 
-export type CompareSelection = { symbol?: string; studies: string[]; metric?: string; sort?: ComparisonSort };
+export type CompareSelection = { symbol?: string; studies: string[]; metric?: string; sort?: ComparisonSort;
+  studyOffset?: number; paperStudy?: string; paperTrial?: string };
 
 /** The operator's selection form. Plain GET: nothing is written, nothing runs. */
-function CompareForm({ studies, selection, metrics, unavailable }: {
+function CompareForm({ studies, selection, metrics, unavailable, studyPage }: {
   studies: { study_id: string; label: string; strategy_family: string }[];
   selection: CompareSelection;
   metrics: string[];
   unavailable?: string;
+  studyPage?: StrategyLabPageInfo;
 }) {
   return (
     <form method="get" action="/terminal#compare" aria-label="Candidate comparison selection" className="margin-bottom-24">
       {selection.studies.filter((id) => !studies.some((study) => study.study_id === id)).map((id) =>
         <input key={id} type="hidden" name="compare_study" value={id} />)}
       {selection.symbol ? <input type="hidden" name="symbol" value={selection.symbol} /> : null}
+      {selection.paperStudy && selection.paperTrial ? <>
+        <input type="hidden" name="paper_study" value={selection.paperStudy} />
+        <input type="hidden" name="paper_trial" value={selection.paperTrial} />
+      </> : null}
       <fieldset>
         <legend>Studies to compare (at most {COMPARE_MAX_STUDIES})</legend>
         {studies.length ? studies.map((study) => (
@@ -154,7 +174,13 @@ function CompareForm({ studies, selection, metrics, unavailable }: {
           </select>
         </label>
       </fieldset>
-      <button type="submit">Compare selected studies</button>
+      <button type="submit" name="study_offset" value={selection.studyOffset ?? 0}>Compare selected studies</button>
+      {studyPage ? <nav aria-label="Comparison study pages">
+        <button type="submit" name="study_offset" value={Math.max(0, studyPage.offset - studyPage.limit)}
+          disabled={studyPage.offset === 0}>Previous studies, retaining selection</button>{" "}
+        <button type="submit" name="study_offset" value={studyPage.offset + studyPage.limit}
+          disabled={!studyPage.has_more || studyPage.offset + studyPage.limit > 10_000}>Next studies, retaining selection</button>
+      </nav> : null}
     </form>
   );
 }
@@ -256,12 +282,13 @@ export function RiskDetail({ item }: { item: CandidatePaperEvidence }) {
 }
 
 /** Selected studies' frozen candidates side by side, one column per candidate. */
-export function ComparisonSection({ studies, studiesUnavailable, selection, comparison, unavailable }: {
+export function ComparisonSection({ studies, studiesUnavailable, selection, comparison, unavailable, studyPage }: {
   studies: { study_id: string; label: string; strategy_family: string }[] | undefined;
   studiesUnavailable?: string;
   selection: CompareSelection;
   comparison: TerminalComparison | undefined;
   unavailable: string | undefined;
+  studyPage?: StrategyLabPageInfo;
 }) {
   const rows = comparison?.comparison.rows ?? [];
   const paper = new Map((comparison?.paper_evidence ?? []).map((item) => [key(item), item]));
@@ -269,7 +296,7 @@ export function ComparisonSection({ studies, studiesUnavailable, selection, comp
   return (
     <section aria-label="Candidate comparison">
       <h3>Side-by-side candidates</h3>
-      <CompareForm studies={studies ?? []} unavailable={studiesUnavailable} selection={selection} metrics={metricKeys(rows)} />
+      <CompareForm studies={studies ?? []} unavailable={studiesUnavailable} selection={selection} metrics={metricKeys(rows)} studyPage={studyPage} />
       {!selection.studies.length ? (
         <p className="empty-notice">Select one or more studies to compare their frozen candidates. Nothing is ranked until you choose a metric and a direction.</p>
       ) : unavailable ? <p className="empty-notice">{unavailable}</p> : comparison ? (

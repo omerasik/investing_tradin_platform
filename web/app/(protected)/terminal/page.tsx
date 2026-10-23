@@ -28,7 +28,8 @@ import {
 } from "../../lib/data-access";
 import { CommandConsole } from "./command-console";
 import { CandidateLifecycleSection, WalkForwardSection } from "./candidate-lifecycle";
-import { AccountRiskSection, CandidateJourney, candidateHref, COMPARE_MAX_STUDIES, ComparisonSection, PaperEvidenceSection, type CompareSelection } from "./compare-section";
+import { AccountRiskSection, CandidateJourney, candidateHref, terminalQuery, COMPARE_MAX_STUDIES, ComparisonSection, PaperEvidenceSection, type CompareSelection } from "./compare-section";
+import { StudyPagination, studyOffset, STUDY_PAGE_LIMIT, MAX_STUDY_OFFSET } from "./study-pagination";
 import { WorkspaceToolbar } from "../../components/workspace-toolbar";
 import { QualityStateBadge } from "../../components/quality-state-badge";
 import { DataTable } from "../../components/data-table";
@@ -230,11 +231,16 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
   const paperStudy = one(raw.paper_study);
   const paperTrial = one(raw.paper_trial);
   const paperTarget = paperStudy && paperTrial && UUID.test(paperStudy) && UUID.test(paperTrial) ? [paperStudy, paperTrial] as const : undefined;
+  const requestedOffset = one(raw.study_offset);
+  selection.studyOffset = studyOffset(requestedOffset);
+  const invalidStudyOffset = requestedOffset !== undefined
+    && (!/^\d{1,5}$/.test(requestedOffset) || Number(requestedOffset) > MAX_STUDY_OFFSET);
+  if (paperTarget) [selection.paperStudy, selection.paperTrial] = paperTarget;
   const ctx = await getWorkspaceContext();
   const [overviewResult, captureResult, signalsResult, studiesResult, rerunsResult, validationResult, accountsResult, incubationResult,
     activationResult, commandsResult, walkForwardResult, candidatesResult] =
     await Promise.all([
-      getTerminalOverview(ctx), getCaptureAvailability(ctx), getTerminalSignals(ctx), getStrategyLabStudies(ctx, { instrument: selection.symbol }),
+      getTerminalOverview(ctx), getCaptureAvailability(ctx), getTerminalSignals(ctx), getStrategyLabStudies(ctx, { instrument: selection.symbol, limit: STUDY_PAGE_LIMIT, offset: selection.studyOffset }),
       getTerminalReruns(ctx), getTerminalValidation(ctx), getTerminalAccounts(ctx), getTerminalIncubation(ctx),
       getTerminalActivation(ctx), getTerminalCommands(ctx), getTerminalWalkForward(ctx), getTerminalCandidates(ctx),
     ]);
@@ -270,7 +276,9 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
   const overview = overviewResult.state === "AVAILABLE" ? overviewResult.value : undefined;
   const capture = captureResult.state === "AVAILABLE" ? captureResult.value : undefined;
   const signals = signalsResult.state === "AVAILABLE" ? signalsResult.value.filter((item) => !symbol || item.symbol === symbol) : undefined;
-  const studies = studiesResult.state === "AVAILABLE" ? studiesResult.value : undefined;
+  const studies = studiesResult.state === "AVAILABLE" && studiesResult.value.state === "AVAILABLE" ? studiesResult.value : undefined;
+  const studiesUnavailable = studiesResult.state !== "AVAILABLE" ? stateText(studiesResult)
+    : !studies ? "Strategy Lab studies are unavailable." : undefined;
   const reruns = rerunsResult.state === "AVAILABLE" ? rerunsResult.value : undefined;
   const validation = validationResult.state === "AVAILABLE" ? validationResult.value : undefined;
   const accounts = accountsResult.state === "AVAILABLE" ? accountsResult.value : undefined;
@@ -344,7 +352,7 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
 
       <Step id="market-scan" title="Market Scan" claim="T4 FORWARD CAPTURE">
         <SymbolNavigation symbol={symbol} catalogue={studies?.facets.instrument_catalogue}
-          unavailable={studiesResult.state !== "AVAILABLE" ? stateText(studiesResult) : undefined} />
+          unavailable={studiesUnavailable} />
         <p>What first-party capture has proven per source. Gaps are shown as gaps, never bridged.</p>
         <p>
           This is forward capture from our own recorder, not the historical research data studies are searched on. To inspect the
@@ -387,8 +395,9 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
       </Step>
 
       <Step id="strategy-lab" title="Strategy Lab" claim="SEARCH_NON_AUTHORITATIVE">
+        {invalidStudyOffset ? <p className="empty-notice">Invalid or unsupported study offset. Showing the first study page; supported offsets are 0–{MAX_STUDY_OFFSET}.</p> : null}
         <p>{symbol ? `Catalogue-associated research for ${symbol}.` : "Research for all markets."} Associations come from stored dataset identities, never labels.</p>
-        {studies?.page.has_more ? <p>Showing the first {studies.items.length} studies. <a href={symbol ? `/strategy-lab?instrument=${symbol}` : "/strategy-lab"}>Browse all matching studies in the Explorer</a>.</p> : null}
+        {studies ? <StudyPagination page={studies.page} selection={selection} /> : null}
         <p>
           Browse every persisted trial, its parameters, stored metrics and Decimal rerun reconciliation in the{" "}
           <a href={symbol ? `/strategy-lab?instrument=${symbol}` : "/strategy-lab"}>Strategy Lab Explorer</a> (read-only).
@@ -401,12 +410,15 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
                 <tr key={study.study_id}>
                   <td><a href={`/strategy-lab?${new URLSearchParams({ study: study.study_id, ...(symbol ? { instrument: symbol } : {}) })}`}>{study.label}</a></td><td>{study.strategy_family}</td><td className="tabular-num">{study.planned_trial_count}</td>
                   <td>{counts(study.queue_states)}</td><td>{study.authority.reasons.join(", ")}</td>
-                  <td><a href={`/terminal?${new URLSearchParams({ compare_study: study.study_id, ...(symbol ? { symbol } : {}) }).toString()}#compare`}>Compare its frozen candidates</a></td>
+                  <td>{selection.studies.length >= COMPARE_MAX_STUDIES && !selection.studies.includes(study.study_id)
+                    ? <a href="#compare">Comparison selection full; adjust selected studies below</a>
+                    : <a href={`/terminal?${terminalQuery({ ...selection, studies: [...new Set([...selection.studies, study.study_id])] })}#compare`}>Compare its frozen candidates</a>}</td>
                 </tr>
               ))}
             </tbody>
           </DataTable>
-        ) : <p className="empty-notice">{studies ? (symbol ? `No catalogue-associated study recorded for ${symbol}.` : "No study registered.") : stateText(studiesResult)}</p>}
+        ) : <p className="empty-notice">{studies ? (studies.page.offset ? "Study page out of range. Return to an earlier study page; comparison selections are retained."
+          : symbol ? `No catalogue-associated study recorded for ${symbol}.` : "No study registered.") : studiesUnavailable}</p>}
       </Step>
 
       <Step id="compare" title="Compare" claim="GROSS · CONDITIONAL">
@@ -419,7 +431,8 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
         {excludedStudies.length ? <p className="empty-notice">Excluded {excludedStudies.length} selected study/studies: their stored symbol association is unavailable or does not match {symbol}. Select a matching study below.</p> : null}
         <ComparisonSection
           studies={studies?.items}
-          studiesUnavailable={studiesResult.state !== "AVAILABLE" ? stateText(studiesResult) : symbol ? `No catalogue-associated study recorded for ${symbol}.` : undefined}
+          studiesUnavailable={studiesUnavailable ?? (studies?.page.offset ? "Study page out of range; off-page selections are retained." : symbol ? `No catalogue-associated study recorded for ${symbol}.` : undefined)}
+          studyPage={studies?.page}
           selection={selection}
           comparison={comparison}
           unavailable={comparisonResult && comparisonResult.state !== "AVAILABLE" ? stateText(comparisonResult) : undefined}
