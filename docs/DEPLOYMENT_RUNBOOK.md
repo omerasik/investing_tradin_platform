@@ -178,6 +178,24 @@ and assess its reported interval alongside that host's time-service status and
 the separate market-source clock evidence; one sample cannot establish ongoing
 clock health.
 
+Access check on 2026-10-23 from the current workspace: no explicit paper
+environment, `POSTGRES_DSN`, or operator token was present in this process. No
+authorized paper application and canonical PostgreSQL database could be
+identified and accessed together, so the authenticated smoke was not run and
+there are no application-before, PostgreSQL, application-after, bracket-width,
+offset-interval, or relation observations for this runtime. No fixture or other
+database substitutes for that missing observation. The local Windows Time
+service was stopped with Manual startup at the read-only check; this is a
+service-state observation, not proof of current host offset or synchronization.
+The separate capture evidence in `docs/current-phase.yaml` records a
+2026-10-05 Bybit-minus-Windows-host estimate of +64 ms +/- 126 ms after a
+restart, and a 2026-10-13 OCI validation-host range of +8.6 to +11.4 ms with
+about +/- 97 ms bounds. Those are RTT-bounded, historical, different-host
+market-source observations; neither measures the paper application's
+PostgreSQL clock or proves current market knowledge time. The operational check
+remains pending until the intended paper runtime and its deployment-owned
+credentials are available through the authorized secret mechanism.
+
 For an existing, separately authorized candidate, add `--study-id <UUID> --trial-id
 <UUID>` to validate its protected paper-evidence response and report its actual
 unrealized availability/reasons. Add `--require-proven-price` only when testing an

@@ -140,7 +140,19 @@ terminal_runtime_smoke: >-
   established as disposable for this task, so no local PostgreSQL run occurred.
   Windows Time was stopped/Manual; no authorized runtime DB/app offset was
   observed. Deployment clock alignment and separate market-source clock
-  evidence remain operational acceptance work.
+  evidence remain operational acceptance work. 2026-10-23 workspace access
+  check: explicit paper environment, POSTGRES_DSN and operator token were absent
+  from the process. No authorized paper application/canonical PostgreSQL pair
+  was identifiable and accessible, so the authenticated smoke was not run;
+  application-before, DB, application-after, bracket, DB-minus-app interval and
+  observed relation remain unmeasured for this runtime. No fixture or other
+  database was substituted. Local Windows Time was still stopped/Manual;
+  service state alone does not establish offset or synchronization. Separate
+  historical Bybit-minus-host evidence is +64 ms +/- 126 ms on 2026-10-05 for
+  the Windows capture host after restart, and +8.6..+11.4 ms with about +/- 97 ms
+  bounds on 2026-10-13 for the OCI validation host. These RTT-bounded,
+  different-host samples do not establish the paper DB/app offset, current
+  market knowledge time, an approved tolerance or continuous clock health.
 terminal_runtime_next_priority: >-
   In an already authorized paper runtime, perform the read-only authenticated
   smoke and retain the one DB/app bracket plus the host time-service and separate
