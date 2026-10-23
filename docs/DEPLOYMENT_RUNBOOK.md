@@ -113,6 +113,216 @@ the `web` dashboard as four independently built and deployed services. Copy
 `docker compose -f docker-compose.staging.yml up -d --build`. A successful staging
 deployment is not, and must never be represented as, live-trading readiness.
 
+## First BTC/ETH/SOL paper-incubation operator procedure
+
+This is the canonical ordered handoff for M-TERMINAL-V1. Stop at an unmet
+prerequisite; a successful API read or a queued command is not acceptance.
+The sprint authorizes neither holdout opening nor paper start. The future write
+steps below require separate owner authorization. Reuse the protected activation,
+candidate lifecycle, funding, economics and risk projections; no checklist here
+replaces their gate logic.
+
+### 1. Identify runtime, evidence roots and access
+
+Record deployment host, reviewed commit, app identity/base URL, canonical database
+name/server/revision, authenticated subject/role and the capture/data root writer
+map. Obtain secret injection through the deployment operator; never paste account
+credentials, tokens or DSNs into files, argv or tickets. A research database is
+not the paper database. Verify migrations through the normal rollout, then use
+[the read-only smoke](#read-only-terminal-runtime-smoke) with the reviewed code.
+Preserve its protected readiness, unauthenticated rejection and authenticated
+read results plus UTC time/exit code. Runtime access is **NOT RUN / ACCESS BLOCKED**
+if that authorized pair cannot be identified.
+
+For read-only gate evidence, with the existing token injected:
+
+```text
+python scripts/terminal_command.py --api <AUTHORIZED_PAPER_API> --readiness
+```
+
+This issues GET `/operator-dashboard/research-terminal/activation` without a
+command body. HTTP failures exit nonzero. Exit zero means the projection was
+read, even when its answers say BLOCKED. Save `cycle_id`, `holdout_state`,
+`state_hash`, each answer's `status`, `subjects`, `reasons`, `identities`,
+`evidence` and `next_action`. Check the intended candidate/account subjects,
+not just an aggregate READY supported by a different account or candidate.
+
+### 2. Verify actual-account fee evidence; obtain OR-6 decisions
+
+The owner supplies a redacted actual Bybit USDT-perpetual account fee statement
+or account fee-screen record: opaque account ID, venue/product, actual VIP/tier,
+exact maker and taker **bps per side**, verifier, ISO verification date, source
+reference and explicit effective start/exclusive end. Keep secrets and personal
+identifiers outside repository/logs. A public fee table, hypothetical rate or
+current statement without historical coverage cannot establish development fees.
+If full coverage is unavailable, retain UNAVAILABLE rather than extending it.
+
+The operator constructs the existing `FeeScheduleV1` and canonical
+`actual-account-fee-evidence-v1` envelope with VERIFIED /
+ACTUAL_ACCOUNT_FEE_STATEMENT, validity interval and `evidence_hash =
+identity_hash_v1(evidence)`. Install a reviewed `DevelopmentFeeBindingV1` through
+`PostgresOperatorDashboardQueries(..., terminal_fee_bindings={study_content_hash:
+binding})` in the deployment composition. It binds independent intended account,
+venue/product/tier, study/frozen-set/dataset hashes, actual full observation
+interval and assessment instant. There is currently **no env-file installer or
+browser upload**; do not assume that putting JSON on disk installs this binding.
+See [the exact envelope and binding contract](DEVELOPMENT_COST_FRAGILITY.md#actual-account-fee-integration--2026-10-23).
+Read Compare for those exact identities and retain VERIFIED/UNAVAILABLE, reasons,
+source/verifier/date, coverage, evidence hash and exact fee-only/scenario
+remainders. Terminal server `as_of` bounds verification time. Hash consistency
+does not independently prove the statement's truth.
+
+Separately the OR-6 owner approves or rejects the prepared
+CONSERVATIVE_MEDIUM 1 / 2.5 / 5 bps per-side slippage grid, or supplies a replacement
+named grid with exact bps and rationale. Record the approved cost policy as
+`or6-cost-policy-v2` in preregistration with the verified schedule; do not mutate
+old gross study identities. The retrospective comparison binding does not
+approve this policy or prove execution costs.
+
+Historical F3 published settled funding is implemented for T2 holdout validation.
+Forward paper funding remains a **technical AND owner-evidence gap**:
+`paper_funding_evidence_v1` never emits ECONOMICALLY_COSTABLE and calculates no
+charge. OR-6 must separately decide the settlement-price convention (trade proxy
+versus venue mark is not interchangeable), whether published settlement is paper
+account settlement authority, acquisition permission and fill-at-settlement
+holding treatment. No option is silently selected. Existing `paper_evidence.py`
+accepts explicit `LAST_TRADE_OF_MINUTE_ENDING_AT_INSTANT` proxy declarations but
+those are evidence declarations, not approved economic authority; the CLI has no
+venue interval store and its funding window remains IRREGULAR. Owner approval
+alone does not implement missing charge/settlement logic. Preserve all economic
+blockers; do not label fee-adjusted figures as complete net returns.
+
+### 3. Complete owner packets, without executing them in this sprint
+
+Use exact full identities from Compare; short hashes below only locate prepared
+packets in [current-phase.yaml](current-phase.yaml). Owner command actor fields
+must equal the authenticated subject and owner commands need REVIEW_RISK.
+The input schemas are the existing Pydantic models in
+`research_terminal_commands_v1.py`; validate complete JSON against those models
+before submission. Use stable explicit idempotency keys and retain returned
+command IDs, events and final states.
+
+| Gate | Exact outstanding owner decision/input | Existing submission |
+| --- | --- | --- |
+| OR-7 | Confirm exact ETH breakout study `566bdfb8-301b-544c-93ce-ea6c9cfb5d77`, dataset and rerun; holdout end A: 2026-09-24 or B: latest admissible published archive day at opening, represented as an explicit exclusive date; minimum trades 30/50/100 (prepared 50); acceptance net return > 0 alone, plus owner drawdown cap, or plus owner daily Sharpe floor (prepared return + cap, cap missing); incubation 14/28/56 days (prepared 28); authorized_by/on and approved v2 cost policy | PREREGISTRATION_RECORD; DRAFT until all requirements resolve |
+| OR-9 | Approve exact study/rerun/trial/symbol entries, watchlist ID, approved_by/on and note. Prepared core: ETH trend `01e0595f`, SOL trend `db8f92df`, ETH breakout `8813e8d1`/`e275f278`; optional diagnostic-only ETH/SOL mean reversion `a204fdbd`/`2a11033e`. Research subset does not itself authorize any watch | WATCHLIST_RECORD; no runner until separately permitted |
+| OR-11 | Account ID, PERSONAL_PAPER or PROP_PAPER, display name and base currency; every policy value below and approved_by/on | ACCOUNT_REGISTER then ACCOUNT_POLICY_RECORD; PROP rules are not enforced by paper v1 and remain blocked |
+
+OR-11 money fields use the chosen base currency: `paper_starting_capital`,
+`paper_order_notional`, `daily_loss_limit`, `maximum_drawdown_limit`,
+`maximum_order_notional`, `maximum_position_notional`,
+`maximum_daily_order_notional`, `maximum_per_trade_loss` are strictly positive.
+`maximum_leverage` is a positive multiple; `allowed_symbols` is an explicit
+nonempty selection from BTCUSDT/ETHUSDT/SOLUSDT; `max_market_age_seconds` is a
+positive integer. `minimum_data_quality`, `maximum_spread_fraction`,
+`maximum_event_risk`, `maximum_expected_slippage_fraction` are fractions/scores
+in [0,1]; `maximum_stop_distance_fraction` is (0,1] and
+`stop_gap_buffer_fraction` is [0,1). No value is proposed by this procedure.
+PROP_PAPER additionally needs prop_firm, prop_daily_loss_limit,
+prop_max_trailing_drawdown and prop_profit_target, and stays blocked by the
+existing paper ledger limitation.
+
+For PERSONAL_PAPER only, the owner may explicitly declare these seven unsupported
+controls `NOT_APPLICABLE`: minimum_data_quality, maximum_spread_fraction,
+maximum_event_risk, maximum_expected_slippage_fraction, maximum_per_trade_loss,
+maximum_stop_distance_fraction, stop_gap_buffer_fraction. The last three must be
+all numeric or all NOT_APPLICABLE. Numeric unsupported controls still block
+opening because paper v1 has no corresponding evidence source. Missing controls
+are never interpreted as NOT_APPLICABLE.
+
+After a **separate approval** to record the prepared packets, use the existing
+submission command, one kind/file/key at a time:
+
+```text
+python scripts/terminal_command.py --api <AUTHORIZED_PAPER_API> --kind <APPROVED_KIND> --inputs <REVIEWED_PACKET_JSON> --key <STABLE_DECISION_KEY>
+python scripts/terminal_command.py --api <AUTHORIZED_PAPER_API> --list
+```
+
+The terminal worker must be separately deployed/authorized with matching code,
+DB and roots for queued preregistration/validation/runner work. A HTTP 2xx receipt
+is not worker success. Verify final command events, then repeat `--readiness`.
+
+### 4. Establish OR-1 capture and clock evidence
+
+Identify one authoritative writer per root before any measurement. Run existing
+`capture_bybit_public.py --root <IDENTIFIED_R1B_ROOT> status`, `availability`, and
+`universe-hours --hours 2`. OR-1 owner must supply formal max-unproven seconds S;
+60 seconds is a paging threshold, not an approved S. Only then run:
+
+```text
+python scripts/capture_bybit_public.py --root <IDENTIFIED_R1B_ROOT> universe-acceptance --max-unproven-seconds <OWNER_APPROVED_S> --required-hours 24 --verbose
+python scripts/capture_bybit_public.py --root <IDENTIFIED_R1B_ROOT> universe-acceptance --max-unproven-seconds <OWNER_APPROVED_S> --required-hours 24 --verify
+```
+
+Retain joint BTC/ETH/SOL COMPLETE hours, longest/current run, evidence end,
+interruptions/staleness, replay outcome and the owner's acceptance reference.
+A historical MET is not proof of current continuity. See
+[OCI capture/backup/clock operations](../deploy/oci/README.md) for root/writer
+handoff and independent restore receipt requirements. Do not start capture or
+change a host clock as part of this check.
+
+From the smoke retain application-before/DB/application-after UTC instants,
+bracket width, DB-minus-app interval and observed relation. Also record that
+host's time-service state and separate bounded market-source samples at their
+actual observation times. A single bracket and historical different-host samples
+prove no ongoing synchronization or owner-approved tolerance. Clock/service
+changes require the deployment owner.
+
+### 5. Separately authorized opening and first paper session
+
+Repeat the activation read and inspect candidate lifecycle/exit criteria in
+Validation, Risk Preview and Paper. The projection does not include every
+external operational requirement: explicitly attach the OR-1/current-clock and
+runtime evidence above. Require authorized preregistration, correct cost policy,
+accepted operational prerequisites and owner permission before the one-shot
+HOLDOUT_OPEN command (preregistration_hash, confirm_cycle_id, opened_by). This
+irreversible holdout action is **not authorized by the sprint**. After that separate
+authorization, execute HOLDOUT_VALIDATE for the same preregistration hash through
+the existing worker; retain every candidate/scenario/lag outcome including failure.
+Acceptance uses net criteria under every approved cost scenario at the OR-5
+2-second baseline and the mandatory 5/30/60-second sensitivity sweep.
+Do not open another cycle or repeat selection to rescue a failed result.
+
+Only a resulting INCUBATING candidate, its authorized watch, a usable account
+policy and separately approved runtime/session can support PAPER_INCUBATION_START
+with family, dataset_version_id, symbol and watchlist_id. A watch entry alone
+cannot make a candidate INCUBATING. Inspect readiness subjects and funding/risk
+blockers again; do not bypass the terminal worker via the lower-level unit-fill
+runner. Keep cost-incomplete research diagnostics explicitly separate from any
+owner-authorized incubation acceptance. Forward funding remains technically
+non-costable under v1 even after packets are recorded.
+
+Retain the start command ID; stop via PAPER_INCUBATION_STOP with
+`start_command_id` after the authorized session. Read `--list`, terminal
+incubation, paper-account and the selected candidate's paper-evidence response.
+For stored evidence inspection, `paper_evidence.py` is dry-run by default and
+`paper_incubation.py report` reports unit results; both support injected
+TRADE_PLATFORM_RESEARCH_DSN so no DSN need appear in argv. Do not add `--persist`
+or run a runner without separate authority.
+
+### 6. Interpret and retain results
+
+Strategy Lab/Compare SEARCH and walk-forward are gross development evidence,
+not independent validation. Decimal reconciliation establishes numeric/selection
+agreement under the recorded convention, not net profitability. Fee-only and
+fee-plus-proposed-slippage remainders are sensitivity arithmetic, not compounded
+net returns. Gross unit fills, hypothetical account money P&L, proven unrealized
+trade references and funding evidence are distinct. A trade proxy is not a
+settlement mark; EVIDENCE_COMPLETE is not ECONOMICALLY_COSTABLE. Missing funding,
+parity, clock, age, price or risk inputs stay unavailable/refused. Record non-fills,
+chain breaks, rejected candidates and all unresolved economic blockers.
+INCUBATING is not PROFESSIONALLY_VALIDATED or execution authority.
+
+Sprint evidence at 2026-10-23 / base `dfd4bc5`: the research ledger at 0062 has
+nine studies/frozen sets/reruns, zero preregistrations, holdout openings,
+watchlist versions, accounts or policies. It cannot stand in for paper readiness.
+This process has no POSTGRES_DSN, POSTGRES_TEST_DSN, operator token or explicit
+paper environment, so no authorized paper smoke/clock bracket was attempted.
+Windows Time was stopped/Manual. OR-1 current runtime/root acceptance was not
+measured. Forward funding costability is technically unimplemented. Disposition:
+**not ready for genuine paper incubation**; no owner gate, holdout or paper
+promotion was activated.
+
 ## Read-only terminal runtime smoke
 
 The existing `analytics` extra is the supported local/staging analytical Python
