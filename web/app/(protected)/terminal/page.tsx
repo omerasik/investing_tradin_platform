@@ -27,7 +27,7 @@ import {
 } from "../../lib/data-access";
 import { CommandConsole } from "./command-console";
 import { CandidateLifecycleSection, WalkForwardSection } from "./candidate-lifecycle";
-import { AccountRiskSection, COMPARE_MAX_STUDIES, ComparisonSection, PaperEvidenceSection, type CompareSelection } from "./compare-section";
+import { AccountRiskSection, CandidateJourney, candidateHref, COMPARE_MAX_STUDIES, ComparisonSection, PaperEvidenceSection, type CompareSelection } from "./compare-section";
 import { WorkspaceToolbar } from "../../components/workspace-toolbar";
 import { QualityStateBadge } from "../../components/quality-state-badge";
 import { DataTable } from "../../components/data-table";
@@ -42,6 +42,7 @@ const STEPS = [
   ["opportunities", "Opportunities"],
   ["strategy-lab", "Strategy Lab"],
   ["compare", "Compare"],
+  ["opportunity-detail", "Selected candidate"],
   ["validation", "Validation"],
   ["candidate-readiness", "Candidate readiness"],
   ["paper-evidence", "Paper evidence"],
@@ -352,7 +353,7 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
         <p>Live signals of watched frozen candidates: proposals only, filled on paper at the next strictly later bar open.</p>
         {signals && signals.length ? (
           <DataTable caption="Recent live signals" ariaLabel="Live signals">
-            <thead><tr><th scope="col">Decided (UTC)</th><th scope="col">Symbol</th><th scope="col">Target</th><th scope="col">Claim</th><th scope="col">Why</th></tr></thead>
+            <thead><tr><th scope="col">Decided (UTC)</th><th scope="col">Symbol</th><th scope="col">Target</th><th scope="col">Claim</th><th scope="col">Why</th><th scope="col">Next</th></tr></thead>
             <tbody>
               {signals.map((signal) => (
                 <tr key={signal.signal_id}>
@@ -361,6 +362,7 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
                   <td>{target(signal.target_from)} → {target(signal.target_to)}</td>
                   <td><Claim label={signal.claim} /></td>
                   <td>{Object.entries(signal.explanation).map(([key, value]) => `${key}=${value}`).join(", ")}</td>
+                  <td><a href={candidateHref(signal.study_id, signal.trial_id, selection)}>Review candidate, risk and paper</a></td>
                 </tr>
               ))}
             </tbody>
@@ -420,6 +422,10 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
         <h3>Walk-forward</h3>
         <WalkForwardSection reports={walkForwardResult.state === "AVAILABLE" ? walkForwardResult.value : undefined} unavailable={stateText(walkForwardResult)} />
       </Step>
+
+      <CandidateJourney selected={Boolean(paperTarget)}
+        item={paperResult?.state === "AVAILABLE" ? paperResult.value : undefined}
+        unavailable={paperResult && paperResult.state !== "AVAILABLE" ? stateText(paperResult) : undefined} />
 
       <Step id="validation" title="Validation" claim="NONE VALIDATED">
         <p>

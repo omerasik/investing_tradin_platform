@@ -59,6 +59,18 @@ export function paperEvidenceHref(studyId: string, trialId: string): string {
   return `/terminal?${new URLSearchParams({ paper_study: studyId, paper_trial: trialId }).toString()}#paper-evidence`;
 }
 
+/** Carry the comparison context through candidate review. */
+export function candidateHref(studyId: string, trialId: string, selection?: CompareSelection): string {
+  const query = new URLSearchParams({ paper_study: studyId, paper_trial: trialId });
+  for (const id of selection?.studies ?? []) query.append("compare_study", id);
+  if (selection?.metric) query.set("compare_metric", selection.metric);
+  if (selection?.sort) {
+    query.set("compare_dimension", selection.sort.dimension);
+    query.set("compare_direction", selection.sort.direction);
+  }
+  return `/terminal?${query.toString()}#opportunity-detail`;
+}
+
 /** Every recorded metric key a row carries, for the operator's explicit choice (never a preset). */
 function metricKeys(rows: ComparisonRow[]): string[] {
   const keys = new Set<string>();
@@ -211,7 +223,7 @@ function EconomicsDetail({ item }: { item: CandidatePaperEvidence }) {
 }
 
 /** Risk of the candidate's recorded paper target under its bound account; sizing only when ALLOWED. */
-function RiskDetail({ item }: { item: CandidatePaperEvidence }) {
+export function RiskDetail({ item }: { item: CandidatePaperEvidence }) {
   const risk = item.risk;
   const current = policySummary(risk.current_policy);
   return (
@@ -360,7 +372,7 @@ export function ComparisonSection({ studies, studiesUnavailable, selection, comp
                   <th scope="row">Next</th>
                   {rows.map((row) => (
                     <td key={key(row)}>
-                      <a href="#candidate-readiness">Readiness</a> · <a href={paperEvidenceHref(row.identity.study_id, row.identity.trial_id)}>Paper evidence</a>
+                      <a href={candidateHref(row.identity.study_id, row.identity.trial_id, selection)}>Review candidate, risk and paper</a>
                     </td>
                   ))}
                 </tr>
@@ -493,4 +505,24 @@ export function PaperEvidenceSection({ items, unavailable }: { items: CandidateP
       ))}
     </>
   );
+}
+
+/** Exact stored identity is kept throughout this read-only review. */
+export function CandidateJourney({ item, selected, unavailable }: {
+  item?: CandidatePaperEvidence; selected: boolean; unavailable?: string;
+}) {
+  return <section id="opportunity-detail" className="panel margin-bottom-24" aria-label="Selected candidate review">
+    <h2>Opportunity detail: selected research candidate</h2>
+    <p>A recorded research candidate is not a recommendation or a validated opportunity.</p>
+    {!selected ? <p className="empty-notice">Compare studies and choose Review candidate, risk and paper, or review a recorded signal.</p>
+      : !item ? <p className="empty-notice">{unavailable ?? "Selected candidate evidence is unavailable."} No risk or price is inferred.</p>
+      : <>
+        <h3>{item.symbol ?? "Symbol unavailable"} / {item.trial_id.slice(0, 8)}</h3>
+        <p>Study <code>{item.study_id}</code>; trial <code>{item.trial_id}</code>; cycle <code>{item.cycle_id}</code>; assessed {utc(item.as_of)}.</p>
+        <p><Badge label={item.claim} /> <Badge label={item.validated_claim} /> Execution authority: {item.execution_authority}.</p>
+        <nav aria-label="Selected candidate steps"><a href="#compare">Back to comparison</a> / <a href="#selected-risk">Review risk</a> / <a href="#selected-paper">Review paper evidence</a></nav>
+        <div id="selected-risk"><RiskDetail item={item} /></div>
+        <div id="selected-paper"><h3>Paper evidence for this candidate</h3><PaperEvidenceSection items={[item]} unavailable={undefined} /></div>
+      </>}
+  </section>;
 }
