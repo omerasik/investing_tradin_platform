@@ -62,6 +62,7 @@ export function paperEvidenceHref(studyId: string, trialId: string): string {
 /** Carry the comparison context through candidate review. */
 export function candidateHref(studyId: string, trialId: string, selection?: CompareSelection): string {
   const query = new URLSearchParams({ paper_study: studyId, paper_trial: trialId });
+  if (selection?.symbol) query.set("symbol", selection.symbol);
   for (const id of selection?.studies ?? []) query.append("compare_study", id);
   if (selection?.metric) query.set("compare_metric", selection.metric);
   if (selection?.sort) {
@@ -104,7 +105,7 @@ function walkForward(row: ComparisonRow, metric: string | undefined): React.Reac
   );
 }
 
-export type CompareSelection = { studies: string[]; metric?: string; sort?: ComparisonSort };
+export type CompareSelection = { symbol?: string; studies: string[]; metric?: string; sort?: ComparisonSort };
 
 /** The operator's selection form. Plain GET: nothing is written, nothing runs. */
 function CompareForm({ studies, selection, metrics, unavailable }: {
@@ -115,6 +116,9 @@ function CompareForm({ studies, selection, metrics, unavailable }: {
 }) {
   return (
     <form method="get" action="/terminal#compare" aria-label="Candidate comparison selection" className="margin-bottom-24">
+      {selection.studies.filter((id) => !studies.some((study) => study.study_id === id)).map((id) =>
+        <input key={id} type="hidden" name="compare_study" value={id} />)}
+      {selection.symbol ? <input type="hidden" name="symbol" value={selection.symbol} /> : null}
       <fieldset>
         <legend>Studies to compare (at most {COMPARE_MAX_STUDIES})</legend>
         {studies.length ? studies.map((study) => (
