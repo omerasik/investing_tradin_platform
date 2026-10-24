@@ -224,7 +224,7 @@ def _held_decision_indices_v1(bars: BarsV1, lag_us: int) -> np.ndarray:
     """
     execution = execution_indices_v1(bars, lag_us)
     decisions = np.flatnonzero(execution >= 0)
-    held = np.full(bars.size, -1, dtype=np.int64)
+    held: np.ndarray = np.full(bars.size, -1, dtype=np.int64)
     np.maximum.at(held, execution[decisions], decisions)
     np.maximum.accumulate(held, out=held)
     held[held < bars.segment_start] = -1
@@ -236,7 +236,7 @@ def _held_decision_indices_v1(bars: BarsV1, lag_us: int) -> np.ndarray:
 
 def _positions_from_schedule_v1(targets: np.ndarray, schedule: np.ndarray) -> np.ndarray:
     """Exact -1/0/+1 values in the float dtype already used by fold metrics."""
-    held = np.asarray(targets[schedule], dtype=float)
+    held: np.ndarray = np.asarray(targets[schedule], dtype=float)
     held[schedule < 0] = 0.0
     return held
 
