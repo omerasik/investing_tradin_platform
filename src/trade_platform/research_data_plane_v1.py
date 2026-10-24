@@ -73,6 +73,8 @@ _NAMESPACE: Final = uuid5(NAMESPACE_URL, "trade_platform.research_data_plane_v1"
 #: manifest): a fixed row-group size makes the bytes independent of how the
 #: source was fetched.
 ROW_GROUP_ROWS: Final = 131_072
+# Reader allocation bound only: never a writer setting or content identity.
+_READ_BATCH_ROWS: Final = 32_768
 _WRITER_SETTINGS: Final[Mapping[str, Any]] = {
     "compression": "zstd",
     "compression_level": 3,
@@ -524,6 +526,37 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _python_columns_v1(batch: pa.RecordBatch) -> list[list[object]]:
+    """Share immutable, exact Decimals inside one bounded read batch.
+
+    Arrow dictionary encoding operates on the declared decimal type, never on
+    floats or a quantized approximation. Equal values can share a Python Decimal
+    across OHLC/other columns of the same type. Nulls and column order survive
+    unchanged. High-cardinality groups use the original conversion; no dictionary
+    or Python-value cache survives this batch. Writer/schema/hash rules are intact.
+    """
+    columns: list[list[object]] = [[] for _ in batch.columns]
+    groups: dict[pa.DataType, list[int]] = {}
+    for i, column in enumerate(batch.columns):
+        if pa.types.is_decimal(column.type):
+            groups.setdefault(column.type, []).append(i)
+        else:
+            columns[i] = column.to_pylist()
+    for positions in groups.values():
+        joined = pa.concat_arrays([batch.column(i) for i in positions])
+        encoded = joined.dictionary_encode()
+        if len(encoded.dictionary) * 4 > len(joined) * 3:
+            for i in positions:
+                columns[i] = batch.column(i).to_pylist()
+            continue
+        values = encoded.dictionary.to_pylist()
+        indices = encoded.indices.fill_null(-1).to_numpy(zero_copy_only=False)
+        for offset, i in enumerate(positions):
+            lo, hi = offset * batch.num_rows, (offset + 1) * batch.num_rows
+            columns[i] = [None if index < 0 else values[index] for index in indices[lo:hi]]
+    return columns
+
+
 class ResearchFrameStoreV1:
     """Content-addressed Parquet objects plus JSON manifests under one root."""
 
@@ -699,9 +732,10 @@ class ResearchFrameStoreV1:
             parquet = pq.ParquetFile(str(self.object_path(item)))
             if not parquet.schema_arrow.equals(frame.schema):
                 raise ResearchDataPlaneError("parquet_schema_differs_from_frame_schema")
-            for batch in parquet.iter_batches(batch_size=ROW_GROUP_ROWS):
-                columns = [column.to_pylist() for column in batch.columns]
+            for batch in parquet.iter_batches(batch_size=_READ_BATCH_ROWS):
+                columns = _python_columns_v1(batch)
                 yield from zip(*columns, strict=True)
+                del columns
 
     def verify(self, manifest: FrameManifestV1) -> None:
         """Re-hash every object and every row. Raises on any divergence."""

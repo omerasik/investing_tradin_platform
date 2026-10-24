@@ -39,6 +39,30 @@ dataset caches, repeated indicators, split construction and worker admission
 remain separate measured follow-ups. The permanent zero-recurring-market-data-
 subscription decision and every existing owner gate remain in force.
 
+### P2A memory-efficient loading (owner-authorized follow-up, 2026-10-25)
+
+Extend the same research data plane with bounded 32,768-row reading and exact
+in-batch Decimal sharing via Arrow dictionaries, retaining the original
+conversion for high-cardinality groups. Writer settings, schemas, manifest and
+object identities, logical hashing and the SDK source remain unchanged.
+`strategy_lab_data_loading_v1` routes existing CLI/search/Decimal-rerun callers
+through the existing full verifier even on warm cache hits; cache retention is
+limited to one root-bound dataset and an estimated 512 MiB bar-payload budget.
+No second dataset authority or new numerical/execution convention is introduced.
+
+`scripts/research_loading_performance.py` retains a pre-P2A reader/SDK reference
+and an offline 86,400-bar fixture; explicit pinned ETH development mode permits
+only read-only loading of the existing 524,160-bar dataset under resource guards.
+Before/after receipts and stage/cache/I/O findings belong to the implementation
+PR. ETH median peak commit fell 896.73 -> 693.57 MiB, working set 881.60 ->
+684.96 MiB; cold time 27.3645 -> 25.0679 s. The unsafe reference warm fast path
+skipped verification; the new warm path performs full revalidation (14.3492 s,
+88.35 MiB process read transfers). Preserve this negative cost finding alongside
+the memory gain: there is no warm-speedup or physical-disk-I/O reduction claim.
+Windows transfer counters do not establish physical disk bytes or OS cache state.
+Complete row materialization, per-load verification and per-worker duplication
+still require measured scaling work; no next phase or large campaign is started.
+
 ## North star (recorded 2026-09-06, Module 3G.0)
 
 The platform is treated from this point forward as a **Professional
