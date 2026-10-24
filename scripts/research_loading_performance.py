@@ -50,7 +50,8 @@ HOST_RESERVE = 512 * MIB
 WORKING_SET_LIMIT = 128 * MIB
 DISK_FLOOR = 24 * 1024 ** 3
 REAL_ID = "da5bca46-8e14-506e-96db-44c039cfd7f2"
-REAL_HASH = "9d465533eb2e7e39ce15fac9d774b663f8f98f360bda8bb9e7ebf68cd2a373d2"
+# Immutable dataset content SHA-256 verified from its catalog, never a credential.
+REAL_HASH = "9d465533eb2e7e39ce15fac9d774b663f8f98f360bda8bb9e7ebf68cd2a373d2"  # pragma: allowlist secret
 
 
 def host_memory() -> dict[str, int]:
