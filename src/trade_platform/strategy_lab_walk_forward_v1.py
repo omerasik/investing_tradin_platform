@@ -82,7 +82,6 @@ from .strategy_sdk_v1 import (
     FAMILIES_V1,
     BarsV1,
     execution_indices_v1,
-    held_positions_v1,
     restrict_to_bound_v1,
 )
 
@@ -169,7 +168,7 @@ def _text(value: float | None) -> str | None:
     return format(value, ".12g")
 
 
-def interval_metrics_f64(bars: BarsV1, held: Sequence[int], indices: Sequence[int]) -> dict[str, Any]:
+def interval_metrics_f64(bars: BarsV1, held: Sequence[int] | np.ndarray, indices: Sequence[int]) -> dict[str, Any]:
     """Gross float64 SEARCH metrics over the given intervals only (in index order).
 
     Position changes are counted where they happen inside the member set: a
@@ -213,6 +212,35 @@ def _decimal(raw: object) -> Decimal | None:
     return value if value.is_finite() else None
 
 
+def _held_decision_indices_v1(bars: BarsV1, lag_us: int) -> np.ndarray:
+    """Trial-independent execution schedule, equivalent to SDK held_positions_v1.
+
+    Use the unchanged SDK's strictly-later-open eligibility. The latest decision
+    reaching an open wins; carry it only inside its segment and force the final
+    interval flat. No target/price arithmetic is performed here. This one local
+    O(bars) array replaces every trial's Python pending dict and two bar loops;
+    it is never cached across datasets, cuts, lags or calls. The SDK source (and
+    therefore strategy, study and trial identities) stays unchanged.
+    """
+    execution = execution_indices_v1(bars, lag_us)
+    decisions = np.flatnonzero(execution >= 0)
+    held: np.ndarray = np.full(bars.size, -1, dtype=np.int64)
+    np.maximum.at(held, execution[decisions], decisions)
+    np.maximum.accumulate(held, out=held)
+    held[held < bars.segment_start] = -1
+    last = np.concatenate((bars.segment[1:] != bars.segment[:-1], [True]))
+    held[last] = -1
+    held.setflags(write=False)
+    return held
+
+
+def _positions_from_schedule_v1(targets: np.ndarray, schedule: np.ndarray) -> np.ndarray:
+    """Exact -1/0/+1 values in the float dtype already used by fold metrics."""
+    held: np.ndarray = np.asarray(targets[schedule], dtype=float)
+    held[schedule < 0] = 0.0
+    return held
+
+
 def run_walk_forward_v1(
     study: StudySpecV1, plan: WalkForwardPlanV1, rule: WalkForwardSelectionRuleV1, *, bars: BarsV1,
 ) -> WalkForwardReportV1:
@@ -237,6 +265,7 @@ def run_walk_forward_v1(
     # Cut first: no target is ever computed from a bar not known before the plan end.
     bars = restrict_to_bound_v1(bars, end, lag)
     split: PurgedWalkForwardV1 = purged_walk_forward_v1(interval_observations_v1(bars, lag_us), plan)
+    schedule = _held_decision_indices_v1(bars, lag_us)
 
     sign = -1 if rule.direction is RankDirectionV1.HIGHER_IS_BETTER else 1
     candidates: list[list[tuple[Decimal, str, dict[str, Any]]]] = [[] for _ in split.splits]
@@ -249,7 +278,7 @@ def run_walk_forward_v1(
             inadmissible += 1
             continue
         targets, ties = family.targets_f64(bars, typed)
-        held = held_positions_v1(bars, targets, lag_us)
+        held = _positions_from_schedule_v1(targets, schedule)
         for k, fold in enumerate(split.splits):
             train_value = _decimal(interval_metrics_f64(bars, held, fold.train_indices)[rule.metric])
             if train_value is None:

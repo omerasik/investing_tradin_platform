@@ -12,6 +12,33 @@ it does not imply a production or live-trading approval. All other work is
 intentionally shown as incomplete until its end-to-end acceptance evidence
 exists.
 
+## Authorized Research Factory performance priority (2026-10-24)
+
+The owner's Phase 1 Performance Foundation supersedes additional narrow
+BTC/ETH research campaigns as the immediate engineering priority, within the
+existing R4 research architecture. It does not replace the multi-asset north
+star, approve later phases, or authorize the proposed 24-fold campaign.
+
+`scripts/research_performance.py` provides an offline, synthetic, reproducible
+reference/optimized benchmark: 86,400 bars, three existing SDK families,
+40 trials total, two rolling folds per family, three fresh sequential processes,
+one numerical thread, a 1 GiB OS memory ceiling and a 120 s deadline per process.
+It reports materialization/evaluation time, throughput, peak RSS/commit where
+available, process I/O, exact study/trial/report identities and source hashes.
+It does not benchmark provider/Parquet I/O or database queue throughput.
+
+The focused implementation reuses a target-independent execution schedule
+inside each bounded walk-forward call. SDK source, strategy/study/trial
+identities, execution timing, near ties, Decimal authority, splits and holdout
+boundaries remain unchanged; parity is checked against the unchanged SDK.
+The benchmark and focused regression evidence belong to the implementation PR;
+broad verification and exact-main CI remain mandatory. No 10,000/100,000-trial
+capacity, multi-worker scaling, alpha, paper or production readiness is claimed.
+Columnar/selective loading, Decimal materialization, existing process-local
+dataset caches, repeated indicators, split construction and worker admission
+remain separate measured follow-ups. The permanent zero-recurring-market-data-
+subscription decision and every existing owner gate remain in force.
+
 ## North star (recorded 2026-09-06, Module 3G.0)
 
 The platform is treated from this point forward as a **Professional
