@@ -2,7 +2,7 @@
 # This is NOT a second roadmap: requirements stay in MASTER_ROADMAP.md, design
 # stays in module docstrings, history stays in git.
 
-updated: 2026-10-23
+updated: 2026-10-24
 
 # Phase naming. Since 2026-09-24 the owner-approved canonical roadmap uses an
 # "R" series (R0-R15, owner review points OR-1..OR-14). It is distinct from the
@@ -13,10 +13,42 @@ updated: 2026-10-23
 # -> R8 opportunity engine -> R9 accounts/risk -> R10 paper; R7 (T3 spine) is
 # the one parallel track.
 phase:
-  id: "M-TERMINAL-V1"
-  name: Crypto Research & Paper-Incubation Terminal v1 (BTC/ETH/SOL), target 2026-10-31
-  status: in_progress
-  base_commit: 7bb9cf3       # T2 research bars + OR-1 retention (#187)
+  id: "RF-PERFORMANCE-1"
+  name: Professional Research Factory Phase 1 - Performance Foundation
+  status: implemented
+  base_commit: 002d0d6       # approved starting main; PR #275
+  owner_direction_2026_10_24: >-
+    Owner authorized a bounded performance baseline, one measured hot-path
+    optimization, deterministic reference parity, minimal canonical doc updates,
+    one PR and solo-maintainer review/merge subject to CI and exact-main CI.
+    Prioritize this foundation over further BTC/ETH campaigns; no 24-fold run.
+    Stop after integration; no holdout, capture, broker, financial-gate or paper activation.
+  scope_paths:
+    - src/trade_platform/strategy_lab_walk_forward_v1.py
+    - scripts/research_performance.py
+    - tests/test_research_performance_v1.py
+    - docs/current-phase.yaml
+    - docs/MASTER_ROADMAP.md
+  terminal_milestone_retained: M-TERMINAL-V1 - Crypto Research & Paper-Incubation Terminal v1 (BTC/ETH/SOL)
+  performance_evidence_2026_10_24: >-
+    Offline synthetic benchmark: 86,400 bars, three SDK families, 40 trials total,
+    two rolling folds/family, three fresh sequential runs/implementation; one
+    numerical thread, 1 GiB hard memory limit, 120 s external deadline/run.
+    Medians reference -> optimized: evaluation 5.949540 -> 2.425462 s;
+    materialization + evaluation 6.412010 -> 2.887274 s;
+    evaluation throughput 6.723209 -> 16.491706 trials/s (2.45x).
+    Median peak working set 132.15 -> 131.85 MiB; process commit 121.37 ->
+    120.98 MiB: approximately unchanged, no reliable peak-memory reduction claim.
+    Dataset I/O zero (in-memory materialization); OS I/O includes imports, not a
+    Parquet/provider benchmark. Study/trial/report identities match both modes
+    and repetitions. Four new parity tests plus focused SDK/split/walk-forward/
+    read-only-export/Decimal-rerun regressions: 44 passed; scoped Ruff, mypy and
+    byte compilation passed. Broad PR and exact-main CI remain integration gates.
+    Real historical ETH breakout/trend and BTC trend receipts (88.547/326.781/
+    229.985 s, peak commit about 901/901/705 MiB) are context only, not comparable
+    speedup baselines. SDK loading/Decimal objects, process-local dataset caches,
+    indicators, split construction and multi-worker admission are not optimized.
+    No 10,000/100,000-trial, profitability or operational-readiness claim.
   owner_decisions_2026_10_08: >-
     OR-1 hybrid retention; OR-3 float64 search / Decimal authority; OR-5 T2 lag
     2 s with mandatory 5/30/60 s sweep (CONDITIONAL); OR-6 methodology only
@@ -25,8 +57,8 @@ phase:
     stress envelope stay owner-gated -> gross, non-promotable.
     Holdout 2026-08-20 immutable; T4 after 2026-09-24 forward-only this cycle.
   order: >-
-    R4.6 SDK + search -> R4.7 Decimal rerun -> R6 preregistration/holdout registry
-    -> R8 live T4 signals -> R9 account policy boundary -> R10 paper incubation -> UI-2.
+    bounded synthetic baseline -> one execution-schedule reuse optimization ->
+    reference parity and before/after benchmark -> PR/CI/exact-main CI -> STOP.
   owner_gates_open: OR-7 (validation/holdout packet), OR-11 (accounts/risk), OR-9 (watchlist/alerts), fee schedule.
   owner_direction_2026_10_09: >-
     Activation campaign. OR-1: acceptance = 24 consecutive manifest-proven
