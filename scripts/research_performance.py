@@ -37,7 +37,7 @@ DEADLINE_SECONDS = 120
 THREAD_VARIABLES = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS")
 
 
-def _windows_job(process: subprocess.Popen[str]) -> tuple[Any, Any]:
+def _windows_job(process: subprocess.Popen[str], *, memory_bytes: int = MEMORY_BYTES) -> tuple[Any, Any]:
     """Attach the stdin-blocked child before it imports analytics or builds data."""
     from ctypes import wintypes as wt
 
@@ -68,7 +68,7 @@ def _windows_job(process: subprocess.Popen[str]) -> tuple[Any, Any]:
     limits = Extended()
     limits.basic.flags = 0x100 | 0x8 | 0x2000  # PROCESS_MEMORY / ACTIVE_PROCESS / KILL_ON_JOB_CLOSE
     limits.basic.active = 1
-    limits.process_memory = MEMORY_BYTES
+    limits.process_memory = memory_bytes
     if not kernel.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
         kernel.CloseHandle(job)
         raise ctypes.WinError(ctypes.get_last_error())

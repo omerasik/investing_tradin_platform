@@ -51,6 +51,7 @@ from trade_platform.strategy_lab_authority_rerun_v1 import (
     PostgresAuthorityRerunStoreV1,
     run_authority_rerun_v1,
 )
+from trade_platform.strategy_lab_data_loading_v1 import BarStrategyEvaluatorV1, load_bars_v1
 from trade_platform.strategy_lab_ledger_v1 import PostgresStrategyLabLedgerV1
 from trade_platform.strategy_lab_manifest_v1 import (
     CandidateSelectionRuleV1,
@@ -82,7 +83,7 @@ from trade_platform.strategy_lab_walk_forward_v1 import (
     run_walk_forward_v1,
 )
 from trade_platform.strategy_lab_worker_v1 import run_study_pool_v1
-from trade_platform.strategy_sdk_v1 import FAMILIES_V1, BarStrategyEvaluatorV1, load_bars_v1
+from trade_platform.strategy_sdk_v1 import FAMILIES_V1
 
 _DURATION = re.compile(r"^(\d+)([mhd])$")
 _UNITS = {"m": timedelta(minutes=1), "h": timedelta(hours=1), "d": timedelta(days=1)}

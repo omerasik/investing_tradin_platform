@@ -46,6 +46,7 @@ from uuid import UUID
 
 from .bybit_funding_history_v1 import FUNDING_CHARGE_RULE_V1, FundingHistoryV1, funding_steps_v1
 from .persistence import PostgresDatabase
+from .strategy_lab_data_loading_v1 import load_bars_v1
 from .strategy_lab_manifest_v1 import CandidateSetV1, StudyManifestV1
 from .strategy_lab_policies_v1 import (
     AUTHORITATIVE_DECIMAL_PRECISION_V1,
@@ -59,7 +60,6 @@ from .strategy_sdk_v1 import (
     FAMILIES_V1,
     BarsV1,
     held_positions_v1,
-    load_bars_v1,
     restrict_to_bound_v1,
 )
 

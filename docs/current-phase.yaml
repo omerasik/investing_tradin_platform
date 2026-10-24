@@ -2,7 +2,7 @@
 # This is NOT a second roadmap: requirements stay in MASTER_ROADMAP.md, design
 # stays in module docstrings, history stays in git.
 
-updated: 2026-10-24
+updated: 2026-10-25
 
 # Phase naming. Since 2026-09-24 the owner-approved canonical roadmap uses an
 # "R" series (R0-R15, owner review points OR-1..OR-14). It is distinct from the
@@ -13,10 +13,17 @@ updated: 2026-10-24
 # -> R8 opportunity engine -> R9 accounts/risk -> R10 paper; R7 (T3 spine) is
 # the one parallel track.
 phase:
-  id: "RF-PERFORMANCE-1"
-  name: Professional Research Factory Phase 1 - Performance Foundation
+  id: "RF-P2A"
+  name: Research Factory P2A - Memory-Efficient Data Loading
   status: implemented
-  base_commit: 002d0d6       # approved starting main; PR #275
+  base_commit: b3d6bd8       # PR #276 performance foundation, exact-main verified
+  owner_direction_p2a: >-
+    Owner authorized focused loader/Parquet/Decimal/cache profiling, one measured
+    memory improvement, bounded synthetic and resource-admitted read-only ETH
+    development loading benchmarks, focused parity/integrity tests and one PR
+    under solo-maintainer review plus exact-main CI. Preserve SDK, dataset,
+    study/trial/report identities and all byte/logical verification. Stop after
+    this phase; no campaigns, holdout, capture, broker, policy or paper activation.
   owner_direction_2026_10_24: >-
     Owner authorized a bounded performance baseline, one measured hot-path
     optimization, deterministic reference parity, minimal canonical doc updates,
@@ -24,12 +31,42 @@ phase:
     Prioritize this foundation over further BTC/ETH campaigns; no 24-fold run.
     Stop after integration; no holdout, capture, broker, financial-gate or paper activation.
   scope_paths:
-    - src/trade_platform/strategy_lab_walk_forward_v1.py
+    - src/trade_platform/research_data_plane_v1.py
+    - src/trade_platform/strategy_lab_data_loading_v1.py
+    - src/trade_platform/strategy_lab_authority_rerun_v1.py
+    - scripts/strategy_lab.py
     - scripts/research_performance.py
-    - tests/test_research_performance_v1.py
+    - scripts/research_loading_performance.py
+    - tests/test_strategy_lab_data_loading_v1.py
     - docs/current-phase.yaml
     - docs/MASTER_ROADMAP.md
   terminal_milestone_retained: M-TERMINAL-V1 - Crypto Research & Paper-Incubation Terminal v1 (BTC/ETH/SOL)
+  p2a_loading_evidence: >-
+    Exact Decimal sharing through Arrow dictionaries in bounded 32,768-row read
+    batches; writer row groups/schema/bytes/logical identities unchanged. SDK
+    source untouched. Strategy Lab CLI, search evaluator and Decimal reruns now
+    use an existing-verifier wrapper: warm hits reprove full dataset/manifest/
+    bytes/logical rows, cache holds <=1 root-bound dataset with a conservative
+    512 MiB estimated bar-payload budget, retained arrays read-only, errors evict.
+    Three fresh sequential runs/mode, one numeric thread, 120 s/run, 512 MiB host
+    reserve, 24 GiB disk floor. Final synthetic process/working-set ceilings
+    512/512 MiB, ETH 1024/1024 MiB; measured peaks below ceilings, no clipping.
+    86,400 bars medians reference -> optimized: cold 3.0610 -> 2.0149 s;
+    peak commit 215.41 -> 193.46 MiB; working set 198.07 -> 162.66 MiB.
+    Pinned ETH da5bca46 (524,160 bars): cold 27.3645 -> 25.0679 s;
+    peak commit 896.73 -> 693.57 MiB; working set 881.60 -> 684.96 MiB.
+    All bars/Decimal/array, dataset/manifest byte hashes and strategy identities
+    match modes/repeats. Warm reference did ZERO revalidations (~0.00004 s);
+    optimized did one full revalidation per hit (1.5564 / 14.3492 s synthetic/ETH).
+    This added integrity cost is explicit, not a warm-speedup claim. Cold process
+    read transfers about 6.14 -> 6.34 MiB / 132.64 -> 132.84 MiB; warm validated
+    reads 3.97 / 88.35 MiB vs zero unsafe reference. Windows transfer counters
+    are not physical disk bytes; actual physical I/O unavailable, OS cache not
+    flushed. Smaller batches alone were slower in an exploratory bounded run;
+    no universal speed/memory claim. Focused 66 tests and mypy 117/117 passed.
+    Broad PR/exact-main CI remain integration gates. Full rows/unused columns,
+    full revalidation per load, process-local duplication, all-in-memory SDK
+    construction and multi-worker admission remain scaling limits.
   performance_evidence_2026_10_24: >-
     Offline synthetic benchmark: 86,400 bars, three SDK families, 40 trials total,
     two rolling folds/family, three fresh sequential runs/implementation; one
@@ -57,8 +94,8 @@ phase:
     stress envelope stay owner-gated -> gross, non-promotable.
     Holdout 2026-08-20 immutable; T4 after 2026-09-24 forward-only this cycle.
   order: >-
-    bounded synthetic baseline -> one execution-schedule reuse optimization ->
-    reference parity and before/after benchmark -> PR/CI/exact-main CI -> STOP.
+    bounded loader profile -> measured Decimal materialization and verified
+    cache boundary -> data/strategy/integrity parity -> PR/CI/exact-main CI -> STOP.
   owner_gates_open: OR-7 (validation/holdout packet), OR-11 (accounts/risk), OR-9 (watchlist/alerts), fee schedule.
   owner_direction_2026_10_09: >-
     Activation campaign. OR-1: acceptance = 24 consecutive manifest-proven
