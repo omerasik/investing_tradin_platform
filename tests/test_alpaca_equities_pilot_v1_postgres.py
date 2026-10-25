@@ -105,10 +105,16 @@ class AlpacaPilotPostgresTests(unittest.TestCase):
                 self.master.add_calendar(calendar)
                 for day in range(5):
                     self.master.add_weekly_session(WeeklySession(calendar.calendar_id, day, time(9, 30), time(16), 0, registered))
-                self.master.add_calendar_exception(CalendarException(calendar.calendar_id, date(2025, 1, 1),
-                    CalendarExceptionType.HOLIDAY, None, registered, "fixture://p3a/holiday"))
-                self.master.add_calendar_exception(CalendarException(calendar.calendar_id, date(2025, 11, 28),
-                    CalendarExceptionType.EARLY_CLOSE, time(13), registered, "fixture://p3a/early-close"))
+                self.master.add_calendar_exception(CalendarException(
+                    calendar_id=calendar.calendar_id, session_date=date(2025, 1, 1),
+                    exception_type=CalendarExceptionType.HOLIDAY, ingested_at=registered,
+                    source_reference="fixture://p3a/holiday",
+                ))
+                self.master.add_calendar_exception(CalendarException(
+                    calendar_id=calendar.calendar_id, session_date=date(2025, 11, 28),
+                    exception_type=CalendarExceptionType.EARLY_CLOSE, ingested_at=registered,
+                    source_reference="fixture://p3a/early-close", closes_at=time(13),
+                ))
         self.contract = replace(source(), source_id=uuid4(), provider_terms_version=f"fixture-only-{uuid4()}")
         self.pipeline.register_source(self.contract)
 

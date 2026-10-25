@@ -107,7 +107,8 @@ class AlpacaPilotTests(unittest.TestCase):
     def test_non_fixture_authorization_and_terms_or_credentials_are_rejected(self):
         for configuration in (
             ProviderConfiguration(PROVIDER, BASE_URL, terms_accepted=True),
-            ProviderConfiguration(PROVIDER, BASE_URL, secret_reference="env:FIXTURE_ONLY"),
+            # An environment-variable reference, never a credential; rejection is under test.
+            ProviderConfiguration(PROVIDER, BASE_URL, secret_reference="env:FIXTURE_ONLY"),  # pragma: allowlist secret
             ProviderConfiguration(PROVIDER, "https://example.invalid"),
         ):
             with self.subTest(configuration=configuration), self.assertRaisesRegex(ProviderError, "fixture_authorization"):
