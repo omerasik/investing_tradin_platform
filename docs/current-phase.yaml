@@ -13,10 +13,67 @@ updated: 2026-10-25
 # -> R8 opportunity engine -> R9 accounts/risk -> R10 paper; R7 (T3 spine) is
 # the one parallel track.
 phase:
-  id: "MM-P3A"
-  name: Multi-Market Foundation P3A - Free US Equities and ETFs Offline Pilot
-  status: implemented
-  base_commit: b6314ee       # PR #277 loader memory foundation, exact-main verified
+  id: "RF-P2B.1"
+  name: Research Factory P2B.1 - Verified Batch Evaluation and 1000-Task Scale Gate
+  status: partial
+  base_commit: f7497ff       # PR #278 offline equities pilot, exact-main verified
+  resource_gate: RESOURCE_BLOCKED
+  integration_disposition: draft_only_until_measured_benchmark_acceptance
+  owner_direction_p2b1: >-
+    Owner authorized end-to-end repeated-work measurement on existing offline
+    inputs, a bounded verified immutable input scope if measured justification
+    exists, one deterministic 1000-evaluation workload with distinct task/config
+    counts, targeted tests and one PR under solo-maintainer/exact-main CI rules.
+    Standalone persistent-evidence verification, identities, Decimal, causality
+    and holdout gates remain unchanged. No provider work or profitability campaign.
+    Stop after P2B.1; no automatic 10000-task campaign or next module.
+  p2b1_work_in_progress: >-
+    Prototype only, not integrated or performance-validated. Private bytes-backed
+    arrays are built from the existing full verifier's very own logical row
+    stream; no unverified second Parquet read, SDK-source change, persistent
+    authority or general-cache verification exemption. Scope binds resolved root,
+    dataset/content/manifest and study identity, with task/time/row/retained-input
+    limits, owner-thread/process rules and cancellation/error cleanup. Optional
+    worker hook uses the existing claim batch (default 8); other evaluators and
+    standalone SDK-wrapper calls retain their old paths. Direct benchmark tasks
+    use three explicit study scopes; this does not measure DB/pool throughput.
+    Forty unique existing-family configurations are cycled for 1000 tasks; no
+    benchmark study is registered. Harness retains interrupted progress and
+    original 512 MiB process/working-set, 120 s external deadline, one numeric
+    thread, 512 MiB host reserve and 24 GiB disk floor. First 12-task reference
+    admission stopped BEFORE spawning at disk_free_bytes=23075213312 versus
+    required 25769803776. No evaluation benchmark ran; no before/after speed,
+    verification-cost or 1000-task-capacity claim exists. Resumed 1000-task
+    reference admission also stopped BEFORE spawning at 15345135616 free bytes
+    (14.29 GiB); successful benchmark tasks remain zero. Guard is not weakened.
+    Focused local selection: 34 passed, 8 PostgreSQL tests explicitly unavailable
+    without POSTGRES_TEST_DSN; mypy 117/117 and scoped Ruff passed. PostgreSQL CI,
+    actual measured justification and merge/exact-main CI remain pending. A draft
+    PR may preserve the prototype and collect broad CI; green CI alone cannot
+    satisfy the missing performance/1000-task acceptance or permit merge.
+  p2b1_environment_evidence: >-
+    The 24 GiB floor is a HOST protection, not scratch sizing: burn_in_outage_2
+    records capture stopping at 20 GiB after Windows pagefile growth during
+    concurrent research; research admission was set to 24 GiB. Read-only audit
+    found only C: as a normal mounted data volume; TEMP/TMP, workspace, default
+    .trade_platform/research-data and configured capture roots are on C:.
+    C:/pagefile.sys is allocated 16684 MiB. PostgreSQL's existing Docker named
+    volume is separate from benchmark roots and was inspected, never modified.
+    Reused .tmp/p2a-fixture has 3 files, 2049840 logical / 2060288 NTFS allocated
+    bytes; no dataset writes are needed. Task progress uses a memory pipe;
+    fixed 40-result maps make output proportional to unique configurations,
+    not 1000 full arrays. An oversized three-run JSON sizing model is 413334
+    bytes; 16 MiB for all benchmark reports is a planning estimate, NOT measured
+    benchmark disk use or permission to lower the host floor. Both task-owned
+    blocked receipts are retained (8192 allocated bytes total); no proven
+    disposable task-owned bulk output or alternate safe volume was found.
+    No user/dataset/capture/database/Docker/WSL files were deleted or relocated.
+    Owner must restore >=24 GiB free on C: with margin for ongoing host writes;
+    the observed deficit is 10424668160 bytes (9.71 GiB), independent of scratch.
+    Admission also needs >=1 GiB available RAM and commit headroom for a single
+    512 MiB child plus reserve; runtime guards remain unchanged. Dedicated
+    research compute is advisable for isolation, but no new worker is provisioned
+    and no larger configuration count, worker-pool throughput or capacity is proven.
   real_source_status: EXTERNAL_BLOCKED
   owner_direction_p3a: >-
     Owner authorized a zero-subscription official-source preflight and the smallest
@@ -55,12 +112,13 @@ phase:
     Prioritize this foundation over further BTC/ETH campaigns; no 24-fold run.
     Stop after integration; no holdout, capture, broker, financial-gate or paper activation.
   scope_paths:
-    - src/trade_platform/alpaca_equities_pilot_v1.py
-    - src/trade_platform/historical_market_data.py
-    - tests/fixtures/alpaca_iex_pilot_v1.json
-    - tests/test_alpaca_equities_pilot_v1.py
-    - tests/test_alpaca_equities_pilot_v1_postgres.py
-    - docs/DATA_PROVIDER_MATRIX.md
+    - src/trade_platform/strategy_lab_evaluation_scope_v1.py
+    - src/trade_platform/strategy_lab_data_loading_v1.py
+    - src/trade_platform/strategy_lab_worker_v1.py
+    - scripts/research_loading_performance.py
+    - tests/test_strategy_lab_evaluation_scope_v1.py
+    - tests/test_strategy_lab_evaluation_scope_v1_postgres.py
+    - tests/test_research_loading_performance_v1.py
     - docs/current-phase.yaml
     - docs/MASTER_ROADMAP.md
   terminal_milestone_retained: M-TERMINAL-V1 - Crypto Research & Paper-Incubation Terminal v1 (BTC/ETH/SOL)
@@ -117,8 +175,8 @@ phase:
     stress envelope stay owner-gated -> gross, non-promotable.
     Holdout 2026-08-20 immutable; T4 after 2026-09-24 forward-only this cycle.
   order: >-
-    official free-source/rights preflight -> offline IEX fixture contract through
-    existing authorities -> focused acceptance/negative evidence -> PR/CI/exact-main CI -> STOP P3A.
+    fixed resource admission -> repeated-work baseline -> justified private
+    verified scope -> parity and 1000-task gate -> PR/CI/exact-main CI -> STOP P2B.1.
   owner_gates_open: OR-7 (validation/holdout packet), OR-11 (accounts/risk), OR-9 (watchlist/alerts), fee schedule.
   owner_direction_2026_10_09: >-
     Activation campaign. OR-1: acceptance = 24 consecutive manifest-proven

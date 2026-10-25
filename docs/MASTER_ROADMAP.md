@@ -90,6 +90,49 @@ provider success nor consolidated, corporate-action-complete, survivorship-free
 or professional-validation evidence. Crypto research and all owner/holdout/
 operational/financial gates are unchanged. Stop after P3A; no P3B or activation.
 
+## Research Factory P2B.1 — PARTIAL, resource admission blocked (2026-10-25)
+
+The owner authorized a measured, bounded verified-evaluation scope and a
+1000-task synthetic acceptance gate after #276/#277/#278. Real US equities
+acquisition remains EXTERNAL_BLOCKED; no new provider work is started.
+
+The branch prototype uses the existing full verifier's row stream to prepare
+private immutable SDK inputs, bound to root/dataset/content/manifest/study and
+finite resource/lifetime limits. The SDK source and standalone verified-loader
+contract remain unchanged; new scopes always revalidate persistent evidence.
+An admitted snapshot intentionally survives later source-file changes, which
+the next independent scope/load rejects. Worker use is bounded by its existing
+claim batch; no new queue, persistent cache, data authority or engine is added.
+
+The existing loading harness now prepares 12/40/1000 direct evaluation tasks,
+40 distinct existing-family parameter points, exact input/decision/result
+fingerprints, verification/materialization/calculation counters, worker Python
+validation time and interrupted-progress receipts. It registers no studies and
+does not measure database queue/process-pool throughput. A 1000-task completion
+would establish neither 1000 independent hypotheses nor profitable strategies.
+
+**No performance improvement is validated or integrated yet.** The first
+reference admission stopped before process creation: 23,075,213,312 free bytes
+versus the unchanged 25,769,803,776-byte (24 GiB) disk floor. Other declared
+limits remain 512 MiB process/working set, 512 MiB host reserve, one numeric
+thread and a 120-second external deadline. A resumed 1000-task admission also
+stopped before spawning: 15,345,135,616 bytes (14.29 GiB), 9.71 GiB below the
+floor; zero benchmark tasks ran. The floor protects host paging and capture
+headroom: the recorded pagefile-growth/capture outage is its rationale, not
+benchmark scratch size. Only C: is available; redirecting TEMP on that volume
+cannot preserve the floor. The reused fixture occupies 2,060,288 NTFS bytes;
+no dataset writes are required. A static report-format estimate allocates
+16 MiB for all receipts, not a measured run-disk result or a weaker host guard.
+No disposable task-owned bulk output was found; fixture and negative receipts
+are retained. Owner action is >=24 GiB free on C: with operating margin, plus
+the existing memory admission. Isolated research compute is advisable for
+reliable throughput measurements, but is not provisioned or capacity-proven.
+No guard is relaxed and no capture/data files or services are changed. Actual
+baseline/after measurements, the 1000-task outcome or precise measured blocker,
+targeted PostgreSQL CI, reviewed PR and exact-main integration remain pending.
+All subscription, evidence, holdout and financial/operational gates remain.
+No 10000–100000-task capacity or next-phase authorization is implied.
+
 ## North star (recorded 2026-09-06, Module 3G.0)
 
 The platform is treated from this point forward as a **Professional

@@ -25,6 +25,16 @@ comparisons. Windows transfer counters are NOT physical disk bytes. Linux report
 /proc/self/io physical bytes separately. Never infer a physical-I/O improvement
 or a cold OS cache from process transfer counts. --profile attributes time and
 memory by stage; compare unprofiled repetitions for final elapsed-time claims.
+
+P2B.1 --evaluation-tasks 12|40|1000 uses the same fixed 512 MiB process ceiling,
+120 s external deadline, host reserve and disk guard. Here reference means the
+standalone P2A VERIFIED evaluator, not the legacy loader reference above. The
+1000-task workload cycles 40 unique points in three unregistered synthetic study
+declarations. Optimized mode admits one explicit scope per study (334/333/333
+tasks, <=105 s each), not a database worker-pool throughput claim. Real workers
+retain their existing claim-batch boundary (default 8). Use a complete reference
+40-task --reference-receipt to check every repeated decision/result identity.
+An interrupted run retains only its last flushed prefix, never a 1000-task pass.
 """
 
 from __future__ import annotations
@@ -183,6 +193,8 @@ def bars_fingerprint(bars) -> str:
 
 
 def load_workload(args) -> dict[str, Any]:
+    if args.evaluation_tasks:
+        return evaluation_workload(args)
     import cProfile
     import pstats
     from contextlib import ExitStack
@@ -335,6 +347,199 @@ def load_workload(args) -> dict[str, Any]:
             "physical_io_note": "Windows transfer counters are not physical disk bytes; OS cache not flushed"}
 
 
+def evaluation_workload(args) -> dict[str, Any]:
+    """P2B.1 direct evaluator tasks, not registered studies or an economic campaign.
+
+    Reference is the unchanged P2A verified evaluator (NOT the unsafe SDK cache).
+    Exactly 40 declared parameter points across three existing families are cycled
+    for the 1000-task workload. Queue/database latency is explicitly unmeasured.
+    """
+    import dataclasses
+    from contextlib import ExitStack, nullcontext
+    from datetime import datetime, timedelta
+    from unittest.mock import patch
+    from uuid import UUID
+
+    import numpy as np
+
+    from trade_platform import research_data_plane_v1 as plane
+    from trade_platform import strategy_lab_data_loading_v1 as loading
+    from trade_platform import strategy_sdk_v1 as sdk
+    from trade_platform.evidence_tier_authority_v1 import EvidenceTierV1
+    from trade_platform.strategy_lab_ledger_v1 import TrialClaimV1, result_content_hash_v1
+    from trade_platform.strategy_lab_policies_v1 import (
+        gross_cost_policy_v1,
+        or3_numeric_policy_v1,
+        or5_t2_timing_policy_v1,
+    )
+    from trade_platform.strategy_lab_study_v1 import (
+        UNTOUCHED_HOLDOUT_BOUNDARY_V1,
+        DatasetBindingV1,
+        ParameterSpaceV1,
+        SearchModeV1,
+        SearchPlanV1,
+        StudySpecV1,
+    )
+    from trade_platform.strategy_lab_worker_v1 import _evaluate
+
+    payload = json.loads((args.root / "v1/datasets/public-archive-bars" / f"{args.dataset}.json").read_bytes())
+    if not payload["identity"].get("synthetic_benchmark_only") or payload["content_hash"] != args.expected:
+        raise ValueError("evaluation_benchmark_requires_the_exact_synthetic_dataset")
+    last = datetime.fromisoformat(payload["identity"]["last_bar_close_at"])
+    if last >= UNTOUCHED_HOLDOUT_BOUNDARY_V1:
+        raise ValueError("benchmark_refuses_holdout_dataset")
+    binding = DatasetBindingV1("bars", UUID(args.dataset), args.expected, EvidenceTierV1.T2_EVENT_TIME,
+                               last + timedelta(seconds=60, microseconds=1))
+    studies = []
+    for family in sdk.FAMILIES_V1.values():
+        space = ParameterSpaceV1.of(*(dataclasses.replace(d, values=d.values[:2]) for d in family.parameter_space().domains))
+        studies.append(StudySpecV1(family.spec(), space, (binding,), SearchPlanV1(SearchModeV1.EXHAUSTIVE, space.cardinality),
+            UNTOUCHED_HOLDOUT_BOUNDARY_V1, policies={"numeric": or3_numeric_policy_v1().payload,
+                "timing": or5_t2_timing_policy_v1().payload, "cost": gross_cost_policy_v1().policy().payload},
+            label="synthetic workload declaration only; not registered"))
+    counters: dict[str, dict[str, Any]] = {}
+    decisions: dict[str, str] = {}
+    outcomes: dict[str, dict[str, Any]] = {}
+    input_fingerprints: dict[str, str] = {}
+    scope_receipts: list[dict[str, Any]] = []
+    chain = hashlib.sha256()
+    completed = failed = excluded = 0
+    oracle = None
+    if args.reference_receipt:
+        receipt_bytes = args.reference_receipt.read_bytes()
+        receipt = json.loads(receipt_bytes)
+        complete = [r["result"] for r in receipt["runs"] if r["status"] == "COMPLETE"]
+        if (receipt.get("implementation") != "reference" or receipt.get("evaluation_tasks") != 40
+                or not complete or any(r["dataset_content_hash"] != args.expected or r["completed"] != 40
+                    or r["failed"] or r["excluded"] or len(r["unique_results"]) != 40 for r in complete)
+                or any(r["unique_results"] != complete[0]["unique_results"] for r in complete)):
+            raise ValueError("reference_receipt_dataset_mismatch")
+        oracle = complete[0]["unique_results"]
+
+    def timed(name, function, *, decision=False):
+        def call(*a, **kw):
+            started = time.perf_counter()
+            try:
+                result = function(*a, **kw)
+            finally:
+                item = counters.setdefault(name, {"count": 0, "seconds": 0.0})
+                item["count"] += 1
+                item["seconds"] += time.perf_counter() - started
+            if decision:
+                value = result[0] if name.startswith("targets:") else result
+                decisions[name.split(":")[0]] = hashlib.sha256(np.asarray(value, dtype=np.int64).tobytes()).hexdigest()
+            return result
+        return call
+
+    loading.clear_bars_cache_v1()
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(plane.ResearchFrameStoreV1, "verify", timed("verification", plane.ResearchFrameStoreV1.verify)))
+        convert = sdk.BarsV1.from_rows
+        stack.enter_context(patch.object(sdk.BarsV1, "from_rows", classmethod(lambda cls, *a, **kw: timed("materialization", convert)(*a, **kw))))
+        stack.enter_context(patch.object(sdk, "held_positions_v1", timed("held", sdk.held_positions_v1, decision=True)))
+        stack.enter_context(patch.object(sdk, "search_metrics_f64", timed("metrics", sdk.search_metrics_f64)))
+        for family in sdk.FAMILIES_V1.values():
+            stack.enter_context(patch.object(type(family), "targets_f64", timed("targets:" + family.family, type(family).targets_f64, decision=True)))
+        evaluator = loading.BarStrategyEvaluatorV1(args.root)
+        dispatch_seconds = 0.0
+        before = resources()
+        started = time.perf_counter()
+        for index, study in enumerate(studies):
+            trials = list(study.trials())
+            count = (len(trials) if args.evaluation_tasks == 40 else
+                     args.evaluation_tasks // 3 + (index < args.evaluation_tasks % 3))
+            context = nullcontext(evaluator)
+            if args.implementation == "optimized":
+                context = evaluator.batch_scope_v1(study, maximum_evaluations=count, maximum_seconds=105.0)
+            with context as active:
+                if args.implementation == "optimized" and hasattr(active, "identity"):
+                    scope_receipts.append(dict(active.identity))
+                for ordinal in range(count):
+                    trial = trials[ordinal % len(trials)]
+                    decisions.clear()
+                    # Fixture envelope ONLY: no registration, DB claim or lease
+                    # is represented as real. Exercise the real worker's typed
+                    # parameter/result-validation wrapper, measuring its Python
+                    # overhead separately from the inner evaluator. DB queue and
+                    # process-pool overhead remain unmeasured.
+                    claim = TrialClaimV1(trial.trial_id, study.study_id, trial.ordinal, trial.content_hash,
+                                         trial.parameters, 1, "offline-no-claim", last)
+                    inner_seconds = 0.0
+
+                    def evaluated(spec, parameters):
+                        nonlocal inner_seconds
+                        tick = time.perf_counter()
+                        try:
+                            return active(spec, parameters)
+                        finally:
+                            inner_seconds += time.perf_counter() - tick
+
+                    try:
+                        dispatched = time.perf_counter()
+                        evaluation = _evaluate(study, evaluated, claim)
+                        dispatch_seconds += time.perf_counter() - dispatched - inner_seconds
+                        match evaluation:
+                            case str(reason):
+                                raise RuntimeError("worker_evaluation_failed:" + reason)
+                    except Exception as error:
+                        failed += 1
+                        print(json.dumps({"progress": True, "completed": completed, "failed": failed, "excluded": excluded,
+                            "error_type": type(error).__name__, "error": str(error), "stages": counters,
+                            "seconds": time.perf_counter() - started}, sort_keys=True), flush=True)
+                        raise
+                    result_hash = result_content_hash_v1(trial_content_hash=trial.content_hash, outcome=evaluation.outcome,
+                                                        metrics=evaluation.metrics, cost_policy_slot=study.cost_policy_slot)
+                    item = {"study_id": str(study.study_id), "study_hash": study.content_hash, "trial_id": str(trial.trial_id),
+                            "trial_hash": trial.content_hash, "result_hash": result_hash, "decisions": dict(decisions),
+                            "outcome": evaluation.outcome.value, "metrics": dict(evaluation.metrics)}
+                    if trial.content_hash in outcomes and outcomes[trial.content_hash] != item:
+                        raise ValueError("non_deterministic_task_result")
+                    if oracle is not None and oracle.get(trial.content_hash) != item:
+                        raise ValueError("reference_calculation_or_identity_mismatch")
+                    outcomes[trial.content_hash] = item
+                    chain.update(json.dumps(item, sort_keys=True, separators=(",", ":")).encode())
+                    completed += 1
+                    excluded += evaluation.outcome.value != "EVALUATED"
+                    if study.content_hash not in input_fingerprints:
+                        bars = (active._bars if args.implementation == "optimized" else
+                                sdk._BARS_CACHE[(str(binding.dataset_version_id), binding.content_hash)])
+                        fingerprint = bars_fingerprint(bars)
+                        input_fingerprints[study.content_hash] = fingerprint
+                        del bars
+                        if oracle is not None and complete[0]["input_fingerprints"].get(study.content_hash) != fingerprint:
+                            raise ValueError("reference_input_snapshot_mismatch")
+                    print(json.dumps({"progress": True, "completed": completed, "failed": failed, "excluded": excluded,
+                                      "seconds": time.perf_counter() - started, "stages": counters,
+                                      "result_chain": chain.hexdigest(), **resources()}, sort_keys=True), flush=True)
+        elapsed = time.perf_counter() - started
+        after = resources()
+    loading.clear_bars_cache_v1()
+    return {"implementation": args.implementation, "evaluation_tasks": args.evaluation_tasks, "completed": completed,
+            "failed": failed, "excluded": excluded, "unique_configurations_evaluated": len(outcomes),
+            "declared_unique_configurations": sum(s.planned_trial_count for s in studies),
+            "registered_studies": 0, "queue_database_overhead": "not measured; offline worker-envelope calls only",
+            "worker_python_validation_seconds": dispatch_seconds,
+            "elapsed_seconds": elapsed, "tasks_per_second": completed / elapsed, "stages": counters,
+            "dataset_content_hash": args.expected, "manifest_hash": payload["bar_frame_manifest_hash"],
+            "result_chain": chain.hexdigest(), "unique_results": outcomes, "before": before, "after": after,
+            "scope_receipts": scope_receipts, "input_fingerprints": input_fingerprints,
+            "reference_receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest() if oracle is not None else None,
+            "physical_io_note": "Windows transfers are not physical disk bytes; progress pipe I/O included; OS cache not flushed"}
+
+
+def last_evaluation_progress(output: str | bytes) -> dict[str, Any] | None:
+    """Last complete flushed receipt; an interrupted trailing line is not success."""
+    text = output.decode(errors="replace") if isinstance(output, bytes) else output
+    for line in reversed(text.splitlines()):
+        try:
+            item = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(item, dict) and item.get("progress") is True:
+            return item
+    return None
+
+
 def worker(args, limit: int) -> None:
     if sys.stdin.readline().strip() != "RUN_BOUNDED_SYNTHETIC":
         raise RuntimeError("missing_parent_resource_admission")
@@ -363,6 +568,7 @@ def run_child(args, limit: int) -> dict[str, Any]:
     child = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, text=True, env=env, cwd=ROOT)
     kernel = job = None
+    partial_stdout: str | bytes = ""
     minimum = host.copy()
     try:
         if os.name == "nt":
@@ -377,16 +583,23 @@ def run_child(args, limit: int) -> dict[str, Any]:
             minimum = {key: min(value, state[key]) for key, value in minimum.items()}
             if (state["available_physical_bytes"] < HOST_RESERVE or state["commit_headroom_bytes"] < 1024 ** 3
                     or state["disk_free_bytes"] < DISK_FLOOR or time.monotonic() - started > 120):
-                return {"status": "RESOURCE_STOPPED", "minimum_host": minimum}
+                return {"status": "RESOURCE_STOPPED", "minimum_host": minimum,
+                        "wall_seconds": time.monotonic() - started,
+                        "stop_reason": ("wall_deadline" if time.monotonic() - started > 120 else "host_resource_guard"),
+                        "last_progress": last_evaluation_progress(partial_stdout)}
             try:
                 stdout, stderr = child.communicate(token, timeout=0.25)
                 break
-            except subprocess.TimeoutExpired:
+            except subprocess.TimeoutExpired as error:
+                partial_stdout = error.output or b""
                 token = None
         if child.returncode:
-            return {"status": "FAILED", "exit_code": child.returncode, "stderr": stderr}
+            return {"status": "FAILED", "exit_code": child.returncode, "stderr": stderr,
+                    "wall_seconds": time.monotonic() - started, "failed_processes": 1,
+                    "last_progress": last_evaluation_progress(stdout)}
         return {"status": "COMPLETE", "host_before": host, "minimum_host": minimum,
-                "host_after": host_memory(), "result": json.loads(stdout)}
+                "host_after": host_memory(), "wall_seconds": time.monotonic() - started,
+                "result": json.loads(stdout.splitlines()[-1])}
     finally:
         if child.poll() is None:
             child.kill()
@@ -400,6 +613,8 @@ def main() -> int:
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--prepare-fixture", action="store_true")
     parser.add_argument("--profile", action="store_true")
+    parser.add_argument("--evaluation-tasks", type=int, choices=(12, 40, 1000), default=0)
+    parser.add_argument("--reference-receipt", type=Path)
     parser.add_argument("--real", action="store_true")
     parser.add_argument("--implementation", choices=("reference", "optimized"), default="optimized")
     parser.add_argument("--root", type=Path, required=True)
@@ -409,6 +624,8 @@ def main() -> int:
     parser.add_argument("--working-set-mib", type=int, choices=(128, 512, 1024), default=128)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.evaluation_tasks and (args.real or args.prepare_fixture or args.profile):
+        parser.error("evaluation gate requires synthetic data and unprofiled stage counters")
     if os.name != "nt" and not sys.platform.startswith("linux"):
         parser.error("resource enforcement is supported only on Windows and Linux")
     if not 1 <= args.repeats <= 3:
@@ -433,8 +650,9 @@ def main() -> int:
         runs.append(run)
         if run["status"] != "COMPLETE":
             break
-    report = {"schema": "research-loading-performance-v1", "runs": runs,
+    report = {"schema": "research-batch-evaluation-performance-v1" if args.evaluation_tasks else "research-loading-performance-v1", "runs": runs,
               "implementation": args.implementation, "real_development_loader_only": args.real,
+              "evaluation_tasks": args.evaluation_tasks,
               "limits": {"process_memory_bytes": limit,
                          "working_set_bytes": args.working_set_mib * MIB if os.name == "nt" else None,
                          "host_reserve_bytes": HOST_RESERVE, "disk_floor_bytes": DISK_FLOOR,
@@ -443,9 +661,17 @@ def main() -> int:
               "git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
               "source_hashes": {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in (
                   "src/trade_platform/strategy_sdk_v1.py", "src/trade_platform/research_data_plane_v1.py",
-                  "src/trade_platform/strategy_lab_data_loading_v1.py", "scripts/research_loading_performance.py")}}
+                  "src/trade_platform/strategy_lab_data_loading_v1.py", "scripts/research_loading_performance.py",
+                  "src/trade_platform/strategy_lab_worker_v1.py", "src/trade_platform/strategy_lab_evaluation_scope_v1.py")
+                  if (ROOT / name).exists()}}
     complete = [run["result"] for run in runs if run["status"] == "COMPLETE"]
-    if complete and not args.prepare_fixture:
+    if complete and args.evaluation_tasks:
+        keys = ("result_chain", "unique_results", "completed", "dataset_content_hash")
+        if any(any(r[k] != complete[0][k] for k in keys) for r in complete):
+            raise RuntimeError("non_deterministic_evaluation_identity")
+        report["median"] = {key: statistics.median(r[key] for r in complete)
+                            for key in ("elapsed_seconds", "tasks_per_second")}
+    elif complete and not args.prepare_fixture:
         keys = ("bars_fingerprint", "dataset_content_hash", "manifest_hash", "strategy_implementation_hashes")
         if any(any(run[key] != complete[0][key] for key in keys) for run in complete):
             raise RuntimeError("non_deterministic_loading_identity")
