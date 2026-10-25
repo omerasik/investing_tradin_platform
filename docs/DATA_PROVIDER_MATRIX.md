@@ -2,6 +2,99 @@
 
 ## Status and decision rule
 
+### P3A zero-subscription preflight — 2026-10-25
+
+The permanent `NO_PAID_MARKET_DATA_SUBSCRIPTIONS` decision supersedes the
+historical paid-provider ranking below. **No source is eligible for activation
+on the evidence reviewed.** Alpaca Basic / IEX is the preferred **technical
+fixture contract**, not an approved data licence or usable operator entitlement.
+All three candidates remain `EXTERNAL_BLOCKED`. Reading public documentation
+does not accept terms, open an account or exercise a data endpoint.
+
+| Candidate | Current official evidence | Rights / access decision |
+|---|---|---|
+| Alpaca Basic, explicitly `feed=iex` | [Plan documentation](https://docs.alpaca.markets/us/docs/about-market-data-api): free, US stocks/ETFs, history since 2016, 200 historical calls/minute; stock endpoints require key/secret headers. [Historical reference](https://docs.alpaca.markets/us/reference/stockbarsingle-1) specifies inclusive endpoints, opaque page tokens, raw/split/dividend/spin-off adjustments and `asof` remapping. [FAQ](https://docs.alpaca.markets/us/docs/market-data-faq) distinguishes single-exchange IEX from consolidated SIP and describes delayed historical SIP access. This pilot deliberately models IEX only, never a default/best feed. | [Current linked terms](https://files.alpaca.markets/disclosures/library/TermsAndConditions.pdf), sections Personal and Non-Commercial Usage, U.S. Residents Only and Content, do not establish this Belgian operator's professional systematic-research, commercial storage or distribution rights. Written consent is required for the stated commercial copying/distribution cases; advance notice is not a licence grant. Permanent immutable retention, retention after termination, internal derived research, applicable underlying-exchange permissions and attribution remain unverified. Account/region entitlement, actual AAPL/SPY history/completeness and a dated terms version also remain unverified. **Technical fixture preference only; EXTERNAL_BLOCKED.** |
+| Official IEX HIST (not IEX Cloud) | [Official HIST documentation](https://iextrading.com/trading/market-data/) describes T+1 binary feed captures in pcap/IEX-TP, requiring matching feed/specification versions. [HIST terms](https://www.iex.io/legal/hist-data-terms) identify free provision and permit distribution subject to attribution, retain IEX ownership and disclaim completeness. Their sections 8/10 describe single-venue reference information rather than a basis for trading decisions. | Potentially useful reference archive, but no conclusion here that the intended professional systematic-research use and indefinite evidence retention are licensed. Obtain clarification of that use against the reference-only language; reviewed terms contain no explicit retention period, which is not a perpetual rights grant. Current downloadable range, AAPL/SPY file availability, authentication/access mechanics, rate/concurrency limits and bounded file sizes were not established without acquisition. No current rate limit, guaranteed history or permission is invented. **EXTERNAL_BLOCKED for the intended use; no pcap decoder/backfill added.** |
+| Existing disabled Stooq candidate | [Official terms URL](https://stooq.com/terms.html) returned a JavaScript browser-verification page during review. Existing CSV contract is engineering evidence only. | Current licence, permanent storage/retention, internal professional research, attribution, feed/adjustment semantics, access quotas and applicable symbol coverage could not be established from readable official evidence. No third-party assertion of free/commercial use substitutes for those rights. **EXTERNAL_BLOCKED; unchanged.** |
+
+**P3A implementation and acceptance boundary.**
+`alpaca_equities_pilot_v1.AlpacaIexFixtureAdapterV1` implements the existing
+`RawHistoricalAdapter` contract from explicit offline response pages. Its default
+has no pages and refuses access. It has **no HTTP transport, secret resolver,
+account/broker API, startup wiring or activation switch**. It accepts only
+test-authorized OHLCV sources, never an owner authorization masquerading as a
+fixture. `terms_accepted=True` and credential references are rejected. No actual
+source registration or calendar/instrument onboarding runs outside tests.
+
+The pilot uses the existing professional `US:XNAS:AAPL` and `US:ARCX:SPY`
+identities, with namespace `ALPACA:IEX:RAW:1MIN:SYMBOL:V1`. `IEXG` is retained as
+execution venue; XNAS/ARCX remain listing venues in immutable provenance. The
+normalizer admits this distinction only for the exact offline IEX contract and
+rejects spoofed feed/venue/adjustment metadata; other providers are unchanged.
+Fixtures are explicitly `T0_SYNTHETIC`, not historical-provider success.
+
+Scope is explicit `iex`, `raw`, `1Min`, USD, `asof=-`, one of the two symbols,
+UTC minute-aligned `[start,end)`, at most five calendar days, closed at least
+15 minutes before retrieval. Pages contain at most 100 bars/256 KiB; use the
+existing ingestion bound of 40 pages. No retries, plan upgrade or provider
+fallback occur. Failed continuation/403/429 or the page bound yields ERROR;
+already-captured evidence remains attributable but cannot justify completeness.
+The required pre-seal coverage gate checks every expected open minute using
+the existing PIT calendar, including wholly missing sessions; missing IEX trades
+may legitimately produce no bar, but this conservative pilot refuses such
+windows rather than inserting zero-volume/forward-filled bars. It rejects
+cross-page duplicates/regression. DST, holidays and early closes remain owned by
+the existing calendar, never a new weekdays-only production calendar.
+
+Original JSON bodies and SHA-256, scope/cursor, provider row and version are
+retained in immutable raw evidence. Economic values use Decimal and must fit the
+existing `NUMERIC(30,12)` exactly; excess precision/range is rejected rather than
+rounded. Bar effective time is minute close; retrieval, normalization and seal
+times remain honest knowledge boundaries. There is no provider revision ID in
+the modeled bars response: revision zero is explicit, changed evidence conflicts
+in existing capture, and no correction is silently numbered or overwritten.
+Adjusted histories are rejected, not relabelled as original/PIT prices. Page
+regrouping/body changes can also conflict and need explicit reconciliation.
+
+Fixture tests demonstrate response -> existing ingestion -> raw capture ->
+normalization -> historical bar bridge -> `PostgresHistoricalBarStore` ->
+persisted Data Health -> sealed dataset -> existing read-only PIT research query.
+PostgreSQL tests roll back all fixture writes; broad and exact-main CI are the
+integration gates. A non-blocking fixture health assessment proves only that
+bounded engineering example: it establishes neither corporate-action completeness,
+survivorship-bias-free universes, consolidated US coverage, historical market
+knowability, professional-validation eligibility nor paper/live readiness.
+No new source registry, schema, dataset authority or research engine is introduced.
+
+**Exact owner actions before any bounded real pilot:**
+
+1. Obtain and retain written source/underlying-exchange clarification covering
+   this operator/entity and Belgium, the exact free plan/feed and symbols,
+   internal systematic research/derived calculations, immutable raw/normalized
+   storage and post-termination retention, attribution, permitted display and
+   distribution (or their explicit exclusion), API access and rate limits.
+   If rights require a recurring subscription, reject the source under the
+   permanent decision; do not reinterpret this phase as permission to pay.
+2. Owner reviews and explicitly accepts the applicable dated/versioned rights
+   documents and exact scope. Only the owner may authorize account/credential
+   provisioning; P3A creates neither. Retain only approved secret references.
+3. After the external blocker is resolved, separately review/authorize the
+   missing real transport and real-source onboarding against the existing
+   `AuthorizedHistoricalSource`/professional-master contracts. A boolean flip
+   cannot activate this fixture-only adapter, and P3A does not implement or
+   authorize that later work.
+4. Explicitly approve an exact UTC window, symbol/feed/adjustment set and limits
+   (initially <=5 calendar days, <=40 pages, <=100 bars/page, concurrency 1,
+   <=200 calls/minute with approved pacing, explicit timeout/byte/disk budgets).
+   Validate actual entitlement, completeness/corrections and calendar evidence;
+   preserve raw/checkpoint/health/seal receipts and stop on any failure. Real
+   backfilled data is not T0 and must receive the existing evidence-tier review;
+   it gains no historical knowledge-time or holdout/professional-validation credit
+   from these fixtures. No provider activation is part of this PR.
+
+The sections below are retained historical comparison evidence, not authority to
+buy, license, select or activate their providers.
+
 Update 2026-09-06 (Module 3G.0): Twelve Data was added to this comparison and
 a first provider was **recommended** (Databento) for a bounded US
 equities/ETF vertical slice, pending explicit owner approval. See

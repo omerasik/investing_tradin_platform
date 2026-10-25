@@ -757,7 +757,7 @@ class PostgresHistoricalMarketDataPipeline:
         _aware(normalized_at, "normalized_at")
         with self._database.transaction() as connection, connection.cursor() as cursor:
             cursor.execute(
-                "SELECT r.source_id,r.observation_kind,r.provider_identifier,r.exchange,r.event_at,r.ingested_at,r.raw_payload,s.provider_identifier_namespace,s.asset_scope,s.provider,s.dataset_name "
+                "SELECT r.source_id,r.observation_kind,r.provider_identifier,r.exchange,r.event_at,r.ingested_at,r.raw_payload,s.provider_identifier_namespace,s.asset_scope,s.provider,s.dataset_name,r.adjustment_status,s.authorization_reference "
                 "FROM historical_raw_observations r JOIN historical_data_sources s ON s.source_id=r.source_id WHERE r.raw_observation_id=%s",
                 (raw_observation_id,),
             )
@@ -788,12 +788,35 @@ class PostgresHistoricalMarketDataPipeline:
         self._require_source_scope_matches_instrument(scope, instrument)
         issues: list[str] = []
         raw_exchange = str(row[3])
-        if raw_exchange == CONSOLIDATED_TAPE_EXCHANGE:
+        payload = cast(dict[str, object], row[6])
+        # P3A: IEX execution venue is distinct from an AAPL/SPY listing venue.
+        # Only this exact, offline source contract earns that distinction. It
+        # never turns an arbitrary IEXG row into consolidated/listing data.
+        if str(row[9]) == "alpaca_iex":
+            if not (
+                kind is ObservationKind.OHLCV
+                and scope is AssetScope.US_EQUITIES_ETFS
+                and str(row[10]) == "iex-raw-1min"
+                and str(row[7]) == "ALPACA:IEX:RAW:1MIN:SYMBOL:V1"
+                and raw_exchange == "IEXG"
+                and instrument.instrument_id in {"US:XNAS:AAPL", "US:ARCX:SPY"}
+                and payload.get("feed") == "iex"
+                and payload.get("execution_mic") == "IEXG"
+                and payload.get("listing_mic") == instrument.mic
+                and payload.get("adjustment") == "raw"
+                and payload.get("asof") == "-"
+                and payload.get("interval") == "1m"
+                and payload.get("fixture_only") is True
+                and payload.get("evidence_tier") == "T0_SYNTHETIC"
+                and str(row[11]) == AdjustmentStatus.RAW.value
+                and str(row[12]).startswith("test-authorization://")
+            ):
+                issues.append("alpaca_iex_source_contract_mismatch")
+        elif raw_exchange == CONSOLIDATED_TAPE_EXCHANGE:
             if instrument.venue not in _CONSOLIDATED_TAPE_ELIGIBLE_VENUES:
                 issues.append("exchange_instrument_mismatch")
         elif raw_exchange not in {instrument.venue, instrument.mic}:
             issues.append("exchange_instrument_mismatch")
-        payload = cast(dict[str, object], row[6])
 
         typed: TypedPayload | None = None
         volume_semantics: OhlcvVolumeSemantics | None = None

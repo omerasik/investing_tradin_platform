@@ -1,0 +1,13 @@
+{
+  "fixture_only": true,
+  "evidence_tier": "T0_SYNTHETIC",
+  "description": "Invented engineering values in the documented Alpaca single-symbol bars response shape; no provider retrieval or entitlement evidence.",
+  "AAPL": [
+    {"symbol":"AAPL","bars":[{"t":"2025-01-02T14:30:00Z","o":174.123456789012,"h":175,"l":173,"c":174.5,"v":100,"n":4,"vw":174.4},{"t":"2025-01-02T14:31:00Z","o":174.5,"h":175,"l":174,"c":174.6,"v":120,"n":5,"vw":174.6}],"next_page_token":"fixture-second-page"},
+    {"symbol":"AAPL","bars":[{"t":"2025-01-02T14:32:00Z","o":174.6,"h":175,"l":174,"c":174.7,"v":110,"n":5,"vw":174.7}],"next_page_token":null}
+  ],
+  "SPY": [
+    {"symbol":"SPY","bars":[{"t":"2025-01-02T14:30:00Z","o":500,"h":502,"l":499,"c":501,"v":1000,"n":30,"vw":500.5},{"t":"2025-01-02T14:31:00Z","o":501,"h":502,"l":500,"c":501.5,"v":1200,"n":40,"vw":501.2}],"next_page_token":"fixture-second-page"},
+    {"symbol":"SPY","bars":[{"t":"2025-01-02T14:32:00Z","o":501.5,"h":503,"l":501,"c":502,"v":1100,"n":35,"vw":501.8}],"next_page_token":null}
+  ]
+}
