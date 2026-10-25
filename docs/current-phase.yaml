@@ -13,10 +13,34 @@ updated: 2026-10-25
 # -> R8 opportunity engine -> R9 accounts/risk -> R10 paper; R7 (T3 spine) is
 # the one parallel track.
 phase:
-  id: "RF-P2A"
-  name: Research Factory P2A - Memory-Efficient Data Loading
+  id: "MM-P3A"
+  name: Multi-Market Foundation P3A - Free US Equities and ETFs Offline Pilot
   status: implemented
-  base_commit: b3d6bd8       # PR #276 performance foundation, exact-main verified
+  base_commit: b6314ee       # PR #277 loader memory foundation, exact-main verified
+  real_source_status: EXTERNAL_BLOCKED
+  owner_direction_p3a: >-
+    Owner authorized a zero-subscription official-source preflight and the smallest
+    disabled fixture-backed AAPL/SPY historical integration through existing
+    authorities, targeted tests, one PR, solo-maintainer review and exact-main CI.
+    No source rights may be inferred; no real calls, accounts, accepted terms,
+    provider activation, broker execution or next phase are authorized.
+  p3a_evidence: >-
+    No source is eligible for real activation on reviewed evidence. Alpaca Basic
+    IEX is the preferred offline technical contract; personal/non-commercial and
+    US-residency terms, Belgian/operator eligibility, permanent retention and
+    systematic research rights need written clarification. Official IEX HIST
+    reference-only terms/retention/access need clarification; Stooq official
+    licensing remains unreadable/unverified. DATA_PROVIDER_MATRIX.md records
+    official links, limits, exact blockers and owner actions. Offline-only adapter
+    has no HTTP transport/secret resolver/activation switch and accepts only test
+    authorization. Existing raw/normalization/bar/Data Health/seal/PIT-query path
+    and canonical AAPL/SPY identities retained; IEXG execution and XNAS/ARCX listing
+    distinguished, exact NUMERIC(30,12), raw-only, no symbol remapping, minute-close
+    effective time and honest ingestion/normalization/seal knowledge times. Fixture
+    evidence remains T0_SYNTHETIC. Missing sessions/minutes, duplicates, precision
+    loss, corrections and partial pagination fail closed. No real-provider success,
+    corporate-action completeness, consolidated coverage, survivorship-free or
+    professional-validation claim. PostgreSQL fixture writes roll back. STOP P3A.
   owner_direction_p2a: >-
     Owner authorized focused loader/Parquet/Decimal/cache profiling, one measured
     memory improvement, bounded synthetic and resource-admitted read-only ETH
@@ -31,13 +55,12 @@ phase:
     Prioritize this foundation over further BTC/ETH campaigns; no 24-fold run.
     Stop after integration; no holdout, capture, broker, financial-gate or paper activation.
   scope_paths:
-    - src/trade_platform/research_data_plane_v1.py
-    - src/trade_platform/strategy_lab_data_loading_v1.py
-    - src/trade_platform/strategy_lab_authority_rerun_v1.py
-    - scripts/strategy_lab.py
-    - scripts/research_performance.py
-    - scripts/research_loading_performance.py
-    - tests/test_strategy_lab_data_loading_v1.py
+    - src/trade_platform/alpaca_equities_pilot_v1.py
+    - src/trade_platform/historical_market_data.py
+    - tests/fixtures/alpaca_iex_pilot_v1.json
+    - tests/test_alpaca_equities_pilot_v1.py
+    - tests/test_alpaca_equities_pilot_v1_postgres.py
+    - docs/DATA_PROVIDER_MATRIX.md
     - docs/current-phase.yaml
     - docs/MASTER_ROADMAP.md
   terminal_milestone_retained: M-TERMINAL-V1 - Crypto Research & Paper-Incubation Terminal v1 (BTC/ETH/SOL)
@@ -94,8 +117,8 @@ phase:
     stress envelope stay owner-gated -> gross, non-promotable.
     Holdout 2026-08-20 immutable; T4 after 2026-09-24 forward-only this cycle.
   order: >-
-    bounded loader profile -> measured Decimal materialization and verified
-    cache boundary -> data/strategy/integrity parity -> PR/CI/exact-main CI -> STOP.
+    official free-source/rights preflight -> offline IEX fixture contract through
+    existing authorities -> focused acceptance/negative evidence -> PR/CI/exact-main CI -> STOP P3A.
   owner_gates_open: OR-7 (validation/holdout packet), OR-11 (accounts/risk), OR-9 (watchlist/alerts), fee schedule.
   owner_direction_2026_10_09: >-
     Activation campaign. OR-1: acceptance = 24 consecutive manifest-proven

@@ -63,6 +63,33 @@ Windows transfer counters do not establish physical disk bytes or OS cache state
 Complete row materialization, per-load verification and per-worker duplication
 still require measured scaling work; no next phase or large campaign is started.
 
+## Multi-Market Foundation P3A (owner-authorized, 2026-10-25)
+
+Following #276/#277, the immediate authorized scope is a zero-subscription US
+equity/ETF historical pilot. [Current provider preflight](DATA_PROVIDER_MATRIX.md)
+records official Alpaca Basic/IEX, IEX HIST and Stooq evidence. **Real sources
+remain EXTERNAL_BLOCKED**: no free API tier establishes this operator's intended
+research/retention rights. Alpaca IEX is a technical fixture preference only;
+the prior Databento ranking is historical and cannot override the permanent
+`NO_PAID_MARKET_DATA_SUBSCRIPTIONS` decision.
+
+`alpaca_equities_pilot_v1` provides a bounded, offline-only raw-page contract for
+AAPL/SPY and the existing professional identity/calendar, raw/normalization,
+historical bar, PostgreSQL Data Health, sealed dataset and PIT-query authorities.
+IEXG execution-feed provenance stays distinct from XNAS/ARCX listing identity;
+raw-only prices and exact existing NUMERIC precision are required. No new
+authority, schema, engine, provider transport, secret or runtime activation is
+added. Fixtures remain T0 engineering evidence; missing sessions, corrections,
+duplicates, precision loss and incomplete pages cannot silently justify research.
+
+Rights/Belgian eligibility, immutable retention, accepted dated terms, actual
+access and AAPL/SPY availability, separately authorized real transport/onboarding
+and an explicitly bounded owner-approved pilot remain external gates. The matrix
+lists the exact required owner actions. Fixture health/sealing is neither real
+provider success nor consolidated, corporate-action-complete, survivorship-free
+or professional-validation evidence. Crypto research and all owner/holdout/
+operational/financial gates are unchanged. Stop after P3A; no P3B or activation.
+
 ## North star (recorded 2026-09-06, Module 3G.0)
 
 The platform is treated from this point forward as a **Professional
