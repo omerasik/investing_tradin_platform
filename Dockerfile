@@ -17,10 +17,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # perl-base (Essential; CVE-2026-13221, -42496, -8376 critical, -42497, -48962,
 # -57432, -57433 high) is fixed in 5.36.0-7+deb12u4 on bookworm-security; the
 # base image ships deb12u3. Same exact-pin rule.
+# OpenSSL (CVE-2026-84782) is fixed in 3.0.22-1~deb12u2 on
+# bookworm-security. Pin both the shared library and CLI to that security build.
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         libpcre2-8-0=10.42-1+deb12u2 \
         perl-base=5.36.0-7+deb12u4 \
+        libssl3=3.0.22-1~deb12u2 \
+        openssl=3.0.22-1~deb12u2 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --gid 10001 tradeplatform \
