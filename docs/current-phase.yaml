@@ -15,10 +15,10 @@ updated: 2026-10-26
 phase:
   id: "RF-P2B.2.1"
   name: Research Factory P2B.2.1 - Canonical Distinct-Configuration Baseline
-  status: in_progress
+  status: implemented
   base_commit: 15bca049      # PR #279; exact-main verify 40360709165 and CodeQL 40360709145 passed
-  resource_gate: PENDING_ISOLATED_WINDOWS
-  acceptance_gate: PENDING_684_DISTINCT_CONFIGURATIONS
+  resource_gate: PASSED_ISOLATED_WINDOWS
+  acceptance_gate: PASSED_3X_684_DISTINCT_CONFIGURATIONS
   integration_disposition: normal_merge_after_exact_head_review_and_required_ci
   owner_direction_p2b21: >-
     Owner authorized the existing canonical three-family domains and admissibility
@@ -41,7 +41,44 @@ phase:
     compares all twelve representatives and requires identical complete repeats.
     These full-space study identities differ legitimately from P2B.1's reduced
     40-point declarations; neither set is rewritten and no study is registered.
-    Hosted acceptance is pending; no completed capacity/performance claim yet.
+    Standard public Windows acceptance40363915645 at source head2b383aa PASS.
+    Three fresh complete reference12, optimized12 and optimized684 repetitions;
+    each684/684 genuinely distinct configurations, zero failures/exclusions,
+    all12 standalone representative input/decision/metric/identity comparisons
+    exact. Full684 results/identities/chains deterministic across all repetitions.
+    Workload seconds684: 20.055766 / 19.931741 / 19.001776; median19.931741,
+    34.317123 configurations/s; median parent wall20.906 s (includes planning/
+    startup/serialization), canonical planning median0.518068 s. Same-VM
+    reference12 -> optimized12 medians25.420073 -> 9.017879 s; no full684
+    standalone reference time/speedup inferred and no cross-run P2B.1 comparison.
+    Reported evaluator peak commit median179.66/max181.09 MiB; working set
+    median151.12/max152.15 MiB (sampled before final JSON serialization).
+    Same512 MiB hard process/working-set caps, external120 s, single thread.
+    Full684 median verification3/5.947523 s, metrics684/5.096704 s,
+    targets trend380/1.416524 s + mean reversion240/1.268911 s + breakout64/
+    1.700270 s, materialization3/1.495812 s, held684/0.209894 s, schedule3/
+    0.010895 s. Verification is the largest fixed stage, metrics the largest
+    per-configuration stage; no new optimization or multi-worker claim.
+    Environment Windows2025 AMD64/4 CPUs, ImageVersion20261021.278.1,
+    managed CPython3.12.14/NumPy2.5.3/PyArrow25.0.1/DuckDB1.5.5. Each full run
+    process read transfers22293168 bytes, writes730371..731004; physical I/O
+    unavailable, OS caches unflushed. Fixture/receipt allocation9715712 bytes,
+    logical9696507 before summary/bootstrap; C: system/TEMP and D: workspace
+    separately guarded. Full-run minima RAM14142943232/commit17402925056/free
+    disk33233936384 bytes. All admitted; no resource stop/deadline/failure.
+    Exact P2B.1 fixture/catalog/manifest/logical/object/SDK bytes reproduced.
+    Catalog SHA c39ef9c22c1dd0111776a053381318aa895b033af9de3ac0744481f23065df00;
+    full result chain61232003e1d3cd473abd5860e732f0b4b7f069669ea475f28f1b28b78fdceeb9.
+    Artifact12668339193 ZIP SHA c5d1fc00849b1d7340bb6ce84af12054f437a603aea393d0bde9e8a0325ee6f2
+    (7-day retention); full receipt SHA a4646af0abf9d228f87b6882d02fc4aa870bad690131e1102a8f5d43f0523646.
+    Downloaded metadata/receipt hashes and all coverage/parity/limit checks
+    independently revalidated, no local benchmark. Fourteen focused metadata/
+    enumerator/identity/guard tests plus11 SDK/scope parity tests passed.
+    Final changes after2b383aa are documentation only; opt-in label removed to
+    prevent an unneeded second benchmark. Exact final head review/required CI,
+    merge and exact-main evidence belong to this phase's PR #281. No capacity
+    beyond684 distinct configurations, full684 standalone parity, financial
+    profitability/net-return, production queue/DB or multi-worker proof.
   p2b1_final_merged_acceptance: >-
     FINAL P2B.1 evidence supersedes historical draft/resource-stop statements below.
     PR #279 merged as 15bca04925d384242671b75ccef68d45fba74a91; exact-main PUSH
