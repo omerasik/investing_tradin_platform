@@ -41,6 +41,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable, Mapping
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -110,22 +111,36 @@ def run_trial_worker_v1(
         if not batch:
             return WorkerReportV1(worker, claimed, succeeded, failed, lost, stopped=False)
         claimed += len(batch)
-        for claim in batch:
-            if stop():
-                return WorkerReportV1(worker, claimed, succeeded, failed, lost, stopped=True)
-            try:
-                held = _renew_if_needed(ledger, claim, lease_seconds, now())
-                outcome = _evaluate(study, evaluator, held)
-                if isinstance(outcome, str):
-                    ledger.fail(held, reason=outcome)
-                    failed += 1
-                else:
-                    ledger.complete(held, outcome=outcome.outcome, metrics=outcome.metrics)
-                    succeeded += 1
-            except StrategyLabLedgerError as error:
-                if str(error) not in {"lease_lost", "lease_expired"}:
-                    raise
-                lost += 1
+        # Only evaluators that explicitly provide this protocol opt into a
+        # private verified input lifetime. Other evaluators keep the old path.
+        factory = getattr(evaluator, "batch_scope_v1", None)
+        scoped = callable(factory)
+        context: AbstractContextManager[Any] = nullcontext(evaluator)
+        if callable(factory):
+            context = factory(study, maximum_evaluations=len(batch), maximum_seconds=min(lease_seconds, 120.0),
+                              should_stop=stop)
+        with context as active:
+            for claim in batch:
+                if stop():
+                    return WorkerReportV1(worker, claimed, succeeded, failed, lost, stopped=True)
+                try:
+                    held = _renew_if_needed(ledger, claim, lease_seconds, now())
+                    outcome = _evaluate(study, active, held)
+                    # A scope observes cooperative stop during calculations as
+                    # well. Leave interrupted claims to lease expiry, recording
+                    # neither a fabricated success nor a cancellation failure.
+                    if scoped and stop():
+                        return WorkerReportV1(worker, claimed, succeeded, failed, lost, stopped=True)
+                    if isinstance(outcome, str):
+                        ledger.fail(held, reason=outcome)
+                        failed += 1
+                    else:
+                        ledger.complete(held, outcome=outcome.outcome, metrics=outcome.metrics)
+                        succeeded += 1
+                except StrategyLabLedgerError as error:
+                    if str(error) not in {"lease_lost", "lease_expired"}:
+                        raise
+                    lost += 1
     return WorkerReportV1(worker, claimed, succeeded, failed, lost, stopped=True)
 
 

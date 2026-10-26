@@ -90,6 +90,143 @@ provider success nor consolidated, corporate-action-complete, survivorship-free
 or professional-validation evidence. Crypto research and all owner/holdout/
 operational/financial gates are unchanged. Stop after P3A; no P3B or activation.
 
+## Research Factory P2B.1 — isolated 1000-task acceptance PASSED (2026-10-26)
+
+Owner-authorized standard public windows-latest acceptance run
+[40356628160](https://github.com/omerasik/investing_tradin_platform/actions/runs/40356628160)
+passed all three repetitions of reference40, optimized40 and optimized1000.
+The existing 86400-bar preparation reproduced exact dataset/catalog, manifest,
+logical-content, Parquet object bytes/hash and recorded Windows SDK/input/result
+identities. All decisions, Decimal inputs, metrics and study/trial/result hashes
+match; zero failures/exclusions. The 1000 tasks repeat 40 configurations, not
+1000 independent hypotheses. No new data authority or numerical engine.
+
+Matched same-run 40-task medians reference -> optimized: 71.193229 -> 8.139306 s,
+0.561851 -> 4.914424 tasks/s (8.75x); parent wall 71.640 -> 8.594 s. Peak commit
+174.45 -> 170.72 MiB, working set 149.45 -> 138.10 MiB. Verification falls
+40/65.793515 s -> 3/5.255977 s; held mapping 2.392297 -> 0.021876 s. Preserve
+the materialization negative: 1/0.425562 s -> 3/1.253819 s. Do not compare these
+matched runner results with local wall times as if they were the same host.
+
+Optimized1000 completes 1000/1000 in every repetition: median 35.224211 s,
+28.389564 tasks/s, parent wall 35.672 s. Median peak commit/working set
+169.43/138.16 MiB; observed maxima 169.47/139.00 MiB. Three full verifications
+cost 5.226092 s, three execution schedules 0.012222 s, 1000 held mappings
+0.418376 s. Repeated result chain is identical. Old reference1000 remains
+censored: no complete reference1000 time or speedup is extrapolated.
+
+Workflow is narrowly opt-in on PR #279, read-only, no secrets/services, pinned
+actions and same-repository check. Separate ephemeral policy: 4 GiB free on
+workspace/TEMP/system volumes, 2 GiB RAM/commit reserves, unchanged 512 MiB child
+and working-set caps, one numeric thread and external120 s deadline. Local
+24 GiB disk/512 MiB reserve/1 GiB runtime commit guards are unchanged. No paid
+larger runner or OCI use. Windows 2025 AMD64, 4 CPUs, managed CPython3.12.14,
+NumPy2.5.3/PyArrow25.0.1/DuckDB1.5.5 are recorded. Initial setup-python failure
+(no Windows installer for security-only3.12.14) is retained; pinned uv installs
+the same patch. Measured fixture/receipt allocation 2674688 bytes before final
+summary; environment and per-volume free space retained. Process I/O is not
+physical disk I/O and OS caches were not flushed.
+
+[Artifact 12667170928](https://github.com/omerasik/investing_tradin_platform/actions/runs/40356628160/artifacts/12667170928)
+has ZIP digest 804f6ead0eb140f749872973e800690c4f92f8a0828024468c286da47d3788b4
+and seven-day retention; compact metrics/digests remain in #279. Final current-head
+CI/solo-maintainer review and exact-main integration evidence are recorded there.
+No profitability, multi-worker/DB throughput, 10000-100000 distinct-configuration
+capacity, operational approval or next phase is established. STOP after P2B.1.
+
+### Retained local position-schedule and host-memory evidence (2026-10-26)
+
+The owner's position-calculation/security continuation stays in P2B.1.
+Independent security PR #280 exact-pins Bookworm libssl3/openssl to
+3.0.22-1~deb12u2 (official Debian fixed-version/amd64/arm64 availability checked).
+PR CI, image scan, SBOM/attestation and runtime checks passed; normal merge
+ed223019103b162a024197f8a763b242d5fa8dbb, exact-main CI tracked in #280.
+Digest, other dependency pins, runtime gates and scanner policy are unchanged.
+PR #279 now includes this main base; no independent security diff is duplicated.
+
+The real verified scope reuses the existing walk-forward target-independent
+execution schedule once per verified dataset/cut/lag/study. Each trial retains
+its parameter-dependent targets; the existing position-mapping helper consumes
+the shared schedule. Immutable bytes backing, retained-input budget accounting
+and scope/error/cancellation cleanup apply. SDK and walk-forward source remain
+unchanged. Existing gap/segment/fill-collision/lag/causality/Decimal parity tests
+plus focused integration tests passed (18 tests); mypy remains 117/117.
+
+Three complete position-optimized 40-task runs match the original reference40
+oracle exactly, with no failures/exclusions. Medians: earlier batch-only
+16.721054 -> 8.128091 s, 2.392194 -> 4.921205 tasks/s. This shared-host recorded
+comparison is not a completed reference1000 timing. Held mapping now costs
+0.015217 s for 40 tasks, with three schedule builds/0.011649 s; verification
+3 calls/5.164689 s. Median peak commit/working set 170.30/142.51 MiB. Each
+active 86400-bar schedule retains 691200 data bytes inside the existing budget.
+
+**Full 1000-task gate remains unproven; keep #279 DRAFT.** Initial position run
+stops at host RAM guard after 11.766 s: 334 completed tasks, no mismatches,
+held mapping 0.137269 s. Minimum RAM 522842112 bytes breaches the 512 MiB
+reserve. After cleanup/renewed admission, final run stops at 5.000 s with
+124 completed tasks; commit headroom 997707776 bytes breaches the unchanged
+1 GiB runtime floor. Its verification/held costs are 1.484072/0.072639 s.
+All completed task results match reference40; prefixes are not full-run times
+or peaks. Both stop on host guards, not the 120-second deadline. Keep prior
+781-task deadline and all new negative receipts; do not extrapolate 1000-task
+throughput or retry with relaxed limits. Resources/CI must permit complete
+acceptance before merge. No further research phase, campaign or OCI A1 work.
+
+### Preserved earlier data-scope and deadline evidence
+
+
+The owner-authorized bounded verified input scope is measured on the existing
+86,400-bar synthetic fixture. Original full verification supplies the exact
+rows for private immutable SDK inputs; independent scopes reverify persistent
+evidence. Standalone loading, SDK source, data authority, Decimal authority,
+strategy/study/trial/result identities, execution and holdout rules are unchanged.
+The worker hook follows existing claim batches (default 8). The direct harness
+uses three study scopes and registers no studies; DB/pool throughput is unmeasured.
+
+Three fresh sequential 40-task runs/mode preserve exact input, decision, metric
+and identity parity: medians reference -> optimized 108.634210 -> 16.721054 s,
+0.368208 -> 2.392194 tasks/s (6.50x). Including child startup, parent wall is
+109.547 -> 17.672 s (6.20x). Peak commit 191.09 -> 170.28 MiB; working set
+159.88 -> 138.32 MiB. Full verification count falls 40 -> 3, cost 100.762419 ->
+8.089020 s. Preserve the negative cost: materializations rise 1 -> 3 and
+0.692338 -> 2.133101 s. Process read transfers 176,853,434 -> 21,055,354 bytes
+are not physical disk I/O; OS caches were not flushed. All six runs have zero
+failures/exclusions and identical fingerprints. Receipts/hashes belong to PR #279.
+
+**The 1000-task acceptance gate FAILED; PR #279 remains draft, no merge.**
+The workload repeats 40 unique configurations, not 1000 economic hypotheses.
+Reference hits the unchanged external deadline at 120.297 s, retaining 42
+completed tasks; optimized hits it at 120.062 s, retaining 781 completed tasks
+whose results all match reference40. Both prefixes have zero evaluation failures
+or exclusions; 219 optimized tasks remain unfinished. The snapshots at their
+last completed tasks are censored evidence, not full-run times/peaks. Do not
+calculate a full-1000 speedup from these different task prefixes. Optimized full
+verification is 3 calls/7.579261 s; repeated held-position work is now dominant
+(80.480575 s), metrics 12.487501 s and targets 9.740101 s. No new optimization
+phase or resource-limit change is authorized. Requested repeated runs stop at
+the first non-completion. A small tested harness correction drains Windows
+stdout after guarded termination so completed prefixes survive timeout.
+
+The Oct25 RESOURCE_BLOCKED disk receipts remain. Oct26 host admission passed:
+35,575,427,072 free bytes (33.1322 GiB), 2,119,430,144 bytes available RAM and
+5,208,887,296 bytes commit headroom. Limits remain 512 MiB process/working set,
+512 MiB host reserve, 24 GiB disk floor, one numerical thread and 120 s/run.
+Both scale stops are deadlines, not host-resource guard failures. Eight raw
+receipts occupy 446,464 allocated NTFS bytes; the unchanged read-only fixture
+occupies 2,060,288 bytes. Host free-space changes are not benchmark scratch.
+The first reference40 timeout overlapped the read-only health audit and predates
+the prefix-drain fix; preserve it separately from the three clean comparisons.
+
+The disk floor protects host paging/capture headroom after the recorded outage,
+not benchmark scratch. Only C: is a normal data volume. Windows read-only
+capture check reports existing ATTENTION (R0/U2 inactive; no recent finalized
+manifests); no capture, database, pagefile, external service, provider or owner
+gate is changed. OCI A1 is not used. Isolated research compute is advisable but
+not provisioned or capacity-proven. PR correctness/security CI and exact-head
+solo-maintainer review are recorded in #279; green CI cannot replace failed
+scale acceptance or justify merge/exact-main claims. No 10000-100000-task,
+profitability, holdout, paper or next-phase approval is implied. STOP P2B.1.
+
 ## North star (recorded 2026-09-06, Module 3G.0)
 
 The platform is treated from this point forward as a **Professional

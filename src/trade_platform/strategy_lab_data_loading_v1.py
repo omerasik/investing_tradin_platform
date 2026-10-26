@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import sys
 import threading
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import AbstractContextManager, contextmanager
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Final
@@ -94,6 +94,16 @@ def load_bars_v1(data_root: Any, dataset_version_id: Any, *, expected_content_ha
 
 class BarStrategyEvaluatorV1(sdk.BarStrategyEvaluatorV1):
     """Use the unmodified SDK evaluator with the same verified cache boundary."""
+
+    def batch_scope_v1(
+        self, study: StudySpecV1, *, maximum_evaluations: int,
+        maximum_seconds: float = 120.0, should_stop: Callable[[], bool] | None = None,
+    ) -> AbstractContextManager[Any]:
+        """Explicit private snapshot; standalone __call__ still fully revalidates."""
+        from .strategy_lab_evaluation_scope_v1 import worker_evaluation_scope_v1
+
+        return worker_evaluation_scope_v1(study, self.data_root, maximum_evaluations=maximum_evaluations,
+                                          maximum_seconds=maximum_seconds, should_stop=should_stop)
 
     def __call__(self, study: StudySpecV1, parameters: Mapping[str, Any]) -> TrialEvaluationV1:
         family = sdk.FAMILIES_V1.get(study.strategy.family)

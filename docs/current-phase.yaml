@@ -2,7 +2,7 @@
 # This is NOT a second roadmap: requirements stay in MASTER_ROADMAP.md, design
 # stays in module docstrings, history stays in git.
 
-updated: 2026-10-25
+updated: 2026-10-26
 
 # Phase naming. Since 2026-09-24 the owner-approved canonical roadmap uses an
 # "R" series (R0-R15, owner review points OR-1..OR-14). It is distinct from the
@@ -13,10 +13,183 @@ updated: 2026-10-25
 # -> R8 opportunity engine -> R9 accounts/risk -> R10 paper; R7 (T3 spine) is
 # the one parallel track.
 phase:
-  id: "MM-P3A"
-  name: Multi-Market Foundation P3A - Free US Equities and ETFs Offline Pilot
+  id: "RF-P2B.1"
+  name: Research Factory P2B.1 - Verified Batch Evaluation and 1000-Task Scale Gate
   status: implemented
-  base_commit: b6314ee       # PR #277 loader memory foundation, exact-main verified
+  base_commit: ed22301       # PR #280 independent OpenSSL security fix; exact-main CI tracked there
+  resource_gate: PASSED_ISOLATED_WINDOWS
+  acceptance_gate: PASSED_3X_1000_TASKS_HOSTED
+  integration_disposition: normal_merge_after_exact_head_review_and_required_ci
+  owner_direction_p2b1: >-
+    Owner authorized end-to-end repeated-work measurement on existing offline
+    inputs, a bounded verified immutable input scope if measured justification
+    exists, one deterministic 1000-evaluation workload with distinct task/config
+    counts, targeted tests and one PR under solo-maintainer/exact-main CI rules.
+    Standalone persistent-evidence verification, identities, Decimal, causality
+    and holdout gates remain unchanged. No provider work or profitability campaign.
+    Stop after P2B.1; no automatic 10000-task campaign or next module.
+  owner_direction_hosted_acceptance: >-
+    Owner explicitly authorized an opt-in PR-triggered standard windows-latest
+    acceptance job on #279, read-only repository permissions, no secrets/services,
+    separate conservative ephemeral-host admission, same 512 MiB child/working-set,
+    one numeric thread and external 120 s deadline. Do not run local benchmarks
+    or further numerical optimizations. Exact recorded fixture and Windows SDK
+    source bytes must reproduce or fail closed; preserve all negative evidence.
+    Same-run reference40 -> optimized40 -> optimized1000, three repetitions each.
+    No OCI, larger paid runner, provider/holdout/paper/broker/financial activation.
+  p2b1_hosted_acceptance_evidence: >-
+    PASS on standard public windows-latest run 40356628160, head d31eca4;
+    artifact 12667170928 (ZIP digest 804f6ead0eb140f749872973e800690c4f92f8a0828024468c286da47d3788b4).
+    Three complete reference40, optimized40 and optimized1000 repetitions;
+    all exact input/Decimal/array/decision/metric/study/trial/result identities
+    match, failures/exclusions zero. Exactly 1000 repeated tasks over 40 unique
+    configurations, no registered studies or economic-hypothesis/profit claim.
+    Existing deterministic preparation reproduced dataset 54cca16c / 01b45526,
+    manifest 5c351631, logical 6b68b9c9, object 0834f116 and original catalog/
+    manifest bytes, SDK Windows source bytes, input fingerprint and reference40
+    result chain. No alternate fixture/authority or precision rule was introduced.
+    Matched same-run 40-task medians reference -> optimized: 71.193229 -> 8.139306 s,
+    0.561851 -> 4.914424 tasks/s (8.75x); parent wall 71.640 -> 8.594 s.
+    Peak commit 174.45 -> 170.72 MiB; working set 149.45 -> 138.10 MiB.
+    Full verification 40/65.793515 s -> 3/5.255977 s; held 2.392297 -> 0.021876 s.
+    Materialization negative retained: 1/0.425562 s -> 3/1.253819 s.
+    Optimized1000: 1000/1000 each run, 35.224211 s / 28.389564 tasks/s median,
+    parent wall 35.672 s (all <120). Peak commit/WS medians 169.43/138.16 MiB,
+    observed maxima 169.47/139.00 MiB. Verification 3/5.226092 s, schedule builds
+    3/0.012222 s, held mapping 1000/0.418376 s. Repetition result chain identical.
+    No full reference1000 time/speedup is inferred from prior censored runs.
+    Environment: Windows 2025Server 26100 AMD64, 4 CPUs, ImageVersion 20261021.278.1,
+    managed CPython 3.12.14, NumPy 2.5.3, PyArrow 25.0.1, DuckDB 1.5.5.
+    Job read-only/secret-free/service-free, same-repository PR #279 plus explicit
+    label, pinned action commits. Initial setup-python bootstrap 40356024744 had
+    no Windows 3.12.14 installer and failed before data; pinned uv 0.13.5 installs
+    that SAME managed patch. Negative bootstrap and prior local stops retained.
+    Independent ephemeral admission keeps 4 GiB free on EACH workspace/TEMP/
+    system volume and 2 GiB RAM/commit reserve, adding 512 MiB at admission.
+    Child/working-set caps 512 MiB, numeric threads=1, external deadline120 unchanged.
+    Local 24 GiB disk/512 MiB host reserve/1 GiB runtime commit guards unchanged.
+    Hosted1000 minima RAM/commit 14300393472/17485312000 bytes; min volume free
+    30214873088 bytes. Measured fixture/receipt allocation 2674688 bytes (before
+    final summary), logical 2657703; per-volume before/after and environment retained.
+    Process transfers are not physical disk I/O; OS caches not flushed. Artifact
+    lasts 7 days; compact metrics/digests persist in PR #279 and canonical docs.
+    Nine pure policy/evidence tests passed; no local benchmark run this continuation.
+    Final documentation-only head reuses unchanged accepted evaluation sources;
+    current-head required CI/review and exact-main proof belong in PR #279.
+    Normal merge only after final review/CI. No OCI, paid runner, holdout/paper/
+    provider/broker activation or next research phase; no 10000-task run.
+  owner_direction_finish_p2b1: >-
+    Owner explicitly authorized a separate main-based exact-pin OpenSSL fix,
+    then reuse of the existing walk-forward target-independent execution schedule
+    in the real verified evaluation path. Same SDK/financial/identity/resource
+    boundaries. Merge #279 only after full 1000-task acceptance and required CI;
+    otherwise preserve draft and the exact blocker. No next research phase.
+  p2b1_position_evidence: >-
+    Retained local position evidence before the successful hosted acceptance.
+    Real scope now builds the existing walk-forward held-decision schedule once
+    from fully verified, restricted immutable bars and exact study lag. Every
+    task still calculates its own targets, then uses the existing position
+    mapping helper. Schedule has immutable bytes backing, is included in the
+    retained-input budget, never crosses scope/root/study/cut/lag, and is released
+    on budget/context exit, failed admission, error or cancellation. SDK and
+    walk-forward source unchanged; no strategy/study/trial/result identity change.
+    Original complete reference40 remains the oracle. Three position-optimized
+    40-task runs: all exact input/decision/metric/identity matches, zero failures
+    or exclusions. Median 8.128091 s / 4.921205 tasks/s versus prior batch-only
+    16.721054 s / 2.392194 tasks/s; this is a recorded shared-host comparison,
+    not a new full-reference1000 timing. Held mapping median 0.015217 s for 40
+    tasks, schedule construction 3 calls/0.011649 s; verification 3/5.164689 s.
+    Peak commit/WS medians 170.30/142.51 MiB; one 86400-entry schedule retains
+    691200 data bytes per active scope, counted within existing 512 MiB cap.
+    Complete 1000-task acceptance is STILL UNPROVEN. First schedule run stops at
+    host guard in 11.766 s: 334 tasks at 8.735273 s, zero failures/exclusions,
+    one verification/1.341302 s, held mapping 0.137269 s. Host RAM minimum
+    522842112 bytes is below 536870912 reserve; no deadline/process-memory trip.
+    After source cleanup and host admission recovered, final run stops at 5.000 s:
+    124 tasks at 4.368499 s, zero failures/exclusions, verification 1/1.484072 s,
+    schedule 1/0.003034 s, held 0.072639 s. Minimum commit headroom 997707776 bytes
+    is below unchanged 1 GiB runtime floor (RAM 1053298688; disk 29451538432).
+    Both completed prefixes exactly match reference40; they are censored evidence
+    and do not establish 1000-task speed/capacity. Requested repeats stop at first
+    noncompletion. All negative/deadline/host-stop receipts are retained.
+    Eighteen targeted scope/execution-schedule/harness parity tests passed;
+    complete-package mypy 117/117. Existing lag/gap/segment/fill-collision,
+    causality, tie/Decimal and SDK-reference tests cover reused schedule helpers.
+    Final helper cleanup drops even unpublished temporary schedule references
+    after failed admission. No extra numerical optimization or guard weakening.
+    #279 remains draft pending stable host headroom and full acceptance; current
+    head CI/review evidence belongs to its PR. No merge/exact-main claim.
+  p2b1_security_evidence: >-
+    Independent PR #280 pins libssl3 and openssl to 3.0.22-1~deb12u2; official
+    Debian tracker/package indexes and amd64/arm64 download availability verified.
+    Existing Python digest, other exact pins, runtime boundaries and security/
+    SBOM/attestation workflows retained. PR-head verify/CodeQL and full container
+    scan/staging/attestation passed; normal merge ed223019103b162a024197f8a763b242d5fa8dbb.
+    Exact-main CI on that merge is tracked in #280. Security fix is on #279's
+    current main base; no OCI benchmark, provider/capture/paper/holdout activation.
+  p2b1_evidence: >-
+    Preserved earlier data-scope evidence before the position follow-up.
+    Measured branch prototype, not integrated. Existing full verifier supplies
+    its exact logical row stream for immutable SDK inputs bound to resolved
+    root/dataset/content/manifest/study. Each independent scope fully verifies;
+    standalone loader, SDK, data authority, identities, Decimal, knowledge-time
+    and holdout rules remain unchanged. Context/error/cancellation/task/time/row/
+    retained-input limits release memory. Real worker hook uses existing claim
+    batches (default 8); direct benchmark uses three study scopes, not DB/pool
+    throughput. Forty unique existing-family configurations cycle for 1000 tasks;
+    no benchmark study is registered. Three fresh sequential 86400-bar synthetic
+    40-task runs/mode: reference -> optimized medians 108.634210 -> 16.721054 s,
+    0.368208 -> 2.392194 tasks/s (6.50x). Parent wall 109.547 -> 17.672 s (6.20x).
+    Peak process commit 191.09 -> 170.28 MiB; peak working set 159.88 -> 138.32 MiB.
+    Full verification count 40 -> 3, cost 100.762419 -> 8.089020 s. Negative
+    finding retained: bar materializations 1 -> 3, cost 0.692338 -> 2.133101 s.
+    Exact input/Decimal/array, decision, metric, dataset/manifest/study/trial/result
+    fingerprints match all six runs; zero failures/exclusions. Process reads
+    176853434 -> 21055354 bytes/run; Windows transfers are NOT physical disk I/O.
+    OS caches not flushed. Reference 1000-task run stopped at wall 120.297 s:
+    last completed prefix 42 tasks at 116.931971 s, 42 complete verifications
+    costing 109.088165 s. Optimized stopped at wall 120.062 s: 781 tasks at
+    119.025705 s, all matched against complete reference40, zero failures or
+    exclusions, 3 verifications costing 7.579261 s. Remaining 219 tasks are NOT
+    successes or economic exclusions. Prefix observed peak commit/WS 190.77/
+    159.89 MiB reference, 171.21/140.69 MiB optimized are lower bounds for stopped
+    processes, not final whole-run peaks. No full-1000 speedup/capacity claim.
+    Optimized completed-prefix held-position work costs 80.480575 s; metrics
+    12.487501 s and targets 9.740101 s remain repeated. This phase's 1000-task
+    gate FAILED; requested three optimized repetitions stop after first timeout.
+    No limit tuning, new optimization phase, historical campaign or OCI A1 use.
+    Windows communicate timeout discarded partial stdout until EOF; a small
+    harness fix kills at the unchanged guard then drains the pipe, retaining
+    censored prefixes. Three targeted harness tests passed; broader validation
+    stays in existing CI. Initial reference40 overlapped read-only health audit
+    and timed out with no retained prefix before this fix; preserved and excluded
+    from successful-run medians. Prior local 34 passed/8 PostgreSQL skips and
+    exact-head PR CI (3439 passed, one permitted Tardis skip, including all 8 PG
+    tests) are historical evidence; renewed head review/CI belongs in PR #279.
+    Keep draft; do not merge or claim phase completion/exact-main CI.
+  p2b1_environment_evidence: >-
+    Retained local-host evidence; current hosted acceptance is recorded above.
+    Oct25 disk admissions 23075213312 then 15345135616 bytes versus 25769803776
+    floor remain preserved negative findings. Floor is HOST paging/capture
+    protection: burn_in_outage_2 records pagefile growth/capture disk-stop.
+    Oct26 Windows admission passed at C: 35575427072 bytes (33.1322 GiB), available
+    RAM 2119430144 bytes and commit headroom 5208887296 bytes. All benchmark runs
+    retain 512 MiB process/Windows hard working-set ceilings, 512 MiB host reserve,
+    24 GiB disk floor, one process/numeric thread, 120 s external deadline.
+    Both 1000-task stops were DEADLINE, not disk/RAM/commit guard failures.
+    Eight raw P2B receipt files occupy 429879 logical / 446464 NTFS allocated
+    bytes, including two older blocked receipts. Reused fixture is unchanged:
+    2049840 logical / 2060288 allocated bytes, no dataset writes or copies.
+    Host free-space changes include unrelated host activity, not scratch usage.
+    Only normal data volume is C:, also holding TEMP/TMP, configured Windows
+    capture roots and default research-data; existing DB volume untouched.
+    Read-only deadman -NoPing at 2026-10-26T14:34:24Z reported ATTENTION:
+    Windows R0/U2 locks not running and no finalized manifests in last two UTC
+    days. No capture/DB/service/host/pagefile/owner gate was changed or activated;
+    this pre-existing service-health finding grants no capture acceptance.
+    Dedicated research compute is advisable for isolation but not provisioned;
+    1000-task deadline acceptance and 10000-100000 unique-configuration capacity
+    remain unproven. Stop P2B.1 with PR #279 draft.
   real_source_status: EXTERNAL_BLOCKED
   owner_direction_p3a: >-
     Owner authorized a zero-subscription official-source preflight and the smallest
@@ -55,12 +228,16 @@ phase:
     Prioritize this foundation over further BTC/ETH campaigns; no 24-fold run.
     Stop after integration; no holdout, capture, broker, financial-gate or paper activation.
   scope_paths:
-    - src/trade_platform/alpaca_equities_pilot_v1.py
-    - src/trade_platform/historical_market_data.py
-    - tests/fixtures/alpaca_iex_pilot_v1.json
-    - tests/test_alpaca_equities_pilot_v1.py
-    - tests/test_alpaca_equities_pilot_v1_postgres.py
-    - docs/DATA_PROVIDER_MATRIX.md
+    - .github/workflows/research-p2b1-acceptance.yml
+    - scripts/research_hosted_acceptance.py
+    - tests/test_research_hosted_acceptance.py
+    - src/trade_platform/strategy_lab_evaluation_scope_v1.py
+    - src/trade_platform/strategy_lab_data_loading_v1.py
+    - src/trade_platform/strategy_lab_worker_v1.py
+    - scripts/research_loading_performance.py
+    - tests/test_strategy_lab_evaluation_scope_v1.py
+    - tests/test_strategy_lab_evaluation_scope_v1_postgres.py
+    - tests/test_research_loading_performance_v1.py
     - docs/current-phase.yaml
     - docs/MASTER_ROADMAP.md
   terminal_milestone_retained: M-TERMINAL-V1 - Crypto Research & Paper-Incubation Terminal v1 (BTC/ETH/SOL)
@@ -117,8 +294,8 @@ phase:
     stress envelope stay owner-gated -> gross, non-promotable.
     Holdout 2026-08-20 immutable; T4 after 2026-09-24 forward-only this cycle.
   order: >-
-    official free-source/rights preflight -> offline IEX fixture contract through
-    existing authorities -> focused acceptance/negative evidence -> PR/CI/exact-main CI -> STOP P3A.
+    fixed resource admission -> repeated-work baseline -> justified private
+    verified scope -> parity and 1000-task gate -> PR/CI/exact-main CI -> STOP P2B.1.
   owner_gates_open: OR-7 (validation/holdout packet), OR-11 (accounts/risk), OR-9 (watchlist/alerts), fee schedule.
   owner_direction_2026_10_09: >-
     Activation campaign. OR-1: acceptance = 24 consecutive manifest-proven
