@@ -68,7 +68,7 @@ class PersistenceTargetRejectionTests(unittest.TestCase):
                 env=_env(
                     {
                         "TRADE_PLATFORM_ENVIRONMENT": "production",
-                        "POSTGRES_DSN": "postgresql://postgres:postgres@127.0.0.1:5439/trade_platform",  # pragma: allowlist secret
+                        "POSTGRES_DSN": "postgresql://postgres:postgres@127.0.0.1:1/does_not_exist",  # pragma: allowlist secret
                     }
                 )
             )

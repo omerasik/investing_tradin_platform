@@ -216,6 +216,9 @@ def compose_protected_postgres_app(
     oidc_jwks_url: str | None = None,
     identity_policy_name: str | None = None,
     secrets_directory: str | None = None,
+    research_data_root: Path | None = None,
+    capture_archive_root: Path | None = None,
+    universe_capture_archive_root: Path | None = None,
 ) -> FastAPI:
     """Build the protected (PAPER or PRODUCTION-shaped) PostgreSQL-backed application.
 
@@ -227,6 +230,9 @@ def compose_protected_postgres_app(
     provider, and a durable PostgreSQL audit authority -- see
     :func:`_compose_production_identity_authorities`. ``PAPER`` behavior is unchanged
     from Module 3C.
+
+    Evidence roots are explicit, optional deployment configuration. Missing roots
+    remain unconfigured in the existing readers; there is no dev/home fallback.
     """
     if environment not in {RuntimeMode.PAPER, RuntimeMode.PRODUCTION}:
         raise RuntimeCompositionError("compose_protected_postgres_app_requires_protected_mode")
@@ -302,6 +308,9 @@ def compose_protected_postgres_app(
             paper_oms=authorities.paper_oms,
             operator_dashboard_queries=authorities.operator_dashboard_queries,
             terminal_commands=PostgresTerminalCommandLedgerV1(authorities.database),
+            research_data_root=research_data_root,
+            capture_archive_root=capture_archive_root,
+            universe_capture_archive_root=universe_capture_archive_root,
             # Not wired for the protected runtime -- explicitly left unavailable
             # (returns 503, never silently SQLite). See
             # docs/MODULE_3C_POSTGRES_RUNTIME_WIRING.md for why:
@@ -345,6 +354,12 @@ def _build_local_research_app() -> FastAPI:
     return build_app(config=PlatformConfig(environment=RuntimeMode.LOCAL_RESEARCH.value))
 
 
+def _evidence_root(env: Callable[[str], str | None], name: str) -> Path | None:
+    """Resolve only an explicitly supplied root, as in the development factory."""
+    value = env(name)
+    return Path(value) if value else None
+
+
 def create_runtime_app_from_environment(
     *, env: Callable[[str], str | None] = os.environ.get
 ) -> FastAPI:
@@ -358,6 +373,9 @@ def create_runtime_app_from_environment(
       - ``TRADE_PLATFORM_OPERATOR_TOKEN``: optional override for ``paper``, otherwise
         ``OperatorAuthenticator.from_environment()`` is used. Ignored for ``production``,
         which never uses the static local-bearer boundary.
+      - ``TRADE_PLATFORM_RESEARCH_DATA_ROOT``, ``TRADE_PLATFORM_CAPTURE_ARCHIVE_ROOT``
+        and ``TRADE_PLATFORM_UNIVERSE_CAPTURE_ARCHIVE_ROOT``: optional evidence
+        roots passed to the existing readers, with no protected-runtime defaults.
       - ``production`` additionally requires ``TRADE_PLATFORM_OIDC_ISSUER``,
         ``TRADE_PLATFORM_OIDC_AUDIENCE``, ``TRADE_PLATFORM_OIDC_JWKS_URL``,
         ``TRADE_PLATFORM_IDENTITY_POLICY_NAME`` and ``TRADE_PLATFORM_SECRETS_DIR`` --
@@ -397,12 +415,18 @@ def create_runtime_app_from_environment(
             oidc_jwks_url=env("TRADE_PLATFORM_OIDC_JWKS_URL"),
             identity_policy_name=env("TRADE_PLATFORM_IDENTITY_POLICY_NAME"),
             secrets_directory=env("TRADE_PLATFORM_SECRETS_DIR"),
+            research_data_root=_evidence_root(env, "TRADE_PLATFORM_RESEARCH_DATA_ROOT"),
+            capture_archive_root=_evidence_root(env, "TRADE_PLATFORM_CAPTURE_ARCHIVE_ROOT"),
+            universe_capture_archive_root=_evidence_root(env, "TRADE_PLATFORM_UNIVERSE_CAPTURE_ARCHIVE_ROOT"),
         )
 
     return compose_protected_postgres_app(
         environment=mode,
         dsn=dsn,
         operator_token=env("TRADE_PLATFORM_OPERATOR_TOKEN"),
+        research_data_root=_evidence_root(env, "TRADE_PLATFORM_RESEARCH_DATA_ROOT"),
+        capture_archive_root=_evidence_root(env, "TRADE_PLATFORM_CAPTURE_ARCHIVE_ROOT"),
+        universe_capture_archive_root=_evidence_root(env, "TRADE_PLATFORM_UNIVERSE_CAPTURE_ARCHIVE_ROOT"),
     )
 
 
