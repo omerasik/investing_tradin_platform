@@ -90,31 +90,51 @@ provider success nor consolidated, corporate-action-complete, survivorship-free
 or professional-validation evidence. Crypto research and all owner/holdout/
 operational/financial gates are unchanged. Stop after P3A; no P3B or activation.
 
-## P2B.1 isolated Windows acceptance (authorized continuation, pending)
+## Research Factory P2B.1 — isolated 1000-task acceptance PASSED (2026-10-26)
 
-The owner authorized a narrowly opt-in, PR-triggered standard windows-latest job
-for #279 after local host-memory stops. No further local benchmark or numeric
-optimization. Read-only permissions, no secrets/services, same-repository PR and
-explicit label, pinned action commits. Public standard hosted resources are free;
-no larger runner, OCI or workflow_dispatch dependency is introduced.
+Owner-authorized standard public windows-latest acceptance run
+[40356628160](https://github.com/omerasik/investing_tradin_platform/actions/runs/40356628160)
+passed all three repetitions of reference40, optimized40 and optimized1000.
+The existing 86400-bar preparation reproduced exact dataset/catalog, manifest,
+logical-content, Parquet object bytes/hash and recorded Windows SDK/input/result
+identities. All decisions, Decimal inputs, metrics and study/trial/result hashes
+match; zero failures/exclusions. The 1000 tasks repeat 40 configurations, not
+1000 independent hypotheses. No new data authority or numerical engine.
 
-A separate ephemeral policy keeps 4 GiB free on workspace/TEMP/system volumes,
-2 GiB host RAM/commit reserves, plus the unchanged 512 MiB child limit, single
-numeric thread and 120 s child deadline. Local production-host guards remain
-unchanged. Existing fixture preparation must reproduce recorded dataset,
-manifest, logical/object identities and Windows SDK byte/input/result hashes;
-otherwise fail closed with actual mismatches. Dependency pins match the prior
-writer. Three same-run reference40/optimized40/optimized1000 repetitions must
-complete with exact parity; no 1000 repeated-task / 40 unique-point confusion.
-Artifacts retain environment, allocated disk bytes, timing/memory/verification
-and all negative findings. Nine pure policy/evidence tests passed; hosted gate
-is pending, not evidence of capacity. Initial run 40356024744 failed before data
-preparation because setup-python has no Windows binary for security-only Python
-3.12.14. A pinned uv bootstrap installs that same managed patch release and
-retains early failure evidence; identity checks are unchanged. Normal existing
-CI and review still apply.
+Matched same-run 40-task medians reference -> optimized: 71.193229 -> 8.139306 s,
+0.561851 -> 4.914424 tasks/s (8.75x); parent wall 71.640 -> 8.594 s. Peak commit
+174.45 -> 170.72 MiB, working set 149.45 -> 138.10 MiB. Verification falls
+40/65.793515 s -> 3/5.255977 s; held mapping 2.392297 -> 0.021876 s. Preserve
+the materialization negative: 1/0.425562 s -> 3/1.253819 s. Do not compare these
+matched runner results with local wall times as if they were the same host.
 
-## Research Factory P2B.1 — PARTIAL, host-memory acceptance blocked (2026-10-26)
+Optimized1000 completes 1000/1000 in every repetition: median 35.224211 s,
+28.389564 tasks/s, parent wall 35.672 s. Median peak commit/working set
+169.43/138.16 MiB; observed maxima 169.47/139.00 MiB. Three full verifications
+cost 5.226092 s, three execution schedules 0.012222 s, 1000 held mappings
+0.418376 s. Repeated result chain is identical. Old reference1000 remains
+censored: no complete reference1000 time or speedup is extrapolated.
+
+Workflow is narrowly opt-in on PR #279, read-only, no secrets/services, pinned
+actions and same-repository check. Separate ephemeral policy: 4 GiB free on
+workspace/TEMP/system volumes, 2 GiB RAM/commit reserves, unchanged 512 MiB child
+and working-set caps, one numeric thread and external120 s deadline. Local
+24 GiB disk/512 MiB reserve/1 GiB runtime commit guards are unchanged. No paid
+larger runner or OCI use. Windows 2025 AMD64, 4 CPUs, managed CPython3.12.14,
+NumPy2.5.3/PyArrow25.0.1/DuckDB1.5.5 are recorded. Initial setup-python failure
+(no Windows installer for security-only3.12.14) is retained; pinned uv installs
+the same patch. Measured fixture/receipt allocation 2674688 bytes before final
+summary; environment and per-volume free space retained. Process I/O is not
+physical disk I/O and OS caches were not flushed.
+
+[Artifact 12667170928](https://github.com/omerasik/investing_tradin_platform/actions/runs/40356628160/artifacts/12667170928)
+has ZIP digest 804f6ead0eb140f749872973e800690c4f92f8a0828024468c286da47d3788b4
+and seven-day retention; compact metrics/digests remain in #279. Final current-head
+CI/solo-maintainer review and exact-main integration evidence are recorded there.
+No profitability, multi-worker/DB throughput, 10000-100000 distinct-configuration
+capacity, operational approval or next phase is established. STOP after P2B.1.
+
+### Retained local position-schedule and host-memory evidence (2026-10-26)
 
 The owner's position-calculation/security continuation stays in P2B.1.
 Independent security PR #280 exact-pins Bookworm libssl3/openssl to

@@ -15,11 +15,11 @@ updated: 2026-10-26
 phase:
   id: "RF-P2B.1"
   name: Research Factory P2B.1 - Verified Batch Evaluation and 1000-Task Scale Gate
-  status: partial
+  status: implemented
   base_commit: ed22301       # PR #280 independent OpenSSL security fix; exact-main CI tracked there
-  resource_gate: PENDING_ISOLATED_WINDOWS_ADMISSION
-  acceptance_gate: PENDING_HOSTED_EXACT_FIXTURE_AND_1000_TASKS
-  integration_disposition: draft_only_until_1000_task_acceptance
+  resource_gate: PASSED_ISOLATED_WINDOWS
+  acceptance_gate: PASSED_3X_1000_TASKS_HOSTED
+  integration_disposition: normal_merge_after_exact_head_review_and_required_ci
   owner_direction_p2b1: >-
     Owner authorized end-to-end repeated-work measurement on existing offline
     inputs, a bounded verified immutable input scope if measured justification
@@ -37,30 +37,47 @@ phase:
     source bytes must reproduce or fail closed; preserve all negative evidence.
     Same-run reference40 -> optimized40 -> optimized1000, three repetitions each.
     No OCI, larger paid runner, provider/holdout/paper/broker/financial activation.
-  p2b1_hosted_acceptance_preparation: >-
-    New workflow uses pull_request labeled/synchronize/reopened, same-repository
-    PR #279 only, explicit research-p2b1-acceptance label, pinned action commits,
-    no persisted checkout credential or services. Standard public-repo Windows
-    runner is free; no workflow_dispatch/default-branch bootstrap dependency.
-    Fixed ephemeral policy: 4 GiB free on EACH workspace/TEMP/system volume and
-    2 GiB available RAM/commit runtime reserve; admission adds the 512 MiB child
-    budget. Original local 24 GiB disk/512 MiB host reserve/1 GiB runtime commit
-    guards remain unchanged and hosted mode refuses non-hosted/non-Windows context.
-    Existing deterministic fixture preparation and benchmark harness are reused;
-    Python 3.12.14, NumPy 2.5.3, PyArrow 25.0.1 and DuckDB 1.5.5 are pinned.
-    SDK checkout uses its recorded Windows CRLF bytes and checks SHA-256.
-    Dataset/catalog, manifest, logical-content, object bytes/hash and original
-    reference40 result/input fingerprints are pinned witnesses, not a new data
-    authority. Original full verifier runs in each existing bounded evaluation.
-    Controller retains environment, per-volume space, file logical/allocation
-    sizes and all receipts as short-lived artifacts on pass or failure. Nine
-    focused non-benchmark policy/evidence tests passed; no local benchmark run.
-    Initial Actions bootstrap run 40356024744 failed before data/workload: setup-python
-    has no Windows 3.12.14 binary (security-only CPython releases are source-only).
-    Pinned setup-uv/uv installs the SAME managed 3.12.14 patch, not an older
-    runtime; bootstrap evidence now exists before Python installation. All fixture,
-    source and result witnesses remain strict. Hosted acceptance and final CI/
-    review/merge remain pending; no passing claim.
+  p2b1_hosted_acceptance_evidence: >-
+    PASS on standard public windows-latest run 40356628160, head d31eca4;
+    artifact 12667170928 (ZIP digest 804f6ead0eb140f749872973e800690c4f92f8a0828024468c286da47d3788b4).
+    Three complete reference40, optimized40 and optimized1000 repetitions;
+    all exact input/Decimal/array/decision/metric/study/trial/result identities
+    match, failures/exclusions zero. Exactly 1000 repeated tasks over 40 unique
+    configurations, no registered studies or economic-hypothesis/profit claim.
+    Existing deterministic preparation reproduced dataset 54cca16c / 01b45526,
+    manifest 5c351631, logical 6b68b9c9, object 0834f116 and original catalog/
+    manifest bytes, SDK Windows source bytes, input fingerprint and reference40
+    result chain. No alternate fixture/authority or precision rule was introduced.
+    Matched same-run 40-task medians reference -> optimized: 71.193229 -> 8.139306 s,
+    0.561851 -> 4.914424 tasks/s (8.75x); parent wall 71.640 -> 8.594 s.
+    Peak commit 174.45 -> 170.72 MiB; working set 149.45 -> 138.10 MiB.
+    Full verification 40/65.793515 s -> 3/5.255977 s; held 2.392297 -> 0.021876 s.
+    Materialization negative retained: 1/0.425562 s -> 3/1.253819 s.
+    Optimized1000: 1000/1000 each run, 35.224211 s / 28.389564 tasks/s median,
+    parent wall 35.672 s (all <120). Peak commit/WS medians 169.43/138.16 MiB,
+    observed maxima 169.47/139.00 MiB. Verification 3/5.226092 s, schedule builds
+    3/0.012222 s, held mapping 1000/0.418376 s. Repetition result chain identical.
+    No full reference1000 time/speedup is inferred from prior censored runs.
+    Environment: Windows 2025Server 26100 AMD64, 4 CPUs, ImageVersion 20261021.278.1,
+    managed CPython 3.12.14, NumPy 2.5.3, PyArrow 25.0.1, DuckDB 1.5.5.
+    Job read-only/secret-free/service-free, same-repository PR #279 plus explicit
+    label, pinned action commits. Initial setup-python bootstrap 40356024744 had
+    no Windows 3.12.14 installer and failed before data; pinned uv 0.13.5 installs
+    that SAME managed patch. Negative bootstrap and prior local stops retained.
+    Independent ephemeral admission keeps 4 GiB free on EACH workspace/TEMP/
+    system volume and 2 GiB RAM/commit reserve, adding 512 MiB at admission.
+    Child/working-set caps 512 MiB, numeric threads=1, external deadline120 unchanged.
+    Local 24 GiB disk/512 MiB host reserve/1 GiB runtime commit guards unchanged.
+    Hosted1000 minima RAM/commit 14300393472/17485312000 bytes; min volume free
+    30214873088 bytes. Measured fixture/receipt allocation 2674688 bytes (before
+    final summary), logical 2657703; per-volume before/after and environment retained.
+    Process transfers are not physical disk I/O; OS caches not flushed. Artifact
+    lasts 7 days; compact metrics/digests persist in PR #279 and canonical docs.
+    Nine pure policy/evidence tests passed; no local benchmark run this continuation.
+    Final documentation-only head reuses unchanged accepted evaluation sources;
+    current-head required CI/review and exact-main proof belong in PR #279.
+    Normal merge only after final review/CI. No OCI, paid runner, holdout/paper/
+    provider/broker activation or next research phase; no 10000-task run.
   owner_direction_finish_p2b1: >-
     Owner explicitly authorized a separate main-based exact-pin OpenSSL fix,
     then reuse of the existing walk-forward target-independent execution schedule
@@ -68,6 +85,7 @@ phase:
     boundaries. Merge #279 only after full 1000-task acceptance and required CI;
     otherwise preserve draft and the exact blocker. No next research phase.
   p2b1_position_evidence: >-
+    Retained local position evidence before the successful hosted acceptance.
     Real scope now builds the existing walk-forward held-decision schedule once
     from fully verified, restricted immutable bars and exact study lag. Every
     task still calculates its own targets, then uses the existing position
@@ -150,6 +168,7 @@ phase:
     tests) are historical evidence; renewed head review/CI belongs in PR #279.
     Keep draft; do not merge or claim phase completion/exact-main CI.
   p2b1_environment_evidence: >-
+    Retained local-host evidence; current hosted acceptance is recorded above.
     Oct25 disk admissions 23075213312 then 15345135616 bytes versus 25769803776
     floor remain preserved negative findings. Floor is HOST paging/capture
     protection: burn_in_outage_2 records pagefile growth/capture disk-stop.
