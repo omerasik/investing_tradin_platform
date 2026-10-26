@@ -62,7 +62,7 @@ async function resolve(node) {
 }
 const render=async(Page,params)=>renderToStaticMarkup(await resolve(await Page({searchParams:Promise.resolve(params)})));
 const links=html=>[...html.matchAll(/<a\b[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g)]
-  .map(([,href,text])=>({url:new URL(href.replaceAll('&amp;','&'),'http://fixture'),text:text.replace(/<[^>]+>/g,'')}));
+  .map(([,href,text])=>({url:new URL(href.replaceAll('&amp;','&'),'http://fixture'),text}));
 const selection={symbol:market,studies:[id(1),id(2)],metric:'total_return',sort:{dimension:'DECIMAL_BASELINE',metric:'total_return',direction:'DESC'},
   studyOffset:50,paperStudy:id(1),paperTrial:id(3)};
 const raw=query=>Object.fromEntries([...query.keys()].map(key=>[key,query.getAll(key).length>1?query.getAll(key):query.get(key)]));
