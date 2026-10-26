@@ -5,7 +5,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 def harness():
@@ -43,3 +43,25 @@ class LoadingHarnessEvidenceTests(unittest.TestCase):
                 self.assertEqual(result["completed"], 71)
         self.assertIsNone(module.last_evaluation_progress('{"completed":1000}\n'))
         self.assertIsNone(module.last_evaluation_progress(b"\xff partial"))
+
+    def test_resource_stop_drains_windows_pipe_after_kill_without_continuing_work(self):
+        module = harness()
+        budget = 512 * module.MIB
+        admitted = {"available_physical_bytes": budget + module.HOST_RESERVE,
+                    "commit_headroom_bytes": budget + module.HOST_RESERVE,
+                    "disk_free_bytes": module.DISK_FLOOR}
+        child, kernel = Mock(), Mock()
+        child._handle = 1
+        child.poll.side_effect = [None, 1]
+        child.communicate.return_value = ('{"progress":true,"completed":71,"failed":0}\n', '')
+        kernel.SetProcessWorkingSetSizeEx.return_value = 1
+        with patch.object(module, "host_memory", side_effect=[admitted,
+                {**admitted, "available_physical_bytes": module.HOST_RESERVE - 1}]), \
+                patch.object(module.subprocess, "Popen", return_value=child), \
+                patch.object(module.bounds, "_windows_job", return_value=(kernel, 1)):
+            result = module.run_child(SimpleNamespace(working_set_mib=512), budget)
+        self.assertEqual(result["status"], "RESOURCE_STOPPED")
+        self.assertEqual(result["stop_reason"], "host_resource_guard")
+        self.assertEqual(result["last_progress"]["completed"], 71)
+        child.kill.assert_called_once_with()
+        child.communicate.assert_called_once_with(timeout=5)

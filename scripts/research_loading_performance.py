@@ -583,10 +583,16 @@ def run_child(args, limit: int) -> dict[str, Any]:
             minimum = {key: min(value, state[key]) for key, value in minimum.items()}
             if (state["available_physical_bytes"] < HOST_RESERVE or state["commit_headroom_bytes"] < 1024 ** 3
                     or state["disk_free_bytes"] < DISK_FLOOR or time.monotonic() - started > 120):
+                # Windows' communicate reader threads may expose no partial
+                # output until EOF. Kill at the same guard, then drain the pipe
+                # so a completed prefix is not incorrectly reported as absent.
+                if child.poll() is None:
+                    child.kill()
+                stdout, _ = child.communicate(timeout=5)
                 return {"status": "RESOURCE_STOPPED", "minimum_host": minimum,
                         "wall_seconds": time.monotonic() - started,
                         "stop_reason": ("wall_deadline" if time.monotonic() - started > 120 else "host_resource_guard"),
-                        "last_progress": last_evaluation_progress(partial_stdout)}
+                        "last_progress": last_evaluation_progress(stdout or partial_stdout)}
             try:
                 stdout, stderr = child.communicate(token, timeout=0.25)
                 break

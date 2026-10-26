@@ -90,48 +90,59 @@ provider success nor consolidated, corporate-action-complete, survivorship-free
 or professional-validation evidence. Crypto research and all owner/holdout/
 operational/financial gates are unchanged. Stop after P3A; no P3B or activation.
 
-## Research Factory P2B.1 — PARTIAL, resource admission blocked (2026-10-25)
+## Research Factory P2B.1 — PARTIAL, 1000-task deadline gate failed (2026-10-26)
 
-The owner authorized a measured, bounded verified-evaluation scope and a
-1000-task synthetic acceptance gate after #276/#277/#278. Real US equities
-acquisition remains EXTERNAL_BLOCKED; no new provider work is started.
+The owner-authorized bounded verified input scope is measured on the existing
+86,400-bar synthetic fixture. Original full verification supplies the exact
+rows for private immutable SDK inputs; independent scopes reverify persistent
+evidence. Standalone loading, SDK source, data authority, Decimal authority,
+strategy/study/trial/result identities, execution and holdout rules are unchanged.
+The worker hook follows existing claim batches (default 8). The direct harness
+uses three study scopes and registers no studies; DB/pool throughput is unmeasured.
 
-The branch prototype uses the existing full verifier's row stream to prepare
-private immutable SDK inputs, bound to root/dataset/content/manifest/study and
-finite resource/lifetime limits. The SDK source and standalone verified-loader
-contract remain unchanged; new scopes always revalidate persistent evidence.
-An admitted snapshot intentionally survives later source-file changes, which
-the next independent scope/load rejects. Worker use is bounded by its existing
-claim batch; no new queue, persistent cache, data authority or engine is added.
+Three fresh sequential 40-task runs/mode preserve exact input, decision, metric
+and identity parity: medians reference -> optimized 108.634210 -> 16.721054 s,
+0.368208 -> 2.392194 tasks/s (6.50x). Including child startup, parent wall is
+109.547 -> 17.672 s (6.20x). Peak commit 191.09 -> 170.28 MiB; working set
+159.88 -> 138.32 MiB. Full verification count falls 40 -> 3, cost 100.762419 ->
+8.089020 s. Preserve the negative cost: materializations rise 1 -> 3 and
+0.692338 -> 2.133101 s. Process read transfers 176,853,434 -> 21,055,354 bytes
+are not physical disk I/O; OS caches were not flushed. All six runs have zero
+failures/exclusions and identical fingerprints. Receipts/hashes belong to PR #279.
 
-The existing loading harness now prepares 12/40/1000 direct evaluation tasks,
-40 distinct existing-family parameter points, exact input/decision/result
-fingerprints, verification/materialization/calculation counters, worker Python
-validation time and interrupted-progress receipts. It registers no studies and
-does not measure database queue/process-pool throughput. A 1000-task completion
-would establish neither 1000 independent hypotheses nor profitable strategies.
+**The 1000-task acceptance gate FAILED; PR #279 remains draft, no merge.**
+The workload repeats 40 unique configurations, not 1000 economic hypotheses.
+Reference hits the unchanged external deadline at 120.297 s, retaining 42
+completed tasks; optimized hits it at 120.062 s, retaining 781 completed tasks
+whose results all match reference40. Both prefixes have zero evaluation failures
+or exclusions; 219 optimized tasks remain unfinished. The snapshots at their
+last completed tasks are censored evidence, not full-run times/peaks. Do not
+calculate a full-1000 speedup from these different task prefixes. Optimized full
+verification is 3 calls/7.579261 s; repeated held-position work is now dominant
+(80.480575 s), metrics 12.487501 s and targets 9.740101 s. No new optimization
+phase or resource-limit change is authorized. Requested repeated runs stop at
+the first non-completion. A small tested harness correction drains Windows
+stdout after guarded termination so completed prefixes survive timeout.
 
-**No performance improvement is validated or integrated yet.** The first
-reference admission stopped before process creation: 23,075,213,312 free bytes
-versus the unchanged 25,769,803,776-byte (24 GiB) disk floor. Other declared
-limits remain 512 MiB process/working set, 512 MiB host reserve, one numeric
-thread and a 120-second external deadline. A resumed 1000-task admission also
-stopped before spawning: 15,345,135,616 bytes (14.29 GiB), 9.71 GiB below the
-floor; zero benchmark tasks ran. The floor protects host paging and capture
-headroom: the recorded pagefile-growth/capture outage is its rationale, not
-benchmark scratch size. Only C: is available; redirecting TEMP on that volume
-cannot preserve the floor. The reused fixture occupies 2,060,288 NTFS bytes;
-no dataset writes are required. A static report-format estimate allocates
-16 MiB for all receipts, not a measured run-disk result or a weaker host guard.
-No disposable task-owned bulk output was found; fixture and negative receipts
-are retained. Owner action is >=24 GiB free on C: with operating margin, plus
-the existing memory admission. Isolated research compute is advisable for
-reliable throughput measurements, but is not provisioned or capacity-proven.
-No guard is relaxed and no capture/data files or services are changed. Actual
-baseline/after measurements, the 1000-task outcome or precise measured blocker,
-targeted PostgreSQL CI, reviewed PR and exact-main integration remain pending.
-All subscription, evidence, holdout and financial/operational gates remain.
-No 10000–100000-task capacity or next-phase authorization is implied.
+The Oct25 RESOURCE_BLOCKED disk receipts remain. Oct26 host admission passed:
+35,575,427,072 free bytes (33.1322 GiB), 2,119,430,144 bytes available RAM and
+5,208,887,296 bytes commit headroom. Limits remain 512 MiB process/working set,
+512 MiB host reserve, 24 GiB disk floor, one numerical thread and 120 s/run.
+Both scale stops are deadlines, not host-resource guard failures. Eight raw
+receipts occupy 446,464 allocated NTFS bytes; the unchanged read-only fixture
+occupies 2,060,288 bytes. Host free-space changes are not benchmark scratch.
+The first reference40 timeout overlapped the read-only health audit and predates
+the prefix-drain fix; preserve it separately from the three clean comparisons.
+
+The disk floor protects host paging/capture headroom after the recorded outage,
+not benchmark scratch. Only C: is a normal data volume. Windows read-only
+capture check reports existing ATTENTION (R0/U2 inactive; no recent finalized
+manifests); no capture, database, pagefile, external service, provider or owner
+gate is changed. OCI A1 is not used. Isolated research compute is advisable but
+not provisioned or capacity-proven. PR correctness/security CI and exact-head
+solo-maintainer review are recorded in #279; green CI cannot replace failed
+scale acceptance or justify merge/exact-main claims. No 10000-100000-task,
+profitability, holdout, paper or next-phase approval is implied. STOP P2B.1.
 
 ## North star (recorded 2026-09-06, Module 3G.0)
 
