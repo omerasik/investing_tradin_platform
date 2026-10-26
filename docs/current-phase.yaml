@@ -13,13 +13,50 @@ updated: 2026-10-26
 # -> R8 opportunity engine -> R9 accounts/risk -> R10 paper; R7 (T3 spine) is
 # the one parallel track.
 phase:
-  id: "RF-P2B.1"
-  name: Research Factory P2B.1 - Verified Batch Evaluation and 1000-Task Scale Gate
-  status: implemented
-  base_commit: ed22301       # PR #280 independent OpenSSL security fix; exact-main CI tracked there
-  resource_gate: PASSED_ISOLATED_WINDOWS
-  acceptance_gate: PASSED_3X_1000_TASKS_HOSTED
+  id: "RF-P2B.2.1"
+  name: Research Factory P2B.2.1 - Canonical Distinct-Configuration Baseline
+  status: in_progress
+  base_commit: 15bca049      # PR #279; exact-main verify 40360709165 and CodeQL 40360709145 passed
+  resource_gate: PENDING_ISOLATED_WINDOWS
+  acceptance_gate: PENDING_684_DISTINCT_CONFIGURATIONS
   integration_disposition: normal_merge_after_exact_head_review_and_required_ci
+  owner_direction_p2b21: >-
+    Owner authorized the existing canonical three-family domains and admissibility
+    audit, minimal offline benchmark extension, representative standalone parity,
+    one bounded opt-in isolated standard Windows acceptance and one focused PR
+    under the solo-maintainer/exact-main procedure. Do not modify SDK/domains or
+    create another registry/evaluator. Keep 512 MiB, one numeric thread, external
+    120 s deadline and existing local/ephemeral host guards. Stop after P2B.2.1;
+    no multi-worker, P2B.2.2, 10000-task run, new family or financial activation.
+  p2b21_evidence: >-
+    Canonical full EXHAUSTIVE enumeration: trend 480 raw / 380 admissible /
+    100 fast_not_shorter_than_slow; mean reversion 240 / 240 / 0; breakout
+    84 / 64 / 20 exit_channel_not_shorter. Total 804 raw, 120 rejected, 684 valid.
+    Full study spaces/search plans and original trial ordinals/space indices/
+    identities are retained, including planned multiple-testing denominator804.
+    Invalid points are explicitly cataloged, not evaluated or silently dropped.
+    Four representatives per family use admissible canonical positions first,
+    thirds and last within those SAME full studies; twelve standalone results
+    form the representative oracle. Optimized684 evaluates each valid point once,
+    compares all twelve representatives and requires identical complete repeats.
+    These full-space study identities differ legitimately from P2B.1's reduced
+    40-point declarations; neither set is rewritten and no study is registered.
+    Hosted acceptance is pending; no completed capacity/performance claim yet.
+  p2b1_final_merged_acceptance: >-
+    FINAL P2B.1 evidence supersedes historical draft/resource-stop statements below.
+    PR #279 merged as 15bca04925d384242671b75ccef68d45fba74a91; exact-main PUSH
+    verify40360709165 and CodeQL40360709145 SUCCESS. Reviewed head03a605e hosted
+    acceptance40358641365 passed three complete ref40/opt40/opt1000 repetitions,
+    each1000/1000 tasks over40 unique configurations, zero errors/mismatches.
+    Exact fixture/Decimal/input/decision/metric/study/trial/result hashes match.
+    Same-run medians reference40 -> optimized40: 63.128456 -> 7.258056 s,
+    0.633629 -> 5.511118 tasks/s (8.70x). Optimized1000 median31.974783 s,
+    31.274645 tasks/s; max commit171.13/working set140.96 MiB. Verification
+    3/4.784895 s; held mapping0.352348 s. Negative materializations3 versus1
+    retained. Child512 MiB/120 s/single-thread and local safeguards unchanged.
+    Artifact12667930847 ZIP SHA256 d73e9ce2b3067b4b5bed250fee0fe6783669a9cfce10b52f4672f3b1402ccc05,
+    seven-day retention. Fixture/receipt allocation2674688 bytes before summary.
+    No full-reference1000 speedup, distinct1000, multi-worker or profit claim.
   owner_direction_p2b1: >-
     Owner authorized end-to-end repeated-work measurement on existing offline
     inputs, a bounded verified immutable input scope if measured justification
@@ -37,8 +74,9 @@ phase:
     source bytes must reproduce or fail closed; preserve all negative evidence.
     Same-run reference40 -> optimized40 -> optimized1000, three repetitions each.
     No OCI, larger paid runner, provider/holdout/paper/broker/financial activation.
-  p2b1_hosted_acceptance_evidence: >-
-    PASS on standard public windows-latest run 40356628160, head d31eca4;
+  p2b1_initial_hosted_acceptance_history: >-
+    Historical first PASS, before final accepted head and merge recorded above.
+    Standard public windows-latest run 40356628160, head d31eca4;
     artifact 12667170928 (ZIP digest 804f6ead0eb140f749872973e800690c4f92f8a0828024468c286da47d3788b4).
     Three complete reference40, optimized40 and optimized1000 repetitions;
     all exact input/Decimal/array/decision/metric/study/trial/result identities
@@ -101,7 +139,8 @@ phase:
     tasks, schedule construction 3 calls/0.011649 s; verification 3/5.164689 s.
     Peak commit/WS medians 170.30/142.51 MiB; one 86400-entry schedule retains
     691200 data bytes per active scope, counted within existing 512 MiB cap.
-    Complete 1000-task acceptance is STILL UNPROVEN. First schedule run stops at
+    At this historical local-only point 1000-task acceptance was unproven.
+    First schedule run stops at
     host guard in 11.766 s: 334 tasks at 8.735273 s, zero failures/exclusions,
     one verification/1.341302 s, held mapping 0.137269 s. Host RAM minimum
     522842112 bytes is below 536870912 reserve; no deadline/process-memory trip.
@@ -117,8 +156,8 @@ phase:
     causality, tie/Decimal and SDK-reference tests cover reused schedule helpers.
     Final helper cleanup drops even unpublished temporary schedule references
     after failed admission. No extra numerical optimization or guard weakening.
-    #279 remains draft pending stable host headroom and full acceptance; current
-    head CI/review evidence belongs to its PR. No merge/exact-main claim.
+    At that point #279 stayed draft; final hosted acceptance/merge above supersede
+    this historical disposition. Preserve these negative receipts.
   p2b1_security_evidence: >-
     Independent PR #280 pins libssl3 and openssl to 3.0.22-1~deb12u2; official
     Debian tracker/package indexes and amd64/arm64 download availability verified.
@@ -166,7 +205,7 @@ phase:
     from successful-run medians. Prior local 34 passed/8 PostgreSQL skips and
     exact-head PR CI (3439 passed, one permitted Tardis skip, including all 8 PG
     tests) are historical evidence; renewed head review/CI belongs in PR #279.
-    Keep draft; do not merge or claim phase completion/exact-main CI.
+    Historical draft disposition is superseded by final merged acceptance above.
   p2b1_environment_evidence: >-
     Retained local-host evidence; current hosted acceptance is recorded above.
     Oct25 disk admissions 23075213312 then 15345135616 bytes versus 25769803776
@@ -188,8 +227,9 @@ phase:
     days. No capture/DB/service/host/pagefile/owner gate was changed or activated;
     this pre-existing service-health finding grants no capture acceptance.
     Dedicated research compute is advisable for isolation but not provisioned;
-    1000-task deadline acceptance and 10000-100000 unique-configuration capacity
-    remain unproven. Stop P2B.1 with PR #279 draft.
+    At this historical point 1000-task acceptance was unproven; final hosted
+    acceptance supersedes it. 10000-100000 unique-configuration capacity remains
+    unproven; no dedicated compute worker was provisioned.
   real_source_status: EXTERNAL_BLOCKED
   owner_direction_p3a: >-
     Owner authorized a zero-subscription official-source preflight and the smallest
@@ -231,9 +271,7 @@ phase:
     - .github/workflows/research-p2b1-acceptance.yml
     - scripts/research_hosted_acceptance.py
     - tests/test_research_hosted_acceptance.py
-    - src/trade_platform/strategy_lab_evaluation_scope_v1.py
-    - src/trade_platform/strategy_lab_data_loading_v1.py
-    - src/trade_platform/strategy_lab_worker_v1.py
+    - tests/test_research_distinct_configuration.py
     - scripts/research_loading_performance.py
     - tests/test_strategy_lab_evaluation_scope_v1.py
     - tests/test_strategy_lab_evaluation_scope_v1_postgres.py
@@ -294,8 +332,8 @@ phase:
     stress envelope stay owner-gated -> gross, non-promotable.
     Holdout 2026-08-20 immutable; T4 after 2026-09-24 forward-only this cycle.
   order: >-
-    fixed resource admission -> repeated-work baseline -> justified private
-    verified scope -> parity and 1000-task gate -> PR/CI/exact-main CI -> STOP P2B.1.
+    canonical-domain audit -> distinct offline workload -> representative parity
+    and bounded complete repeats -> PR/CI/exact-main CI -> STOP P2B.2.1.
   owner_gates_open: OR-7 (validation/holdout packet), OR-11 (accounts/risk), OR-9 (watchlist/alerts), fee schedule.
   owner_direction_2026_10_09: >-
     Activation campaign. OR-1: acceptance = 24 consecutive manifest-proven

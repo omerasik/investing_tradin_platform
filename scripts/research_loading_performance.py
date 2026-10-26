@@ -35,6 +35,12 @@ tasks, <=105 s each), not a database worker-pool throughput claim. Real workers
 retain their existing claim-batch boundary (default 8). Use a complete reference
 40-task --reference-receipt to check every repeated decision/result identity.
 An interrupted run retains only its last flushed prefix, never a 1000-task pass.
+
+P2B.2.1 --distinct-configurations --evaluation-tasks 684 enumerates the FULL
+canonical domains, accounts for inadmissible points, and executes each valid
+trial once. --evaluation-tasks 12 selects first/thirds/last admissible trials per
+family from those same full studies for a bounded standalone reference. It does
+not shrink the study space or its planned multiple-testing denominator.
 """
 
 from __future__ import annotations
@@ -372,6 +378,45 @@ def load_workload(args) -> dict[str, Any]:
             "physical_io_note": "Windows transfer counters are not physical disk bytes; OS cache not flushed"}
 
 
+def distinct_trials(study) -> tuple[list[Any], dict[str, Any]]:
+    """Audit the canonical enumerator/admissibility; never deduplicate by dropping."""
+    from trade_platform.strategy_sdk_v1 import FAMILIES_V1
+
+    family = FAMILIES_V1[study.strategy.family]
+    if family.spec() != study.strategy or family.parameter_space() != study.parameter_space:
+        raise ValueError("distinct_workload_requires_canonical_full_family_space")
+    valid, points, seen, reasons = [], [], set(), {}
+    for trial in study.trials():
+        key = json.dumps([family.spec().payload(), dict(trial.parameters)], sort_keys=True)
+        if key in seen:
+            raise ValueError("duplicate_canonical_configuration")
+        seen.add(key)
+        if trial != study.trial_for(trial.parameters, ordinal=trial.ordinal):
+            raise ValueError("noncanonical_trial_identity")
+        reason = family.inadmissible(study.parameter_space.typed_point(trial.parameters))
+        points.append({"ordinal": trial.ordinal, "space_index": trial.space_index,
+            "parameters": dict(trial.parameters), "trial_id": str(trial.trial_id),
+            "trial_hash": trial.content_hash, "rejected_reason": reason})
+        if reason is None:
+            valid.append(trial)
+        else:
+            reasons[reason] = reasons.get(reason, 0) + 1
+    if len(points) != study.parameter_space.cardinality or len({p["space_index"] for p in points}) != len(points):
+        raise ValueError("canonical_space_incomplete_or_duplicated")
+    return valid, {"family": family.family, "study_id": str(study.study_id), "study_hash": study.content_hash,
+        "planned_trial_count": study.planned_trial_count, "raw_points": len(points),
+        "admissible_points": len(valid), "rejected_points": len(points) - len(valid),
+        "rejection_reasons": reasons, "points": points}
+
+
+def representative_trials(trials: list[Any]) -> list[Any]:
+    """Four spread representatives without rewriting space, ordinal or identity."""
+    indices = (0, (len(trials) - 1) // 3, 2 * (len(trials) - 1) // 3, len(trials) - 1)
+    if len(set(indices)) != 4:
+        raise ValueError("insufficient_distinct_representatives")
+    return [trials[i] for i in indices]
+
+
 def evaluation_workload(args) -> dict[str, Any]:
     """P2B.1 direct evaluator tasks, not registered studies or an economic campaign.
 
@@ -416,31 +461,46 @@ def evaluation_workload(args) -> dict[str, Any]:
         raise ValueError("benchmark_refuses_holdout_dataset")
     binding = DatasetBindingV1("bars", UUID(args.dataset), args.expected, EvidenceTierV1.T2_EVENT_TIME,
                                last + timedelta(seconds=60, microseconds=1))
-    studies = []
+    distinct = getattr(args, "distinct_configurations", False)
+    planning_started = time.perf_counter()
+    studies, selected_trials, catalogs = [], {}, []
     for family in sdk.FAMILIES_V1.values():
-        space = ParameterSpaceV1.of(*(dataclasses.replace(d, values=d.values[:2]) for d in family.parameter_space().domains))
+        space = (family.parameter_space() if distinct else ParameterSpaceV1.of(
+            *(dataclasses.replace(d, values=d.values[:2]) for d in family.parameter_space().domains)))
         studies.append(StudySpecV1(family.spec(), space, (binding,), SearchPlanV1(SearchModeV1.EXHAUSTIVE, space.cardinality),
             UNTOUCHED_HOLDOUT_BOUNDARY_V1, policies={"numeric": or3_numeric_policy_v1().payload,
                 "timing": or5_t2_timing_policy_v1().payload, "cost": gross_cost_policy_v1().policy().payload},
             label="synthetic workload declaration only; not registered"))
+        if distinct:
+            valid, catalog = distinct_trials(studies[-1])
+            catalogs.append(catalog)
+            selected_trials[family.family] = representative_trials(valid) if args.evaluation_tasks == 12 else valid
+    if distinct and sum(map(len, selected_trials.values())) != args.evaluation_tasks:
+        raise ValueError("distinct_task_count_does_not_match_canonical_space")
+    catalog_hash = hashlib.sha256(json.dumps(catalogs, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    planning_seconds = time.perf_counter() - planning_started
     counters: dict[str, dict[str, Any]] = {}
     decisions: dict[str, str] = {}
     outcomes: dict[str, dict[str, Any]] = {}
     input_fingerprints: dict[str, str] = {}
     scope_receipts: list[dict[str, Any]] = []
     chain = hashlib.sha256()
-    completed = failed = excluded = 0
+    completed = failed = excluded = reference_comparisons = 0
     oracle = None
     if args.reference_receipt:
         receipt_bytes = args.reference_receipt.read_bytes()
         receipt = json.loads(receipt_bytes)
         complete = [r["result"] for r in receipt["runs"] if r["status"] == "COMPLETE"]
-        if (receipt.get("implementation") != "reference" or receipt.get("evaluation_tasks") != 40
-                or not complete or any(r["dataset_content_hash"] != args.expected or r["completed"] != 40
-                    or r["failed"] or r["excluded"] or len(r["unique_results"]) != 40 for r in complete)
+        oracle_tasks = 12 if distinct else 40
+        if (receipt.get("implementation") != "reference" or receipt.get("evaluation_tasks") != oracle_tasks
+                or (distinct and receipt.get("distinct_configurations") is not True)
+                or not complete or any(r["dataset_content_hash"] != args.expected or r["completed"] != oracle_tasks
+                    or r["failed"] or r["excluded"] or len(r["unique_results"]) != oracle_tasks for r in complete)
                 or any(r["unique_results"] != complete[0]["unique_results"] for r in complete)):
             raise ValueError("reference_receipt_dataset_mismatch")
         oracle = complete[0]["unique_results"]
+        if distinct and any(r["configuration_catalog_hash"] != catalog_hash for r in complete):
+            raise ValueError("reference_parameter_catalog_mismatch")
 
     def timed(name, function, *, decision=False):
         def call(*a, **kw):
@@ -475,8 +535,8 @@ def evaluation_workload(args) -> dict[str, Any]:
         before = resources()
         started = time.perf_counter()
         for index, study in enumerate(studies):
-            trials = list(study.trials())
-            count = (len(trials) if args.evaluation_tasks == 40 else
+            trials = selected_trials[study.strategy.family] if distinct else list(study.trials())
+            count = (len(trials) if distinct or args.evaluation_tasks == 40 else
                      args.evaluation_tasks // 3 + (index < args.evaluation_tasks % 3))
             context = nullcontext(evaluator)
             if args.implementation == "optimized":
@@ -485,7 +545,7 @@ def evaluation_workload(args) -> dict[str, Any]:
                 if args.implementation == "optimized" and hasattr(active, "identity"):
                     scope_receipts.append(dict(active.identity))
                 for ordinal in range(count):
-                    trial = trials[ordinal % len(trials)]
+                    trial = trials[ordinal] if distinct else trials[ordinal % len(trials)]
                     decisions.clear()
                     # Fixture envelope ONLY: no registration, DB claim or lease
                     # is represented as real. Exercise the real worker's typed
@@ -522,10 +582,17 @@ def evaluation_workload(args) -> dict[str, Any]:
                     item = {"study_id": str(study.study_id), "study_hash": study.content_hash, "trial_id": str(trial.trial_id),
                             "trial_hash": trial.content_hash, "result_hash": result_hash, "decisions": dict(decisions),
                             "outcome": evaluation.outcome.value, "metrics": dict(evaluation.metrics)}
+                    if distinct:
+                        item.update(family=study.strategy.family, parameters=dict(trial.parameters),
+                                    ordinal=trial.ordinal, space_index=trial.space_index)
+                        if trial.content_hash in outcomes:
+                            raise ValueError("duplicate_evaluated_configuration")
                     if trial.content_hash in outcomes and outcomes[trial.content_hash] != item:
                         raise ValueError("non_deterministic_task_result")
-                    if oracle is not None and oracle.get(trial.content_hash) != item:
-                        raise ValueError("reference_calculation_or_identity_mismatch")
+                    if oracle is not None and (not distinct or trial.content_hash in oracle):
+                        if oracle.get(trial.content_hash) != item:
+                            raise ValueError("reference_calculation_or_identity_mismatch")
+                        reference_comparisons += 1
                     outcomes[trial.content_hash] = item
                     chain.update(json.dumps(item, sort_keys=True, separators=(",", ":")).encode())
                     completed += 1
@@ -540,13 +607,20 @@ def evaluation_workload(args) -> dict[str, Any]:
                             raise ValueError("reference_input_snapshot_mismatch")
                     print(json.dumps({"progress": True, "completed": completed, "failed": failed, "excluded": excluded,
                                       "seconds": time.perf_counter() - started, "stages": counters,
-                                      "result_chain": chain.hexdigest(), **resources()}, sort_keys=True), flush=True)
+                                      "result_chain": chain.hexdigest(), **resources(),
+                                      **({"unique_configurations_evaluated": len(outcomes),
+                                          "rejected_parameter_points": sum(c["rejected_points"] for c in catalogs),
+                                          "configuration_catalog_hash": catalog_hash,
+                                          "reference_comparisons": reference_comparisons} if distinct else {})}, sort_keys=True), flush=True)
         elapsed = time.perf_counter() - started
         after = resources()
     loading.clear_bars_cache_v1()
+    if distinct and oracle is not None and reference_comparisons != len(oracle):
+        raise ValueError("reference_representatives_not_all_compared")
     return {"implementation": args.implementation, "evaluation_tasks": args.evaluation_tasks, "completed": completed,
             "failed": failed, "excluded": excluded, "unique_configurations_evaluated": len(outcomes),
-            "declared_unique_configurations": sum(s.planned_trial_count for s in studies),
+            "declared_unique_configurations": (sum(c["admissible_points"] for c in catalogs) if distinct else
+                                               sum(s.planned_trial_count for s in studies)),
             "registered_studies": 0, "queue_database_overhead": "not measured; offline worker-envelope calls only",
             "worker_python_validation_seconds": dispatch_seconds,
             "elapsed_seconds": elapsed, "tasks_per_second": completed / elapsed, "stages": counters,
@@ -554,7 +628,13 @@ def evaluation_workload(args) -> dict[str, Any]:
             "result_chain": chain.hexdigest(), "unique_results": outcomes, "before": before, "after": after,
             "scope_receipts": scope_receipts, "input_fingerprints": input_fingerprints,
             "reference_receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest() if oracle is not None else None,
-            "physical_io_note": "Windows transfers are not physical disk bytes; progress pipe I/O included; OS cache not flushed"}
+            "physical_io_note": "Windows transfers are not physical disk bytes; progress pipe I/O included; OS cache not flushed",
+            **({"configuration_catalog": catalogs, "configuration_catalog_hash": catalog_hash,
+                "planned_parameter_points": sum(s.planned_trial_count for s in studies),
+                "rejected_parameter_points": sum(c["rejected_points"] for c in catalogs),
+                "reference_comparisons": reference_comparisons, "planning_seconds": planning_seconds,
+                "representative_selection": "admissible canonical indices: 0, floor((n-1)/3), floor(2*(n-1)/3), n-1"}
+               if distinct else {})}
 
 
 def last_evaluation_progress(output: str | bytes) -> dict[str, Any] | None:
@@ -651,7 +731,8 @@ def main() -> int:
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--prepare-fixture", action="store_true")
     parser.add_argument("--profile", action="store_true")
-    parser.add_argument("--evaluation-tasks", type=int, choices=(12, 40, 1000), default=0)
+    parser.add_argument("--evaluation-tasks", type=int, choices=(12, 40, 684, 1000), default=0)
+    parser.add_argument("--distinct-configurations", action="store_true")
     parser.add_argument("--reference-receipt", type=Path)
     parser.add_argument("--real", action="store_true")
     parser.add_argument("--hosted-windows-acceptance", action="store_true",
@@ -664,6 +745,9 @@ def main() -> int:
     parser.add_argument("--working-set-mib", type=int, choices=(128, 512, 1024), default=128)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if (args.distinct_configurations and args.evaluation_tasks not in (12, 684)) or (
+            args.evaluation_tasks == 684 and not args.distinct_configurations):
+        parser.error("distinct workload requires exactly 12 representatives or all 684 canonical admissible points")
     if args.evaluation_tasks and (args.real or args.prepare_fixture or args.profile):
         parser.error("evaluation gate requires synthetic data and unprofiled stage counters")
     try:
@@ -697,6 +781,7 @@ def main() -> int:
     report = {"schema": "research-batch-evaluation-performance-v1" if args.evaluation_tasks else "research-loading-performance-v1", "runs": runs,
               "implementation": args.implementation, "real_development_loader_only": args.real,
               "evaluation_tasks": args.evaluation_tasks,
+              **({"distinct_configurations": True} if args.distinct_configurations else {}),
               "limits": {"process_memory_bytes": limit,
                          "working_set_bytes": args.working_set_mib * MIB if os.name == "nt" else None,
                          "admission_policy": policy["name"],
@@ -712,10 +797,13 @@ def main() -> int:
                   "src/trade_platform/strategy_lab_walk_forward_v1.py")
                   if (ROOT / name).exists()}}
     complete = [run["result"] for run in runs if run["status"] == "COMPLETE"]
+    deterministic = True
     if complete and args.evaluation_tasks:
         keys = ("result_chain", "unique_results", "completed", "dataset_content_hash")
         if any(any(r[k] != complete[0][k] for k in keys) for r in complete):
-            raise RuntimeError("non_deterministic_evaluation_identity")
+            # Retain every complete-but-inconsistent repetition as negative evidence.
+            deterministic = False
+            report["validation_error"] = "non_deterministic_evaluation_identity"
         report["median"] = {key: statistics.median(r[key] for r in complete)
                             for key in ("elapsed_seconds", "tasks_per_second")}
     elif complete and not args.prepare_fixture:
@@ -728,7 +816,7 @@ def main() -> int:
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps({"output": str(args.output), "statuses": [run["status"] for run in runs],
                       "median": report.get("median")}))
-    return 0 if len(complete) == count else 2
+    return 0 if len(complete) == count and deterministic else 2
 
 
 if __name__ == "__main__":

@@ -90,7 +90,53 @@ provider success nor consolidated, corporate-action-complete, survivorship-free
 or professional-validation evidence. Crypto research and all owner/holdout/
 operational/financial gates are unchanged. Stop after P3A; no P3B or activation.
 
-## Research Factory P2B.1 — isolated 1000-task acceptance PASSED (2026-10-26)
+## Research Factory P2B.2.1 — canonical distinct-configuration baseline (2026-10-26)
+
+Owner-authorized scope: existing three SDK families and verified evaluation
+infrastructure only; one single-worker offline acceptance on the same pinned
+86400-bar fixture, no SDK/domain/evaluator change or alternate parameter authority.
+Full canonical ParameterSpaceV1 / EXHAUSTIVE SearchPlanV1 enumeration yields
+trend480 raw/380 admissible/100 rejected (fast_not_shorter_than_slow), mean
+reversion240/240/0, breakout84/64/20 (exit_channel_not_shorter): **804 raw,
+120 explicitly rejected, 684 genuinely distinct admissible configurations**.
+Original full-study/trial identities, ordinals and space indices are retained;
+planned multiple-testing denominators still include all804 points. These
+full-space study identities differ legitimately from P2B.1's reduced declarations.
+
+The existing benchmark adds an explicit distinct mode, with no modulo/repetition
+or silent truncation. Four spread representatives per family (admissible list
+first, thirds, last) use those same full studies for standalone parity. Existing
+immutable scopes, schedule helpers, financial maths and result hashes are reused.
+Hosted complete repeats, exact twelve-result representative comparison and
+explicit 684 unique completions are required under unchanged512 MiB/one numerical
+thread/external120 s limits and existing host-specific safeguards. Acceptance
+pending; retain any stopped prefix and precise blocker. No full684 reference
+timing, profitability, net-return or10000-task capacity claim. Stop after P2B.2.1;
+no P2B.2.2, multi-worker, new family/provider/capture/holdout/paper/broker activation.
+
+## Research Factory P2B.1 — final merged acceptance (2026-10-26)
+
+PR [#279](https://github.com/omerasik/investing_tradin_platform/pull/279) merged as
+`15bca04925d384242671b75ccef68d45fba74a91`; exact-main PUSH
+[verify40360709165](https://github.com/omerasik/investing_tradin_platform/actions/runs/40360709165)
+and [CodeQL40360709145](https://github.com/omerasik/investing_tradin_platform/actions/runs/40360709145)
+passed. Final reviewed head03a605e
+[acceptance40358641365](https://github.com/omerasik/investing_tradin_platform/actions/runs/40358641365)
+passed three complete ref40/opt40/opt1000 repeats, exact original fixture,
+Decimal inputs, decisions, metrics and immutable identities; zero mismatches.
+Matched same-VM medians ref40 -> opt40 **63.128456 -> 7.258056 s (8.70x)**,
+0.633629 ->5.511118 tasks/s. Opt1000 median **31.974783 s /31.274645 tasks/s**;
+max commit171.13 MiB/working set140.96 MiB. Verification3/4.784895 s,
+held0.352348 s; negative materializations3 versus1 retained. Exactly1000
+repeated tasks over40 unique configurations, not1000 distinct hypotheses.
+[Artifact12667930847](https://github.com/omerasik/investing_tradin_platform/actions/runs/40358641365/artifacts/12667930847)
+ZIP SHA256 `d73e9ce2b3067b4b5bed250fee0fe6783669a9cfce10b52f4672f3b1402ccc05`,
+seven-day retention; fixture/receipt allocation2674688 bytes before summary.
+Original512 MiB/120 s/single-thread/local guards unchanged. No full-reference1000
+time/speedup is inferred. The earlier hosted/local results below are historical;
+their draft/unproven dispositions are superseded by this final merged evidence.
+
+### Historical first isolated 1000-task acceptance (2026-10-26)
 
 Owner-authorized standard public windows-latest acceptance run
 [40356628160](https://github.com/omerasik/investing_tradin_platform/actions/runs/40356628160)
@@ -160,7 +206,7 @@ comparison is not a completed reference1000 timing. Held mapping now costs
 3 calls/5.164689 s. Median peak commit/working set 170.30/142.51 MiB. Each
 active 86400-bar schedule retains 691200 data bytes inside the existing budget.
 
-**Full 1000-task gate remains unproven; keep #279 DRAFT.** Initial position run
+**Historical local-only gate was unproven; superseded by final hosted acceptance.** Initial position run
 stops at host RAM guard after 11.766 s: 334 completed tasks, no mismatches,
 held mapping 0.137269 s. Minimum RAM 522842112 bytes breaches the 512 MiB
 reserve. After cleanup/renewed admission, final run stops at 5.000 s with
@@ -193,7 +239,7 @@ and identity parity: medians reference -> optimized 108.634210 -> 16.721054 s,
 are not physical disk I/O; OS caches were not flushed. All six runs have zero
 failures/exclusions and identical fingerprints. Receipts/hashes belong to PR #279.
 
-**The 1000-task acceptance gate FAILED; PR #279 remains draft, no merge.**
+**Historical pre-schedule gate FAILED; that draft disposition was superseded by final hosted acceptance/merge.**
 The workload repeats 40 unique configurations, not 1000 economic hypotheses.
 Reference hits the unchanged external deadline at 120.297 s, retaining 42
 completed tasks; optimized hits it at 120.062 s, retaining 781 completed tasks
