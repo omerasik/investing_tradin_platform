@@ -75,6 +75,8 @@ const assertContext=query=>{
   assert.equal(query.get('paper_trial'),id(3));
 };
 (async()=>{
+  assert.equal(strategyLabHref(),'/strategy-lab');
+  assert.equal(strategyLabHref(undefined,undefined,terminalContext('')),'/strategy-lab');
   for (const symbol of symbols) {
     market=symbol;catalogue=original;
     const context={...selection,symbol};

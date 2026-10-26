@@ -63,7 +63,7 @@ export function strategyLabHref(studyId?: string, trialId?: string, selection?: 
   if (selection?.symbol) query.set("instrument", selection.symbol);
   const context = terminalQuery(selection).toString();
   if (context) query.set("terminal_context", context);
-  return `/strategy-lab?${query.toString()}${trialId ? "#trial-detail" : ""}`;
+  return `/strategy-lab${query.size ? `?${query}` : ""}${trialId ? "#trial-detail" : ""}`;
 }
 
 export function paperEvidenceHref(studyId: string, trialId: string): string {
