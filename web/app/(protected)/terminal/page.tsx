@@ -1,6 +1,7 @@
 import React from "react";
 import {
   getCaptureAvailability,
+  getChartSeriesCatalog,
   getStrategyLabStudies,
   getStrategyLabStudy,
   getTerminalAccounts,
@@ -21,14 +22,13 @@ import {
   utc,
   type ActivationReadiness,
   type CandidatePaperEvidence,
-  type ComparisonSort,
   type ReadinessAnswer,
   type TerminalCommand,
   type TerminalCycle,
 } from "../../lib/data-access";
 import { CommandConsole } from "./command-console";
 import { CandidateLifecycleSection, WalkForwardSection } from "./candidate-lifecycle";
-import { AccountRiskSection, CandidateJourney, candidateHref, terminalQuery, COMPARE_MAX_STUDIES, ComparisonSection, PaperEvidenceSection, type CompareSelection } from "./compare-section";
+import { AccountRiskSection, CandidateJourney, candidateHref, terminalQuery, compareSelection, researchChart, researchChartHref, strategyLabHref, COMPARE_MAX_STUDIES, ComparisonSection, PaperEvidenceSection, type CompareSelection } from "./compare-section";
 import { StudyPagination, studyOffset, STUDY_PAGE_LIMIT, MAX_STUDY_OFFSET } from "./study-pagination";
 import { WorkspaceToolbar } from "../../components/workspace-toolbar";
 import { QualityStateBadge } from "../../components/quality-state-badge";
@@ -69,9 +69,8 @@ function target(value: number): string {
 }
 
 /** The trial's detail in the Strategy Lab Explorer, with its study kept. */
-function TrialLink({ studyId, trialId }: { studyId: string; trialId: string }) {
-  const query = new URLSearchParams({ study: studyId, trial: trialId });
-  return <a href={`/strategy-lab?${query.toString()}#trial-detail`}><code title={trialId}>{trialId.slice(0, 8)}…</code></a>;
+function TrialLink({ studyId, trialId, selection }: { studyId: string; trialId: string; selection: CompareSelection }) {
+  return <a href={strategyLabHref(studyId, trialId, selection)}><code title={trialId}>{trialId.slice(0, 8)}…</code></a>;
 }
 
 function Claim({ label }: { label: string }) {
@@ -204,25 +203,11 @@ function CycleSummary({ cycle }: { cycle: TerminalCycle }) {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const METRIC = /^[a-z][a-z0-9_]{0,63}$/;
 
 type RawParams = Record<string, string | string[] | undefined>;
 
 function one(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
-}
-
-/** The operator's comparison choice from the URL; malformed values are dropped, nothing is defaulted. */
-function compareSelection(raw: RawParams): CompareSelection {
-  const listed = ([] as string[]).concat(raw.compare_study ?? []);
-  const studies = [...new Set(listed.filter((id) => UUID.test(id)))].slice(0, COMPARE_MAX_STUDIES);
-  const metricText = one(raw.compare_metric);
-  const metric = metricText && METRIC.test(metricText) ? metricText : undefined;
-  const dimension = one(raw.compare_dimension);
-  const direction = one(raw.compare_direction);
-  const sort: ComparisonSort | undefined = metric && (dimension === "SEARCH" || dimension === "DECIMAL_BASELINE")
-    && (direction === "ASC" || direction === "DESC") ? { dimension, metric, direction } : undefined;
-  return { studies, metric, sort, symbol: terminalSymbol(one(raw.symbol)) };
 }
 
 export default async function ResearchTerminalPage({ searchParams }: { searchParams?: Promise<RawParams> }) {
@@ -238,11 +223,12 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
   if (paperTarget) [selection.paperStudy, selection.paperTrial] = paperTarget;
   const ctx = await getWorkspaceContext();
   const [overviewResult, captureResult, signalsResult, studiesResult, rerunsResult, validationResult, accountsResult, incubationResult,
-    activationResult, commandsResult, walkForwardResult, candidatesResult] =
+    activationResult, commandsResult, walkForwardResult, candidatesResult, chartsResult] =
     await Promise.all([
       getTerminalOverview(ctx), getCaptureAvailability(ctx), getTerminalSignals(ctx, selection.symbol), getStrategyLabStudies(ctx, { instrument: selection.symbol, limit: STUDY_PAGE_LIMIT, offset: selection.studyOffset }),
       getTerminalReruns(ctx), getTerminalValidation(ctx), getTerminalAccounts(ctx), getTerminalIncubation(ctx),
       getTerminalActivation(ctx), getTerminalCommands(ctx), getTerminalWalkForward(ctx), getTerminalCandidates(ctx),
+      getChartSeriesCatalog(ctx),
     ]);
   // Validate every explicit comparison selection against stored catalogue bindings,
   // including IDs outside the first study-list page. Never infer from names.
@@ -283,6 +269,8 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
   const validation = validationResult.state === "AVAILABLE" ? validationResult.value : undefined;
   const accounts = accountsResult.state === "AVAILABLE" ? accountsResult.value : undefined;
   const incubation = incubationResult.state === "AVAILABLE" ? incubationResult.value : undefined;
+  const chart = researchChart(chartsResult.state === "AVAILABLE" ? chartsResult.value.items : undefined, symbol, selection.series);
+  const chartLink = chart.series ? researchChartHref(chart.series, selection) : undefined;
 
   return (
     <div className="workspace-container">
@@ -293,7 +281,9 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
         asOf={ctx.evidenceTime}
       />
 
-      <ResearchWorkflowNav current="terminal" />
+      <ResearchWorkflowNav current="terminal" hrefs={{terminal: `/terminal?${terminalQuery(selection)}`,
+        chart: chartLink ?? (symbol || selection.series ? null : "/chart"), "strategy-lab": strategyLabHref(selection.paperStudy, selection.paperTrial, selection),
+        validation: `/terminal?${terminalQuery(selection)}#validation`}} />
 
       <nav aria-label="Research workflow steps" className="margin-bottom-24">
         <ol className="workflow-steps">
@@ -356,7 +346,9 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
         <p>What first-party capture has proven per source. Gaps are shown as gaps, never bridged.</p>
         <p>
           This is forward capture from our own recorder, not the historical research data studies are searched on. To inspect the
-          historical bars, open the <a href="/chart">Market Chart</a> (historical research bars, never live prices).
+          historical bars, {chartLink ? <>open the <a href={chartLink}>Market Chart for {chart.series?.instrument}</a></>
+            : symbol || selection.series ? <span className="chart-option-unavailable">{chart.reason}</span>
+              : <>choose a market above or open the <a href="/chart">Market Chart catalogue</a></>} (historical research bars, never live prices).
         </p>
         {capture?.sources.length ? (
           <DataTable caption="First-party capture by source" ariaLabel="Capture by source">
@@ -400,7 +392,7 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
         {studies ? <StudyPagination page={studies.page} /> : null}
         <p>
           Browse every persisted trial, its parameters, stored metrics and Decimal rerun reconciliation in the{" "}
-          <a href={symbol ? `/strategy-lab?instrument=${symbol}` : "/strategy-lab"}>Strategy Lab Explorer</a> (read-only).
+          <a href={strategyLabHref(undefined, undefined, selection)}>Strategy Lab Explorer</a> (read-only).
         </p>
         {studies && studies.items.length ? (
           <DataTable caption="Registered studies" ariaLabel="Strategy Lab studies">
@@ -408,7 +400,7 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
             <tbody>
               {studies.items.map((study) => (
                 <tr key={study.study_id}>
-                  <td><a href={`/strategy-lab?${new URLSearchParams({ study: study.study_id, ...(symbol ? { instrument: symbol } : {}) })}`}>{study.label}</a></td><td>{study.strategy_family}</td><td className="tabular-num">{study.planned_trial_count}</td>
+                  <td><a href={strategyLabHref(study.study_id, undefined, selection)}>{study.label}</a></td><td>{study.strategy_family}</td><td className="tabular-num">{study.planned_trial_count}</td>
                   <td>{counts(study.queue_states)}</td><td>{study.authority.reasons.join(", ")}</td>
                   <td>{selection.studies.length >= COMPARE_MAX_STUDIES && !selection.studies.includes(study.study_id)
                     ? <a href="#compare">Comparison selection full; adjust selected studies below</a>
@@ -445,7 +437,7 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
             <tbody>
               {rerun.selected.length ? rerun.selected.map((item) => (
                 <tr key={item.trial_id}>
-                  <td className="tabular-num">{item.rank}</td><td><TrialLink studyId={rerun.study_id} trialId={item.trial_id} /></td>
+                  <td className="tabular-num">{item.rank}</td><td><TrialLink studyId={rerun.study_id} trialId={item.trial_id} selection={selection} /></td>
                   <td className="tabular-num">{item.metric_value}</td><td><Claim label={rerun.claim} /></td>
                 </tr>
               )) : <tr><td colSpan={4}><Claim label={rerun.claim} /> no selection</td></tr>}
@@ -474,7 +466,7 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
                 <tbody>
                   {validation.candidates.map((item) => (
                     <tr key={`${item.study_id}-${item.trial_id}-${item.recorded_at}`}>
-                      <td>{item.study_label}</td><td><TrialLink studyId={item.study_id} trialId={item.trial_id} /></td>
+                      <td>{item.study_label}</td><td><TrialLink studyId={item.study_id} trialId={item.trial_id} selection={selection} /></td>
                       <td><Claim label={item.label} /></td><td>{item.reasons.join(", ")}</td>
                     </tr>
                   ))}
@@ -492,7 +484,7 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
 
       <Step id="paper-evidence" title="Paper evidence" claim="NON_COSTABLE · NOT A PROMOTION DECISION">
         <p>Live/replay paper-fill parity and linked forward funding evidence per candidate, resolved server-side from stored rows. Nothing here promotes, sizes or charges.</p>
-        <PaperEvidenceSection
+        <PaperEvidenceSection selection={selection}
           items={paperItems}
           unavailable={paperResult && paperResult.state !== "AVAILABLE" ? stateText(paperResult) : undefined}
         />
@@ -524,7 +516,7 @@ export default async function ResearchTerminalPage({ searchParams }: { searchPar
             <tbody>
               {incubation.report.candidates.map((item) => (
                 <tr key={`${item.study_id}-${item.trial_id}-${item.symbol}`}>
-                  <td>{item.symbol}</td><td><TrialLink studyId={item.study_id} trialId={item.trial_id} /></td>
+                  <td>{item.symbol}</td><td><TrialLink studyId={item.study_id} trialId={item.trial_id} selection={selection} /></td>
                   <td className="tabular-num">{counts(item.fills_by_status)}</td><td className="tabular-num">{item.round_trips.length}</td>
                   <td className="tabular-num">{item.gross_return_sum}</td><td className="tabular-num">{item.break_even_cost_bps_per_side ?? "—"}</td>
                   <td className="tabular-num">{item.chain_breaks}</td><td>{item.elapsed_days} / {String(item.required_days)}</td>

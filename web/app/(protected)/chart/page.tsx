@@ -17,6 +17,8 @@ import { ProvenancePanel } from "../../components/provenance-panel";
 import { MarketChart, type MarketChartPoint } from "../../components/market-chart";
 import { decimalText } from "../../lib/decimal-text";
 import { ResearchWorkflowNav } from "../../components/research-workflow-nav";
+import { researchChart, researchChartHref, strategyLabHref, terminalContext, terminalQuery } from "../terminal/compare-section";
+import { terminalSymbol } from "../terminal/symbol-navigation";
 
 export const dynamic = "force-dynamic";
 
@@ -43,13 +45,6 @@ const UNIVERSE = ["BTCUSDT", "ETHUSDT", "SOLUSDT"] as const;
 const STEP_SECONDS: Record<string, number> = { "1m": 60, "1h": 3_600, "4h": 14_400, "1d": 86_400 };
 const DEFAULT_TIMEFRAME = "1d";
 
-function chartHref(series: string, timeframe?: string, end?: string): string {
-  const query = new URLSearchParams({ series });
-  if (timeframe) query.set("tf", timeframe);
-  if (end) query.set("end", end);
-  return `/chart?${query.toString()}`;
-}
-
 function ageText(from: string | null | undefined, to: string): string {
   if (!from) return "UNAVAILABLE";
   const hours = (Date.parse(to) - Date.parse(from)) / 3_600_000;
@@ -60,14 +55,32 @@ function ageText(from: string | null | undefined, to: string): string {
 export default async function ChartPage({
   searchParams,
 }: {
-  searchParams?: Promise<{ series?: string; instrument?: string; tf?: string; end?: string }>;
+  searchParams?: Promise<{ series?: string; symbol?: string; instrument?: string; tf?: string; end?: string; terminal_context?: string }>;
 }) {
   const params = await searchParams;
   const ctx = await getWorkspaceContext();
   const catalogResult = await getChartSeriesCatalog(ctx);
   const catalog = catalogResult.state === "AVAILABLE" ? catalogResult.value.items : [];
   const windows = catalog.filter((item) => item.window);
-  const selected = catalog.find((item) => item.manifest_hash === params?.series) ?? windows[0] ?? catalog[0];
+  const context = terminalContext(params?.terminal_context);
+  const matches = catalog.filter(item => item.manifest_hash === params?.series);
+  const association = researchChart(catalogResult.state === "AVAILABLE" ? catalog : undefined, params?.symbol, params?.series);
+  // An explicit unavailable identity never falls back to another market's first series.
+  const selected = params?.symbol !== undefined ? association.series : params?.series !== undefined
+    ? matches.length === 1 ? matches[0] : undefined : windows[0] ?? catalog[0];
+  const selectionReason = params?.symbol !== undefined ? association.reason : params?.series !== undefined && !selected
+    ? "Requested chart identity is unavailable or ambiguous in the catalogue." : undefined;
+  const selection = params?.terminal_context !== undefined ? context : {...context,
+    series: selected?.manifest_hash, symbol: terminalSymbol(selected?.instrument)};
+  function chartHref(series: string, timeframe?: string, end?: string): string {
+    const item = catalog.find(entry => entry.manifest_hash === series);
+    const query = item?.window && terminalSymbol(item.instrument)
+      ? new URLSearchParams(researchChartHref(item, selection).split("?")[1])
+      : new URLSearchParams({series, terminal_context: terminalQuery(selection).toString()});
+    if (timeframe) query.set("tf", timeframe);
+    if (end) query.set("end", end);
+    return `/chart?${query.toString()}`;
+  }
   const timeframes = selected?.timeframes ?? [];
   const timeframe = timeframes.includes(params?.tf ?? "") ? params!.tf! : timeframes.includes(DEFAULT_TIMEFRAME) ? DEFAULT_TIMEFRAME : timeframes[0];
 
@@ -95,7 +108,7 @@ export default async function ChartPage({
   const lastBar = candles
     ? { at: candles.coverage.last_bar_close_at, verb: "closed" }
     : { at: buckets?.buckets.at(-1)?.last_bar_at ?? null, verb: "opened" };
-  const windowFor = (symbol: string): ChartSeriesRef | undefined => windows.find((item) => item.instrument === symbol);
+  const windowFor = (symbol: string): ChartSeriesRef | undefined => researchChart(catalog, symbol).series;
 
   return (
     <div className="workspace-container">
@@ -107,9 +120,13 @@ export default async function ChartPage({
         asOf={ctx.evidenceTime}
       />
 
-      <ResearchWorkflowNav current="chart" />
+      <ResearchWorkflowNav current="chart" hrefs={{terminal: `/terminal?${terminalQuery(selection)}`,
+        chart: selected ? chartHref(selected.manifest_hash, timeframe, params?.end) : null,
+        "strategy-lab": strategyLabHref(selection.paperStudy, selection.paperTrial, selection),
+        validation: `/terminal?${terminalQuery(selection)}#validation`}} />
 
       <article className="panel margin-bottom-24" aria-label="Market Chart">
+        {selectionReason ? <p className="empty-notice" role="status">{selectionReason} Choose an exact catalogued window below.</p> : null}
         <h2>
           <span>{instrument}{timeframe ? ` · ${timeframe}` : ""}</span>
           <QualityStateBadge
@@ -129,7 +146,7 @@ export default async function ChartPage({
                       {symbol}
                     </Link>
                   ) : (
-                    <span className="chart-option-unavailable">{symbol}: UNAVAILABLE (no catalogued T2 research window)</span>
+                    <span className="chart-option-unavailable">{symbol}: UNAVAILABLE (no unique catalogued T2 research window)</span>
                   )}
                 </li>
               );
@@ -167,7 +184,7 @@ export default async function ChartPage({
             <li>Data: <strong data-frame-source={selected.frame_kind}>{frameSource(selected)}</strong></li>
             {selected.window && selected.instrument ? (
               <li>
-                <Link href={`/strategy-lab?${new URLSearchParams({ instrument: selected.instrument }).toString()}`}>
+                <Link href={strategyLabHref(selection.paperStudy, selection.paperTrial, selection)}>
                   Strategy Lab studies on {selected.instrument}
                 </Link>{" "}
                 (search-tier, gross)
@@ -175,7 +192,7 @@ export default async function ChartPage({
             ) : (
               <li className="chart-option-unavailable">Strategy Lab studies: only T2 research windows are searched</li>
             )}
-            <li><Link href="/terminal#market-scan">Forward capture status (Research Terminal)</Link></li>
+            <li><Link href={`/terminal?${terminalQuery(selection)}#market-scan`}>Forward capture status (Research Terminal)</Link></li>
           </ul>
         )}
         {selected && !timeframe && (

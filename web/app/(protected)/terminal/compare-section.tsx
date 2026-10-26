@@ -9,6 +9,8 @@ import {
   type TerminalAccount,
   type TerminalComparison,
   type StrategyLabPageInfo,
+  type ChartSeriesRef,
+  type StrategyLabDatasetRef,
 } from "../../lib/data-access";
 import type { EvidenceResult } from "../../operator-contracts";
 import { DataTable } from "../../components/data-table";
@@ -23,6 +25,8 @@ import {
   storedEvidenceText,
   targetText,
 } from "./paper-economics";
+import { terminalSymbol } from "./symbol-navigation";
+import { studyOffset } from "./study-pagination";
 
 /**
  * Compare and Paper evidence: recorded evidence side by side. The operator picks the
@@ -52,8 +56,14 @@ function recorded(metrics: ComparisonMetric[] | undefined, metric: string | unde
   return <span className="tabular-num">{found.value}</span>;
 }
 
-function trialHref(studyId: string, trialId: string): string {
-  return `/strategy-lab?${new URLSearchParams({ study: studyId, trial: trialId }).toString()}#trial-detail`;
+export function strategyLabHref(studyId?: string, trialId?: string, selection?: CompareSelection): string {
+  const query = new URLSearchParams();
+  if (studyId) query.set("study", studyId);
+  if (trialId) query.set("trial", trialId);
+  if (selection?.symbol) query.set("instrument", selection.symbol);
+  const context = terminalQuery(selection).toString();
+  if (context) query.set("terminal_context", context);
+  return `/strategy-lab?${query.toString()}${trialId ? "#trial-detail" : ""}`;
 }
 
 export function paperEvidenceHref(studyId: string, trialId: string): string {
@@ -77,6 +87,7 @@ export function terminalQuery(selection?: CompareSelection): URLSearchParams {
     query.set("paper_trial", selection.paperTrial);
   }
   if (selection?.symbol) query.set("symbol", selection.symbol);
+  if (selection?.series) query.set("series", selection.series);
   for (const id of selection?.studies ?? []) query.append("compare_study", id);
   if (selection?.metric) query.set("compare_metric", selection.metric);
   if (selection?.sort) {
@@ -84,6 +95,62 @@ export function terminalQuery(selection?: CompareSelection): URLSearchParams {
     query.set("compare_direction", selection.sort.direction);
   }
   return query;
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const HASH = /^[0-9a-f]{64}$/;
+const METRIC = /^[a-z][a-z0-9_]{0,63}$/;
+export type TerminalParams = Record<string, string | string[] | undefined>;
+const first = (value: string | string[] | undefined) => Array.isArray(value) ? value[0] : value;
+
+/** The same validated Terminal URL contract on every return path; no redirect URL is accepted. */
+export function compareSelection(raw: TerminalParams): CompareSelection {
+  const studies = [...new Set(([] as string[]).concat(raw.compare_study ?? []).filter(id => UUID.test(id)))].slice(0, COMPARE_MAX_STUDIES);
+  const metricText = first(raw.compare_metric);
+  const metric = metricText && METRIC.test(metricText) ? metricText : undefined;
+  const dimension = first(raw.compare_dimension), direction = first(raw.compare_direction);
+  const paperStudy = first(raw.paper_study), paperTrial = first(raw.paper_trial);
+  const series = first(raw.series);
+  return { studies, metric, symbol: terminalSymbol(first(raw.symbol)),
+    series: series && HASH.test(series) ? series : undefined,
+    sort: metric && (dimension === "SEARCH" || dimension === "DECIMAL_BASELINE") && (direction === "ASC" || direction === "DESC")
+      ? {dimension, metric, direction} : undefined,
+    studyOffset: studyOffset(first(raw.study_offset)),
+    ...(paperStudy && paperTrial && UUID.test(paperStudy) && UUID.test(paperTrial) ? {paperStudy, paperTrial} : {}),
+  };
+}
+
+/** Transport terminalQuery verbatim through pages whose own paging uses different offsets. */
+export function terminalContext(value: unknown): CompareSelection {
+  const raw: TerminalParams = Object.create(null);
+  if (typeof value === "string" && value.length <= 4096) {
+    const query = new URLSearchParams(value);
+    for (const key of query.keys()) raw[key] = query.getAll(key);
+  }
+  return compareSelection(raw);
+}
+
+/** Only exact catalogue identities can select a historical research window. */
+export function researchChart(charts: ChartSeriesRef[] | undefined, symbol: string | undefined,
+  manifest?: string, binding?: Pick<StrategyLabDatasetRef, "dataset_version_id" | "content_hash">,
+): { series?: ChartSeriesRef; reason?: string } {
+  if (!charts) return {reason: "Chart catalogue unavailable."};
+  if ((symbol !== undefined && !terminalSymbol(symbol)) || (!symbol && !manifest)) return {reason: "Choose BTCUSDT, ETHUSDT or SOLUSDT for a research chart."};
+  const matches = charts.filter(item => item.frame_kind === "T2_ARCHIVE_OHLCV_1M" && item.window
+    && terminalSymbol(item.instrument) && (!symbol || item.instrument === symbol) && UUID.test(item.dataset_version_id) && HASH.test(item.manifest_hash)
+    && HASH.test(item.window.content_hash) && (!manifest || item.manifest_hash === manifest)
+    && (!binding || (item.dataset_version_id === binding.dataset_version_id && item.window.content_hash === binding.content_hash)));
+  return matches.length === 1 ? {series: matches[0]} : {reason: matches.length
+    ? `Ambiguous historical catalogue association for ${symbol ?? "the requested manifest"}; choose an exact window.`
+    : `No exact historical catalogue association for ${symbol ?? "the requested manifest"}.`};
+}
+
+export function researchChartHref(series: ChartSeriesRef, selection?: CompareSelection): string {
+  const query = new URLSearchParams({series: series.manifest_hash});
+  if (series.instrument) query.set("symbol", series.instrument);
+  const context = terminalQuery({...selection, studies: selection?.studies ?? [], series: selection?.series ?? series.manifest_hash}).toString();
+  if (context) query.set("terminal_context", context);
+  return `/chart?${query.toString()}`;
 }
 
 /** Every recorded metric key a row carries, for the operator's explicit choice (never a preset). */
@@ -120,7 +187,7 @@ function walkForward(row: ComparisonRow, metric: string | undefined): React.Reac
 }
 
 export type CompareSelection = { symbol?: string; studies: string[]; metric?: string; sort?: ComparisonSort;
-  studyOffset?: number; paperStudy?: string; paperTrial?: string };
+  studyOffset?: number; paperStudy?: string; paperTrial?: string; series?: string };
 
 /** The operator's selection form. Plain GET: nothing is written, nothing runs. */
 function CompareForm({ studies, selection, metrics, unavailable, studyPage }: {
@@ -135,6 +202,7 @@ function CompareForm({ studies, selection, metrics, unavailable, studyPage }: {
       {selection.studies.filter((id) => !studies.some((study) => study.study_id === id)).map((id) =>
         <input key={id} type="hidden" name="compare_study" value={id} />)}
       {selection.symbol ? <input type="hidden" name="symbol" value={selection.symbol} /> : null}
+      {selection.series ? <input type="hidden" name="series" value={selection.series} /> : null}
       {selection.paperStudy && selection.paperTrial ? <>
         <input type="hidden" name="paper_study" value={selection.paperStudy} />
         <input type="hidden" name="paper_trial" value={selection.paperTrial} />
@@ -386,7 +454,7 @@ export function ComparisonSection({ studies, studiesUnavailable, selection, comp
                   <th scope="col">Evidence</th>
                   {rows.map((row) => (
                     <th scope="col" key={key(row)} data-compare-candidate={row.identity.trial_id}>
-                      {row.identity.study_label} · <a href={trialHref(row.identity.study_id, row.identity.trial_id)}><code title={row.identity.trial_id}>{row.identity.trial_id.slice(0, 8)}…</code></a>
+                      {row.identity.study_label} · <a href={strategyLabHref(row.identity.study_id, row.identity.trial_id, selection)}><code title={row.identity.trial_id}>{row.identity.trial_id.slice(0, 8)}…</code></a>
                     </th>
                   ))}
                 </tr>
@@ -532,7 +600,7 @@ function reasonsList(reasons: string[]): React.ReactNode {
 }
 
 /** Per-candidate live/replay parity and forward funding. NOT_LOADED is shown as such, never as INCOMPLETE. */
-export function PaperEvidenceSection({ items, unavailable }: { items: CandidatePaperEvidence[]; unavailable: string | undefined }) {
+export function PaperEvidenceSection({ items, unavailable, selection }: { items: CandidatePaperEvidence[]; unavailable: string | undefined; selection?: CompareSelection }) {
   if (unavailable) return <p className="empty-notice">{unavailable}</p>;
   if (!items.length) {
     return (
@@ -557,7 +625,7 @@ export function PaperEvidenceSection({ items, unavailable }: { items: CandidateP
         <tbody>
           {items.map((item) => (
             <tr key={key(item)} data-paper-evidence={item.trial_id}>
-              <td><a href={trialHref(item.study_id, item.trial_id)}><code title={item.trial_id}>{item.trial_id.slice(0, 8)}…</code></a> ({item.cycle_id})</td>
+              <td><a href={strategyLabHref(item.study_id, item.trial_id, selection)}><code title={item.trial_id}>{item.trial_id.slice(0, 8)}…</code></a> ({item.cycle_id})</td>
               <td>{item.symbol ?? "—"}</td>
               <td className="tabular-num">
                 {item.parity.live_side.live_signals_recorded ?? 0} live signals · {item.parity.live_side.paper_fills_in_cycle ?? 0} paper fills

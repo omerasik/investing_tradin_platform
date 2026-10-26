@@ -30,6 +30,8 @@ import { KeyValueGrid } from "../../components/key-value-grid";
 import { Pagination } from "../../components/pagination";
 import { ProvenancePanel } from "../../components/provenance-panel";
 import { ResearchWorkflowNav } from "../../components/research-workflow-nav";
+import { candidateHref, researchChart, researchChartHref, terminalContext, terminalQuery, type CompareSelection } from "../terminal/compare-section";
+import { terminalSymbol } from "../terminal/symbol-navigation";
 
 export const dynamic = "force-dynamic";
 
@@ -72,6 +74,7 @@ const METRIC_LABELS: Record<string, string> = {
 };
 
 type Params = {
+  terminal_context?: string;
   study?: string; family?: string; instrument?: string; study_offset?: string;
   sort?: string; dir?: string; outcome?: string; frozen?: string; offset?: string; limit?: string; trial?: string;
   /** Heatmap: x and y parameters, metric, and fixed values as comma-joined ``name:value`` pairs. */
@@ -103,7 +106,9 @@ function fixedPairs(raw: string | string[] | undefined, axes: (string | undefine
 
 /** Hidden inputs carrying the page state a form does not itself edit. */
 function Carry({ params, keys }: { params: Params; keys: (keyof Params)[] }) {
-  return <>{keys.map((key) => (params[key] ? <input key={key} type="hidden" name={key} value={params[key]} /> : null))}</>;
+  return <>{params.terminal_context && !keys.includes("terminal_context")
+    ? <input type="hidden" name="terminal_context" value={params.terminal_context} /> : null}
+    {keys.map((key) => (params[key] ? <input key={key} type="hidden" name={key} value={params[key]} /> : null))}</>;
 }
 
 function boundedInt(value: string | undefined, max: number): number {
@@ -151,22 +156,23 @@ function href(params: Params, overrides: Partial<Params>): string {
  * when the chart catalogue carries the exact same ``dataset_version_id`` and window identity;
  * anything else is named as not charted rather than pointed at a different series.
  */
-function StudyDataLinks({ datasets, charts }: { datasets: StrategyLabDatasetRef[]; charts: ChartSeriesRef[] | undefined }) {
+function StudyDataLinks({ datasets, charts, selection }: { datasets: StrategyLabDatasetRef[]; charts: ChartSeriesRef[] | undefined; selection: CompareSelection }) {
   const windows = datasets.filter((ref) => ref.resolution === "RESEARCH_WINDOW_CATALOGUE");
   return (
     <ul className="context-links" aria-label="Study data on the Market Chart">
       {windows.length ? windows.map((ref) => {
-        const series = charts?.find((item) => item.window && item.dataset_version_id === ref.dataset_version_id && item.window.content_hash === ref.content_hash);
+        const chart = researchChart(charts, ref.symbol ?? undefined, undefined, ref);
+        const series = chart.series;
         const name = `${ref.symbol ?? "UNRESOLVED"} ${ref.first_utc_day}..${ref.last_utc_day}`;
         return (
           <li key={`${ref.dataset_version_id}:${ref.content_hash}`}>
             {series
-              ? <><Link href={`/chart?${new URLSearchParams({ series: series.manifest_hash }).toString()}`}>Historical bars for {name} on the Market Chart</Link> (not live prices)</>
-              : <span className="chart-option-unavailable">{name}: not charted{charts ? " (no exact catalogue match)" : " (chart catalogue unavailable)"}</span>}
+              ? <><Link href={researchChartHref(series, selection)}>Historical bars for {name} on the Market Chart</Link> (not live prices)</>
+              : <span className="chart-option-unavailable">{name}: not charted ({chart.reason})</span>}
           </li>
         );
       }) : <li className="chart-option-unavailable">No research window resolved for this study: nothing to chart.</li>}
-      <li><a href="/terminal#validation">Recorded validation status and blockers (Research Terminal)</a></li>
+      <li><a href={`/terminal?${terminalQuery(selection)}#validation`}>Recorded validation status and blockers (Research Terminal)</a></li>
     </ul>
   );
 }
@@ -425,6 +431,10 @@ async function TrialDetailPanel({ studyId, trialId, ctx, params }: {
       <p><Link href={href(params, { trial: undefined })}>Close trial detail</Link></p>
       {detail ? (
         <>
+          <nav aria-label="Trial in Research Terminal">
+            <a href={candidateHref(studyId, detail.trial.trial_id, terminalContext(params.terminal_context))}>Review candidate, risk and paper</a>{" · "}
+            <a href={`/terminal?${terminalQuery({...terminalContext(params.terminal_context), paperStudy: studyId, paperTrial: detail.trial.trial_id})}#validation`}>Validation status with this candidate selected</a>
+          </nav>
           <KeyValueGrid
             columns={3}
             items={[
@@ -490,6 +500,7 @@ async function TrialDetailPanel({ studyId, trialId, ctx, params }: {
 
 export default async function StrategyLabExplorerPage({ searchParams }: { searchParams?: Promise<RawParams> }) {
   const raw = (await searchParams) ?? {};
+  const context = terminalContext(raw.terminal_context);
   const family = pick(raw.family, FAMILY);
   const instrument = pick(raw.instrument, SYMBOL);
   const studyOffset = boundedInt(raw.study_offset, 10_000);
@@ -513,6 +524,7 @@ export default async function StrategyLabExplorerPage({ searchParams }: { search
   const studyId = pick(raw.study, UUID) ?? studies?.items[0]?.study_id;
   // Links keep the page state that is valid; anything malformed is dropped, not echoed.
   const params: Params = {
+    terminal_context: terminalQuery(context).toString() || undefined,
     study: studyId, family, instrument, study_offset: studyOffset ? String(studyOffset) : undefined,
     sort: query.sort === "ordinal" ? undefined : query.sort, dir: query.direction === "desc" ? "desc" : undefined,
     outcome: query.outcome === "ALL" ? undefined : query.outcome, frozen: query.frozenOnly ? "1" : undefined,
@@ -550,6 +562,15 @@ export default async function StrategyLabExplorerPage({ searchParams }: { search
   const preferred = PREFERRED_METRICS.filter((key) => metricKeys.includes(key));
   const columns: string[] = preferred.length ? [...preferred] : metricKeys;
   const summary = detail?.summary;
+  const symbol = summary?.instrument_source === "RESEARCH_WINDOW_CATALOGUE" ? terminalSymbol(summary.instrument) : undefined;
+  const bindings = summary?.datasets.filter(ref => ref.resolution === "RESEARCH_WINDOW_CATALOGUE") ?? [];
+  const chart = summary ? bindings.length === 1 ? researchChart(charts, symbol, undefined, bindings[0])
+    : {reason: "No unique research window resolved for this study."} : researchChart(charts, context.symbol, context.series);
+  // An all-markets comparison must not become a one-market filter merely by viewing a study.
+  const selection: CompareSelection = raw.terminal_context !== undefined ? context : {...context,
+    symbol, series: chart.series?.manifest_hash, studies: summary ? [summary.study_id] : []};
+  params.terminal_context = terminalQuery(selection).toString() || undefined;
+  const selectedTrial = trialId && summary ? {...selection, paperStudy: summary.study_id, paperTrial: trialId} : selection;
 
   return (
     <div className="workspace-container">
@@ -561,11 +582,15 @@ export default async function StrategyLabExplorerPage({ searchParams }: { search
         asOf={ctx.evidenceTime}
       />
 
-      <ResearchWorkflowNav current="strategy-lab" />
+      <ResearchWorkflowNav current="strategy-lab" hrefs={{terminal: `/terminal?${terminalQuery(selectedTrial)}#compare`,
+        "strategy-lab": href(params, {}),
+        chart: chart.series ? researchChartHref(chart.series, selection) : null,
+        validation: `/terminal?${terminalQuery(selectedTrial)}#validation`}} />
 
       <article className="panel margin-bottom-24" aria-label="Studies">
         <h2><span>Studies</span><QualityStateBadge status={studies ? studies.state : studiesResult.state} /></h2>
         <form method="GET" className="filter-bar" aria-label="Study filters">
+          <Carry params={params} keys={[]} />
           <div className="filter-groups">
             <div className="filter-item">
               <label htmlFor="study-family" className="filter-label">Strategy family</label>
@@ -585,7 +610,7 @@ export default async function StrategyLabExplorerPage({ searchParams }: { search
           </div>
           <div className="filter-actions">
             <button type="submit" className="filter-apply-btn">Apply Filters</button>
-            <Link href="/strategy-lab" className="filter-reset-btn">Reset</Link>
+            <Link href={href({terminal_context: params.terminal_context}, {})} className="filter-reset-btn">Reset</Link>
           </div>
         </form>
         {studies && !studies.facets.instrument_catalogue ? (
@@ -618,7 +643,7 @@ export default async function StrategyLabExplorerPage({ searchParams }: { search
               </tbody>
             </DataTable>
             <Pagination limit={studies.page.limit} offset={studies.page.offset} returned={studies.page.returned} hasMore={studies.page.has_more}
-              basePath="/strategy-lab" searchParams={{ study: params.study, family, instrument }} offsetParam="study_offset" limitParam="study_limit" />
+              basePath="/strategy-lab" searchParams={{ study: params.study, family, instrument, terminal_context: params.terminal_context }} offsetParam="study_offset" limitParam="study_limit" />
           </>
         ) : (
           <p className="empty-notice">{studies ? (family || instrument ? "No study matches these filters." : "No study registered.") : stateText(studiesResult)}</p>
@@ -655,7 +680,7 @@ export default async function StrategyLabExplorerPage({ searchParams }: { search
                   { key: "search", label: "Search", value: `${String(detail.search.mode ?? "UNAVAILABLE")} · max ${String(detail.search.max_trials ?? "UNAVAILABLE")}` },
                 ]}
               />
-              <StudyDataLinks datasets={summary.datasets} charts={charts} />
+              <StudyDataLinks datasets={summary.datasets} charts={charts} selection={selection} />
               {detail.economics ? <EconomicsTable economics={detail.economics} /> : <p className="empty-notice">Economics UNAVAILABLE for this study.</p>}
               <section aria-label="Frozen candidates and Decimal rerun" className="margin-bottom-24">
                 <h3>Frozen candidates and Decimal rerun reconciliation</h3>
@@ -733,7 +758,7 @@ export default async function StrategyLabExplorerPage({ searchParams }: { search
             </div>
             <div className="filter-actions">
               <button type="submit" className="filter-apply-btn">Apply Filters</button>
-              <Link href={href({ study: studyId, family, instrument }, {})} className="filter-reset-btn">Reset</Link>
+              <Link href={href({ study: studyId, family, instrument, terminal_context: params.terminal_context }, {})} className="filter-reset-btn">Reset</Link>
             </div>
           </form>
           <p>
