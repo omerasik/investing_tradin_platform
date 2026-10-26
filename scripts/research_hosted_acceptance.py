@@ -7,6 +7,7 @@ for the original verifier (which every reference/scope evaluation still calls).
 
 from __future__ import annotations
 
+import argparse
 import ctypes
 import hashlib
 import importlib.metadata
@@ -76,9 +77,10 @@ def fixture_evidence(root: Path) -> dict[str, Any]:
 
 
 def validate_report(report: dict[str, Any], tasks: int, implementation: str,
-                    oracle: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+                    oracle: dict[str, Any] | None = None, *, distinct: bool = False) -> list[dict[str, Any]]:
     limits = report["limits"]
     if (report["implementation"] != implementation or report["evaluation_tasks"] != tasks
+            or (distinct and report.get("distinct_configurations") is not True)
             or len(report["runs"]) != 3 or report.get("real_development_loader_only") is not False
             or limits["admission_policy"] != "github-hosted-windows-p2b1-v1"
             or any(limits[k] != v for k, v in {"process_memory_bytes": 512 * 1024 ** 2,
@@ -92,8 +94,9 @@ def validate_report(report: dict[str, Any], tasks: int, implementation: str,
             raise ValueError("acceptance_incomplete_or_late_run")
         r = run["result"]
         if (r["completed"] != tasks or r["failed"] != 0 or r["excluded"] != 0
-                or r["unique_configurations_evaluated"] != 40 or r["declared_unique_configurations"] != 40
-                or len(r["unique_results"]) != 40
+                or r["unique_configurations_evaluated"] != (tasks if distinct else 40)
+                or r["declared_unique_configurations"] != (684 if distinct else 40)
+                or len(r["unique_results"]) != (tasks if distinct else 40)
                 or r["registered_studies"] != 0 or r["dataset_content_hash"] != CONTENT
                 or r["manifest_hash"] != MANIFEST or r["elapsed_seconds"] > 120
                 or r["after"]["peak_commit_bytes"] > 512 * 1024 ** 2
@@ -105,12 +108,72 @@ def validate_report(report: dict[str, Any], tasks: int, implementation: str,
         if tasks == 40 and r["result_chain"] != REFERENCE_CHAIN:
             raise ValueError("recorded_reference40_identity_changed")
         reference = oracle or (results[0] if results else r)
-        if any(r[k] != reference[k] for k in ("unique_results", "input_fingerprints")):
+        compared = ({key: r["unique_results"].get(key) for key in reference["unique_results"]}
+                    if distinct else r["unique_results"])
+        if compared != reference["unique_results"] or r["input_fingerprints"] != reference["input_fingerprints"]:
             raise ValueError("reference_result_or_input_mismatch")
+        if distinct:
+            validate_distinct_catalog(r, tasks)
+            if oracle is not None and (r["reference_comparisons"] != 12 or
+                    r["configuration_catalog"] != oracle["configuration_catalog"]):
+                raise ValueError("distinct_reference_coverage_mismatch")
+            if results and any(r[k] != results[0][k] for k in ("unique_results", "configuration_catalog")):
+                raise ValueError("non_deterministic_distinct_results")
         if results and r["result_chain"] != results[0]["result_chain"]:
             raise ValueError("non_deterministic_repetition")
         results.append(r)
     return results
+
+
+def validate_distinct_catalog(result: dict[str, Any], tasks: int) -> None:
+    """Check every admitted/rejected point and retained canonical identity."""
+    expected = {"trend_ma_cross": (480, 380, {"fast_not_shorter_than_slow": 100}),
+                "mean_reversion_z": (240, 240, {}),
+                "breakout_channel": (84, 64, {"exit_channel_not_shorter": 20})}
+    catalogs = result["configuration_catalog"]
+    if (len(catalogs) != 3 or {c["family"] for c in catalogs} != set(expected)
+            or result["planned_parameter_points"] != 804 or result["rejected_parameter_points"] != 120
+            or result["configuration_catalog_hash"] != hashlib.sha256(
+                json.dumps(catalogs, sort_keys=True, separators=(",", ":")).encode()).hexdigest()):
+        raise ValueError("distinct_catalog_count_or_hash_mismatch")
+    admitted, parameters = {}, set()
+    for catalog in catalogs:
+        raw, valid, reasons = expected[catalog["family"]]
+        points = catalog["points"]
+        if (catalog["raw_points"] != raw or catalog["planned_trial_count"] != raw
+                or catalog["admissible_points"] != valid or catalog["rejected_points"] != raw - valid
+                or catalog["rejection_reasons"] != reasons or len(points) != raw
+                or [p["space_index"] for p in points] != list(range(raw))
+                or [p["ordinal"] for p in points] != list(range(raw))):
+            raise ValueError("distinct_family_accounting_mismatch")
+        actual_reasons: dict[str, int] = {}
+        accepted = []
+        for point in points:
+            key = json.dumps([catalog["family"], point["parameters"]], sort_keys=True)
+            if key in parameters:
+                raise ValueError("duplicate_parameter_point")
+            parameters.add(key)
+            if point["rejected_reason"] is not None:
+                reason = point["rejected_reason"]
+                actual_reasons[reason] = actual_reasons.get(reason, 0) + 1
+            else:
+                accepted.append(point)
+        if actual_reasons != reasons or len(accepted) != valid:
+            raise ValueError("distinct_rejection_reason_mismatch")
+        chosen = benchmark.representative_trials(accepted) if tasks == 12 else accepted
+        for point in chosen:
+            key = point["trial_hash"]
+            if key in admitted:
+                raise ValueError("duplicate_canonical_trial_hash")
+            admitted[key] = {"family": catalog["family"], "study_id": catalog["study_id"],
+                "study_hash": catalog["study_hash"], **{k: point[k] for k in (
+                    "parameters", "ordinal", "space_index", "trial_id", "trial_hash")}}
+    if set(admitted) != set(result["unique_results"]):
+        raise ValueError("distinct_results_incomplete_or_unexpected")
+    for key, identities in admitted.items():
+        item = result["unique_results"][key]
+        if any(item[k] != value for k, value in identities.items()) or item["outcome"] != "EVALUATED":
+            raise ValueError("distinct_trial_identity_or_outcome_mismatch")
 
 
 def run(output: Path, *arguments: str) -> dict[str, Any]:
@@ -160,6 +223,13 @@ def storage() -> dict[str, Any]:
 
 
 def main() -> int:
+    global OUTPUT, FIXTURE
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--distinct-configurations", action="store_true")
+    options = parser.parse_args()
+    if options.distinct_configurations:
+        OUTPUT = ROOT / ".tmp/hosted-p2b21"
+        FIXTURE = OUTPUT / "fixture"
     # The harness independently validates this context before each child.
     args = type("Admission", (), {"hosted_windows_acceptance": True, "working_set_mib": 512})()
     policy = benchmark.resource_policy(args)
@@ -182,14 +252,19 @@ def main() -> int:
         write(OUTPUT / "fixture-identity.json", evidence)
         if not evidence["matches"]:
             raise ValueError("fixture_identity_not_portable:" + ",".join(evidence["mismatches"]))
-        common = ("--dataset", DATASET, "--expected", CONTENT, "--repeats", "3")
-        reference = run(OUTPUT / "reference40.json", "--implementation", "reference", "--evaluation-tasks", "40", *common)
-        oracle, *_ = validate_report(reference, 40, "reference")
-        for tasks in (40, 1000):
+        distinct = options.distinct_configurations
+        summary["workload"] = "684 distinct configurations" if distinct else "1000 repetitions of 40 configurations"
+        common = ("--dataset", DATASET, "--expected", CONTENT, "--repeats", "3",
+                  *(("--distinct-configurations",) if distinct else ()))
+        reference_tasks = 12 if distinct else 40
+        reference_path = OUTPUT / f"reference{reference_tasks}.json"
+        reference = run(reference_path, "--implementation", "reference", "--evaluation-tasks", str(reference_tasks), *common)
+        oracle, *_ = validate_report(reference, reference_tasks, "reference", distinct=distinct)
+        for tasks in ((12, 684) if distinct else (40, 1000)):
             report = run(OUTPUT / f"optimized{tasks}.json", "--implementation", "optimized",
-                "--evaluation-tasks", str(tasks), "--reference-receipt", str(OUTPUT / "reference40.json"), *common)
-            validate_report(report, tasks, "optimized", oracle)
-            if any(r["result"]["reference_receipt_sha256"] != sha(OUTPUT / "reference40.json")
+                "--evaluation-tasks", str(tasks), "--reference-receipt", str(reference_path), *common)
+            validate_report(report, tasks, "optimized", oracle, distinct=distinct)
+            if any(r["result"]["reference_receipt_sha256"] != sha(reference_path)
                    for r in report["runs"]):
                 raise ValueError("reference_receipt_binding_changed")
         final = fixture_evidence(FIXTURE)

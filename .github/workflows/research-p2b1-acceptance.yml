@@ -1,4 +1,4 @@
-name: P2B.1 isolated Windows acceptance
+name: Research Factory isolated Windows acceptance
 
 on:
   pull_request:
@@ -14,10 +14,13 @@ concurrency:
 jobs:
   acceptance:
     if: >-
-      github.event.pull_request.number == 279 &&
       github.event.pull_request.head.repo.full_name == github.repository &&
-      contains(github.event.pull_request.labels.*.name, 'research-p2b1-acceptance') &&
-      (github.event.action != 'labeled' || github.event.label.name == 'research-p2b1-acceptance')
+      ((github.event.pull_request.number == 279 &&
+        contains(github.event.pull_request.labels.*.name, 'research-p2b1-acceptance') &&
+        (github.event.action != 'labeled' || github.event.label.name == 'research-p2b1-acceptance')) ||
+       (github.event.pull_request.head.ref == 'codex/distinct-configuration-baseline' &&
+        contains(github.event.pull_request.labels.*.name, 'research-p2b21-acceptance') &&
+        (github.event.action != 'labeled' || github.event.label.name == 'research-p2b21-acceptance')))
     runs-on: windows-latest
     timeout-minutes: 25
     env:
@@ -27,6 +30,7 @@ jobs:
       NUMEXPR_NUM_THREADS: '1'
       PIP_NO_CACHE_DIR: '1'
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
+      DISTINCT_ACCEPTANCE: ${{ contains(github.event.pull_request.labels.*.name, 'research-p2b21-acceptance') }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -61,14 +65,20 @@ jobs:
           python -m pip list --format=json > .tmp/hosted-environment/packages.json
       - name: Prepare, verify exact fixture and run bounded acceptance
         shell: pwsh
-        run: python scripts/research_hosted_acceptance.py
+        run: |
+          if ($env:DISTINCT_ACCEPTANCE -eq 'true') {
+            python scripts/research_hosted_acceptance.py --distinct-configurations
+          } else {
+            python scripts/research_hosted_acceptance.py
+          }
+          exit $LASTEXITCODE
       - name: Retain all completed, stopped and portability evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: p2b1-windows-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
+          name: research-windows-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
           path: |
-            .tmp/hosted-p2b1/*.json
+            .tmp/hosted-p2b*/*.json
             .tmp/hosted-environment/*.json
           include-hidden-files: true
           if-no-files-found: error
