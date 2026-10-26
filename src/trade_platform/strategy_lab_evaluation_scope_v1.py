@@ -21,6 +21,7 @@ import dataclasses
 import hashlib
 import json
 import os
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
@@ -32,6 +33,7 @@ from typing import Any, Self
 
 import numpy as np
 
+from . import strategy_lab_walk_forward_v1 as execution
 from . import strategy_sdk_v1 as sdk
 from .evidence_tier_authority_v1 import EvidenceTierV1
 from .public_archive_research_bars_v1 import ResearchBarsError, load_research_bar_dataset_v1
@@ -135,6 +137,7 @@ class VerifiedEvaluationScopeV1:
         self._deadline = 0.0
         self._used = 0
         self._bars: sdk.BarsV1 | None = None
+        self._schedule: np.ndarray | None = None
         self._identity: Mapping[str, Any] = MappingProxyType({})
 
     @property
@@ -163,7 +166,7 @@ class VerifiedEvaluationScopeV1:
         self._entered = True
         self._deadline = self._clock() + self._maximum_seconds
         store = _VerifiedRows(self._root, self._maximum_rows, self._check)
-        mutable = prepared = None
+        mutable = prepared = schedule = indices = None
         try:
             self._check()
             _family(self._study)
@@ -201,7 +204,13 @@ class VerifiedEvaluationScopeV1:
             mutable = sdk.BarsV1.from_rows(store.rows)
             prepared = _immutable_bars(sdk.restrict_to_bound_v1(
                 mutable, self._study.evaluation_upper_bound_exclusive, self._study.timing_lag))
-            retained = _retained_upper_bound_v1(prepared)
+            # The existing walk-forward schedule depends only on the verified,
+            # restricted bars and exact lag. Targets remain trial-dependent.
+            lag_us = self._study.timing_lag // timedelta(microseconds=1)
+            indices = execution._held_decision_indices_v1(prepared, lag_us)
+            schedule = np.frombuffer(indices.tobytes(), dtype=indices.dtype)
+            retained = (_retained_upper_bound_v1(prepared) + sys.getsizeof(schedule)
+                        + sys.getsizeof(schedule.base))
             if retained > self._maximum_snapshot_bytes:
                 raise MemoryError("scope_retained_input_budget_exhausted")
             self._check()
@@ -215,11 +224,14 @@ class VerifiedEvaluationScopeV1:
                 "maximum_evaluations": self._maximum_evaluations, "maximum_seconds": self._maximum_seconds,
                 "maximum_rows": self._maximum_rows, "maximum_snapshot_bytes": self._maximum_snapshot_bytes,
                 "retained_input_upper_bound_bytes": retained,
+                "execution_schedule_bytes": schedule.nbytes,
+                "execution_schedule_lag_micros": lag_us,
             })
             self._bars = prepared
+            self._schedule = schedule
             return self
         except BaseException:
-            mutable = prepared = None
+            mutable = prepared = schedule = indices = None
             self.close()
             raise
         finally:
@@ -243,11 +255,13 @@ class VerifiedEvaluationScopeV1:
                         self.close()
                     return TrialEvaluationV1(TrialOutcomeV1.INADMISSIBLE_PARAMETERS, {"reason": reason})
                 bars = self._bars
-                if bars is None:
+                if bars is None or self._schedule is None:
                     raise EvaluationScopeError("scope_has_no_verified_input")
                 targets, ties = family.targets_f64(bars, parameters)
                 self._check()
-                held = sdk.held_positions_v1(bars, targets, study.timing_lag // timedelta(microseconds=1))
+                # SDK metrics convert held values with np.asarray(dtype=float);
+                # its unchanged Sequence[int] annotation excludes ndarrays.
+                held: Any = execution._positions_from_schedule_v1(targets, self._schedule)
                 self._check()
                 result = TrialEvaluationV1(TrialOutcomeV1.EVALUATED, sdk.search_metrics_f64(bars, held, near_ties=ties))
                 self._check()
@@ -267,6 +281,7 @@ class VerifiedEvaluationScopeV1:
     def close(self) -> None:
         with self._lock:
             self._bars = None
+            self._schedule = None
             self._closed = True
 
     def __exit__(self, *exc: object) -> None:

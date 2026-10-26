@@ -90,7 +90,46 @@ provider success nor consolidated, corporate-action-complete, survivorship-free
 or professional-validation evidence. Crypto research and all owner/holdout/
 operational/financial gates are unchanged. Stop after P3A; no P3B or activation.
 
-## Research Factory P2B.1 — PARTIAL, 1000-task deadline gate failed (2026-10-26)
+## Research Factory P2B.1 — PARTIAL, host-memory acceptance blocked (2026-10-26)
+
+The owner's position-calculation/security continuation stays in P2B.1.
+Independent security PR #280 exact-pins Bookworm libssl3/openssl to
+3.0.22-1~deb12u2 (official Debian fixed-version/amd64/arm64 availability checked).
+PR CI, image scan, SBOM/attestation and runtime checks passed; normal merge
+ed223019103b162a024197f8a763b242d5fa8dbb, exact-main CI tracked in #280.
+Digest, other dependency pins, runtime gates and scanner policy are unchanged.
+PR #279 now includes this main base; no independent security diff is duplicated.
+
+The real verified scope reuses the existing walk-forward target-independent
+execution schedule once per verified dataset/cut/lag/study. Each trial retains
+its parameter-dependent targets; the existing position-mapping helper consumes
+the shared schedule. Immutable bytes backing, retained-input budget accounting
+and scope/error/cancellation cleanup apply. SDK and walk-forward source remain
+unchanged. Existing gap/segment/fill-collision/lag/causality/Decimal parity tests
+plus focused integration tests passed (18 tests); mypy remains 117/117.
+
+Three complete position-optimized 40-task runs match the original reference40
+oracle exactly, with no failures/exclusions. Medians: earlier batch-only
+16.721054 -> 8.128091 s, 2.392194 -> 4.921205 tasks/s. This shared-host recorded
+comparison is not a completed reference1000 timing. Held mapping now costs
+0.015217 s for 40 tasks, with three schedule builds/0.011649 s; verification
+3 calls/5.164689 s. Median peak commit/working set 170.30/142.51 MiB. Each
+active 86400-bar schedule retains 691200 data bytes inside the existing budget.
+
+**Full 1000-task gate remains unproven; keep #279 DRAFT.** Initial position run
+stops at host RAM guard after 11.766 s: 334 completed tasks, no mismatches,
+held mapping 0.137269 s. Minimum RAM 522842112 bytes breaches the 512 MiB
+reserve. After cleanup/renewed admission, final run stops at 5.000 s with
+124 completed tasks; commit headroom 997707776 bytes breaches the unchanged
+1 GiB runtime floor. Its verification/held costs are 1.484072/0.072639 s.
+All completed task results match reference40; prefixes are not full-run times
+or peaks. Both stop on host guards, not the 120-second deadline. Keep prior
+781-task deadline and all new negative receipts; do not extrapolate 1000-task
+throughput or retry with relaxed limits. Resources/CI must permit complete
+acceptance before merge. No further research phase, campaign or OCI A1 work.
+
+### Preserved earlier data-scope and deadline evidence
+
 
 The owner-authorized bounded verified input scope is measured on the existing
 86,400-bar synthetic fixture. Original full verification supplies the exact

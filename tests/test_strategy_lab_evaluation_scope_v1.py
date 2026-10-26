@@ -183,10 +183,29 @@ class VerifiedEvaluationScopeTests(unittest.TestCase):
                     active(self.study, self.params)
 
     def test_retained_budget_and_cancellation_inside_calculation_leave_no_input(self):
+        from trade_platform import strategy_lab_walk_forward_v1 as execution
+
         scope = self.scope(maximum_snapshot_bytes=1)
-        with self.assertRaises(MemoryError), scope:
-            pass
+        original_schedule = execution._held_decision_indices_v1
+        references = []
+
+        def observed_schedule(*args):
+            value = original_schedule(*args)
+            references.append(weakref.ref(value))
+            return value
+
+        with patch.object(execution, "_held_decision_indices_v1", observed_schedule):
+            try:
+                scope.__enter__()
+            except MemoryError:
+                # Even a retained exception traceback must not keep the
+                # unpublished temporary schedule alive after failed admission.
+                gc.collect()
+                self.assertIsNone(references[0]())
+            else:
+                self.fail("retained-input budget did not fail closed")
         self.assertIsNone(scope._bars)
+        self.assertIsNone(scope._schedule)
         kind = type(sdk.FAMILIES_V1[self.study.strategy.family])
         original = kind.targets_f64
         with self.scope() as active:
@@ -197,3 +216,28 @@ class VerifiedEvaluationScopeTests(unittest.TestCase):
             with patch.object(kind, "targets_f64", cancelled), self.assertRaises(EvaluationScopeError):
                 active(self.study, self.params)
             self.assertIsNone(active._bars)
+
+    def test_execution_schedule_is_built_once_immutable_and_released_with_scope(self):
+        from trade_platform import strategy_lab_walk_forward_v1 as execution
+
+        expected = loading.BarStrategyEvaluatorV1(self.root)(self.study, self.params)
+        original = execution._held_decision_indices_v1
+        with patch.object(execution, "_held_decision_indices_v1", wraps=original) as built, \
+                patch.object(sdk, "held_positions_v1", side_effect=AssertionError("per-task schedule rebuilt")):
+            with self.scope(maximum_evaluations=2) as active:
+                schedule = active._schedule
+                reference = weakref.ref(schedule)
+                with self.assertRaises(ValueError):
+                    schedule.setflags(write=True)
+                for _ in range(2):
+                    self.assertEqual(active(self.study, self.params), expected)
+                self.assertEqual(built.call_count, 1)
+                self.assertIsNone(active._schedule)
+                self.assertIsNone(active._bars)
+            del schedule
+            gc.collect()
+            self.assertIsNone(reference())
+
+        with self.scope() as active:
+            active.cancel()
+            self.assertIsNone(active._schedule)

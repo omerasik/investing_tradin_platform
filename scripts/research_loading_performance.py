@@ -364,6 +364,7 @@ def evaluation_workload(args) -> dict[str, Any]:
 
     from trade_platform import research_data_plane_v1 as plane
     from trade_platform import strategy_lab_data_loading_v1 as loading
+    from trade_platform import strategy_lab_walk_forward_v1 as execution
     from trade_platform import strategy_sdk_v1 as sdk
     from trade_platform.evidence_tier_authority_v1 import EvidenceTierV1
     from trade_platform.strategy_lab_ledger_v1 import TrialClaimV1, result_content_hash_v1
@@ -437,6 +438,10 @@ def evaluation_workload(args) -> dict[str, Any]:
         convert = sdk.BarsV1.from_rows
         stack.enter_context(patch.object(sdk.BarsV1, "from_rows", classmethod(lambda cls, *a, **kw: timed("materialization", convert)(*a, **kw))))
         stack.enter_context(patch.object(sdk, "held_positions_v1", timed("held", sdk.held_positions_v1, decision=True)))
+        stack.enter_context(patch.object(execution, "_positions_from_schedule_v1",
+            timed("held", execution._positions_from_schedule_v1, decision=True)))
+        stack.enter_context(patch.object(execution, "_held_decision_indices_v1",
+            timed("execution_schedule", execution._held_decision_indices_v1)))
         stack.enter_context(patch.object(sdk, "search_metrics_f64", timed("metrics", sdk.search_metrics_f64)))
         for family in sdk.FAMILIES_V1.values():
             stack.enter_context(patch.object(type(family), "targets_f64", timed("targets:" + family.family, type(family).targets_f64, decision=True)))
@@ -668,7 +673,8 @@ def main() -> int:
               "source_hashes": {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in (
                   "src/trade_platform/strategy_sdk_v1.py", "src/trade_platform/research_data_plane_v1.py",
                   "src/trade_platform/strategy_lab_data_loading_v1.py", "scripts/research_loading_performance.py",
-                  "src/trade_platform/strategy_lab_worker_v1.py", "src/trade_platform/strategy_lab_evaluation_scope_v1.py")
+                  "src/trade_platform/strategy_lab_worker_v1.py", "src/trade_platform/strategy_lab_evaluation_scope_v1.py",
+                  "src/trade_platform/strategy_lab_walk_forward_v1.py")
                   if (ROOT / name).exists()}}
     complete = [run["result"] for run in runs if run["status"] == "COMPLETE"]
     if complete and args.evaluation_tasks:

@@ -16,9 +16,9 @@ phase:
   id: "RF-P2B.1"
   name: Research Factory P2B.1 - Verified Batch Evaluation and 1000-Task Scale Gate
   status: partial
-  base_commit: f7497ff       # PR #278 offline equities pilot, exact-main verified
-  resource_gate: ADMITTED
-  acceptance_gate: FAILED_1000_TASK_WALL_DEADLINE
+  base_commit: ed22301       # PR #280 independent OpenSSL security fix; exact-main CI tracked there
+  resource_gate: RESOURCE_STOPPED_HOST_MEMORY
+  acceptance_gate: INCOMPLETE_1000_TASK_HOST_GUARD
   integration_disposition: draft_only_until_1000_task_acceptance
   owner_direction_p2b1: >-
     Owner authorized end-to-end repeated-work measurement on existing offline
@@ -28,7 +28,56 @@ phase:
     Standalone persistent-evidence verification, identities, Decimal, causality
     and holdout gates remain unchanged. No provider work or profitability campaign.
     Stop after P2B.1; no automatic 10000-task campaign or next module.
+  owner_direction_finish_p2b1: >-
+    Owner explicitly authorized a separate main-based exact-pin OpenSSL fix,
+    then reuse of the existing walk-forward target-independent execution schedule
+    in the real verified evaluation path. Same SDK/financial/identity/resource
+    boundaries. Merge #279 only after full 1000-task acceptance and required CI;
+    otherwise preserve draft and the exact blocker. No next research phase.
+  p2b1_position_evidence: >-
+    Real scope now builds the existing walk-forward held-decision schedule once
+    from fully verified, restricted immutable bars and exact study lag. Every
+    task still calculates its own targets, then uses the existing position
+    mapping helper. Schedule has immutable bytes backing, is included in the
+    retained-input budget, never crosses scope/root/study/cut/lag, and is released
+    on budget/context exit, failed admission, error or cancellation. SDK and
+    walk-forward source unchanged; no strategy/study/trial/result identity change.
+    Original complete reference40 remains the oracle. Three position-optimized
+    40-task runs: all exact input/decision/metric/identity matches, zero failures
+    or exclusions. Median 8.128091 s / 4.921205 tasks/s versus prior batch-only
+    16.721054 s / 2.392194 tasks/s; this is a recorded shared-host comparison,
+    not a new full-reference1000 timing. Held mapping median 0.015217 s for 40
+    tasks, schedule construction 3 calls/0.011649 s; verification 3/5.164689 s.
+    Peak commit/WS medians 170.30/142.51 MiB; one 86400-entry schedule retains
+    691200 data bytes per active scope, counted within existing 512 MiB cap.
+    Complete 1000-task acceptance is STILL UNPROVEN. First schedule run stops at
+    host guard in 11.766 s: 334 tasks at 8.735273 s, zero failures/exclusions,
+    one verification/1.341302 s, held mapping 0.137269 s. Host RAM minimum
+    522842112 bytes is below 536870912 reserve; no deadline/process-memory trip.
+    After source cleanup and host admission recovered, final run stops at 5.000 s:
+    124 tasks at 4.368499 s, zero failures/exclusions, verification 1/1.484072 s,
+    schedule 1/0.003034 s, held 0.072639 s. Minimum commit headroom 997707776 bytes
+    is below unchanged 1 GiB runtime floor (RAM 1053298688; disk 29451538432).
+    Both completed prefixes exactly match reference40; they are censored evidence
+    and do not establish 1000-task speed/capacity. Requested repeats stop at first
+    noncompletion. All negative/deadline/host-stop receipts are retained.
+    Eighteen targeted scope/execution-schedule/harness parity tests passed;
+    complete-package mypy 117/117. Existing lag/gap/segment/fill-collision,
+    causality, tie/Decimal and SDK-reference tests cover reused schedule helpers.
+    Final helper cleanup drops even unpublished temporary schedule references
+    after failed admission. No extra numerical optimization or guard weakening.
+    #279 remains draft pending stable host headroom and full acceptance; current
+    head CI/review evidence belongs to its PR. No merge/exact-main claim.
+  p2b1_security_evidence: >-
+    Independent PR #280 pins libssl3 and openssl to 3.0.22-1~deb12u2; official
+    Debian tracker/package indexes and amd64/arm64 download availability verified.
+    Existing Python digest, other exact pins, runtime boundaries and security/
+    SBOM/attestation workflows retained. PR-head verify/CodeQL and full container
+    scan/staging/attestation passed; normal merge ed223019103b162a024197f8a763b242d5fa8dbb.
+    Exact-main CI on that merge is tracked in #280. Security fix is on #279's
+    current main base; no OCI benchmark, provider/capture/paper/holdout activation.
   p2b1_evidence: >-
+    Preserved earlier data-scope evidence before the position follow-up.
     Measured branch prototype, not integrated. Existing full verifier supplies
     its exact logical row stream for immutable SDK inputs bound to resolved
     root/dataset/content/manifest/study. Each independent scope fully verifies;
