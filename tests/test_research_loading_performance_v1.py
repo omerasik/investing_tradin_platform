@@ -20,6 +20,35 @@ def harness():
 
 
 class LoadingHarnessEvidenceTests(unittest.TestCase):
+    def test_hosted_policy_is_explicit_context_bound_and_leaves_local_limits_unchanged(self):
+        module = harness()
+        args = SimpleNamespace(working_set_mib=512)
+        self.assertEqual(module.resource_policy(args), {"name": "local-research-host-v1",
+            "reserve": 512 * module.MIB, "disk_floor": 24 * 1024 ** 3, "commit_floor": 1024 ** 3})
+        args.hosted_windows_acceptance = True
+        with patch.dict(module.os.environ, {"GITHUB_ACTIONS": "false"}), self.assertRaises(ValueError):
+            module.resource_policy(args)
+        context = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", "RUNNER_OS": "Windows"}
+        with patch.object(module.os, "name", "nt"), patch.dict(module.os.environ, context):
+            policy = module.resource_policy(args)
+            self.assertEqual(policy["reserve"], 2 * 1024 ** 3)
+            self.assertEqual(policy["commit_floor"], 2 * 1024 ** 3)
+            self.assertEqual(policy["disk_floor"], 4 * 1024 ** 3)
+            args.real = True
+            with self.assertRaises(ValueError):
+                module.resource_policy(args)
+            args.real, args.working_set_mib = False, 1024
+            with self.assertRaises(ValueError):
+                module.resource_policy(args)
+
+    def test_hosted_sampling_protects_every_relevant_volume(self):
+        module = harness()
+        host = {"available_physical_bytes": 10, "commit_headroom_bytes": 20, "disk_free_bytes": 99}
+        with patch.object(module, "host_memory", return_value=host), \
+                patch.dict(module.os.environ, {"SystemDrive": "C:"}), \
+                patch.object(module.shutil, "disk_usage", side_effect=[SimpleNamespace(free=x) for x in (9, 3, 7)]):
+            self.assertEqual(module.sampled_host({"name": "github-hosted-windows-p2b1-v1"})["disk_free_bytes"], 3)
+
     def test_disk_or_ram_or_commit_admission_failure_never_starts_a_child(self):
         module = harness()
         budget = 512 * module.MIB

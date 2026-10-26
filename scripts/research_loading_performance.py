@@ -48,6 +48,7 @@ import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -62,6 +63,30 @@ DISK_FLOOR = 24 * 1024 ** 3
 REAL_ID = "da5bca46-8e14-506e-96db-44c039cfd7f2"
 # Immutable dataset content SHA-256 verified from its catalog, never a credential.
 REAL_HASH = "9d465533eb2e7e39ce15fac9d774b663f8f98f360bda8bb9e7ebf68cd2a373d2"  # pragma: allowlist secret
+
+
+def resource_policy(args) -> dict[str, Any]:
+    """Separate ephemeral-runner admission; local production-host guards stay fixed."""
+    if not getattr(args, "hosted_windows_acceptance", False):
+        return {"name": "local-research-host-v1", "reserve": HOST_RESERVE,
+                "disk_floor": DISK_FLOOR, "commit_floor": 1024 ** 3}
+    if (os.name != "nt" or os.environ.get("GITHUB_ACTIONS") != "true"
+            or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted"
+            or os.environ.get("RUNNER_OS") != "Windows"
+            or getattr(args, "real", False) or getattr(args, "working_set_mib", None) != 512):
+        raise ValueError("hosted_acceptance_requires_isolated_standard_windows_runner")
+    return {"name": "github-hosted-windows-p2b1-v1", "reserve": 2 * 1024 ** 3,
+            "disk_floor": 4 * 1024 ** 3, "commit_floor": 2 * 1024 ** 3}
+
+
+def sampled_host(policy: dict[str, Any]) -> dict[str, int]:
+    state = host_memory()
+    if policy["name"] == "github-hosted-windows-p2b1-v1":
+        # The ephemeral host has no capture/DB. Still protect workspace, TEMP
+        # and the Windows/pagefile volume independently; use their minimum.
+        paths = (ROOT, Path(tempfile.gettempdir()), Path(os.environ["SystemDrive"] + "/"))
+        state["disk_free_bytes"] = min(shutil.disk_usage(p).free for p in paths)
+    return state
 
 
 def host_memory() -> dict[str, int]:
@@ -557,11 +582,12 @@ def worker(args, limit: int) -> None:
 
 
 def run_child(args, limit: int) -> dict[str, Any]:
-    host = host_memory()
+    policy = resource_policy(args)
+    host = sampled_host(policy)
     working_set_limit = args.working_set_mib * MIB
-    admission = (working_set_limit if os.name == "nt" else limit) + HOST_RESERVE
-    if (host["available_physical_bytes"] < admission or host["commit_headroom_bytes"] < limit + HOST_RESERVE
-            or host["disk_free_bytes"] < DISK_FLOOR):
+    admission = (working_set_limit if os.name == "nt" else limit) + policy["reserve"]
+    if (host["available_physical_bytes"] < admission or host["commit_headroom_bytes"] < limit + policy["reserve"]
+            or host["disk_free_bytes"] < policy["disk_floor"]):
         return {"status": "RESOURCE_BLOCKED", "host": host}
     env = os.environ.copy()
     env.update(dict.fromkeys(bounds.THREAD_VARIABLES, "1"))
@@ -584,10 +610,11 @@ def run_child(args, limit: int) -> dict[str, Any]:
                 raise ctypes.WinError(ctypes.get_last_error())
         started, token = time.monotonic(), "RUN_BOUNDED_SYNTHETIC\n"
         while True:
-            state = host_memory()
+            state = sampled_host(policy)
             minimum = {key: min(value, state[key]) for key, value in minimum.items()}
-            if (state["available_physical_bytes"] < HOST_RESERVE or state["commit_headroom_bytes"] < 1024 ** 3
-                    or state["disk_free_bytes"] < DISK_FLOOR or time.monotonic() - started > 120):
+            if (state["available_physical_bytes"] < policy["reserve"]
+                    or state["commit_headroom_bytes"] < policy["commit_floor"]
+                    or state["disk_free_bytes"] < policy["disk_floor"] or time.monotonic() - started > 120):
                 # Windows' communicate reader threads may expose no partial
                 # output until EOF. Kill at the same guard, then drain the pipe
                 # so a completed prefix is not incorrectly reported as absent.
@@ -609,7 +636,7 @@ def run_child(args, limit: int) -> dict[str, Any]:
                     "wall_seconds": time.monotonic() - started, "failed_processes": 1,
                     "last_progress": last_evaluation_progress(stdout)}
         return {"status": "COMPLETE", "host_before": host, "minimum_host": minimum,
-                "host_after": host_memory(), "wall_seconds": time.monotonic() - started,
+                "host_after": sampled_host(policy), "wall_seconds": time.monotonic() - started,
                 "result": json.loads(stdout.splitlines()[-1])}
     finally:
         if child.poll() is None:
@@ -627,6 +654,8 @@ def main() -> int:
     parser.add_argument("--evaluation-tasks", type=int, choices=(12, 40, 1000), default=0)
     parser.add_argument("--reference-receipt", type=Path)
     parser.add_argument("--real", action="store_true")
+    parser.add_argument("--hosted-windows-acceptance", action="store_true",
+                        help="explicit separate admission for isolated GitHub-hosted Windows only")
     parser.add_argument("--implementation", choices=("reference", "optimized"), default="optimized")
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--dataset")
@@ -637,6 +666,10 @@ def main() -> int:
     args = parser.parse_args()
     if args.evaluation_tasks and (args.real or args.prepare_fixture or args.profile):
         parser.error("evaluation gate requires synthetic data and unprofiled stage counters")
+    try:
+        policy = resource_policy(args)
+    except ValueError as error:
+        parser.error(str(error))
     if os.name != "nt" and not sys.platform.startswith("linux"):
         parser.error("resource enforcement is supported only on Windows and Linux")
     if not 1 <= args.repeats <= 3:
@@ -666,7 +699,9 @@ def main() -> int:
               "evaluation_tasks": args.evaluation_tasks,
               "limits": {"process_memory_bytes": limit,
                          "working_set_bytes": args.working_set_mib * MIB if os.name == "nt" else None,
-                         "host_reserve_bytes": HOST_RESERVE, "disk_floor_bytes": DISK_FLOOR,
+                         "admission_policy": policy["name"],
+                         "host_reserve_bytes": policy["reserve"], "disk_floor_bytes": policy["disk_floor"],
+                         "runtime_commit_floor_bytes": policy["commit_floor"],
                          "wall_seconds_per_run": 120, "workers": 1, "numeric_threads": 1},
               "environment": {"python": sys.version, "platform": sys.platform},
               "git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),

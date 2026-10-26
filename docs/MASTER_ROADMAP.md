@@ -90,6 +90,26 @@ provider success nor consolidated, corporate-action-complete, survivorship-free
 or professional-validation evidence. Crypto research and all owner/holdout/
 operational/financial gates are unchanged. Stop after P3A; no P3B or activation.
 
+## P2B.1 isolated Windows acceptance (authorized continuation, pending)
+
+The owner authorized a narrowly opt-in, PR-triggered standard windows-latest job
+for #279 after local host-memory stops. No further local benchmark or numeric
+optimization. Read-only permissions, no secrets/services, same-repository PR and
+explicit label, pinned action commits. Public standard hosted resources are free;
+no larger runner, OCI or workflow_dispatch dependency is introduced.
+
+A separate ephemeral policy keeps 4 GiB free on workspace/TEMP/system volumes,
+2 GiB host RAM/commit reserves, plus the unchanged 512 MiB child limit, single
+numeric thread and 120 s child deadline. Local production-host guards remain
+unchanged. Existing fixture preparation must reproduce recorded dataset,
+manifest, logical/object identities and Windows SDK byte/input/result hashes;
+otherwise fail closed with actual mismatches. Dependency pins match the prior
+writer. Three same-run reference40/optimized40/optimized1000 repetitions must
+complete with exact parity; no 1000 repeated-task / 40 unique-point confusion.
+Artifacts retain environment, allocated disk bytes, timing/memory/verification
+and all negative findings. Nine pure policy/evidence tests passed; hosted gate
+is pending, not evidence of capacity. Normal existing CI and review still apply.
+
 ## Research Factory P2B.1 — PARTIAL, host-memory acceptance blocked (2026-10-26)
 
 The owner's position-calculation/security continuation stays in P2B.1.

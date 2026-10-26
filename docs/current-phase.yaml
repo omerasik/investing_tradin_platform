@@ -17,8 +17,8 @@ phase:
   name: Research Factory P2B.1 - Verified Batch Evaluation and 1000-Task Scale Gate
   status: partial
   base_commit: ed22301       # PR #280 independent OpenSSL security fix; exact-main CI tracked there
-  resource_gate: RESOURCE_STOPPED_HOST_MEMORY
-  acceptance_gate: INCOMPLETE_1000_TASK_HOST_GUARD
+  resource_gate: PENDING_ISOLATED_WINDOWS_ADMISSION
+  acceptance_gate: PENDING_HOSTED_EXACT_FIXTURE_AND_1000_TASKS
   integration_disposition: draft_only_until_1000_task_acceptance
   owner_direction_p2b1: >-
     Owner authorized end-to-end repeated-work measurement on existing offline
@@ -28,6 +28,34 @@ phase:
     Standalone persistent-evidence verification, identities, Decimal, causality
     and holdout gates remain unchanged. No provider work or profitability campaign.
     Stop after P2B.1; no automatic 10000-task campaign or next module.
+  owner_direction_hosted_acceptance: >-
+    Owner explicitly authorized an opt-in PR-triggered standard windows-latest
+    acceptance job on #279, read-only repository permissions, no secrets/services,
+    separate conservative ephemeral-host admission, same 512 MiB child/working-set,
+    one numeric thread and external 120 s deadline. Do not run local benchmarks
+    or further numerical optimizations. Exact recorded fixture and Windows SDK
+    source bytes must reproduce or fail closed; preserve all negative evidence.
+    Same-run reference40 -> optimized40 -> optimized1000, three repetitions each.
+    No OCI, larger paid runner, provider/holdout/paper/broker/financial activation.
+  p2b1_hosted_acceptance_preparation: >-
+    New workflow uses pull_request labeled/synchronize/reopened, same-repository
+    PR #279 only, explicit research-p2b1-acceptance label, pinned action commits,
+    no persisted checkout credential or services. Standard public-repo Windows
+    runner is free; no workflow_dispatch/default-branch bootstrap dependency.
+    Fixed ephemeral policy: 4 GiB free on EACH workspace/TEMP/system volume and
+    2 GiB available RAM/commit runtime reserve; admission adds the 512 MiB child
+    budget. Original local 24 GiB disk/512 MiB host reserve/1 GiB runtime commit
+    guards remain unchanged and hosted mode refuses non-hosted/non-Windows context.
+    Existing deterministic fixture preparation and benchmark harness are reused;
+    Python 3.12.14, NumPy 2.5.3, PyArrow 25.0.1 and DuckDB 1.5.5 are pinned.
+    SDK checkout uses its recorded Windows CRLF bytes and checks SHA-256.
+    Dataset/catalog, manifest, logical-content, object bytes/hash and original
+    reference40 result/input fingerprints are pinned witnesses, not a new data
+    authority. Original full verifier runs in each existing bounded evaluation.
+    Controller retains environment, per-volume space, file logical/allocation
+    sizes and all receipts as short-lived artifacts on pass or failure. Nine
+    focused non-benchmark policy/evidence tests passed; no local benchmark run.
+    Hosted acceptance and final CI/review/merge remain pending; no passing claim.
   owner_direction_finish_p2b1: >-
     Owner explicitly authorized a separate main-based exact-pin OpenSSL fix,
     then reuse of the existing walk-forward target-independent execution schedule
@@ -176,6 +204,9 @@ phase:
     Prioritize this foundation over further BTC/ETH campaigns; no 24-fold run.
     Stop after integration; no holdout, capture, broker, financial-gate or paper activation.
   scope_paths:
+    - .github/workflows/research-p2b1-acceptance.yml
+    - scripts/research_hosted_acceptance.py
+    - tests/test_research_hosted_acceptance.py
     - src/trade_platform/strategy_lab_evaluation_scope_v1.py
     - src/trade_platform/strategy_lab_data_loading_v1.py
     - src/trade_platform/strategy_lab_worker_v1.py

@@ -1,0 +1,62 @@
+name: P2B.1 isolated Windows acceptance
+
+on:
+  pull_request:
+    types: [labeled, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p2b1-windows-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    if: >-
+      github.event.pull_request.number == 279 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(github.event.pull_request.labels.*.name, 'research-p2b1-acceptance') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'research-p2b1-acceptance')
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      NUMEXPR_NUM_THREADS: '1'
+      PIP_NO_CACHE_DIR: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Reproduce the recorded Windows source-byte convention
+        shell: pwsh
+        run: git -c core.autocrlf=true checkout-index --all --force
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12.14'
+          architecture: x64
+      - name: Install recorded research dependencies
+        shell: pwsh
+        run: |
+          python -m pip install -e ".[analytics]" "numpy==2.5.3" "pyarrow==25.0.1" "duckdb==1.5.5"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Path .tmp/hosted-environment -Force | Out-Null
+          python -m pip list --format=json > .tmp/hosted-environment/packages.json
+      - name: Prepare, verify exact fixture and run bounded acceptance
+        shell: pwsh
+        run: python scripts/research_hosted_acceptance.py
+      - name: Retain all completed, stopped and portability evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: p2b1-windows-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
+          path: |
+            .tmp/hosted-p2b1/*.json
+            .tmp/hosted-environment/*.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
