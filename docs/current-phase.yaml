@@ -55,7 +55,12 @@ phase:
     Controller retains environment, per-volume space, file logical/allocation
     sizes and all receipts as short-lived artifacts on pass or failure. Nine
     focused non-benchmark policy/evidence tests passed; no local benchmark run.
-    Hosted acceptance and final CI/review/merge remain pending; no passing claim.
+    Initial Actions bootstrap run 40356024744 failed before data/workload: setup-python
+    has no Windows 3.12.14 binary (security-only CPython releases are source-only).
+    Pinned setup-uv/uv installs the SAME managed 3.12.14 patch, not an older
+    runtime; bootstrap evidence now exists before Python installation. All fixture,
+    source and result witnesses remain strict. Hosted acceptance and final CI/
+    review/merge remain pending; no passing claim.
   owner_direction_finish_p2b1: >-
     Owner explicitly authorized a separate main-based exact-pin OpenSSL fix,
     then reuse of the existing walk-forward target-independent execution schedule

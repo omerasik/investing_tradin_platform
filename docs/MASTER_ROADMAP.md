@@ -108,7 +108,11 @@ writer. Three same-run reference40/optimized40/optimized1000 repetitions must
 complete with exact parity; no 1000 repeated-task / 40 unique-point confusion.
 Artifacts retain environment, allocated disk bytes, timing/memory/verification
 and all negative findings. Nine pure policy/evidence tests passed; hosted gate
-is pending, not evidence of capacity. Normal existing CI and review still apply.
+is pending, not evidence of capacity. Initial run 40356024744 failed before data
+preparation because setup-python has no Windows binary for security-only Python
+3.12.14. A pinned uv bootstrap installs that same managed patch release and
+retains early failure evidence; identity checks are unchanged. Normal existing
+CI and review still apply.
 
 ## Research Factory P2B.1 — PARTIAL, host-memory acceptance blocked (2026-10-26)
 
