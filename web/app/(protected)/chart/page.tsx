@@ -43,7 +43,7 @@ function frameSource(item: ChartSeriesRef): string {
 /** The terminal's research universe; a symbol without a catalogued window is shown as unavailable. */
 const UNIVERSE = ["BTCUSDT", "ETHUSDT", "SOLUSDT"] as const;
 const STEP_SECONDS: Record<string, number> = { "1m": 60, "1h": 3_600, "4h": 14_400, "1d": 86_400 };
-const DEFAULT_TIMEFRAME = "1d";
+const DEFAULT_TIMEFRAME = process.env.TRADE_PLATFORM_LITE === "1" ? "1h" : "1d";
 
 function ageText(from: string | null | undefined, to: string): string {
   if (!from) return "UNAVAILABLE";

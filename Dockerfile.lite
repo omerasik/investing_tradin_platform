@@ -1,0 +1,21 @@
+# syntax=docker/dockerfile:1.7
+# Isolated Lite API only. Evidence is mounted at runtime, never copied into an image.
+FROM python:3.12.14-slim-bookworm@sha256:a116514e19457bcb7af7efe9c3dd0b9b71e85b317694e7882a1c52aa15a78134
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/app/src TRADE_PLATFORM_LITE=1 OMP_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
+# Same reviewed security packages as the canonical API image.
+RUN apt-get update && apt-get install --yes --no-install-recommends \
+    libpcre2-8-0=10.42-1+deb12u2 perl-base=5.36.0-7+deb12u4 \
+    libssl3=3.0.22-1~deb12u2 openssl=3.0.22-1~deb12u2 \
+    && rm -rf /var/lib/apt/lists/*
+COPY requirements-runtime.txt requirements-lite.txt /tmp/
+RUN python -m pip install --no-deps -r /tmp/requirements-runtime.txt -r /tmp/requirements-lite.txt \
+    && python -m pip check && rm /tmp/requirements*.txt
+RUN groupadd --gid 10001 tradeplatform && useradd --uid 10001 --gid 10001 \
+    --no-log-init --home-dir /app --shell /usr/sbin/nologin tradeplatform
+WORKDIR /app
+COPY --chown=10001:10001 src ./src
+USER 10001:10001
+EXPOSE 8000
+CMD ["python", "-m", "uvicorn", "trade_platform.terminal_lite_v1:create_lite_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--limit-concurrency", "32", "--no-access-log"]

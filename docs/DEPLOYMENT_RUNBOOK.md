@@ -1,5 +1,161 @@
 # Deployment Runbook
 
+## Research Terminal Lite
+
+P0.4A provides a local read-only demonstration through the existing FastAPI,
+Next.js, chart, Strategy Lab, terminal and research data-plane readers. It does
+not query, dump, copy, seed, reset or migrate `trade_platform_research` or its
+`0062` volume. `compose.lite.yml` owns only project `trade-terminal-lite`, database
+`trade_terminal_lite`, PostgreSQL 16 and volume `trade-terminal-lite_lite_pgdata`.
+The local database port is 5441; API and dashboard use 8011 and 3011 on loopback.
+
+### Reproduce locally
+
+Install the repository's Python dev and analytics dependencies and the existing
+web dependencies. Docker Desktop must be running. Existing retained archive
+day records/manifests and Parquet objects must be present; preparation does not
+download anything. The default sources are `~/.trade_platform/public-archive`
+and `~/.trade_platform/research-data`; explicit `--archive-root` and
+`--source-root` overrides are available. Neither source is modified.
+
+```powershell
+.venv\Scripts\python scripts/terminal_lite.py prepare
+.venv\Scripts\python scripts/terminal_lite.py verify
+.venv\Scripts\python scripts/terminal_lite.py serve
+# In another shell, from web/:
+node scripts/smoke-terminal-lite.mjs
+```
+
+Open `http://127.0.0.1:3011/terminal`. Obtain `dashboard_password` from
+`~/.trade_platform/terminal-lite/settings.local.json`; do not paste this file
+into logs or source control. Operator, database, dashboard and session secrets
+are independently generated. Ctrl+C stops this launcher's API/dashboard child
+processes. `python scripts/terminal_lite.py stop` stops only the Lite PostgreSQL
+service and preserves its disposable volume. Restart with `prepare` then
+`serve`. Preparation re-verifies the existing subset and applies canonical
+migrations only to its constructed Lite target. It strips inherited research,
+test and dashboard configuration so another DSN cannot take precedence.
+
+The smallest useful existing source granularity is a verified archive day.
+The latest common retained day before the untouched holdout is **2026-08-18 UTC**.
+Each market has 1,440 one-minute bars: 4,320 total. These are real historical
+Bybit public archive event-time values, with **NO_TIMING_AUTHORITY** as the chart
+claim ceiling. This is not a verified publication-lag, performance or profit
+claim. Each original day frame is byte- and logical-hash verified; its original
+archive file identity, retrieval metadata and retention record are retained.
+Raw archives previously evicted under the existing retention policy are not
+downloaded or re-derived. The supported `build_research_bar_dataset_v1` path
+creates the one-day windows. Their Decimal row hashes must equal the source day
+hashes. New window identities describe the actual subset; parent identities
+are never relabelled as smaller datasets. Provenance is in
+`~/.trade_platform/terminal-lite/evidence/lite-provenance.json`.
+
+Bars remain in the content-addressed filesystem data plane; they are not
+duplicated into SQL price rows. The PostgreSQL control-plane catalog is fresh.
+There is no supported standalone import of the available walk-forward exports
+into the complete study/trial/frozen-candidate ledger. The original full-window
+study identities cannot be attached to one-day windows. Accordingly there are
+zero loaded studies, trials, trades or performance results. Strategy Lab and
+comparison navigation retain explicit unavailable/empty states. No synthetic
+fixture is loaded. Creating new results or copying the original SQL ledger is
+outside this Lite delivery.
+
+The dedicated `lite_reader` login has SELECT grants, no schema/database CREATE,
+and default read-only transactions with a 5-second statement timeout. The Lite
+factory refuses another database/login, PostgreSQL major version, mismatched
+subset or schema revision (v1 pins current head `20261020_0067`). It has no
+command ledger, paper OMS, worker, capture root, price-source policy or broker.
+Every non-GET/HEAD/OPTIONS API request is refused. The existing legacy generic
+`/health/ready` reports platform build capabilities, including paper capability;
+use **`/health/lite-ready`** for actual Lite readiness and disabled execution
+flags. Readiness uses the canonical query lock and a database read. Browser
+authentication uses the existing signed HttpOnly/SameSite session and server-only
+API bearer token. Local mode is not a claim of production OIDC/RBAC readiness.
+
+### Resource envelope and validation
+
+Measured on the Windows host during one bounded eight-visit browser smoke on
+2026-10-27, without a full historical import or repository benchmark:
+
+| Component | Observed | Limit / planning allowance |
+| --- | --- | --- |
+| Evidence directory | 396,688 bytes before provenance report; under 0.4 MiB total | 16 MiB preparation/startup ceiling; at most 1,440 rows/market |
+| Fresh canonical SQL database | 20,347,927 bytes; PostgreSQL data directory about 75 MiB | Independent volume; plan 1 GiB hosted storage |
+| PostgreSQL container | about 42–47 MiB working memory | Enforced 256 MiB, 0.5 CPU, 12 connections, 32 MiB shared buffers, 2 MiB work memory, no parallel workers |
+| API process | about 126 MiB resident, 131 MiB observed peak on final smoke | One worker, concurrency 32; plan 512 MiB container limit |
+| Next.js development server | about 490 MiB resident; 1,414 MiB observed peak, plus about 68 MiB launcher peak | 512 MiB JS heap setting is **not** an RSS ceiling; allow 2 GiB for local dev |
+| Chart queries | one-day scans, 24 hourly candles per market | One DuckDB thread, 128 MB memory limit, no disk spill; existing chart point/page limits |
+
+Allow roughly 2.5 GiB for local application processes and PostgreSQL, plus the
+Docker/OS overhead. API and Next.js native processes have measured working sets,
+not OS-enforced RSS caps. Hosted container limits must be configured separately.
+Production Next.js runtime/build memory is **not yet measured**; keep the 2 GiB
+dashboard allowance until an approved isolated deployment proves a smaller cap.
+Do not infer hosted load capacity or production build requirements from this
+single-user development smoke.
+
+`verify` runs only the Lite isolation/integration tests and existing chart tests
+against the dedicated database. Portable checks stay in normal CI discovery;
+the explicit `tests.terminal_lite_acceptance` harness requires local evidence
+and fails on missing inputs rather than introducing CI skips. It checks authentication/refusal, real subset
+candle counts, exact Decimal aggregation, canonical schema, empty evidence and
+missing-object responses. The browser smoke checks actual canvases for all three
+markets, login failure/success/logout, secret absence in HTML, evidence-to-chart
+links, Strategy Lab, comparison and mutation refusal. Screenshots and its bounded
+result are written outside the repository under `terminal-lite/browser-smoke`.
+
+### Independent Railway deployment path — pending owner approval
+
+No Railway project, service, deployment, domain, volume or data transfer was
+created. Read-only account discovery returned one existing project; it was not
+selected as a target. SocialOS and all existing services remain untouched.
+Before provisioning, the owner must approve a **new project**, its spend/resource
+cap and transfer of the specific Lite evidence directory. The following is a
+reproducible configuration procedure, not evidence of a deployed service.
+
+After approval, record the new project/environment/service IDs and use them
+explicitly for all operations. Do not use a previously linked project or bare
+`railway up`. Use three independent services, one replica each:
+
+| Service | Source / configuration | Initial limit |
+| --- | --- | --- |
+| PostgreSQL | `postgres:16-alpine`; fresh volume; `trade_terminal_lite` / `lite_owner`; private network | 256 MiB / 0.5 CPU / 1 GiB volume |
+| API | Repository root; `Dockerfile.lite`; `PORT=8000`; `/health/lite-ready` | 512 MiB |
+| Dashboard | `/web`; existing Dockerfile; `PORT=3000`; `/login` | 2 GiB until measured |
+
+Bootstrap only the new database through an authenticated SSH tunnel to
+`127.0.0.1:5541`, using `scripts.terminal_lite.initialize_database(dsn,
+reader_password)`. This helper checks the dedicated target and PostgreSQL major
+version before applying canonical migrations and SELECT-only reader grants.
+Never copy/restore the original database. Supply only the new reader URL as
+`LITE_READ_DSN` to the API, plus a new operator token, `TRADE_PLATFORM_LITE=1`
+and `LITE_RESEARCH_ROOT=/data/evidence`. Upload only the approved evidence subset
+to an independent volume with read access for UID/GID 10001; preserve and
+re-verify all manifests and objects. Do not upload settings, full archives,
+fixtures or the original data plane.
+
+Set `TRADE_PLATFORM_LITE=1` on the dashboard, independent dashboard/session
+secrets, the API bearer token and the approved HTTPS dashboard origin. Use the
+API's authenticated **HTTPS** service domain for `TRADE_PLATFORM_API_BASE_URL`:
+the existing validator rejects HTTP internal hostnames. Keep credentials at
+runtime, and workers/capture/cron/brokers absent. Build/scan both images, observe
+terminal deployment SUCCESS, then run the bounded authenticated chart smoke and
+measure hosted resources before accepting the environment. No image build,
+transfer or hosted validation is part of this integration.
+
+Current readiness: **local Lite working; hosted deployment conditional** on
+owner approval, fresh-service bootstrap/evidence upload, image build/security
+validation and a bounded production-mode hosted smoke. No paid or hosted
+validation was attempted, and no further research phase is started.
+
+References checked: [Railway monorepos](https://docs.railway.com/deployments/monorepo),
+[healthcheck ports](https://docs.railway.com/deployments/healthchecks),
+[SSH transfers and local forwarding](https://docs.railway.com/cli/ssh),
+[volume ownership/replica constraints](https://docs.railway.com/volumes/reference),
+and [legacy config-as-code deprecation](https://docs.railway.com/config-as-code/reference).
+
+---
+
 Development is local and research-only. Future environments are development, test, paper, then production, with signed/versioned artifacts, migration checks, least-privilege secret injection, staged rollout, rollback and backup/restore evidence. No deployment may include live execution without signed readiness approval.
 
 The repository `Dockerfile` is a narrow research API artifact, not the paper or

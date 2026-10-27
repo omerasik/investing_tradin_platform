@@ -170,7 +170,9 @@ function CommandsSection({ readiness, commands, unavailable }: {
         submitted with the owner&apos;s own credential (<code>scripts/terminal_command.py</code>), never through this
         page&apos;s shared token, and every approval is bound to that authenticated owner.
       </p>
-      <CommandConsole blocked={blockedCommands(readiness)} />
+      {process.env.TRADE_PLATFORM_LITE === "1"
+        ? <p className="empty-notice">BLOCKED · Lite is read only. Research commands, holdout access and paper execution are disabled.</p>
+        : <CommandConsole blocked={blockedCommands(readiness)} />}
       {commands && commands.length ? (
         <DataTable caption="Recent commands" ariaLabel="Recent commands">
           <thead><tr><th scope="col">Requested (UTC)</th><th scope="col">Command</th><th scope="col">By</th><th scope="col">State</th><th scope="col">Outcome</th></tr></thead>

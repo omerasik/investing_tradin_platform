@@ -1,0 +1,23 @@
+name: trade-terminal-lite
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: trade_terminal_lite
+      POSTGRES_USER: lite_owner
+      POSTGRES_PASSWORD: ${LITE_DB_PASSWORD:?Lite password required}
+    ports:
+      - "127.0.0.1:5441:5432"
+    volumes:
+      - lite_pgdata:/var/lib/postgresql/data
+    mem_limit: 256m
+    cpus: 0.5
+    shm_size: 64m
+    command: ["postgres", "-c", "shared_buffers=32MB", "-c", "work_mem=2MB", "-c", "max_connections=12", "-c", "max_parallel_workers=0"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lite_owner -d trade_terminal_lite"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+volumes:
+  lite_pgdata:

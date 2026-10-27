@@ -1,6 +1,7 @@
 import React from "react";
 import {
   getCaptureAvailability,
+  getChartSeriesCatalog,
   getEvidenceCatalog,
   getWorkspaceContext,
   stateText,
@@ -112,7 +113,11 @@ function CaptureSourceDetail({ source }: { source: CaptureSource }) {
 
 export default async function EvidencePage() {
   const ctx = await getWorkspaceContext();
-  const [catalogResult, captureResult] = await Promise.all([getEvidenceCatalog(ctx), getCaptureAvailability(ctx)]);
+  const [catalogResult, captureResult, chartResult] = await Promise.all([
+    getEvidenceCatalog(ctx), getCaptureAvailability(ctx),
+    process.env.TRADE_PLATFORM_LITE === "1" ? getChartSeriesCatalog(ctx) : Promise.resolve(undefined),
+  ]);
+  const windows = chartResult?.state === "AVAILABLE" ? chartResult.value.items.filter(item => item.window) : [];
   const catalog = catalogResult.state === "AVAILABLE" ? catalogResult.value : undefined;
   const capture = captureResult.state === "AVAILABLE" ? captureResult.value : undefined;
   const production = capture?.sources.find((source) => source.purpose === "PRODUCTION");
@@ -126,6 +131,20 @@ export default async function EvidencePage() {
         status={catalog ? catalog.state : catalogResult.state}
         asOf={ctx.evidenceTime}
       />
+
+      {process.env.TRADE_PLATFORM_LITE === "1" ? <article className="panel margin-bottom-24" aria-label="Lite historical evidence">
+        <h2>Verified historical subset</h2>
+        <p>Content-addressed research windows registered through the existing archive window builder. Archive file identities and original day-frame hashes are retained. Raw archives were not downloaded again. No synthetic fixtures or study results are loaded.</p>
+        {windows.length ? <DataTable caption="Lite historical windows" ariaLabel="Lite historical windows">
+          <thead><tr><th>Market</th><th>UTC days</th><th>Minute bars</th><th>Immutable identity</th><th>Timing ceiling</th></tr></thead>
+          <tbody>{windows.map(item => <tr key={item.manifest_hash}>
+            <td><a href={`/chart?symbol=${encodeURIComponent(item.instrument ?? "")}&series=${item.manifest_hash}&tf=1h`}>{item.instrument}</a></td>
+            <td>{item.window!.first_utc_day} – {item.window!.last_utc_day}</td>
+            <td>{item.row_count.toLocaleString("en-US")}</td>
+            <td><code>{item.window!.content_hash}</code></td><td>{item.tier_ceiling}</td>
+          </tr>)}</tbody>
+        </DataTable> : <p className="empty-notice">UNAVAILABLE · Historical subset catalogue could not be read.</p>}
+      </article> : null}
 
       <div className="metrics-strip">
         <div className="metric-card">

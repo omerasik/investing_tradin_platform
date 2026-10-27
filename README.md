@@ -57,6 +57,23 @@ instead of the fixture database (it is migrated to head, never seeded or reset):
 python scripts/dev.py --research
 ```
 
+For an independent, disposable, read-only Lite terminal using a verified one-day
+BTC/ETH/SOL archive subset, without opening or migrating the research database:
+
+```powershell
+.venv\Scripts\python scripts/terminal_lite.py prepare
+.venv\Scripts\python scripts/terminal_lite.py verify
+.venv\Scripts\python scripts/terminal_lite.py serve
+```
+
+Open `http://127.0.0.1:3011/terminal`. The generated login password is
+`dashboard_password` in `~/.trade_platform/terminal-lite/settings.local.json`.
+This uses PostgreSQL 16 on **5441**, API **8011**, a separate volume and the current
+schema. Real study/trial results are explicitly unavailable; all execution and
+research commands are disabled. See the **Research Terminal Lite** section of
+[the deployment runbook](docs/DEPLOYMENT_RUNBOOK.md#research-terminal-lite)
+for resource measurements, stop instructions and the independent Railway path.
+
 The dashboard safely shows explicit unavailable states on a fresh database.
 Deployment-owned `web/dashboard.config.json` remains an optional override for
 pinning a specific authority record; it is not required for PostgreSQL
