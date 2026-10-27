@@ -123,6 +123,10 @@ explicitly for all operations. Do not use a previously linked project or bare
 | API | Repository root; `Dockerfile.lite`; `PORT=8000`; `/health/lite-ready` | 512 MiB |
 | Dashboard | `/web`; existing Dockerfile; `PORT=3000`; `/login` | 2 GiB until measured |
 
+`Dockerfile.lite.dockerignore` independently permits only the Lite image recipe,
+locked requirements and source tree. The canonical API build-context allowlist
+is unchanged; settings, local evidence and archives stay outside both images.
+
 Bootstrap only the new database through an authenticated SSH tunnel to
 `127.0.0.1:5541`, using `scripts.terminal_lite.initialize_database(dsn,
 reader_password)`. This helper checks the dedicated target and PostgreSQL major

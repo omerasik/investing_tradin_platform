@@ -26,6 +26,28 @@ from trade_platform.terminal_lite_v1 import create_lite_app
 
 
 class LiteIsolationTests(unittest.TestCase):
+    def test_lite_image_has_its_own_minimal_build_context(self):
+        root = Path(__file__).resolve().parents[1]
+        entries = {
+            line.strip()
+            for line in (root / "Dockerfile.lite.dockerignore")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line.strip()
+        }
+        self.assertEqual(
+            entries,
+            {
+                "**",
+                "!Dockerfile.lite",
+                "!Dockerfile.lite.dockerignore",
+                "!requirements-runtime.txt",
+                "!requirements-lite.txt",
+                "!src/",
+                "!src/**",
+            },
+        )
+
     def test_original_database_is_refused_before_connecting(self):
         with (
             patch.dict(
