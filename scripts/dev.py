@@ -13,8 +13,9 @@ Usage:
 ``--research`` serves the operator terminal over the real research database
 (``trade_platform_research`` in the ``trade-platform-postgres-dev-research``
 container, where the acquired windows, studies, frozen candidates and Decimal
-reruns live) instead of the ``trade_platform`` fixture database. It migrates
-that database to head and never seeds or resets it.
+reruns live) instead of the ``trade_platform`` fixture database. It checks that
+database's schema read-only and never migrates, seeds or resets it. Schema changes
+require the separately authorized migration procedure before research startup.
 
 The dashboard's ``web/dashboard.config.json`` (or the file named by
 ``TRADE_PLATFORM_DASHBOARD_CONFIG_PATH``) takes precedence over the environment
@@ -363,6 +364,52 @@ def run_migrations(postgres_port: int, database: str = FIXTURE_DATABASE) -> None
     log_success("Alembic migrations applied up to head.")
 
 
+def preflight_research_schema(postgres_port: int) -> None:
+    """Read only: require the repository's single Alembic head, never run its environment."""
+    import psycopg
+    from alembic.script import ScriptDirectory
+
+    guidance = (
+        "Research startup never applies migrations. Use the separately authorized "
+        "migration procedure (verified backup, isolated rehearsal and owner approval) "
+        "before retrying. API/dashboard were not started."
+    )
+    try:
+        heads = ScriptDirectory(str(ROOT_DIR / "migrations")).get_heads()
+    except Exception:  # noqa: BLE001 - unavailable migration metadata must refuse startup
+        log_error(f"Research schema unavailable: cannot determine the required Alembic revision. {guidance}")
+        sys.exit(1)
+    if len(heads) != 1:
+        log_error(f"Research schema unavailable: repository must have exactly one Alembic head. {guidance}")
+        sys.exit(1)
+    required = heads[0]
+    dsn = f"postgresql://postgres:postgres@127.0.0.1:{postgres_port}/{RESEARCH_DATABASE}"  # pragma: allowlist secret
+    try:
+        with (
+            psycopg.connect(
+                dsn, connect_timeout=3, autocommit=True,
+                options="-c default_transaction_read_only=on -c statement_timeout=3000",
+            ) as conn,
+            conn.cursor() as cur,
+        ):
+            cur.execute("SELECT version_num FROM public.alembic_version")
+            revisions = cur.fetchmany(2)
+    except (OSError, psycopg.Error):
+        log_error(
+            f"Research schema unavailable for {RESEARCH_DATABASE}: cannot read Alembic revision "
+            f"(missing/inaccessible version table or database); required {required}. {guidance}"
+        )
+        sys.exit(1)
+    if revisions != [(required,)]:
+        observed = ", ".join(repr(row[0]) for row in revisions) or "<missing>"
+        log_error(
+            f"Research schema mismatch for {RESEARCH_DATABASE}: observed {observed}; "
+            f"required exactly {required}. {guidance}"
+        )
+        sys.exit(1)
+    log_success(f"Research schema {required} verified read-only; no migrations applied.")
+
+
 def seed_demo(postgres_port: int) -> None:
     """Explicit deterministic engineering-evidence seed; never a provider action."""
     log("Seeding deterministic Module 1B synthetic demo evidence...")
@@ -537,7 +584,7 @@ def main() -> None:
         "--research",
         action="store_true",
         help=f"Serve the real research database {RESEARCH_DATABASE} (container {RESEARCH_CONTAINER}); "
-        "migrates it, never seeds or resets it.",
+        "checks schema read-only, never migrates, seeds or resets it.",
     )
     parser.add_argument(
         "--postgres-port",
@@ -572,9 +619,10 @@ def main() -> None:
     pnpm_cmd = check_prerequisites(args.postgres_port, args.api_port, args.port)
     if args.research:
         start_research_postgres(args.postgres_port)
+        preflight_research_schema(args.postgres_port)
     else:
         start_postgres(args.postgres_port, reset_db=args.reset_db)
-    run_migrations(args.postgres_port, database)
+        run_migrations(args.postgres_port, database)
     if args.demo:
         seed_demo(args.postgres_port)
 

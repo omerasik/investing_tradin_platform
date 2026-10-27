@@ -1,4 +1,4 @@
-"""Unit coverage for explicit Module 1B demo orchestration ordering."""
+"""Fixture/demo ordering and fail-closed read-only research schema preflight."""
 
 from __future__ import annotations
 
@@ -32,6 +32,9 @@ class DevOrchestrationTests(unittest.TestCase):
     def _run_main(self, *, demo: bool, research: bool = False) -> tuple[list[str], MagicMock, MagicMock]:
         calls: list[str] = []
         backend, frontend = MagicMock(), MagicMock()
+        connection = MagicMock()
+        connection.cursor.return_value.__enter__.return_value.fetchmany.return_value = [("20261020_0067",)]
+        schema_preflight = self.dev.preflight_research_schema
         backend.poll.return_value = 0
         frontend.poll.return_value = 0
         argv = ["dev.py", "--postgres-port", "55439", "--api-port", "58000", "--port", "53000"]
@@ -45,6 +48,9 @@ class DevOrchestrationTests(unittest.TestCase):
             patch.object(self.dev, "check_prerequisites", side_effect=lambda *_: ["pnpm"]),
             patch.object(self.dev, "start_postgres", side_effect=lambda *_args, **_kwargs: calls.append("postgres")),
             patch.object(self.dev, "start_research_postgres", side_effect=lambda *_: calls.append("research-postgres")),
+            patch("psycopg.connect") as connect,
+            patch.object(self.dev, "preflight_research_schema",
+                         side_effect=lambda port: (calls.append("research-schema"), schema_preflight(port))[1]),
             patch.object(self.dev, "run_migrations", side_effect=lambda _port, db: calls.append(f"migrations:{db}")),
             patch.object(self.dev, "seed_demo", side_effect=lambda *_: calls.append("seed")),
             patch.object(self.dev, "start_backend",
@@ -55,6 +61,7 @@ class DevOrchestrationTests(unittest.TestCase):
             patch.object(self.dev, "log_success"),
             self.assertRaises(SystemExit),
         ):
+            connect.return_value.__enter__.return_value = connection
             self.dev.main()
         return calls, backend, frontend
 
@@ -67,9 +74,9 @@ class DevOrchestrationTests(unittest.TestCase):
         calls, _backend, _frontend = self._run_main(demo=False)
         self.assertEqual(calls, ["postgres", "migrations:trade_platform", "backend:trade_platform", "frontend"])
 
-    def test_research_serves_and_migrates_the_research_database_without_compose(self) -> None:
+    def test_research_checks_schema_without_migrating_or_seeding(self) -> None:
         calls, _backend, _frontend = self._run_main(demo=False, research=True)
-        self.assertEqual(calls, ["research-postgres", "migrations:trade_platform_research",
+        self.assertEqual(calls, ["research-postgres", "research-schema",
                                  "backend:trade_platform_research", "frontend"])
 
     def test_research_refuses_seed_or_reset_before_touching_docker(self) -> None:
@@ -109,6 +116,141 @@ class DevOrchestrationTests(unittest.TestCase):
         ):
             self.dev.start_postgres(55439, reset_db=True)
         run.assert_not_called()
+
+
+class ResearchSchemaPreflightTests(unittest.TestCase):
+    REQUIRED = "20261020_0067"
+
+    def setUp(self) -> None:
+        self.dev = _load_dev_module()
+
+    def _connection(self, revisions: list[tuple[str | None]]) -> tuple[MagicMock, MagicMock]:
+        connect = MagicMock()
+        cursor = connect.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
+        cursor.fetchmany.return_value = revisions
+        return connect, cursor
+
+    def test_repository_head_is_the_required_revision_without_running_alembic_environment(self) -> None:
+        connect, _cursor = self._connection([(self.REQUIRED,)])
+        with (
+            patch("psycopg.connect", connect),
+            patch.object(self.dev.subprocess, "run") as run,
+            patch.object(self.dev, "log_success"),
+        ):
+            self.dev.preflight_research_schema(55439)
+        run.assert_not_called()
+
+    def test_compatible_revision_uses_only_a_bounded_read_only_query(self) -> None:
+        connect, cursor = self._connection([(self.REQUIRED,)])
+        with (
+            patch("psycopg.connect", connect),
+            patch("alembic.script.ScriptDirectory") as scripts,
+            patch.object(self.dev, "log_success"),
+        ):
+            scripts.return_value.get_heads.return_value = [self.REQUIRED]
+            self.dev.preflight_research_schema(55439)
+        scripts.assert_called_once_with(str(ROOT / "migrations"))
+        connect.assert_called_once_with(
+            "postgresql://postgres:postgres@127.0.0.1:55439/trade_platform_research",  # pragma: allowlist secret
+            connect_timeout=3, autocommit=True,
+            options="-c default_transaction_read_only=on -c statement_timeout=3000",
+        )
+        cursor.execute.assert_called_once_with("SELECT version_num FROM public.alembic_version")
+        cursor.fetchmany.assert_called_once_with(2)
+        connect.return_value.__enter__.return_value.commit.assert_not_called()
+
+    def test_outdated_unknown_missing_newer_null_or_multiple_revisions_refuse(self) -> None:
+        for revisions in (
+            [("20261009_0062",)], [("unknown",)], [], [("20990101_9999",)],
+            [(None,)], [(self.REQUIRED,), ("20261009_0062",)], [(self.REQUIRED,), (self.REQUIRED,)],
+        ):
+            with self.subTest(revisions=revisions):
+                connect, _cursor = self._connection(revisions)
+                stderr = io.StringIO()
+                with (
+                    patch("psycopg.connect", connect),
+                    patch("alembic.script.ScriptDirectory") as scripts,
+                    patch("sys.stderr", stderr),
+                    self.assertRaises(SystemExit) as stopped,
+                ):
+                    scripts.return_value.get_heads.return_value = [self.REQUIRED]
+                    self.dev.preflight_research_schema(55439)
+                self.assertEqual(stopped.exception.code, 1)
+                self.assertIn("schema mismatch", stderr.getvalue())
+                self.assertIn(self.REQUIRED, stderr.getvalue())
+                self.assertIn("separately authorized migration procedure", stderr.getvalue())
+                self.assertIn("API/dashboard were not started", stderr.getvalue())
+
+    def test_unavailable_database_or_version_table_refuses_without_exception_secrets(self) -> None:
+        import psycopg
+
+        private_detail = "private-connection-detail-never-log"
+        for failure in (psycopg.OperationalError(private_detail),
+                        psycopg.errors.UndefinedTable(private_detail), OSError(private_detail)):
+            with self.subTest(failure=type(failure).__name__):
+                stderr = io.StringIO()
+                connect, cursor = self._connection([])
+                cursor.execute.side_effect = failure
+                if isinstance(failure, psycopg.OperationalError):
+                    connect.side_effect = failure
+                with (
+                    patch("psycopg.connect", connect),
+                    patch("alembic.script.ScriptDirectory") as scripts,
+                    patch("sys.stderr", stderr),
+                    self.assertRaises(SystemExit) as stopped,
+                ):
+                    scripts.return_value.get_heads.return_value = [self.REQUIRED]
+                    self.dev.preflight_research_schema(55439)
+                self.assertEqual(stopped.exception.code, 1)
+                self.assertIn("schema unavailable", stderr.getvalue())
+                self.assertIn(self.REQUIRED, stderr.getvalue())
+                self.assertIn("separately authorized migration procedure", stderr.getvalue())
+                self.assertNotIn(private_detail, stderr.getvalue())
+
+    def test_missing_ambiguous_or_unreadable_repository_head_refuses_before_connect(self) -> None:
+        for heads in ([], [self.REQUIRED, "another_head"], OSError("unreadable migration metadata")):
+            with self.subTest(heads=heads):
+                with (
+                    patch("psycopg.connect") as connect,
+                    patch("alembic.script.ScriptDirectory") as scripts,
+                    patch.object(self.dev, "log_error") as error,
+                    self.assertRaises(SystemExit),
+                ):
+                    if isinstance(heads, OSError):
+                        scripts.return_value.get_heads.side_effect = heads
+                    else:
+                        scripts.return_value.get_heads.return_value = heads
+                    self.dev.preflight_research_schema(55439)
+                connect.assert_not_called()
+                self.assertIn("Research schema unavailable", error.call_args.args[0])
+
+    def test_main_schema_refusal_prevents_migrations_seed_and_application_startup(self) -> None:
+        import psycopg
+
+        for unavailable in (False, True):
+            with self.subTest(unavailable=unavailable):
+                connect, _cursor = self._connection([("20261009_0062",)])
+                if unavailable:
+                    connect.side_effect = psycopg.OperationalError("unavailable")
+                with (
+                    patch.object(sys, "argv", ["dev.py", "--research"]),
+                    patch.object(self.dev, "preflight_dashboard_config"),
+                    patch.object(self.dev, "check_prerequisites", return_value=["pnpm"]),
+                    patch.object(self.dev, "start_research_postgres") as research,
+                    patch.object(self.dev, "start_postgres") as fixture,
+                    patch.object(self.dev, "run_migrations") as migrations,
+                    patch.object(self.dev, "seed_demo") as seed,
+                    patch.object(self.dev, "start_backend") as backend,
+                    patch.object(self.dev, "start_frontend") as frontend,
+                    patch("psycopg.connect", connect),
+                    patch.object(self.dev, "log_error"),
+                    self.assertRaises(SystemExit) as stopped,
+                ):
+                    self.dev.main()
+                self.assertEqual(stopped.exception.code, 1)
+                research.assert_called_once()
+                for blocked in (fixture, migrations, seed, backend, frontend):
+                    blocked.assert_not_called()
 
 
 API_PORT, DASHBOARD_PORT = 58000, 53000
