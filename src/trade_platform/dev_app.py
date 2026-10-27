@@ -13,6 +13,7 @@ from .config import PlatformConfig
 from .first_party_capture_archive_v1 import default_archive_root
 from .operator_dashboard import PostgresOperatorDashboardQueries
 from .persistence import PersistenceTarget, PostgresDatabase
+from .research_terminal_commands_v1 import PostgresTerminalCommandLedgerV1
 from .security import InMemoryRateLimiter, OperatorAuthenticator
 from .terminal_paper_prices_v1 import terminal_paper_prices_from_environment_v1
 
@@ -50,6 +51,7 @@ def create_dev_app(database: PostgresDatabase | None = None) -> FastAPI:
         rate_limiter=InMemoryRateLimiter(max_requests=10_000),
         operator_dashboard_queries=PostgresOperatorDashboardQueries(
             db, terminal_paper_prices=terminal_paper_prices_from_environment_v1()),
+        terminal_commands=PostgresTerminalCommandLedgerV1(db),
         capture_archive_root=Path(capture_root) if capture_root else default_archive_root(),
         universe_capture_archive_root=(
             Path(universe_root) if universe_root else default_archive_root().parent / "capture-universe-r1b"
