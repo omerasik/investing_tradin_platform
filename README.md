@@ -75,8 +75,11 @@ schema. Only the first `prepare` is a database bootstrap; on an existing Lite
 host start with `prepare-window`. The selected 1–14 August 2026 UTC window has
 20,160 verified minute bars per market. The prior one-day root remains available
 for rollback, and the 16 MiB evidence ceiling is unchanged.
-Real study/trial results are explicitly unavailable; all execution and
-research commands are disabled. See the **Research Terminal Lite** section of
+The separately invoked `python scripts/terminal_lite_research.py run` produces
+one bounded BTC breakout study; repeat runs are idempotent. Results are gross,
+SEARCH_NON_AUTHORITATIVE and development-only on 14 days, with unverified costs
+and no profitability validation. Unsupported results remain unavailable; all
+API research commands and execution stay disabled. See the **Research Terminal Lite** section of
 [the deployment runbook](docs/DEPLOYMENT_RUNBOOK.md#research-terminal-lite)
 for resource measurements, stop instructions and the independent Railway path.
 

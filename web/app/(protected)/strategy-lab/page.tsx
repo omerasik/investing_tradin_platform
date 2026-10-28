@@ -662,6 +662,17 @@ export default async function StrategyLabExplorerPage({ searchParams }: { search
                 Why not authoritative: {summary.authority.reasons.join(", ")}. Promotable: no. Every metric below is the stored text, never
                 recomputed in this browser.
               </p>
+              {process.env.TRADE_PLATFORM_LITE === "1" ? (
+                <p className="empty-notice" role="note" aria-label="Lite research limitations">
+                  Development-only research on a short historical sample
+                  {summary.datasets.filter((ref) => ref.resolution === "RESEARCH_WINDOW_CATALOGUE").map((ref) => (
+                    <span key={ref.dataset_version_id}>: {ref.symbol}, {ref.first_utc_day}..{ref.last_utc_day}
+                      {ref.first_utc_day && ref.last_utc_day
+                        ? ` (${Math.round((Date.parse(ref.last_utc_day) - Date.parse(ref.first_utc_day)) / 86400000) + 1} days)` : ""}</span>
+                  ))}. SEARCH_NON_AUTHORITATIVE and gross. Trading costs are unverified; profitability is not validated.
+                  Holdout, paper and live execution remain disabled.
+                </p>
+              ) : null}
               <KeyValueGrid
                 columns={4}
                 items={[

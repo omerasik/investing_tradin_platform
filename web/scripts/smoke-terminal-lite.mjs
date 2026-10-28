@@ -71,7 +71,31 @@ async function main() {
       await page.locator("canvas").first().waitFor({ state: "visible" });
     }
     await visit("/strategy-lab");
-    assert.ok((await page.locator("main").innerText()).includes("unavailable"), "study evidence explicitly unavailable");
+    const studiesResponse = await page.request.get("/api/authorities?target=" + encodeURIComponent("/operator-dashboard/strategy-lab/studies"));
+    assert.equal(studiesResponse.status(), 200);
+    const studies = await studiesResponse.json();
+    assert.ok(studies.total === 0 || studies.total === 1, "only the explicitly invoked BTC pilot is admitted");
+    if (studies.total === 1) {
+      const study = studies.items[0];
+      assert.equal(study.study_id, "020fe0da-b880-54fb-be1b-52cee81bbd7f");
+      assert.equal(study.result_count, 84);
+      await visit(`/strategy-lab?study=${study.study_id}`);
+      const note = await page.getByRole("note", { name: "Lite research limitations" }).innerText();
+      assert.ok(note.includes("14 days") && note.includes("SEARCH_NON_AUTHORITATIVE") && note.includes("profitability is not validated"));
+      const trialResponse = await page.request.get("/api/authorities?target=" + encodeURIComponent(
+        `/operator-dashboard/strategy-lab/studies/${study.study_id}/trials?limit=100`));
+      assert.equal(trialResponse.status(), 200);
+      const trials = await trialResponse.json();
+      assert.equal(trials.items.filter(item => item.outcome === "EVALUATED").length, 64);
+      assert.equal(trials.items.filter(item => item.outcome === "INADMISSIBLE_PARAMETERS").length, 20);
+      const trial = trials.items.find(item => item.outcome === "EVALUATED");
+      await visit(`/strategy-lab?study=${study.study_id}&trial=${trial.trial_id}`);
+      const text = await page.locator("main").innerText();
+      assert.ok(text.includes(trial.metrics.total_return), "the persisted gross metric is visible verbatim");
+      assert.ok(text.includes("UNAVAILABLE"), "unsupported economics remain unavailable");
+    } else {
+      assert.ok((await page.locator("main").innerText()).includes("unavailable"), "absent study evidence explicitly unavailable");
+    }
     await visit("/terminal?symbol=ETHUSDT#compare");
     assert.ok((await page.locator("#compare").innerText()).match(/select|unavailable|no .*stud/i), "comparison explains missing evidence");
     await visit("/evidence");
