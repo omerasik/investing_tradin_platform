@@ -2,6 +2,94 @@
 
 ## Research Terminal Lite
 
+### Verified multi-day window (P0.4C.1)
+
+The explicitly selected common window is **2026-08-01 through 2026-08-14 UTC**:
+**20,160 minute bars per market / 60,480 total**. The later 2026-08-05..18
+candidate was refused because SOL's retained 2026-08-15 frame has 1,439 rows
+and no 21:56 UTC bar. No missing minute is filled or carried forward, and
+there is no automatic date-window substitution. The selected dates are before
+the untouched 2026-08-20 holdout boundary.
+
+On the already prepared Lite host, this procedure performs no database migration:
+
+```powershell
+.venv\Scripts\python scripts/terminal_lite.py prepare-window --from 2026-08-01 --to 2026-08-14
+.venv\Scripts\python scripts/terminal_lite.py verify --subset subsets/2026-08-01_2026-08-14
+.venv\Scripts\python scripts/terminal_lite.py activate --subset subsets/2026-08-01_2026-08-14
+.venv\Scripts\python scripts/terminal_lite.py serve
+# From web/, in another shell:
+node scripts/smoke-terminal-lite.mjs
+```
+
+`prepare-window` requires explicit dates and 7..14 days. It reads only retained
+archive/day manifests and Parquet, reuses the canonical
+`build_research_bar_dataset_v1(require_continuous=True)`, and verifies every day
+and the complete window's exact Decimal row hash. A complete UTC minute grid
+and NULL market knowledge time are required. Startup re-proves the retained
+day frames and their exact concatenation before connecting to the Lite reader.
+Missing/corrupt days or objects, extra catalogue records, changed identities or
+bindings, incomplete minute grids, mismatched dates, excessive size and holdout
+overlap are refused. The chart ceiling stays **NO_TIMING_AUTHORITY**.
+
+No dataset format or evaluator changes: the existing `terminal-lite-v1`
+sidecar accepts the legacy `utc_day`, or explicit `first_utc_day`, `last_utc_day`,
+`day_count` and original day-frame bindings. Actual dataset UUID/content hashes
+come from the canonical research-window builder, and differ from the one-day
+and original long-window datasets. Source metadata/hashes remain intact; raw
+archives are not downloaded or copied.
+
+The new root is fully verified in staging, then atomically published under
+`~/.trade_platform/terminal-lite/subsets/2026-08-01_2026-08-14`. Existing roots
+are never overwritten. `activate` verifies both roots and atomically writes
+`active-subset.local.json`, pinning content hashes and recording the previous
+root. Stop the serving launcher before switching, then restart: a running API
+keeps its startup root. The prior `evidence/` directory remains unchanged and
+is still the default when no selector exists. To recover it:
+
+```powershell
+# Stop the Lite API/dashboard launcher first (Ctrl+C).
+.venv\Scripts\python scripts/terminal_lite.py activate --subset evidence
+.venv\Scripts\python scripts/terminal_lite.py serve
+```
+
+If the currently selected root/selector is corrupted, add `--recover` to the
+explicit `activate --subset evidence` command. This bypasses only admission of
+the broken current selection; the requested recovery root must still fully
+verify. There is no automatic substitution of a different historical window.
+
+Measured preparation on 2026-10-28: **10,354,390 bytes / about 9.87 MiB** total
+evidence, including retained day frames and canonical window objects; the
+**16 MiB ceiling is unchanged**. Preparation took 63.91 s wall / 23.08 s CPU,
+with 93,425,664 bytes peak RSS (about 89.1 MiB), admitted under one logical CPU,
+one numeric/Arrow I/O thread, a 512 MiB process limit and a 120 s external wall
+deadline. Windows uses the existing Job Object helper; POSIX uses an address-space
+limit and requires CPU-affinity support. Actual preparation was measured on
+Windows; the POSIX path is not a hosted-resource validation. Preflight found
+about 5.3 GiB available RAM and 24.2 GiB free disk.
+The previous root remains separate at about 0.4 MiB. PostgreSQL and chart limits
+below remain unchanged; native application RSS is still measured, not OS-capped.
+The 11-visit multi-day browser smoke measured API peak RSS about 169 MiB and
+Next.js development server peak RSS about 718 MiB, within the existing roughly
+2.5 GiB local application allowance plus Docker/OS overhead. Authentication,
+all four timeframes, minute paging, provenance identities and unavailable
+study/comparison states passed; no study results were generated.
+Full dataset identities and measured preparation resources are retained outside
+Git in `terminal-lite/preparation-2026-08-01_2026-08-14.local.json`.
+
+`verify` runs portable isolation/provenance/chart checks and a separate real-data
+acceptance harness, each with a 120 s subprocess deadline. It covers legacy
+compatibility, exact multi-day identities and aggregation, all timeframes,
+minute paging, corruption/missing-day/mismatch/holdout refusal and rollback.
+The bounded browser smoke checks three markets, all four timeframes, an earlier
+minute page, provenance identities/navigation, authentication and refusal states.
+Its range and screenshots stay outside Git under
+`terminal-lite/browser-smoke/<first>_<last>/`. No retained data or settings ship
+in Git. No study/trial, trades, performance or comparison results are generated;
+their unavailable states and all research/execution restrictions remain intact.
+
+### Original one-day bootstrap and baseline
+
 P0.4A provides a local read-only demonstration through the existing FastAPI,
 Next.js, chart, Strategy Lab, terminal and research data-plane readers. It does
 not query, dump, copy, seed, reset or migrate `trade_platform_research` or its

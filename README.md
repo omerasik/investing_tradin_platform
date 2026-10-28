@@ -57,19 +57,25 @@ instead of the fixture database (it is migrated to head, never seeded or reset):
 python scripts/dev.py --research
 ```
 
-For an independent, disposable, read-only Lite terminal using a verified one-day
+For an independent, disposable, read-only Lite terminal using retained historical
 BTC/ETH/SOL archive subset, without opening or migrating the research database:
 
 ```powershell
 .venv\Scripts\python scripts/terminal_lite.py prepare
-.venv\Scripts\python scripts/terminal_lite.py verify
+.venv\Scripts\python scripts/terminal_lite.py prepare-window --from 2026-08-01 --to 2026-08-14
+.venv\Scripts\python scripts/terminal_lite.py verify --subset subsets/2026-08-01_2026-08-14
+.venv\Scripts\python scripts/terminal_lite.py activate --subset subsets/2026-08-01_2026-08-14
 .venv\Scripts\python scripts/terminal_lite.py serve
 ```
 
 Open `http://127.0.0.1:3011/terminal`. The generated login password is
 `dashboard_password` in `~/.trade_platform/terminal-lite/settings.local.json`.
 This uses PostgreSQL 16 on **5441**, API **8011**, a separate volume and the current
-schema. Real study/trial results are explicitly unavailable; all execution and
+schema. Only the first `prepare` is a database bootstrap; on an existing Lite
+host start with `prepare-window`. The selected 1–14 August 2026 UTC window has
+20,160 verified minute bars per market. The prior one-day root remains available
+for rollback, and the 16 MiB evidence ceiling is unchanged.
+Real study/trial results are explicitly unavailable; all execution and
 research commands are disabled. See the **Research Terminal Lite** section of
 [the deployment runbook](docs/DEPLOYMENT_RUNBOOK.md#research-terminal-lite)
 for resource measurements, stop instructions and the independent Railway path.

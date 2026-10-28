@@ -5,22 +5,29 @@ local Lite database and retained private filesystem evidence. Missing inputs fai
 rather than skip. Normal CI exercises portable Lite isolation/provenance tests;
 no private data, extra database migration or CI skip exception is needed.
 """
+
 from __future__ import annotations
 
+import json
 import os
 import unittest
+from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import urlencode
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
+from trade_platform.terminal_lite_evidence_v1 import report_days
 from trade_platform.terminal_lite_v1 import create_lite_app
 
 
 class LiteAcceptanceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        if not os.environ.get("LITE_TEST_READ_DSN") or not os.environ.get("LITE_TEST_RESEARCH_ROOT"):
+        if not os.environ.get("LITE_TEST_READ_DSN") or not os.environ.get(
+            "LITE_TEST_RESEARCH_ROOT"
+        ):
             raise RuntimeError("explicit_disposable_lite_database_and_subset_required")
 
     def setUp(self):
@@ -33,6 +40,10 @@ class LiteAcceptanceTests(unittest.TestCase):
                 "TRADE_PLATFORM_LITE": "1",
             },
         )
+        self.report = json.loads(
+            (Path(os.environ["LITE_TEST_RESEARCH_ROOT"]) / "lite-provenance.json").read_text()
+        )
+        self.days = report_days(self.report)
         self.env.start()
         self.client = TestClient(create_lite_app())
         self.client.__enter__()
@@ -77,22 +88,34 @@ class LiteAcceptanceTests(unittest.TestCase):
             sorted(item["instrument"] for item in catalog["items"]),
         )
         for series in catalog["items"]:
-            minute = self.get(
-                f"/operator-dashboard/chart-series/{series['manifest_hash']}/candles?timeframe=1m"
-            )
-            hourly = self.get(
-                f"/operator-dashboard/chart-series/{series['manifest_hash']}/candles?timeframe=1h"
-            )
-            self.assertEqual(1440, len(minute["candles"]))
-            self.assertEqual(24, len(hourly["candles"]))
+            prefix = f"/operator-dashboard/chart-series/{series['manifest_hash']}/candles?"
+            minute = self.get(prefix + "timeframe=1m&limit=2000")
+            hourly = self.get(prefix + "timeframe=1h")
+            daily = self.get(prefix + "timeframe=1d")
+            four_hour = self.get(prefix + "timeframe=4h")
+            self.assertEqual(min(2000, 1440 * len(self.days)), len(minute["candles"]))
+            self.assertEqual(24 * len(self.days), len(hourly["candles"]))
+            self.assertEqual(len(self.days), len(daily["candles"]))
+            self.assertEqual(6 * len(self.days), len(four_hour["candles"]))
+            self.assertEqual(1440 * len(self.days), hourly["coverage"]["source_bars"])
             self.assertEqual(0, hourly["coverage"]["missing_source_bars"])
+            self.assertEqual(0, hourly["partial_candles"])
+            self.assertEqual(str(self.days[0]), hourly["coverage"]["first_bar_at"][:10])
+            self.assertEqual(str(self.days[-1]), daily["candles"][-1]["open_at"][:10])
             self.assertEqual("NO_TIMING_AUTHORITY", series["tier_ceiling"])
-            first = minute["candles"][:60]
-            candle = hourly["candles"][0]
-            self.assertEqual(first[0]["open"], candle["open"])
-            self.assertEqual(first[-1]["close"], candle["close"])
-            self.assertEqual(max(Decimal(c["high"]) for c in first), Decimal(candle["high"]))
-            self.assertEqual(sum(Decimal(c["volume"]) for c in first), Decimal(candle["volume"]))
+            sample = minute["candles"][-60:]
+            candle = hourly["candles"][-1]
+            self.assertEqual(sample[0]["open"], candle["open"])
+            self.assertEqual(sample[-1]["close"], candle["close"])
+            self.assertEqual(max(Decimal(c["high"]) for c in sample), Decimal(candle["high"]))
+            self.assertEqual(sum(Decimal(c["volume"]) for c in sample), Decimal(candle["volume"]))
+            if len(self.days) > 1:
+                earlier = self.get(
+                    prefix
+                    + urlencode({"timeframe": "1m", "end": minute["earlier_end"], "limit": 2000})
+                )
+                self.assertLess(earlier["candles"][-1]["open_at"], minute["candles"][0]["open_at"])
+                self.assertEqual(0, earlier["partial_candles"])
 
     def test_empty_research_views_and_missing_comparison_remain_explicit(self):
         studies = self.get("/operator-dashboard/strategy-lab/studies")

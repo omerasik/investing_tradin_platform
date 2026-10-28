@@ -13,10 +13,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts.terminal_lite import clean_env, initialize_database, prepare_subset
-from tests.test_public_archive_research_bars_v1 import DAY, DayArchive
+from tests.lite_fixtures import seed_lite_days
+from tests.test_public_archive_research_bars_v1 import DAY
 from trade_platform.instrument_chart_v1 import _chart_query_config
 from trade_platform.public_archive_research_bars_v1 import (
-    acquire_and_derive_day_v1,
     load_day_bars_v1,
     load_research_bar_dataset_v1,
 )
@@ -97,14 +97,11 @@ class LiteIsolationTests(unittest.TestCase):
             root = Path(temporary)
             archive, source, target = root / "archive", root / "source", root / "lite"
             store = ResearchFrameStoreV1(source)
-            acquire_and_derive_day_v1(
-                archive, "BTCUSDT", DAY, store=store, evict=True, fetch=DayArchive()
-            )
+            seed_lite_days(root, DAY, 1)
             before = {
                 str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()
             }
-            with patch("scripts.terminal_lite.SYMBOLS", ("BTCUSDT",)):
-                report = prepare_subset(archive, source, target, DAY)
+            report = prepare_subset(archive, source, target, DAY)
             from uuid import UUID
 
             original = load_day_bars_v1(archive, "BTCUSDT", DAY)
@@ -121,10 +118,7 @@ class LiteIsolationTests(unittest.TestCase):
             # Altering a retained object fails closed, before a destination exists.
             manifest = store.load_manifest(original.bar_frame_manifest_hash)
             store.object_path(manifest.objects[0]).write_bytes(b"corrupted fixture")
-            with (
-                patch("scripts.terminal_lite.SYMBOLS", ("BTCUSDT",)),
-                self.assertRaises(ValueError),
-            ):
+            with self.assertRaises(ValueError):
                 prepare_subset(archive, source, root / "refused", DAY)
             self.assertFalse((root / "refused").exists())
 
