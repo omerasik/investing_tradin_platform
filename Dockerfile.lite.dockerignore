@@ -1,0 +1,7 @@
+**
+!Dockerfile.lite
+!Dockerfile.lite.dockerignore
+!requirements-runtime.txt
+!requirements-lite.txt
+!src/
+!src/**

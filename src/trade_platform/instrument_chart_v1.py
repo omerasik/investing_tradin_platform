@@ -68,6 +68,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import UTC, datetime
 from itertools import pairwise
 from pathlib import Path
@@ -92,6 +93,13 @@ DEFAULT_CHART_POINTS_V1: Final = 400
 CHART_TIMEFRAMES_V1: Final[dict[str, int]] = {"1m": 60, "1h": 3_600, "4h": 14_400, "1d": 86_400}
 DEFAULT_CHART_CANDLES_V1: Final = 2_000
 MAX_CHART_CANDLES_V1: Final = 5_000
+
+
+def _chart_query_config() -> dict[str, Any]:
+    """Lite chart reads use one numeric thread, bounded memory and no spill."""
+    if os.environ.get("TRADE_PLATFORM_LITE") == "1":
+        return {"threads": 1, "memory_limit": "128MB", "max_temp_directory_size": "0B"}
+    return {}
 
 #: Frame kinds whose schema declares the source bar interval (seconds).
 _SOURCE_BAR_SECONDS: Final[dict[str, int]] = {"T2_ARCHIVE_OHLCV_1M": 60, "T4_OHLCV_1M": 60}
@@ -435,7 +443,7 @@ def read_chart_series_v1(
 
     manifest, relation = _load_checked_frame(series, research_root)
     columns = _COLUMNS[series.frame_kind]
-    connection = duckdb.connect()
+    connection = duckdb.connect(config=_chart_query_config())
     params: list[object]
     try:
         if series.frame_kind == "OHLCV":
@@ -563,7 +571,7 @@ def read_chart_candles_v1(
     holdout = UNTOUCHED_HOLDOUT_BOUNDARY_V1 if series.frame_kind in _HOLDOUT_FRAME_KINDS else None
     cut = _epoch_us(holdout) if holdout is not None else None
     where, params = (f"WHERE epoch_us({at}) < ?", [cut]) if cut is not None else ("", [])
-    connection = duckdb.connect()
+    connection = duckdb.connect(config=_chart_query_config())
     try:
         count, distinct, first_us, last_us, off_grid = connection.execute(
             f"SELECT COUNT(*), COUNT(DISTINCT epoch_us({at})), MIN(epoch_us({at})), MAX(epoch_us({at})), "  # nosec B608
