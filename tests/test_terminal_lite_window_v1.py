@@ -97,6 +97,39 @@ class LiteWindowTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "day_bindings_mismatch"):
             verify_lite_subset(self.target)
 
+    def test_catalogue_envelope_uuid_must_match_canonical_identity(self):
+        path = (
+            self.target
+            / "v1/datasets/public-archive-bars"
+            / f"{self.report['datasets'][0]['dataset_version_id']}.json"
+        )
+        envelope = json.loads(path.read_text())
+        envelope["dataset_version_id"] = "00000000-0000-0000-0000-000000000000"
+        path.write_text(json.dumps(envelope), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "catalogue_envelope_identity_mismatch"):
+            verify_lite_subset(self.target)
+
+    def test_rehashed_window_manifest_cannot_substitute_source_lineage(self):
+        from trade_platform.research_data_plane_v1 import FrameManifestV1
+
+        report = json.loads((self.target / "lite-provenance.json").read_text())
+        item = report["datasets"][0]
+        old_path = self.target / "v1/manifests" / f"{item['manifest_hash']}.json"
+        manifest = json.loads(old_path.read_text())
+        manifest["lineage"]["symbol"] = "ETHUSDT"
+        changed = FrameManifestV1.hash_payload(manifest)
+        (old_path.parent / f"{changed}.json").write_text(json.dumps(manifest), encoding="utf-8")
+        path = (
+            self.target / "v1/datasets/public-archive-bars" / f"{item['dataset_version_id']}.json"
+        )
+        envelope = json.loads(path.read_text())
+        envelope["bar_frame_manifest_hash"] = changed
+        path.write_text(json.dumps(envelope), encoding="utf-8")
+        item["manifest_hash"] = changed
+        self.write_report(report)
+        with self.assertRaisesRegex(ValueError, "window_manifest_lineage_mismatch"):
+            verify_lite_subset(self.target)
+
     def test_retained_archive_manifest_identity_cannot_be_changed(self):
         path = _paths(self.target / "archive-provenance", "BTCUSDT", DAY)["manifest"]
         manifest = json.loads(path.read_text())
