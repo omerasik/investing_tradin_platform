@@ -2,6 +2,72 @@
 
 ## Research Terminal Lite
 
+### First offline BTC study (P0.4C.2A)
+
+The browser-facing Lite API remains SELECT-only and rejects every mutation.
+Research is a separate, explicitly invoked local process using the existing
+`lite_owner` writer; no command worker or execution authority is enabled:
+
+```powershell
+.venv\Scripts\python scripts/terminal_lite_research.py run
+# Repeat the same command only to resume this study or verify its completed no-op.
+# With the existing Lite API/dashboard running:
+node web/scripts/smoke-terminal-lite.mjs
+```
+
+This bounded launcher currently requires Windows. It exposes no alternate DSN,
+family, dataset, retry or execution arguments. It strips inherited platform/DB
+settings, admits only the independently capped Lite container on loopback:5441,
+re-proves the active BTC Aug01..14 dataset and canonical study declaration, then
+checks the actual PostgreSQL database/user/version/address/schema, reader grants,
+cluster pin, existing study identity and trial definitions before writing. It
+never opens the original research database. Another study or changed dataset,
+canonical SDK identity, cluster, grants or resource limits causes refusal.
+
+The unchanged `strategy_lab.py` declaration and canonical evaluator/ledger run
+the complete **84-point breakout_channel** space: **64 EVALUATED and 20
+INADMISSIBLE_PARAMETERS**, zero failed/pending trials in the measured run. All
+84 results retain their original ordinals and multiple-testing denominator.
+The existing worker runs in the supervised process rather than spawning a pool;
+other CLI/API callers keep their previous behavior. No family/domain, evaluator,
+numeric/financial convention, schema, cost model or lag policy is changed.
+
+Study `020fe0da-b880-54fb-be1b-52cee81bbd7f` binds exactly BTC dataset
+`e5942fd6-42f4-5ad2-8b34-09bae2996db6`. The persisted complete manifest hash is
+`67e4c918caa21cebab952f94d8829de0b164e856616b6bd6763c9b18f201b795`.
+The second complete invocation preserves all study/trial/result/event/manifest
+counts and the manifest hash: it performs no new evaluations. Receipts and
+negative/stop logs remain outside Git under `terminal-lite/research-pilot/`.
+Results and exact metric text are read from PostgreSQL through the existing
+Strategy Lab list, detail, pagination, outcome filters and trial readers.
+`/strategy-lab?study=020fe0da-b880-54fb-be1b-52cee81bbd7f` opens the study.
+
+**These are SEARCH_NON_AUTHORITATIVE, gross, development-only results on a
+short 14-day sample, with the existing 2-second declared research lag. Trading
+costs are unverified and profitability is not validated.** No candidates are
+frozen, no Decimal/validation/walk-forward/holdout result is generated, and
+those unsupported results remain unavailable. Near ties retain the canonical
+search diagnostics; no authority is inferred. No fees/spread/slippage/funding
+amounts or execution trades are invented. Research action endpoints, paper,
+brokers and live execution stay disabled.
+
+The existing 16 MiB evidence ceiling is unchanged. The offline process has one
+worker, one logical core, one numeric/Arrow I/O thread, 512 MiB process commit
+and working-set caps, and a 120-second external deadline. The local host guards
+retain a 24 GiB disk floor, 512 MiB physical-RAM reserve (1 GiB at admission)
+and 1 GiB commit headroom; Lite database size is refused above 64 MiB. A hard
+stop retains already committed queue/results and negative receipts, without
+automatic retry or fabricated completion. PostgreSQL's existing 256 MiB/0.5 CPU,
+connection and chart/query limits remain unchanged.
+
+Measured complete study: 26.01 s worker wall / 24.73 s CPU, 127.8 MiB peak RSS /
+145.0 MiB peak commit. Database grew from 20,347,927 to 20,823,063 bytes (about
+19.86 MiB total). No source frames, previous subset or original research DB
+were changed. The initial pre-write check refused PostgreSQL's CIDR address
+text versus Docker's host text; comparing `host(inet_server_addr())` resolved
+the representation mismatch without changing the expected server identity.
+That stopped attempt registered zero studies and remains in private receipts.
+
 ### Verified multi-day window (P0.4C.1)
 
 The explicitly selected common window is **2026-08-01 through 2026-08-14 UTC**:
@@ -85,8 +151,9 @@ The bounded browser smoke checks three markets, all four timeframes, an earlier
 minute page, provenance identities/navigation, authentication and refusal states.
 Its range and screenshots stay outside Git under
 `terminal-lite/browser-smoke/<first>_<last>/`. No retained data or settings ship
-in Git. No study/trial, trades, performance or comparison results are generated;
-their unavailable states and all research/execution restrictions remain intact.
+in Git. Window preparation itself generates no study/trial, trades, performance
+or comparison results. Only the separately invoked BTC pilot above adds genuine
+search results; unsupported evidence and execution restrictions remain intact.
 
 ### Original one-day bootstrap and baseline
 

@@ -576,6 +576,7 @@ def main() -> None:
             (
                 "tests.test_terminal_lite_v1",
                 "tests.test_terminal_lite_window_v1",
+                "tests.test_terminal_lite_research",
                 "tests.test_instrument_chart_v1",
             ),
             ("tests.terminal_lite_acceptance",),

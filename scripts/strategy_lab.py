@@ -82,7 +82,7 @@ from trade_platform.strategy_lab_walk_forward_v1 import (
     WalkForwardSelectionRuleV1,
     run_walk_forward_v1,
 )
-from trade_platform.strategy_lab_worker_v1 import run_study_pool_v1
+from trade_platform.strategy_lab_worker_v1 import run_study_pool_v1, run_trial_worker_v1
 from trade_platform.strategy_sdk_v1 import FAMILIES_V1
 
 _DURATION = re.compile(r"^(\d+)([mhd])$")
@@ -210,11 +210,23 @@ def build_study(family: str, dataset_id: UUID, data_root: Path | None) -> StudyS
 def run_strategy_lab_command(
     command: str, *, study: StudySpecV1, dsn: str, database: PostgresDatabase, data_root: Path | None,
     workers: int, metric: str | None = None, direction: str | None = None, top_k: int | None = None,
+    in_process: bool = False,
 ) -> dict[str, object]:
-    """search / status / freeze / rerun of one study; shared by this CLI and the terminal command worker."""
+    """search / status / freeze / rerun; shared by CLI and terminal command worker.
+
+    An external one-process supervisor can explicitly use ``in_process`` to
+    run the same canonical worker without a coordinator/child pool. No API
+    composition enables it and existing callers keep their process pool.
+    """
     ledger = PostgresStrategyLabLedgerV1(database)
+    if in_process and (command != "search" or workers != 1):
+        raise ValueError("in_process_requires_search_and_one_worker")
     if command == "search":
-        reports = run_study_pool_v1(dsn, study, BarStrategyEvaluatorV1(data_root), workers=workers)
+        reports = (
+            (run_trial_worker_v1(ledger, study, BarStrategyEvaluatorV1(data_root), worker="lite-offline"),)
+            if in_process else
+            run_study_pool_v1(dsn, study, BarStrategyEvaluatorV1(data_root), workers=workers)
+        )
         print(json.dumps([dataclasses.asdict(report) for report in reports], default=str), flush=True)
     progress = ledger.progress(study.study_id)
     out: dict[str, object] = {

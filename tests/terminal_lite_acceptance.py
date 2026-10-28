@@ -117,9 +117,32 @@ class LiteAcceptanceTests(unittest.TestCase):
                 self.assertLess(earlier["candles"][-1]["open_at"], minute["candles"][0]["open_at"])
                 self.assertEqual(0, earlier["partial_candles"])
 
-    def test_empty_research_views_and_missing_comparison_remain_explicit(self):
+    def test_research_results_or_explicit_absence_and_unsupported_views(self):
+        from collections import Counter
+
+        from scripts.terminal_lite_research import DATASET_HASH, DATASET_ID, STUDY_ID
+
         studies = self.get("/operator-dashboard/strategy-lab/studies")
-        self.assertEqual(0, studies["total"])
+        self.assertIn(studies["total"], (0, 1))
+        if studies["total"]:
+            study = studies["items"][0]
+            self.assertEqual(str(STUDY_ID), study["study_id"])
+            self.assertEqual("BTCUSDT", study["instrument"])
+            self.assertEqual(str(DATASET_ID), study["datasets"][0]["dataset_version_id"])
+            self.assertEqual(DATASET_HASH, study["datasets"][0]["content_hash"])
+            self.assertEqual((84, 84), (study["planned_trial_count"], study["result_count"]))
+            detail = self.get(f"/operator-dashboard/strategy-lab/studies/{STUDY_ID}")
+            self.assertFalse(detail["summary"]["authority"]["promotable"])
+            self.assertEqual("UNAVAILABLE", detail["economics"]["net_profitability"])
+            self.assertEqual([], detail["candidate_sets"])
+            trials = self.get(f"/operator-dashboard/strategy-lab/studies/{STUDY_ID}/trials?limit=100")
+            self.assertEqual(84, trials["total"])
+            self.assertEqual(Counter(EVALUATED=64, INADMISSIBLE_PARAMETERS=20),
+                             Counter(item["outcome"] for item in trials["items"]))
+            first = next(item for item in trials["items"] if item["outcome"] == "EVALUATED")
+            self.assertEqual("20160", first["metrics"]["bars_evaluated"])
+            self.assertEqual("SEARCH_NON_AUTHORITATIVE", first["numeric_tier"])
+            self.get(f"/operator-dashboard/strategy-lab/studies/{STUDY_ID}/trials/{first['trial_id']}")
         for name in ("reruns", "walk-forward", "candidates", "accounts", "signals", "commands"):
             self.assertEqual([], self.get(f"/operator-dashboard/research-terminal/{name}"))
         self.get("/operator-dashboard/evidence-catalog")
@@ -148,9 +171,8 @@ class LiteAcceptanceTests(unittest.TestCase):
                 ("20261020_0067",),
                 connection.execute("SELECT version_num FROM alembic_version").fetchone(),
             )
-            self.assertEqual(
-                (0,), connection.execute("SELECT count(*) FROM strategy_lab_trials").fetchone()
-            )
+            self.assertIn(connection.execute("SELECT count(*) FROM strategy_lab_trials").fetchone(),
+                          ((0,), (84,)))
             self.assertEqual(
                 (False,),
                 connection.execute(
