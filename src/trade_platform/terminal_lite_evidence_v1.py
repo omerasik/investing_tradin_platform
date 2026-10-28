@@ -45,6 +45,7 @@ def report_days(report: Mapping[str, Any]) -> list[date]:
 def verified_day(archive: Path, store: Any, symbol: str, day: date) -> tuple[Any, Any]:
     from .bybit_public_archive_v1 import bybit_public_trade_archive_contract_v1
     from .public_archive_research_bars_v1 import (
+        DAY_BARS_SCHEMA_VERSION_V1,
         DERIVED,
         archive_day_status_v1,
         load_day_bars_v1,
@@ -79,6 +80,8 @@ def verified_day(archive: Path, store: Any, symbol: str, day: date) -> tuple[Any
         or manifest.lineage.get("source_file_sha256") != file.sha256
         or manifest.lineage.get("symbol") != symbol
         or manifest.lineage.get("utc_day") != str(day)
+        or manifest.lineage.get("source_id") != str(contract.source_id)
+        or manifest.lineage.get("derivation") != DAY_BARS_SCHEMA_VERSION_V1
     ):
         raise ValueError(f"lite_day_frame_mismatch:{symbol}:{day}")
     store.verify(manifest)
@@ -139,6 +142,21 @@ def verify_lite_subset(root: Path) -> dict[str, Any]:
     contract = bybit_public_trade_archive_contract_v1()
     for item in report["datasets"]:
         dataset = load_research_bar_dataset_v1(store, UUID(item["dataset_version_id"]))
+        envelope = json.loads(
+            (
+                store.root / "datasets/public-archive-bars" / f"{dataset.dataset_version_id}.json"
+            ).read_text(encoding="utf-8")
+        )
+        if envelope.get("dataset_version_id") != str(dataset.dataset_version_id):
+            raise ValueError("lite_catalogue_envelope_identity_mismatch")
+        window_frame = store.load_manifest(dataset.bar_frame_manifest_hash)
+        if window_frame.frame_kind != "T2_ARCHIVE_OHLCV_1M" or window_frame.lineage != {
+            "source_id": str(contract.source_id),
+            "symbol": item["symbol"],
+            "window": f"{days[0]}..{days[-1]}",
+            "derivation": BAR_DATASET_SCHEMA_VERSION_V1,
+        }:
+            raise ValueError("lite_window_manifest_lineage_mismatch")
         identity = dataset.identity
         if (
             dataset.content_hash != item["content_hash"]
