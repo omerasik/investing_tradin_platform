@@ -1,0 +1,62 @@
+name: Lite production image qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact reviewed merged main SHA (must match dispatch main)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lite-image-qualification
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      NUMEXPR_NUM_THREADS: '1'
+      PIP_NO_CACHE_DIR: '1'
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Require the exact dispatch revision before installing or building
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          test "$SOURCE_SHA" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          python scripts/qualify_lite_images.py admission
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install code-only fixture and migration dependencies
+        run: python -m pip install -e '.[dev,analytics]'
+      - name: Authenticate image pulls (never used as build arguments)
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: printf '%s' "$DOCKERHUB_TOKEN" | docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
+      - name: Sequential bounded builds, pinned scans and production smoke
+        run: python scripts/qualify_lite_images.py qualify
+      - name: Retain only allowlisted sanitized qualification JSON
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: lite-image-qualification-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            lite-image-evidence/admission.json
+            lite-image-evidence/qualification.json
+          if-no-files-found: error
+          retention-days: 7
