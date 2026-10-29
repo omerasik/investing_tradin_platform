@@ -24,7 +24,8 @@ class PrivateRecoveryTests(unittest.TestCase):
     def test_export_preflight_refuses_disk_without_images_or_private_access(self):
         measured = {'available_physical_bytes': 2 * 1024**3, 'commit_headroom_bytes': 2 * 1024**3,
                     'disk_free_bytes': recovery.pilot.DISK_FLOOR - 1}
-        with patch('scripts.research_loading_performance.host_memory', return_value=measured), \
+        with patch.object(recovery.os, 'name', 'nt'), \
+                patch('scripts.research_loading_performance.host_memory', return_value=measured), \
                 patch.object(recovery.subprocess, 'run') as inspect, \
                 patch.object(recovery.pilot, 'settings') as settings:
             result = recovery.preflight()
