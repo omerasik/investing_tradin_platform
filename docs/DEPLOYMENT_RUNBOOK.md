@@ -2,6 +2,58 @@
 
 ## Research Terminal Lite
 
+### Three-market offline studies (P0.4C.2B)
+
+The offline launcher now admits exactly the three verified August 1–14, 2026
+datasets. It derives each study through the unchanged `strategy_lab.build_study`
+and `breakout_channel` evaluator; UUIDs are never relabelled:
+
+| Market | Dataset UUID | Canonical study UUID |
+| --- | --- | --- |
+| BTC | `e5942fd6-42f4-5ad2-8b34-09bae2996db6` | `020fe0da-b880-54fb-be1b-52cee81bbd7f` |
+| ETH | `d3436b40-3d8b-58e1-987f-82dc0d08c95f` | `761c1b42-fb0e-53ec-aaec-6bb5931895cc` |
+| SOL | `04b8964d-5053-5783-b390-93d916e0a06e` | `c187ee85-932a-535a-b147-13821a9ac24b` |
+
+```powershell
+# BTC remains the backwards-compatible default; its completed replay is a no-op.
+.venv\Scripts\python scripts/terminal_lite_research.py run
+.venv\Scripts\python scripts/terminal_lite_research.py run --dataset-id d3436b40-3d8b-58e1-987f-82dc0d08c95f
+# Run SOL only after ETH's accepted supervisor receipt and full integrity audit.
+.venv\Scripts\python scripts/terminal_lite_research.py run --dataset-id 04b8964d-5053-5783-b390-93d916e0a06e
+# Repeat each invocation to verify persisted idempotence; never retry failures automatically.
+node web/scripts/smoke-terminal-lite.mjs --require-three-studies
+```
+
+Before any search write, admission verifies the exact verified dataset set,
+the original container/database/reader grants and **existing** cluster pin,
+every persisted study identity and trial definition, every stored result hash,
+full queue denominator and each existing canonical manifest. Unexpected studies,
+changed identities/results/manifests and a missing/replaced pin are refused.
+The original complete BTC manifest remains pinned to the hash below. Every
+successor also needs its predecessors' completed manifests and accepted host
+resource receipts. No automatic multi-study campaign is exposed.
+
+Receipts under `terminal-lite/research-pilot/` include actual outcome counts,
+canonical manifests, representative stored metrics, host/process measurements
+and SHA-256 digests of every column in all six study/trial/queue/result/event/
+manifest tables. Each invocation checks that other studies stay byte-identical;
+a completed replay must preserve both counts and these complete row digests.
+The 64 MiB database ceiling, 512 MiB worker caps, single core/worker and 120-second
+per-study deadline remain unchanged. A host refusal is a stop, never a reason
+to weaken a resource floor.
+
+The existing authenticated Strategy Lab and symbol-scoped terminal readers
+discover these studies from actual dataset catalogue bindings. The bounded
+browser smoke verifies all 84 API trial identities, result hashes and metric
+text per study against its completed canonical manifest. Existing comparison
+contracts require frozen candidate sets: without them, all selected studies
+are explicitly listed in `studies_without_frozen_set`, with no comparison rows,
+ranking or composite score. This phase does not freeze candidates to populate
+that view. Read the studies' stored search metrics in Strategy Lab; unsupported
+candidate/cross-study ranking, validated economics and profitability remain
+unavailable. All original gross/development/2-second-lag, SELECT-only API,
+holdout and execution restrictions below still apply.
+
 ### First offline BTC study (P0.4C.2A)
 
 The browser-facing Lite API remains SELECT-only and rejects every mutation.
