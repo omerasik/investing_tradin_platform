@@ -95,6 +95,7 @@ class Qualification:
 
     def run(self, label, args, *, timeout=120, env=None):
         self.step = label
+        print(label, flush=True)
         started = time.monotonic()
         log = self.temp / 'command.log'
         with log.open('w+') as output:
@@ -126,6 +127,7 @@ class Qualification:
         cpu = self.run('cpu_' + container, ['docker', 'exec', container, 'cat', '/sys/fs/cgroup/cpu.stat'])
         inspection = json.loads(self.run('state_' + container, ['docker', 'inspect', container]))[0]
         self.evidence['resources'][container] = {
+            "image_id": inspection['Image'],
             "peak_cgroup_memory_bytes": int(raw.strip()), "oom_killed": inspection['State']['OOMKilled'],
             "memory_limit_bytes": inspection['HostConfig']['Memory'],
             "cpu_limit_nanocpus": inspection['HostConfig']['NanoCpus'],
@@ -134,6 +136,9 @@ class Qualification:
             "cpu_stat": dict(line.split() for line in cpu.splitlines()),
             "restart_count": inspection['RestartCount']}
         assert not inspection['State']['OOMKilled'] and inspection['RestartCount'] == 0
+        if container in ('lite-qual-api', 'lite-qual-dashboard'):
+            name = container.removeprefix('lite-qual-')
+            assert inspection['Image'] == self.evidence['images'][name]['image_id']
 
     def build_scan(self):
         self.run('create_bounded_builder', ['docker', 'buildx', 'create', '--name', 'lite-qual-builder',
