@@ -7,6 +7,7 @@ must also pass before PRIVATE_RECOVERY_PASS may be issued.
 
 from __future__ import annotations
 
+import argparse
 import gzip
 import hashlib
 import json
@@ -30,25 +31,57 @@ DASHBOARD_IMAGE = 'sha256:b1ac5cbc604a81d0d3613b9b4c276680919560314a6a043931dc09
 MAX_EVIDENCE = 16 * 1024**2
 
 
-def preflight():
+def preflight(operation='export', *, image_ids=None):
+    """Capacity precheck only; identity/integrity and runtime acceptance are separate.
+
+    Historical CI config IDs are records, not retrievable image archives. Only
+    smoke requires locally available images from a separately qualified build.
+    """
     from scripts.research_loading_performance import host_memory
 
+    if operation not in ('export', 'restore', 'smoke'):
+        raise ValueError('unknown_recovery_operation')
+    if image_ids is not None and operation != 'smoke':
+        raise ValueError('production_images_apply_only_to_smoke')
+    if image_ids is not None and (set(image_ids) != {'api', 'dashboard'} or any(
+            not isinstance(value, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', value)
+            for value in image_ids.values())):
+        raise ValueError('explicit_production_image_ids_required')
     measured = host_memory()
     images = {}
-    for key, digest in (('api', API_IMAGE), ('dashboard', DASHBOARD_IMAGE)):
-        check = subprocess.run(['docker', 'image', 'inspect', digest, '--format', '{{.Id}}'],
-                               capture_output=True, text=True, check=False, timeout=10)
-        images[key] = {'expected_id': digest,
-                       'available': check.returncode == 0 and check.stdout.strip() == digest}
     blockers = []
     if os.name != 'nt':
         blockers.append('PRIVATE_ACCEPTANCE_REQUIRES_ADMITTED_WINDOWS_HOST')
     if not pilot.admitted(measured, initial=True):
         blockers.append('HOST_RESOURCE_ADMISSION_REFUSED')
-    if not all(item['available'] for item in images.values()):
-        blockers.append('EXACT_QUALIFIED_IMAGES_NOT_AVAILABLE_NO_REBUILD_OR_PULL')
+    if operation == 'smoke':
+        if image_ids is None:
+            blockers.append('SEPARATELY_QUALIFIED_LOCAL_PRODUCTION_IMAGES_REQUIRED')
+        else:
+            for key, digest in image_ids.items():
+                try:
+                    check = subprocess.run(
+                        ['docker', 'image', 'inspect', digest, '--format', '{{.Id}}'],
+                        capture_output=True, text=True, check=False, timeout=10)
+                    available = check.returncode == 0 and check.stdout.strip() == digest
+                except (OSError, subprocess.TimeoutExpired):
+                    available = False
+                images[key] = {'expected_id': digest, 'available': available}
+            if not all(item['available'] for item in images.values()):
+                blockers.append('PRODUCTION_IMAGES_NOT_AVAILABLE_NO_REBUILD_OR_PULL')
+    prerequisites = {
+        'export': ['SOURCE_CLUSTER_PIN_AND_CANONICAL_AUDIT', 'READ_ONLY_CONSISTENT_SNAPSHOT',
+                   'PRIVATE_DESTINATION_ACL_AND_INTEGRITY'],
+        'restore': ['VERIFIED_EXPORT_AND_EVIDENCE', 'INDEPENDENT_EMPTY_PG16_TARGET',
+                    'FULL_LOGICAL_AND_CANONICAL_RECONCILIATION'],
+        'smoke': ['SEPARATE_IMAGE_QUALIFICATION_RECEIPT', 'RECONCILED_PRIVATE_RESTORE',
+                  'INDEPENDENT_SELECT_ONLY_READER', 'AUTHENTICATED_RUNTIME_AND_MUTATION_REFUSAL'],
+    }
     return {'status': 'BLOCKED' if blockers else 'PREFLIGHT_PASS_ACCEPTANCE_NOT_RUN',
-            'host': measured, 'images': images, 'blockers': blockers,
+            'operation': operation, 'host': measured, 'images': images, 'blockers': blockers,
+            'historical_qualification_records': {'run_id': '40880602729',
+                                                'api': API_IMAGE, 'dashboard': DASHBOARD_IMAGE},
+            'acceptance_prerequisites_not_verified': prerequisites[operation],
             'limits': {'initial_ram_bytes': 1024**3, 'runtime_ram_bytes': pilot.MEMORY_BYTES,
                        'commit_headroom_bytes': 1024**3, 'disk_floor_bytes': pilot.DISK_FLOOR},
             'private_operations_performed': False}
@@ -63,8 +96,8 @@ def is_link(path):
     return path.is_symlink() or getattr(path, 'is_junction', lambda: False)()
 
 
-def require_private_admission():
-    result = preflight()
+def require_private_admission(operation):
+    result = preflight(operation)
     if result['status'] != 'PREFLIGHT_PASS_ACCEPTANCE_NOT_RUN':
         raise ValueError('private_recovery_preconditions_refused')
 
@@ -249,7 +282,7 @@ def export_snapshot(connection, destination):
     Call only after host admission and bounded canonical source audit. Caller
     owns the REPEATABLE READ/READ ONLY transaction and exclusive private folder.
     """
-    require_private_admission()
+    require_private_admission('export')
     destination = private_artifact_path(destination)
     if (connection.info.host, connection.info.port) != ('127.0.0.1', 5441):
         raise ValueError('source_loopback_port_required')
@@ -286,7 +319,7 @@ def export_snapshot(connection, destination):
 
 def restore_verified_dump(connection, target, source_system_identifier, dump_path, expected):
     """Target identity proof must be obtained by target_identity immediately before this call."""
-    require_private_admission()
+    require_private_admission('restore')
     dump_path = private_artifact_path(dump_path)
     verify_target_database(connection, target, source_system_identifier, empty=True)
     source_container = json.loads(subprocess.check_output(['docker', 'inspect', 'trade-terminal-lite-postgres-1'], timeout=10))[0]
@@ -307,9 +340,16 @@ def restore_verified_dump(connection, target, source_system_identifier, dump_pat
 
 
 def main():
-    if sys.argv[1:] != ['preflight']:
-        raise ValueError('preflight_only_no_private_acceptance_command')
-    result = preflight()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('command', choices=['preflight'])
+    parser.add_argument('--operation', choices=['export', 'restore', 'smoke'], default='export')
+    parser.add_argument('--api-image-id')
+    parser.add_argument('--dashboard-image-id')
+    args = parser.parse_args()
+    image_ids = None
+    if args.api_image_id is not None or args.dashboard_image_id is not None:
+        image_ids = {'api': args.api_image_id, 'dashboard': args.dashboard_image_id}
+    result = preflight(args.operation, image_ids=image_ids)
     print(json.dumps(result))
     return 1 if result['status'] == 'BLOCKED' else 0
 

@@ -114,23 +114,112 @@ private machine. Do not introduce synthetic performance into the real ledger.
 
 ### P0.4D.1B admission and tested primitives
 
-Run `.venv\Scripts\python scripts/terminal_lite_recovery.py preflight` before
-any private operation. This reads host capacity and inspects local exact image
-IDs only; it never pulls/builds/scans images, reads Lite settings/evidence or
-connects to SQL. It reports BLOCKED when a Windows guard fails or either exact
-qualified image is absent. Initial P0.4D.1B sample: 25,248,333,824 free disk
-bytes against the unchanged 25,769,803,776-byte floor; RAM and commit passed.
-No private acceptance was started. Measurements are retained outside Git in
-`terminal-lite/p04d1b-preflight.local.json`.
+Run `.venv\Scripts\python scripts/terminal_lite_recovery.py preflight --operation export`
+before source audit/export, or `--operation restore` before independent recovery.
+The default is `export`. These capacity-only checks do not inspect production
+images, read Lite settings/evidence or connect to SQL. They retain Windows
+admission, initial 1 GiB available RAM, 1 GiB commit headroom, 24 GiB disk and
+runtime 512 MiB RAM floors. Source pins, snapshot integrity, private destination
+ACLs, verified export and isolated target/reconciliation remain mandatory at
+their respective stages. A preflight pass is never private acceptance.
 
-The exact images from run 40880602729 are absent on the local Docker engine.
-That run retained sanitized summaries **without image archives**, and no
-registry publication was made. A digest alone cannot recover discarded image
-bytes. Under this phase's no-rebuild/no-rescan rule, an already-existing trusted
-copy of the exact qualified images must be made locally available and its
-config IDs verified before production smoke. No such copy is currently known.
-If none exists, this is a separate owner decision about the image-reuse
-constraint; do not silently rebuild or substitute images.
+Use `--operation smoke --api-image-id sha256:<64-hex> --dashboard-image-id
+sha256:<64-hex>` only with IDs from a separately qualified, locally present
+production build and its reviewed qualification receipt. The preflight checks
+local ID availability only; it does not verify the receipt or perform smoke.
+Omitting images blocks smoke alone. No preflight builds, pulls or scans images.
+The CLI still cannot run a real audit, export, restore or smoke.
+
+Run 40880602729 remains historical **code-only qualification evidence**. Its
+config IDs are records, not retrievable archives: that run retained sanitized
+summaries without image bytes or registry publication. Missing old bytes must
+not block data-only audit/export or independent recovery. For actual deployment,
+use a fresh build and requalification on the admitted deployment-target platform
+from an exact reviewed main SHA, preserving Dockerfile/base/dependency identities.
+Use the existing opt-in image-qualification workflow and pinned scan policy for
+the target's architecture; rerun both real production images, security/user/
+entrypoint checks and generated-fixture production smoke, retaining new IDs and
+sanitized receipts. An old config ID does not qualify newly built bytes. Any
+later private smoke must use the resulting actual qualified local images. No
+build, paid runner, image publication or data transfer is authorized by this
+preflight change.
+
+### P0.4D.1C bounded capacity diagnosis and next gate
+
+Read-only Windows measurements on 2026-10-29, latest sample 15:24:29 UTC:
+free disk 17,315,078,144 bytes (16.126 GiB), available physical RAM
+4,573,970,432 bytes (4.260 GiB), committed bytes 37,392,580,608 against
+46,530,043,904 commit limit. RAM/commit currently exceed initial floors;
+disk remains 8,454,725,632 bytes (7.874 GiB) below the unchanged floor.
+Earlier samples varied from about 0.65 to 6.19 GiB available RAM. The former
+253 MiB and 3.04 GiB conditions are historical, not current measurements.
+No cleanup, stop, restart, relocation, export or restore was performed.
+
+Measured pressure and attribution limits:
+
+- System-managed pagefile is 30,114,721,792 bytes (28.047 GiB); allocation
+  decreased by 97,329,152 bytes between two metadata samples. Current pagefile
+  usage is 4,930 MiB, peak 7,784 MiB. Large commit pressure and automatic
+  pagefile growth are a plausible major disk-pressure cause, not a proven
+  attribution of the entire historical ~20 GiB drop. No earlier pagefile/VHDX
+  size baseline or contemporaneous process trace establishes that split.
+  [Microsoft's sizing documentation](https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/how-to-determine-the-appropriate-page-file-size-for-64-bit-versions-of-windows)
+  explains automatic growth/shrink; do not change the pagefile.
+- Docker VHDX has both logical and allocated length 44,833,964,032 bytes
+  (41.755 GiB); Ubuntu VHDX logical length is 5.168 GiB. Docker reports
+  17.78 GB images, 12.48 GB volumes, **zero build cache**, and only about 6 MB
+  container writable layers. Reported reclaimable images (5.022 GB) and
+  volumes (7.578 GB) are not safe-to-delete inventories or guaranteed Windows
+  savings. Preserve all volumes, including research/Lite and unidentified ones.
+  Do not prune, stop WSL/Docker or compact disks. Host reclamation depends on
+  Desktop/backend behavior; [Docker documents that distinction](https://www.docker.com/blog/docker-desktop-4-34/).
+- One process snapshot grouped private commit at WSL 4.41 GiB, 17 desktop
+  assistant processes 3.66 GiB, 22 browser processes 3.45 GiB, 16 ChatGPT
+  processes 2.07 GiB and 20 Node processes 1.82 GiB. Representative grouped
+  working sets were about 1.11 GiB for the first assistant and 0.53 GiB for
+  the browser; private commit is not reclaimable physical RAM. Paging,
+  compression and multiple applications explain present pressure, but the
+  individual contributors at the historical 253 MiB instant remain unverified.
+
+Owner actions, in priority order; these are proposals, not authorization:
+
+1. No RAM action is currently necessary. If pressure returns, owner-selected
+   unused interactive applications may be closed after saving work; expected
+   savings are bounded by their then-current resident memory, not private
+   commit. Do not close capture, research or database processes.
+2. Smallest low-risk disk proposal: approve only named package download caches
+   after checking no installer/package operation is using them. Bounded metadata
+   inventory measured npm-cache **at least 4.094 GiB** (12-second scan incomplete),
+   pip cache 0.371 GiB and pnpm cache 0.577 GiB. These can be regenerated but
+   deleting them has offline/redownload costs. Their ~5.042 GiB alone is
+   insufficient for today's 7.874 GiB gap. No cache was deleted.
+3. If owner confirms obsolete, four standalone installers (Android Studio,
+   Docker Desktop, SteelSeries and a VS Code setup under Temp) total 2.457 GiB;
+   two abandoned runtime-download archives total 0.673 GiB. Together with the
+   cache proposal this identifies at least **8.173 GiB of file lengths**, not
+   guaranteed immediate free bytes. This barely exceeds the present deficit;
+   remeasure after each approved action and stop if headroom is unstable.
+   Temp totals 1.910 GiB including that VS Code setup: do not double count or
+   blanket-delete Temp. Existing Next build output is only 0.211 GiB.
+
+The 24 GiB floor originated in the research workflow and is conservative for
+an approximately 20.4 MiB database plus 9.87 MiB evidence (last verified sizes,
+not a new source audit). A distinct export-only budget could be justified from
+fresh canonical source size, maximum dump/archive/staging overhead, filesystem
+allocation, helper peak commit and Windows growth reserve. These bounds and
+source preservation must be measured on an admitted environment first; a small
+database alone does not bound concurrent pagefile/VHDX growth. **No alternate
+floor is implemented or activated.** Owner approval of a separately reviewed
+policy and exact revision is required before use. Restore and production smoke
+have different target/image capacity needs and receive no export exemption.
+
+Earliest next executable check after explicitly approved capacity recovery is
+`preflight --operation export`; do not repeat it while the known disk deficit
+remains. Once admitted, the next private operation is a fresh bounded read-only
+source/dataset audit and private-destination ACL proof, followed by snapshot
+export. This phase stops before those operations. Independent PG16 recovery,
+all 3/252/252/504/3 and 60,480-bar reconciliations, reader credentials and
+qualified-image private smoke remain pending; no recovery PASS is claimed.
 
 `scripts/terminal_lite_recovery.py` provides tested low-level primitives:
 length-framed sorted logical SQL/sequence inventories, snapshot-bound binary

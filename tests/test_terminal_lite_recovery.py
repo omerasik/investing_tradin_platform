@@ -21,18 +21,70 @@ class PrivateRecoveryTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
 
-    def test_preflight_reports_resources_and_missing_images_without_private_access(self):
+    def test_export_preflight_refuses_disk_without_images_or_private_access(self):
         measured = {'available_physical_bytes': 2 * 1024**3, 'commit_headroom_bytes': 2 * 1024**3,
                     'disk_free_bytes': recovery.pilot.DISK_FLOOR - 1}
         with patch('scripts.research_loading_performance.host_memory', return_value=measured), \
-                patch.object(recovery.subprocess, 'run', return_value=MagicMock(returncode=1)), \
+                patch.object(recovery.subprocess, 'run') as inspect, \
                 patch.object(recovery.pilot, 'settings') as settings:
             result = recovery.preflight()
         self.assertEqual('BLOCKED', result['status'])
         self.assertIn('HOST_RESOURCE_ADMISSION_REFUSED', result['blockers'])
-        self.assertIn('EXACT_QUALIFIED_IMAGES_NOT_AVAILABLE_NO_REBUILD_OR_PULL', result['blockers'])
+        self.assertEqual(['HOST_RESOURCE_ADMISSION_REFUSED'], result['blockers'])
+        self.assertEqual('export', result['operation'])
         self.assertFalse(result['private_operations_performed'])
+        inspect.assert_not_called()
         settings.assert_not_called()
+
+    def test_data_stages_require_no_images_but_keep_all_resource_floors(self):
+        admitted = {'available_physical_bytes': 2 * 1024**3,
+                    'commit_headroom_bytes': 2 * 1024**3,
+                    'disk_free_bytes': recovery.pilot.DISK_FLOOR}
+        for operation in ('export', 'restore'):
+            for key, floor in (('available_physical_bytes', 1024**3),
+                               ('commit_headroom_bytes', 1024**3),
+                               ('disk_free_bytes', recovery.pilot.DISK_FLOOR)):
+                with self.subTest(operation=operation, key=key), \
+                        patch.object(recovery.os, 'name', 'nt'), \
+                        patch('scripts.research_loading_performance.host_memory') as memory, \
+                        patch.object(recovery.subprocess, 'run') as inspect, \
+                        patch.object(recovery.pilot, 'settings') as settings:
+                    memory.return_value = admitted
+                    result = recovery.preflight(operation)
+                    self.assertEqual('PREFLIGHT_PASS_ACCEPTANCE_NOT_RUN', result['status'])
+                    self.assertTrue(result['acceptance_prerequisites_not_verified'])
+                    memory.return_value = {**admitted, key: floor - 1}
+                    with self.assertRaisesRegex(ValueError, 'preconditions_refused'):
+                        recovery.require_private_admission(operation)
+                    inspect.assert_not_called()
+                    settings.assert_not_called()
+
+    def test_smoke_requires_explicit_images_and_only_checks_local_availability(self):
+        measured = {'available_physical_bytes': 2 * 1024**3,
+                    'commit_headroom_bytes': 2 * 1024**3,
+                    'disk_free_bytes': recovery.pilot.DISK_FLOOR}
+        ids = {'api': 'sha256:' + 'a' * 64, 'dashboard': 'sha256:' + 'b' * 64}
+        with patch.object(recovery.os, 'name', 'nt'), \
+                patch('scripts.research_loading_performance.host_memory', return_value=measured), \
+                patch.object(recovery.subprocess, 'run') as inspect:
+            result = recovery.preflight('smoke')
+            self.assertEqual(['SEPARATELY_QUALIFIED_LOCAL_PRODUCTION_IMAGES_REQUIRED'], result['blockers'])
+            inspect.assert_not_called()
+            inspect.side_effect = [MagicMock(returncode=0, stdout=ids['api']),
+                                   MagicMock(returncode=0, stdout=ids['dashboard'])]
+            result = recovery.preflight('smoke', image_ids=ids)
+            self.assertEqual('PREFLIGHT_PASS_ACCEPTANCE_NOT_RUN', result['status'])
+            self.assertIn('SEPARATE_IMAGE_QUALIFICATION_RECEIPT',
+                          result['acceptance_prerequisites_not_verified'])
+            self.assertEqual(2, inspect.call_count)
+            inspect.side_effect = OSError('Docker unavailable')
+            self.assertIn('PRODUCTION_IMAGES_NOT_AVAILABLE_NO_REBUILD_OR_PULL',
+                          recovery.preflight('smoke', image_ids=ids)['blockers'])
+        for operation, images in (('unknown', None), ('export', ids),
+                                  ('smoke', {'api': 'tag:latest'}),
+                                  ('smoke', {**ids, 'dashboard': None})):
+            with self.subTest(operation=operation, images=images), self.assertRaises(ValueError):
+                recovery.preflight(operation, image_ids=images)
 
     def test_deterministic_archive_roundtrip_and_source_preservation(self):
         source = self.root / 'source'
