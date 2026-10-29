@@ -354,10 +354,12 @@ class Qualification:
         raise RuntimeError('production_health_deadline')
 
     def cleanup(self):
+        subprocess.run(['docker', 'stop', '--time', '5', 'buildx_buildkit_lite-qual-builder0'],
+                       check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
         for name in ('lite-qual-dashboard', 'lite-qual-api', 'lite-qual-db'):
             subprocess.run(['docker', 'rm', '-f', '-v', name], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
         subprocess.run(['docker', 'network', 'rm', 'lite-qual-net'], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
-        subprocess.run(['docker', 'buildx', 'rm', 'lite-qual-builder'], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+        subprocess.run(['docker', 'buildx', 'rm', '--force', 'lite-qual-builder'], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
 
 
 def main():
