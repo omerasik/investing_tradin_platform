@@ -43,6 +43,14 @@ a paid runner as an automatic fallback. Record actual run conclusions below
 only after execution; the older pending gates below are not silently passed by
 adding this workflow.
 
+The first actual run ([40876422203](https://github.com/omerasik/investing_tradin_platform/actions/runs/40876422203))
+built both images on the standard runner. API passed the policy; dashboard was
+blocked by fixable Alpine SSL and bundled package-manager CVEs, with zero
+secret findings in either image. The dashboard runtime removes unused
+npm/Corepack/Yarn tooling (Next starts directly) and refreshes the two SSL
+libraries. No vulnerability ignore or policy weakening is used. A new reviewed
+merged-main run must qualify this correction before claiming success.
+
 ## Evidence and pending gates
 
 | Gate | Result / precise prerequisite |
