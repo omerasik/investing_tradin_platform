@@ -98,7 +98,9 @@ class Qualification:
         print(label, flush=True)
         started = time.monotonic()
         log = self.temp / 'command.log'
-        with log.open('w+') as output:
+        # Concurrent tool log writers can interleave UTF-8 glyph bytes. Diagnostic
+        # decoding must not turn a successful enforced exit code into a failure.
+        with log.open('w+', encoding='utf-8', errors='replace') as output:
             child = subprocess.Popen(args, stdout=output, stderr=subprocess.STDOUT, env=env, cwd=ROOT)
             try:
                 while child.poll() is None:

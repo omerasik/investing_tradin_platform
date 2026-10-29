@@ -1,13 +1,38 @@
 """Portable policy tests; never starts containers or accesses private Lite state."""
 
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.qualify_lite_images import GIB, MIB, admission, admitted, private_path, scan_summary
+from scripts.qualify_lite_images import (
+    GIB,
+    MIB,
+    Qualification,
+    admission,
+    admitted,
+    private_path,
+    scan_summary,
+)
 
 
 class LiteImageQualificationTests(unittest.TestCase):
+    def test_successful_tool_with_non_utf8_diagnostics_keeps_exit_code_enforcement(self):
+        sample = {'available_bytes': 6 * GIB, 'commit_headroom_bytes': 6 * GIB,
+                  'disk_free_bytes': 16 * GIB, 'cpus': 2}
+        with tempfile.TemporaryDirectory() as directory, patch('scripts.qualify_lite_images.host', return_value=sample):
+            runner = Qualification.__new__(Qualification)
+            runner.temp = Path(directory)
+            runner.evidence = {'host_minimum': dict(sample), 'steps': []}
+            runner.secret_stage = False
+            command = [sys.executable, '-c', 'import os; os.write(1, bytes([255]))']
+            self.assertEqual('\ufffd', runner.run('non_utf8_fixture', command))
+            self.assertEqual(0, runner.evidence['steps'][-1]['exit_code'])
+            with self.assertRaisesRegex(RuntimeError, 'command_failed'):
+                runner.run('failed_fixture', [sys.executable, '-c', 'raise SystemExit(7)'])
+            self.assertEqual(7, runner.evidence['steps'][-1]['exit_code'])
+
     def test_workflow_is_manual_main_only_and_uploads_only_sanitized_summaries(self):
         import yaml
 
