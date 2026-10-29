@@ -112,6 +112,45 @@ private machine. Do not introduce synthetic performance into the real ledger.
 
 ## Private snapshot, export and evidence transfer
 
+### P0.4D.1B admission and tested primitives
+
+Run `.venv\Scripts\python scripts/terminal_lite_recovery.py preflight` before
+any private operation. This reads host capacity and inspects local exact image
+IDs only; it never pulls/builds/scans images, reads Lite settings/evidence or
+connects to SQL. It reports BLOCKED when a Windows guard fails or either exact
+qualified image is absent. Initial P0.4D.1B sample: 25,248,333,824 free disk
+bytes against the unchanged 25,769,803,776-byte floor; RAM and commit passed.
+No private acceptance was started. Measurements are retained outside Git in
+`terminal-lite/p04d1b-preflight.local.json`.
+
+The exact images from run 40880602729 are absent on the local Docker engine.
+That run retained sanitized summaries **without image archives**, and no
+registry publication was made. A digest alone cannot recover discarded image
+bytes. Under this phase's no-rebuild/no-rescan rule, an already-existing trusted
+copy of the exact qualified images must be made locally available and its
+config IDs verified before production smoke. No such copy is currently known.
+If none exists, this is a separate owner decision about the image-reuse
+constraint; do not silently rebuild or substitute images.
+
+`scripts/terminal_lite_recovery.py` provides tested low-level primitives:
+length-framed sorted logical SQL/sequence inventories, snapshot-bound binary
+export, fixed source-port/cluster-pin checks, deterministic evidence packaging,
+staged hash-verified extraction refusing traversal/links/duplicates, fresh
+target container/volume/PG16/cluster/port checks, and binary single-transaction
+restore with full inventory comparison. Transfer helpers recheck admission,
+monitor the existing host floors and enforce a 120-second deadline. They have
+**no private acceptance CLI** and do not create or delete recovery resources.
+They are not a completed orchestration/controller or proof of recovery.
+
+The steps below still require the bounded canonical source/target audit worker,
+private ACL/encryption setup, independently provisioned target/reader lifecycle,
+full three-study/bar/manifest reconciliation, post-source-preservation audit,
+qualified-image production smoke and verified cleanup. No PASS may be issued
+from a helper return value or from synthetic tests. Synthetic archive/binary/
+identity tests run locally; a separately created disposable CI PG16 database
+tests repeatable-read table inventories and non-MVCC sequence-change detection.
+No real dump, archive, credential or detailed receipt is sent to CI.
+
 This procedure is intentionally **pending execution**. A byte hash of a dump
 does not prove recovery: both byte integrity and canonical logical
 reconciliation are required. Custom `pg_dump` archives contain metadata and
