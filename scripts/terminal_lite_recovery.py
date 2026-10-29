@@ -65,6 +65,15 @@ def require_private_admission():
         raise ValueError('private_recovery_preconditions_refused')
 
 
+def private_artifact_path(path):
+    path = Path(path)
+    private_root = (pilot.STATE / 'transfer').resolve()
+    if (path.is_symlink() or any(parent.is_symlink() for parent in path.parents)
+            or private_root not in path.resolve().parents):
+        raise ValueError('private_transfer_artifact_path_required')
+    return path
+
+
 def binary_transfer(args, *, source=None, destination=None):
     """No text conversion or diagnostic/credential output; enforce host floors."""
     from scripts.research_loading_performance import host_memory
@@ -237,6 +246,7 @@ def export_snapshot(connection, destination):
     owns the REPEATABLE READ/READ ONLY transaction and exclusive private folder.
     """
     require_private_admission()
+    destination = private_artifact_path(destination)
     if (connection.info.host, connection.info.port) != ('127.0.0.1', 5441):
         raise ValueError('source_loopback_port_required')
     expected = pilot.container_identity()
@@ -273,6 +283,7 @@ def export_snapshot(connection, destination):
 def restore_verified_dump(connection, target, source_system_identifier, dump_path, expected):
     """Target identity proof must be obtained by target_identity immediately before this call."""
     require_private_admission()
+    dump_path = private_artifact_path(dump_path)
     verify_target_database(connection, target, source_system_identifier, empty=True)
     source_container = json.loads(subprocess.check_output(['docker', 'inspect', 'trade-terminal-lite-postgres-1'], timeout=10))[0]
     actual = json.loads(subprocess.check_output(['docker', 'inspect', target['container_id']], timeout=10))[0]

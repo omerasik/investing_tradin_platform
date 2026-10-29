@@ -118,10 +118,20 @@ class PrivateRecoveryTests(unittest.TestCase):
         conn = MagicMock()
         conn.info.host, conn.info.port = '127.0.0.1', 5542
         conn.execute.return_value.fetchone.return_value = ('trade_terminal_lite', 'lite_owner', 160014, '192.0.2.2', 'source-cluster')
-        with patch.object(recovery, 'require_private_admission'), patch.object(recovery, 'binary_transfer') as transfer:
+        with patch.object(recovery, 'require_private_admission'), \
+                patch.object(recovery, 'private_artifact_path', return_value=Path('unused')), \
+                patch.object(recovery, 'binary_transfer') as transfer:
             with self.assertRaisesRegex(ValueError, 'independent_recovery_cluster'):
                 recovery.restore_verified_dump(conn, {'server_address': '192.0.2.2'}, 'source-cluster', 'unused', {})
             transfer.assert_not_called()
+
+    def test_private_dump_paths_cannot_point_into_repo_or_source_evidence(self):
+        with patch.object(recovery.pilot, 'STATE', self.root):
+            self.assertEqual(self.root / 'transfer/run/snapshot.dump',
+                             recovery.private_artifact_path(self.root / 'transfer/run/snapshot.dump'))
+            for path in (self.root / 'evidence/snapshot.dump', recovery.ROOT / 'snapshot.dump', self.root / 'transfer'):
+                with self.assertRaisesRegex(ValueError, 'private_transfer_artifact_path'):
+                    recovery.private_artifact_path(path)
 
 
 @unittest.skipUnless(os.environ.get('GITHUB_ACTIONS') == 'true' and os.environ.get('POSTGRES_TEST_DSN'),
