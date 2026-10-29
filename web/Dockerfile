@@ -28,6 +28,13 @@ COPY . .
 RUN pnpm exec next build
 
 FROM base AS runtime
+# The production command invokes Node/Next directly. Do not ship unused npm,
+# Corepack or Yarn toolchains and their vulnerable transitive packages. Refresh
+# the two Alpine SSL libraries identified by the actual P0.4D.1A image scan.
+RUN apk upgrade --no-cache libcrypto3 libssl3 \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-* \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+        /usr/local/bin/pnpm /usr/local/bin/pnpx /usr/local/bin/yarn /usr/local/bin/yarnpkg
 RUN addgroup -g 10001 dashboard && adduser -D -u 10001 -G dashboard dashboard
 WORKDIR /app
 ENV NODE_ENV=production \

@@ -72,8 +72,8 @@ def scan_summary(report):
             severity = item['Severity']
             counts[severity] = counts.get(severity, 0) + 1
             if severity in ('HIGH', 'CRITICAL') and item.get('FixedVersion'):
-                fixable.append({k: item.get(k) for k in
-                                ('VulnerabilityID', 'PkgName', 'InstalledVersion', 'FixedVersion', 'Severity')})
+                fixable.append({"Target": result.get('Target'), **{k: item.get(k) for k in
+                                ('VulnerabilityID', 'PkgName', 'InstalledVersion', 'FixedVersion', 'Severity')}})
     return {"severity_counts": counts, "fixable_high_critical": fixable,
             "secret_findings": secret_count,
             "eol": bool(report.get('Metadata', {}).get('OS', {}).get('EOSL'))}
