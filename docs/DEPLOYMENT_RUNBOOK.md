@@ -2,6 +2,16 @@
 
 ## Research Terminal Lite
 
+### Hosted readiness after the three-study phase (P0.4D.1)
+
+Use [the hosted readiness and transfer procedure](LITE_HOSTED_READINESS.md).
+Its disposition is **BLOCKED** until the admitted image/security smoke and
+private export/independent restore reconciliation pass. No cloud resources or
+private transfers are authorized by this readiness phase. The older one-day
+bootstrap below is historical: `initialize_database` alone does **not** preserve
+the three studies, 252 trials/results, events or manifests. Do not run `prepare`,
+bootstrap migrations or restore against the working local Lite database.
+
 ### Three-market offline studies (P0.4C.2B)
 
 The offline launcher now admits exactly the three verified August 1–14, 2026
