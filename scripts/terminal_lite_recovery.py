@@ -59,6 +59,10 @@ def digest_file(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+def is_link(path):
+    return path.is_symlink() or getattr(path, 'is_junction', lambda: False)()
+
+
 def require_private_admission():
     result = preflight()
     if result['status'] != 'PREFLIGHT_PASS_ACCEPTANCE_NOT_RUN':
@@ -68,7 +72,7 @@ def require_private_admission():
 def private_artifact_path(path):
     path = Path(path)
     private_root = (pilot.STATE / 'transfer').resolve()
-    if (path.is_symlink() or any(parent.is_symlink() for parent in path.parents)
+    if (is_link(path) or any(is_link(parent) for parent in path.parents)
             or private_root not in path.resolve().parents):
         raise ValueError('private_transfer_artifact_path_required')
     return path
@@ -96,12 +100,12 @@ def binary_transfer(args, *, source=None, destination=None):
 
 def file_inventory(root):
     root = Path(root)
-    if root.is_symlink() or not root.is_dir():
+    if is_link(root) or not root.is_dir():
         raise ValueError('regular_evidence_directory_required')
     result = {}
     total = 0
     for path in sorted(root.rglob('*')):
-        if path.is_symlink():
+        if is_link(path):
             raise ValueError('evidence_links_forbidden')
         if path.is_dir():
             continue
@@ -145,7 +149,7 @@ def safe_member(name):
 
 def unpack_evidence(archive_path, destination, expected):
     destination = Path(destination)
-    if destination.exists() or destination.is_symlink():
+    if destination.exists() or is_link(destination) or any(is_link(p) for p in destination.parents):
         raise ValueError('restore_directory_must_be_new')
     if digest_file(archive_path) != expected['sha256']:
         raise ValueError('evidence_archive_hash_mismatch')

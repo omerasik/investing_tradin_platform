@@ -82,6 +82,13 @@ class PrivateRecoveryTests(unittest.TestCase):
         self.assertNotEqual(recovery.row_digest([('a',), ('b',)]), recovery.row_digest([('b',), ('a',)]))
         self.assertEqual({'rows': 0, 'sha256': hashlib.sha256(b'').hexdigest()}, recovery.row_digest([]))
 
+    def test_windows_junctions_refuse_before_file_reads(self):
+        with patch.object(type(self.root), 'is_junction', return_value=True, create=True), \
+                patch.object(recovery, 'digest_file') as digest:
+            with self.assertRaisesRegex(ValueError, 'regular_evidence_directory'):
+                recovery.file_inventory(self.root)
+            digest.assert_not_called()
+
     def test_binary_transfer_preserves_null_and_non_utf8_bytes_and_exit_gate(self):
         measured = {'available_physical_bytes': 2 * 1024**3, 'commit_headroom_bytes': 2 * 1024**3,
                     'disk_free_bytes': recovery.pilot.DISK_FLOOR}
