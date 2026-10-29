@@ -29,13 +29,13 @@ from scripts.terminal_lite import STATE, active_root, clean_env, settings
 DATASET_ID = UUID("e5942fd6-42f4-5ad2-8b34-09bae2996db6")
 DATASET_HASH = "6368e6460d97cd07471098f32afbf3bd82ffb477d26fa7042e5e0a9576c9aa1e"  # pragma: allowlist secret
 STUDY_ID = UUID("020fe0da-b880-54fb-be1b-52cee81bbd7f")
-BTC_MANIFEST = "67e4c918caa21cebab952f94d8829de0b164e856616b6bd6763c9b18f201b795"
+BTC_MANIFEST = "67e4c918caa21cebab952f94d8829de0b164e856616b6bd6763c9b18f201b795"  # pragma: allowlist secret
 DATASETS = {
     DATASET_ID: ("BTCUSDT", DATASET_HASH),
     UUID("d3436b40-3d8b-58e1-987f-82dc0d08c95f"): (
-        "ETHUSDT", "9446e31832cee97f7caac798b0aeb3713468b375d72981c8303bfeeb00e09f81"),
+        "ETHUSDT", "9446e31832cee97f7caac798b0aeb3713468b375d72981c8303bfeeb00e09f81"),  # pragma: allowlist secret
     UUID("04b8964d-5053-5783-b390-93d916e0a06e"): (
-        "SOLUSDT", "a03e9e5a8888a5f3144041ec067bb942014ee72fc99b0b5241e5e998c8f8e2b7"),
+        "SOLUSDT", "a03e9e5a8888a5f3144041ec067bb942014ee72fc99b0b5241e5e998c8f8e2b7"),  # pragma: allowlist secret
 }
 MEMORY_BYTES = 512 * 1024**2
 DISK_FLOOR = 24 * 1024**3
@@ -152,7 +152,9 @@ def database_proof(database: Any, expected: dict[str, str], allowed: tuple[Any, 
         raise ValueError("lite_pilot_cluster_pin_mismatch")
     # Audit *all* admitted studies before the worker may register/claim anything.
     for stored in studies:
-        verify_results(database, by_id[stored[0]])
+        verified = by_id[stored[0]]
+        _, manifest = verify_results(database, verified)
+        verify_recorded_digest(database, verified, manifest)
     return proof
 
 
@@ -211,6 +213,23 @@ def study_digest(database: Any, study_id: UUID) -> str:
             ).format(sql.Identifier(name)), (study_id,)).fetchall()
             digest.update(json.dumps([name, rows], separators=(",", ":")).encode())
     return digest.hexdigest()
+
+
+def verify_recorded_digest(database: Any, study: Any, manifest: Any) -> None:
+    """A completed receipt also pins results against coordinated hash/manifest edits."""
+    for path in sorted((STATE / "research-pilot").glob("*.json"), reverse=True):
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+        if receipt.get("study_id") != str(study.study_id) or not receipt.get("finished"):
+            continue
+        recorded = receipt.get("study_digests", {}).get(str(study.study_id))
+        if recorded is not None:
+            if (manifest is None or receipt.get("manifest_hash") != manifest.manifest_hash
+                    or receipt.get("study_content_hash") != study.content_hash
+                    or recorded != study_digest(database, study.study_id)):
+                raise ValueError("lite_pilot_completed_receipt_digest_mismatch")
+            return
+        # Legacy BTC receipts predate complete-row digests; its original
+        # immutable manifest is independently pinned by verify_results.
 
 
 def snapshot(database: Any) -> dict[str, int]:

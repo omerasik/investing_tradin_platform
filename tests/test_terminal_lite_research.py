@@ -154,7 +154,7 @@ class LitePilotTests(unittest.TestCase):
         self.study.trials = list
         allowed = (self.study, *others)
         self.studies = [(s.study_id, s.content_hash, {}) for s in reversed(allowed)]
-        with patch.object(pilot, "verify_results") as audit:
+        with patch.object(pilot, "verify_results", return_value=([], None)) as audit:
             pilot.database_proof(self.database, self.expected, allowed)
             self.assertEqual(3, audit.call_count)
         self.studies[-1] = (self.study.study_id, "changed", {})
@@ -215,6 +215,22 @@ class LitePilotTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, "resource_acceptance"):
                 pilot.accepted_predecessor(self.study)
 
+    def test_completed_receipt_detects_coordinated_result_and_manifest_change(self):
+        receipts = self.state / "research-pilot"
+        receipts.mkdir()
+        (receipts / "synthetic.json").write_text(json.dumps({
+            "study_id": str(self.study.study_id), "study_content_hash": self.study.content_hash,
+            "finished": True, "manifest_hash": "original-manifest",
+            "study_digests": {str(self.study.study_id): "original-rows"}}))
+        manifest = SimpleNamespace(manifest_hash="original-manifest")
+        with patch.object(pilot, "study_digest", return_value="original-rows"):
+            pilot.verify_recorded_digest(self.database, self.study, manifest)
+        for changed_manifest, changed_digest in (("changed-manifest", "original-rows"),
+                                                  ("original-manifest", "changed-rows")):
+            with patch.object(pilot, "study_digest", return_value=changed_digest), \
+                    self.assertRaisesRegex(ValueError, "receipt_digest_mismatch"):
+                pilot.verify_recorded_digest(self.database, self.study, SimpleNamespace(manifest_hash=changed_manifest))
+
     def test_in_process_uses_the_same_single_worker_and_never_a_pool(self):
         study = SimpleNamespace(study_id=pilot.STUDY_ID, planned_trial_count=84, label="synthetic",
                                 authority=lambda: SimpleNamespace(reasons=[]), timing_lag=None)
@@ -239,7 +255,7 @@ class LitePilotTests(unittest.TestCase):
         other = SimpleNamespace(study_id=UUID(int=1), content_hash="synthetic-other", identity=dict, trials=list)
         self.studies = [(s.study_id, s.content_hash, {}) for s in (self.study, other)]
         with patch.object(pilot, "checked_studies", return_value={pilot.DATASET_ID: self.study, UUID(int=1): other}), \
-                patch.object(pilot, "verify_results", side_effect=[None, ValueError("synthetic_result_hash_mismatch")]), \
+                patch.object(pilot, "verify_results", side_effect=[([], None), ValueError("synthetic_result_hash_mismatch")]), \
                 patch("scripts.strategy_lab.run_strategy_lab_command") as worker:
             with self.assertRaisesRegex(ValueError, "result_hash_mismatch"):
                 pilot.execute_pilot(self.database, "unused", self.state, self.study, self.expected)
