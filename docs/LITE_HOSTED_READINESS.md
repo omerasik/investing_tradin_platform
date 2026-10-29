@@ -6,6 +6,43 @@ Implementation baseline: merged P0.4C.2B, `f557f613990093a34f140edbc5bdd7907145d
 No Railway account/project discovery or mutation is needed for this phase;
 never use the locally linked project or interact with SocialOS.
 
+### Opt-in code-only image qualification (P0.4D.1A)
+
+After its focused PR and normal required CI merge, run the manual
+`lite-image-qualification.yml` workflow with `--ref main -f source_sha=<exact
+merged-main-SHA>`. The workflow refuses a different dispatch SHA or branch.
+It builds **both actual Dockerfiles**, sequentially in a 4 GiB / 2 CPU BuildKit
+container (stopped before each scan), using `--load` without a registry push.
+The existing digest-pinned Trivy 0.73.0 policy checks EOL and fixable
+HIGH/CRITICAL findings; secret findings also block qualification. Standard
+GitHub-hosted Linux admission requires 5 GiB available RAM/commit, 12 GiB free
+disk and two CPUs; monitored floors are 512 MiB RAM, 1 GiB commit and 3 GiB disk.
+These are isolated ephemeral-runner limits, not changes to Windows guards.
+
+Production smoke uses generated credentials, a fresh capped PG16 database,
+three **synthetic** one-day filesystem fixtures and **zero studies/results**.
+It exercises the actual non-root API/dashboard image commands, chart readers,
+health, session/login/logout/HTTPS-cookie contract, SELECT-only reader and
+mutation/execution refusal. Services bind only runner loopback ports; the
+dashboard shares the API container network namespace to use an accepted
+loopback API URL, without changing the hosted HTTPS validator.
+
+Only `admission.json` and `qualification.json` are uploaded for seven days:
+exact source SHA, image config IDs (local SHA-256 digests, not registry
+RepoDigests), layer IDs/archive hashes, sanitized CVE/package/severity counts,
+scanner DB metadata, startup outcomes, step timings, cgroup peak memory/CPU
+usage and host minima. No image tar, raw secret report, environment/inspect
+output, credentials, cookies, logs, SQL or fixture/data file is uploaded.
+The entrypoint refuses workstations and does not read private Lite settings.
+
+A workflow SUCCESS with `IMAGE_QUALIFICATION_PASS` qualifies code-only images;
+it does **not** qualify private source/export/restore, real three-study recovery,
+public TLS/ingress, Railway volume permissions or deployment. Failed admission
+or build/scan/smoke reports BLOCKED with the sanitized failing step; do not use
+a paid runner as an automatic fallback. Record actual run conclusions below
+only after execution; the older pending gates below are not silently passed by
+adding this workflow.
+
 ## Evidence and pending gates
 
 | Gate | Result / precise prerequisite |
