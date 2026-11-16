@@ -16,8 +16,8 @@ importers:
   .:
     dependencies:
       lightweight-charts:
-        specifier: 5.2.1
-        version: 5.2.1
+        specifier: 5.3.0
+        version: 5.3.0
       next:
         specifier: 16.4.1
         version: 16.4.1(@babel/core@7.29.7(supports-color@7.2.0))(@playwright/test@1.62.1)(@types/node@24.10.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -1381,8 +1381,8 @@ packages:
     resolution: {integrity: sha512-+bT2uH4E5LGE7h/n3evcS/sQlJXCpIp6ym8OWJ5eV6+67Dsql/LaaT7qJBAt2rzfoa/5QBGBhxDix1dMt2kQKQ==}
     engines: {node: '>= 0.8.0'}
 
-  lightweight-charts@5.2.1:
-    resolution: {integrity: sha512-IVwoK1RLFiLPubaKIjNbtjWLnpPMqiABSrTay6whmNa8L1+19292VtHJ+BWyPUuLCwF0tcQlhEWd1CLB2a1nsQ==}
+  lightweight-charts@5.3.0:
+    resolution: {integrity: sha512-w16fu2/FteUkIJdgc9G2tOCKs1fwFSqnqF8+kMgHGv0uGIfcfpEJhziSaQbML1yrkbeg4nQXV3msjmhBzhLNhw==}
 
   locate-path@6.0.0:
     resolution: {integrity: sha512-iPZK6eYjbxRu3uB4/WZ3EsEIMJFMqAoopl3R+zuq0UjcAm/MO6KCweDgPfP3elTztoKP3KtnVHxTn2NHBSDVUw==}
@@ -3311,7 +3311,7 @@ snapshots:
       prelude-ls: 1.2.1
       type-check: 0.4.0
 
-  lightweight-charts@5.2.1:
+  lightweight-charts@5.3.0:
     dependencies:
       fancy-canvas: 2.1.0
 
